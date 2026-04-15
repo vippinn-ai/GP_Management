@@ -123,7 +123,6 @@ interface ReportFilterState {
   toDate?: string;
 }
 
-const CURRENT_USER_KEY = "game-parlour-management-system/current-user";
 const DEFAULT_INVENTORY_CATEGORIES = ["Beverages", "Food", "Refill Sheesha", "Arcade"];
 const DEFAULT_EXPENSE_CATEGORIES = ["Utilities", "Rent", "Internet", "Salary", "Supplies", "Maintenance"];
 
@@ -400,14 +399,14 @@ function upsertCustomer(appData: AppData, customerName?: string, customerPhone?:
 export default function App() {
   const backendConfigured = isBackendConfigured();
   const [appData, setAppData] = useState<AppData>(() => (backendConfigured ? cloneValue(seedAppData) : loadAppData()));
-  const [activeUserId, setActiveUserId] = useState<string | null>(() => (backendConfigured ? null : window.sessionStorage.getItem(CURRENT_USER_KEY)));
+  const [activeUserId, setActiveUserId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<TabId>("dashboard");
   const [online, setOnline] = useState<boolean>(navigator.onLine);
   const [now, setNow] = useState<string>(new Date().toISOString());
   const [loginUsername, setLoginUsername] = useState("admin");
   const [loginPassword, setLoginPassword] = useState("admin123");
   const [loginError, setLoginError] = useState("");
-  const [remoteLoading, setRemoteLoading] = useState<boolean>(backendConfigured);
+  const [remoteLoading, setRemoteLoading] = useState(false);
   const [remoteError, setRemoteError] = useState("");
   const [remoteVersion, setRemoteVersion] = useState(0);
   const [remoteSaving, setRemoteSaving] = useState(false);
@@ -572,14 +571,6 @@ export default function App() {
   }, [appData.businessProfile]);
 
   useEffect(() => {
-    if (activeUserId) {
-      window.sessionStorage.setItem(CURRENT_USER_KEY, activeUserId);
-    } else {
-      window.sessionStorage.removeItem(CURRENT_USER_KEY);
-    }
-  }, [activeUserId]);
-
-  useEffect(() => {
     const timerId = window.setInterval(() => setNow(new Date().toISOString()), 1000);
     return () => window.clearInterval(timerId);
   }, []);
@@ -588,41 +579,7 @@ export default function App() {
     if (!backendConfigured) {
       return;
     }
-    let cancelled = false;
-    async function initializeRemote() {
-      try {
-        setRemoteLoading(true);
-        const profile = await fetchCurrentProfile();
-        if (!profile) {
-          if (!cancelled) {
-            setActiveUserId(null);
-            setRemoteLoading(false);
-          }
-          return;
-        }
-        const snapshot = await loadRemoteAppDataSnapshot();
-        if (cancelled) {
-          return;
-        }
-        skipRemotePersistRef.current = true;
-        setAppData(snapshot.appData);
-        setRemoteVersion(snapshot.version);
-        setActiveUserId(profile.id);
-        setRemoteError("");
-      } catch (error) {
-        if (!cancelled) {
-          setRemoteError(error instanceof Error ? error.message : "Unable to load backend data.");
-        }
-      } finally {
-        if (!cancelled) {
-          setRemoteLoading(false);
-        }
-      }
-    }
-    void initializeRemote();
-    return () => {
-      cancelled = true;
-    };
+    void signOutRemote().catch(() => undefined);
   }, [backendConfigured]);
 
   useEffect(() => {
