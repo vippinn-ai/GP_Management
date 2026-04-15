@@ -22,6 +22,7 @@ create table if not exists public.profiles (
 create table if not exists public.app_state (
   id text primary key,
   data jsonb not null default '{}'::jsonb,
+  version integer not null default 0,
   updated_at timestamptz not null default timezone('utc', now()),
   updated_by uuid references public.profiles (id)
 );
@@ -105,3 +106,17 @@ with check (public.current_profile_is_active());
 insert into public.app_state (id, data)
 values ('primary', '{}'::jsonb)
 on conflict (id) do nothing;
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_publication_tables
+    where pubname = 'supabase_realtime'
+      and schemaname = 'public'
+      and tablename = 'app_state'
+  ) then
+    alter publication supabase_realtime add table public.app_state;
+  end if;
+end
+$$;

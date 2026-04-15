@@ -19,7 +19,7 @@ import {
   adminUpdateUserRemote,
   fetchCurrentProfile,
   isBackendConfigured,
-  loadRemoteAppData,
+  loadRemoteAppDataSnapshot,
   saveRemoteAppData,
   signInWithUsername,
   signOutRemote,
@@ -409,6 +409,8 @@ export default function App() {
   const [loginError, setLoginError] = useState("");
   const [remoteLoading, setRemoteLoading] = useState<boolean>(backendConfigured);
   const [remoteError, setRemoteError] = useState("");
+  const [remoteVersion, setRemoteVersion] = useState(0);
+  const [remoteSaving, setRemoteSaving] = useState(false);
   const [startSessionDraft, setStartSessionDraft] = useState<StartSessionDraft>({
     stationId: "",
     customerName: "",
@@ -505,12 +507,36 @@ export default function App() {
   });
 
   async function refreshRemoteState(options?: { keepUser?: boolean }) {
-    const remoteData = await loadRemoteAppData();
+    const snapshot = await loadRemoteAppDataSnapshot();
     skipRemotePersistRef.current = true;
-    setAppData(remoteData);
+    setAppData(snapshot.appData);
+    setRemoteVersion(snapshot.version);
     if (!options?.keepUser) {
       const profile = await fetchCurrentProfile();
       setActiveUserId(profile?.id ?? null);
+    }
+  }
+
+  async function saveRemoteSnapshot(nextAppData: AppData, expectedVersion = remoteVersion) {
+    if (!activeUserId) {
+      return;
+    }
+    setRemoteSaving(true);
+    try {
+      const nextVersion = await saveRemoteAppData(nextAppData, activeUserId, expectedVersion);
+      setRemoteVersion(nextVersion);
+      setRemoteError("");
+    } catch (error) {
+      await refreshRemoteState({ keepUser: true });
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Remote data changed in another browser. Please retry after the latest data loads.";
+      setRemoteError(message);
+      window.alert(message);
+      throw error;
+    } finally {
+      setRemoteSaving(false);
     }
   }
 
@@ -530,7 +556,7 @@ export default function App() {
       window.clearTimeout(remoteSaveTimerRef.current);
     }
     remoteSaveTimerRef.current = window.setTimeout(() => {
-      void saveRemoteAppData(appData, activeUserId).catch((error: unknown) => {
+      void saveRemoteSnapshot(appData).catch((error: unknown) => {
         setRemoteError(error instanceof Error ? error.message : "Unable to sync app data.");
       });
     }, 250);
@@ -574,12 +600,13 @@ export default function App() {
           }
           return;
         }
-        const remoteData = await loadRemoteAppData();
+        const snapshot = await loadRemoteAppDataSnapshot();
         if (cancelled) {
           return;
         }
         skipRemotePersistRef.current = true;
-        setAppData(remoteData);
+        setAppData(snapshot.appData);
+        setRemoteVersion(snapshot.version);
         setActiveUserId(profile.id);
         setRemoteError("");
       } catch (error) {
@@ -602,9 +629,10 @@ export default function App() {
     if (!backendConfigured || !activeUserId) {
       return;
     }
-    return subscribeToRemoteAppData((nextAppData) => {
+    return subscribeToRemoteAppData((snapshot) => {
       skipRemotePersistRef.current = true;
-      setAppData(nextAppData);
+      setAppData(snapshot.appData);
+      setRemoteVersion(snapshot.version);
       setRemoteError("");
     });
   }, [activeUserId, backendConfigured]);
@@ -891,9 +919,10 @@ export default function App() {
       setRemoteLoading(true);
       void signInWithUsername(loginUsername, loginPassword)
         .then(async (profile) => {
-          const remoteData = await loadRemoteAppData();
+          const snapshot = await loadRemoteAppDataSnapshot();
           skipRemotePersistRef.current = true;
-          setAppData(remoteData);
+          setAppData(snapshot.appData);
+          setRemoteVersion(snapshot.version);
           setActiveUserId(profile.id);
           setLoginError("");
           setRemoteError("");
@@ -1513,28 +1542,87 @@ export default function App() {
     );
   }
 
-  function finalizeCheckout() {
+  async function finalizeCheckout() {
     if (!activeUser || !checkoutState) {
       return;
+    }
+    let baseAppData = appData;
+    let baseVersion = remoteVersion;
+    if (backendConfigured) {
+      const snapshot = await loadRemoteAppDataSnapshot();
+      baseAppData = snapshot.appData;
+      baseVersion = snapshot.version;
+      setRemoteVersion(baseVersion);
+      if (checkoutState.mode === "session" && checkoutState.sessionId) {
+        const remoteSession = baseAppData.sessions.find((entry) => entry.id === checkoutState.sessionId);
+        if (!remoteSession || remoteSession.status === "closed") {
+          skipRemotePersistRef.current = true;
+          setAppData(baseAppData);
+          setCheckoutState(null);
+          setManageSessionId(null);
+          window.alert("This session was already closed from another browser. Latest data has been loaded.");
+          return;
+        }
+      }
+      if (checkoutState.mode === "customer_tab" && checkoutState.customerTabId) {
+        const remoteTab = baseAppData.customerTabs.find((entry) => entry.id === checkoutState.customerTabId);
+        if (!remoteTab || remoteTab.status === "closed") {
+          skipRemotePersistRef.current = true;
+          setAppData(baseAppData);
+          setCheckoutState(null);
+          window.alert("This consumables tab was already closed from another browser. Latest data has been loaded.");
+          return;
+        }
+      }
+      if (checkoutState.mode === "bill_replacement" && checkoutState.replacementBillId) {
+        const remoteBill = baseAppData.bills.find((entry) => entry.id === checkoutState.replacementBillId);
+        if (!remoteBill || remoteBill.status !== "issued") {
+          skipRemotePersistRef.current = true;
+          setAppData(baseAppData);
+          setCheckoutState(null);
+          window.alert("This bill was already changed from another browser. Latest data has been loaded.");
+          return;
+        }
+      }
+      skipRemotePersistRef.current = true;
+      setAppData(baseAppData);
+    }
+    function getAvailableStockFromData(
+      data: AppData,
+      item: InventoryItem,
+      ignoreSessionId?: string,
+      ignoreCustomerTabId?: string
+    ) {
+      const sessionReserved = sumBy(
+        data.sessions.filter((entry) => entry.status !== "closed" && entry.id !== ignoreSessionId),
+        (entry) => sumBy(entry.items.filter((line) => line.inventoryItemId === item.id), (line) => line.quantity)
+      );
+      const tabReserved = item.isReusable
+        ? sumBy(
+            data.customerTabs.filter((entry) => entry.status === "open" && entry.id !== ignoreCustomerTabId),
+            (entry) => sumBy(entry.items.filter((line) => line.inventoryItemId === item.id), (line) => line.quantity)
+          )
+        : 0;
+      return Math.max(0, item.stockQty - sessionReserved - tabReserved);
     }
     const issuedAt = new Date().toISOString();
     const effectiveClosedAt =
       checkoutState.mode === "session" ? checkoutState.closedAt ?? issuedAt : issuedAt;
     const session =
       checkoutState.mode === "session" && checkoutState.sessionId
-        ? getSessionById(checkoutState.sessionId)
+        ? baseAppData.sessions.find((entry) => entry.id === checkoutState.sessionId)
         : undefined;
     const customerTab =
       checkoutState.mode === "customer_tab" && checkoutState.customerTabId
-        ? getCustomerTabById(checkoutState.customerTabId)
+        ? baseAppData.customerTabs.find((entry) => entry.id === checkoutState.customerTabId)
         : undefined;
     const replacementBill =
       checkoutState.mode === "bill_replacement" && checkoutState.replacementBillId
-        ? getBillById(checkoutState.replacementBillId)
+        ? baseAppData.bills.find((entry) => entry.id === checkoutState.replacementBillId)
         : undefined;
     const sourceLines =
       checkoutState.mode === "session" && session
-        ? getSessionCheckoutLines(session, getSessionChargeSummary(session, effectiveClosedAt))
+        ? getSessionCheckoutLines(session, calculateSessionCharge(session, baseAppData.sessionPauseLogs, effectiveClosedAt))
         : checkoutState.mode === "customer_tab"
           ? getCustomerTabCheckoutLines(customerTab?.items ?? [])
           : checkoutState.replacementLines ?? [];
@@ -1543,8 +1631,8 @@ export default function App() {
         if (!line.inventoryItemId) {
           return false;
         }
-        const inventoryItem = appData.inventoryItems.find((item) => item.id === line.inventoryItemId);
-        return !inventoryItem || getAvailableStock(inventoryItem, undefined, customerTab.id) < line.quantity;
+        const inventoryItem = baseAppData.inventoryItems.find((item) => item.id === line.inventoryItemId);
+        return !inventoryItem || getAvailableStockFromData(baseAppData, inventoryItem, undefined, customerTab.id) < line.quantity;
       });
       if (unavailableLine) {
         window.alert(`Not enough stock available for ${unavailableLine.description}. Update the tab before billing.`);
@@ -1559,14 +1647,14 @@ export default function App() {
       const originalQuantities = getInventoryQuantityMap(replacementBill.lines);
       const replacementQuantities = getInventoryQuantityMap(sourceLines);
       for (const [itemId, nextQuantity] of Object.entries(replacementQuantities)) {
-        const item = appData.inventoryItems.find((entry) => entry.id === itemId);
+        const item = baseAppData.inventoryItems.find((entry) => entry.id === itemId);
         if (!item) {
           window.alert("One of the replacement bill items no longer exists.");
           return;
         }
         const requiredDelta = nextQuantity - (originalQuantities[itemId] ?? 0);
         if (item.isReusable) {
-          if (requiredDelta > getAvailableStock(item)) {
+          if (requiredDelta > getAvailableStockFromData(baseAppData, item)) {
             window.alert(`${item.name} is currently occupied.`);
             return;
           }
@@ -1647,7 +1735,7 @@ export default function App() {
             appliedAt: issuedAt
           }
         : undefined;
-    const billNumber = formatBillNumber(appData, issuedAt);
+    const billNumber = formatBillNumber(baseAppData, issuedAt);
     const issuedBill = {
       id: billId,
       billNumber,
@@ -1674,7 +1762,8 @@ export default function App() {
       replaceReason: replacementBill ? checkoutState.replaceReason?.trim() : undefined
     };
 
-    mutateAppData((draft) => {
+    const nextAppData = cloneValue(baseAppData);
+    const draft = nextAppData;
       draft.bills.unshift(issuedBill);
       draft.payments.unshift({
         id: createId("payment"),
@@ -1775,7 +1864,13 @@ export default function App() {
       if (ltpWinningSession && session) {
         addAuditLog(draft, activeUser.id, "ltp_discount_applied", "session", session.id, `Applied LTP win discount to ${session.stationNameSnapshot}.`);
       }
-    });
+    if (backendConfigured) {
+      skipRemotePersistRef.current = true;
+      setAppData(nextAppData);
+      await saveRemoteSnapshot(nextAppData, baseVersion);
+    } else {
+      setAppData(nextAppData);
+    }
 
     setSelectedReceiptBillId(billId);
     setCheckoutState(null);
@@ -1783,8 +1878,8 @@ export default function App() {
     setSelectedCustomerTabId(null);
     setCustomerTabDraft({ customerName: "", customerPhone: "" });
     setReplacementItemForm({ itemId: "", quantity: 1 });
-    openReceiptWindow(appData.businessProfile, issuedBill, appData.bills);
-    downloadReceiptPdf(appData.businessProfile, issuedBill, appData.bills);
+    openReceiptWindow(nextAppData.businessProfile, issuedBill, nextAppData.bills);
+    downloadReceiptPdf(nextAppData.businessProfile, issuedBill, nextAppData.bills);
   }
 
   function upsertInventoryItem(event: FormEvent<HTMLFormElement>) {
@@ -2573,7 +2668,7 @@ export default function App() {
         </nav>
         <div className="sidebar-footer">
           <div className={`status-pill ${online ? "is-online" : "is-offline"}`}>
-            {online ? "Online" : "Offline fallback"}
+            {remoteSaving ? "Syncing" : online ? "Online" : "Offline fallback"}
           </div>
           <div className="helper-text">
             {backendConfigured
@@ -4375,7 +4470,7 @@ export default function App() {
           </div>
           <div className="button-row">
             <button className="secondary-button" type="button" onClick={() => { setCheckoutState(null); setReplacementItemForm({ itemId: "", quantity: 1 }); }}>Cancel</button>
-            <button className="primary-button" type="button" onClick={finalizeCheckout}>{checkoutState.mode === "bill_replacement" ? "Issue Replacement Bill" : "Issue Bill"}</button>
+            <button className="primary-button" type="button" onClick={finalizeCheckout} disabled={remoteSaving}>{checkoutState.mode === "bill_replacement" ? "Issue Replacement Bill" : "Issue Bill"}</button>
           </div>
         </Modal>
       )}
