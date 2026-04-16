@@ -6,8 +6,9 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "preview": "vite preview",
-    "bootstrap:production": "node scripts/bootstrap-production.mjs scripts/production-config.sample.json"
+    "preview": "npm run build && wrangler dev",
+    "bootstrap:production": "node scripts/bootstrap-production.mjs scripts/production-config.sample.json",
+    "deploy": "npm run build && wrangler deploy"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.103.0",
@@ -17,11 +18,13 @@
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
+    "@cloudflare/vite-plugin": "^1.32.3",
     "@types/react": "^19.1.2",
     "@types/react-dom": "^19.1.2",
     "@vitejs/plugin-react": "^5.0.0",
     "supabase": "^2.91.1",
     "typescript": "^5.8.3",
-    "vite": "^6.3.5"
+    "vite": "^6.3.5",
+    "wrangler": "^4.83.0"
   }
 }
