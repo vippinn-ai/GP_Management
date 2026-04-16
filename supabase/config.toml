@@ -1,0 +1,11 @@
+[functions.admin-create-user]
+verify_jwt = false
+
+[functions.admin-update-user]
+verify_jwt = false
+
+[functions.admin-change-password]
+verify_jwt = false
+
+[functions.admin-toggle-user-active]
+verify_jwt = false
