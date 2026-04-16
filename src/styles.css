@@ -221,6 +221,31 @@ td {
   color: #ffd190;
 }
 
+.remote-error-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  background: rgba(192, 57, 43, 0.15);
+  border: 1px solid rgba(192, 57, 43, 0.3);
+  border-radius: 6px;
+  font-size: 0.78rem;
+  color: #f08080;
+  line-height: 1.4;
+}
+
+.remote-error-banner span {
+  flex: 1;
+}
+
+.remote-error-banner .ghost-button {
+  flex-shrink: 0;
+  font-size: 0.75rem;
+  color: #f08080;
+  text-decoration: underline;
+  padding: 0;
+}
+
 .helper-text,
 .muted {
   color: #667a70;

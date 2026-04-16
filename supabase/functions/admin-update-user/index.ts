@@ -6,6 +6,11 @@ Deno.serve(async (request) => {
     return new Response("ok", { headers: corsHeaders });
   }
 
+  const contentLength = Number(request.headers.get("content-length") ?? "0");
+  if (contentLength > 4096) {
+    return jsonResponse({ error: "Request too large." }, 413);
+  }
+
   const guard = await requireAdmin(request);
   if ("error" in guard) {
     return guard.error;
