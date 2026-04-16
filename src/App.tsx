@@ -128,6 +128,14 @@ interface CustomerProfileEditDraft {
   phone: string;
 }
 
+interface StationEditDraft {
+  id: string;
+  name: string;
+  mode: Station["mode"];
+  active: boolean;
+  ltpEnabled: boolean;
+}
+
 interface UserEditDraft {
   id: string;
   name: string;
@@ -520,6 +528,7 @@ export default function App() {
     active: true,
     ltpEnabled: false
   });
+  const [editStationDraft, setEditStationDraft] = useState<StationEditDraft | null>(null);
   const [pricingDraft, setPricingDraft] = useState({
     stationId: "",
     label: "",
@@ -2619,21 +2628,44 @@ function normalizeAppDataCustomers(source: AppData) {
       return;
     }
     mutateAppData((draft) => {
-      if (stationForm.id) {
-        const existing = draft.stations.find((station) => station.id === stationForm.id);
-        if (!existing) {
-          return;
-        }
-        Object.assign(existing, stationForm, { name: stationForm.name.trim() });
-      } else {
-        draft.stations.unshift({
-          ...stationForm,
-          id: createId("station"),
-          name: stationForm.name.trim()
-        });
-      }
+      draft.stations.unshift({
+        ...stationForm,
+        id: createId("station"),
+        name: stationForm.name.trim()
+      });
     });
     setStationForm({ id: "", name: "", mode: "timed", active: true, ltpEnabled: false });
+  }
+
+  function beginEditStation(station: Station) {
+    if (!canEditSettings) {
+      return;
+    }
+    setEditStationDraft({
+      id: station.id,
+      name: station.name,
+      mode: station.mode,
+      active: station.active,
+      ltpEnabled: station.ltpEnabled
+    });
+  }
+
+  function saveEditedStation(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!activeUser || !canEditSettings || !editStationDraft) {
+      return;
+    }
+    mutateAppData((draft) => {
+      const existing = draft.stations.find((station) => station.id === editStationDraft.id);
+      if (!existing) {
+        return;
+      }
+      Object.assign(existing, {
+        ...editStationDraft,
+        name: editStationDraft.name.trim()
+      });
+    });
+    setEditStationDraft(null);
   }
 
   function deleteStation(stationId: string) {
@@ -4670,7 +4702,7 @@ function normalizeAppDataCustomers(source: AppData) {
                 <label><span>Mode</span><select value={stationForm.mode} onChange={(event) => setStationForm((p) => ({ ...p, mode: event.target.value as Station["mode"] }))}><option value="timed">Timed</option><option value="unit_sale">Unit sale</option></select></label>
                 <label className="checkbox-field"><input type="checkbox" checked={stationForm.active} onChange={(event) => setStationForm((p) => ({ ...p, active: event.target.checked }))} /><span>Active station</span></label>
                 <label className="checkbox-field"><input type="checkbox" checked={stationForm.ltpEnabled} onChange={(event) => setStationForm((p) => ({ ...p, ltpEnabled: event.target.checked }))} /><span>LTP enabled</span></label>
-                <button className="primary-button" type="submit">{stationForm.id ? "Update Station" : "Create Station"}</button>
+                <button className="primary-button" type="submit">Create Station</button>
               </form>
               )}
               <div className="table-wrap">
@@ -4683,7 +4715,7 @@ function normalizeAppDataCustomers(source: AppData) {
                         <td>{station.mode}</td>
                         <td>{station.ltpEnabled ? "Enabled" : "Off"}</td>
                         <td>{station.active ? "Active" : "Inactive"}</td>
-                        {canEditSettings && <td><div className="button-row dense"><button className="ghost-button" type="button" onClick={() => setStationForm(station)}>Edit</button><button className="ghost-button danger" type="button" onClick={() => deleteStation(station.id)}>Delete</button></div></td>}
+                        {canEditSettings && <td><div className="button-row dense"><button className="ghost-button" type="button" onClick={() => beginEditStation(station)}>Edit</button><button className="ghost-button danger" type="button" onClick={() => deleteStation(station.id)}>Delete</button></div></td>}
                       </tr>
                     ))}
                   </tbody>
@@ -4913,6 +4945,71 @@ function normalizeAppDataCustomers(source: AppData) {
               </button>
               <button className="primary-button" type="submit">
                 Save Profile
+              </button>
+            </div>
+          </form>
+        </Modal>
+      )}
+
+      {editStationDraft && (
+        <Modal title={`Edit Station${editStationDraft.name ? ` - ${editStationDraft.name}` : ""}`} onClose={() => setEditStationDraft(null)}>
+          <form className="form-grid" onSubmit={saveEditedStation}>
+            <label>
+              <span>Station Name</span>
+              <input
+                required
+                value={editStationDraft.name}
+                onChange={(event) =>
+                  setEditStationDraft((previous) =>
+                    previous ? { ...previous, name: event.target.value } : previous
+                  )
+                }
+              />
+            </label>
+            <label>
+              <span>Mode</span>
+              <select
+                value={editStationDraft.mode}
+                onChange={(event) =>
+                  setEditStationDraft((previous) =>
+                    previous ? { ...previous, mode: event.target.value as Station["mode"] } : previous
+                  )
+                }
+              >
+                <option value="timed">Timed</option>
+                <option value="unit_sale">Unit sale</option>
+              </select>
+            </label>
+            <label className="checkbox-field">
+              <input
+                type="checkbox"
+                checked={editStationDraft.active}
+                onChange={(event) =>
+                  setEditStationDraft((previous) =>
+                    previous ? { ...previous, active: event.target.checked } : previous
+                  )
+                }
+              />
+              <span>Active station</span>
+            </label>
+            <label className="checkbox-field">
+              <input
+                type="checkbox"
+                checked={editStationDraft.ltpEnabled}
+                onChange={(event) =>
+                  setEditStationDraft((previous) =>
+                    previous ? { ...previous, ltpEnabled: event.target.checked } : previous
+                  )
+                }
+              />
+              <span>LTP enabled</span>
+            </label>
+            <div className="button-row field-span-full">
+              <button className="secondary-button" type="button" onClick={() => setEditStationDraft(null)}>
+                Cancel
+              </button>
+              <button className="primary-button" type="submit">
+                Update Station
               </button>
             </div>
           </form>
