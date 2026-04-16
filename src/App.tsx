@@ -449,6 +449,7 @@ export default function App() {
   const [remoteError, setRemoteError] = useState("");
   const [remoteVersion, setRemoteVersion] = useState(0);
   const [remoteSaving, setRemoteSaving] = useState(false);
+  const [blockingActionLabel, setBlockingActionLabel] = useState<string | null>(null);
   const [startSessionDraft, setStartSessionDraft] = useState<StartSessionDraft>({
     stationId: "",
     customerName: "",
@@ -1062,6 +1063,15 @@ function normalizeAppDataCustomers(source: AppData) {
       mutator(next);
       return next;
     });
+  }
+
+  async function runBlockingAction<T>(label: string, action: () => Promise<T>) {
+    setBlockingActionLabel(label);
+    try {
+      return await action();
+    } finally {
+      setBlockingActionLabel(null);
+    }
   }
 
   function getSessionById(sessionId: string) {
@@ -2705,19 +2715,18 @@ function normalizeAppDataCustomers(source: AppData) {
       return;
     }
     if (backendConfigured) {
-      void adminCreateUserRemote({
-        name: nextName,
-        username: nextUsername,
-        password: userForm.password,
-        role: userForm.role
-      })
-        .then(async () => {
-          setUserForm({ name: "", username: "", password: "", role: "receptionist" });
-          await refreshRemoteState({ keepUser: true });
-        })
-        .catch((error: unknown) => {
-          window.alert(error instanceof Error ? error.message : "Unable to create user.");
+      void runBlockingAction("Creating user...", async () => {
+        await adminCreateUserRemote({
+          name: nextName,
+          username: nextUsername,
+          password: userForm.password,
+          role: userForm.role
         });
+        setUserForm({ name: "", username: "", password: "", role: "receptionist" });
+        await refreshRemoteState({ keepUser: true });
+      }).catch((error: unknown) => {
+        window.alert(error instanceof Error ? error.message : "Unable to create user.");
+      });
       return;
     }
     mutateAppData((draft) => {
@@ -2783,19 +2792,18 @@ function normalizeAppDataCustomers(source: AppData) {
       return;
     }
     if (backendConfigured) {
-      void adminUpdateUserRemote({
-        id: editUserDraft.id,
-        name: nextName,
-        username: nextUsername,
-        role: editUserDraft.role
-      })
-        .then(async () => {
-          setEditUserDraft(null);
-          await refreshRemoteState({ keepUser: true });
-        })
-        .catch((error: unknown) => {
-          window.alert(error instanceof Error ? error.message : "Unable to update user.");
+      void runBlockingAction("Updating user...", async () => {
+        await adminUpdateUserRemote({
+          id: editUserDraft.id,
+          name: nextName,
+          username: nextUsername,
+          role: editUserDraft.role
         });
+        setEditUserDraft(null);
+        await refreshRemoteState({ keepUser: true });
+      }).catch((error: unknown) => {
+        window.alert(error instanceof Error ? error.message : "Unable to update user.");
+      });
       return;
     }
     mutateAppData((draft) => {
@@ -2840,13 +2848,12 @@ function normalizeAppDataCustomers(source: AppData) {
       return;
     }
     if (backendConfigured) {
-      void adminChangePasswordRemote(passwordDraft.userId, nextPassword)
-        .then(() => {
-          setPasswordDraft(null);
-        })
-        .catch((error: unknown) => {
-          window.alert(error instanceof Error ? error.message : "Unable to update password.");
-        });
+      void runBlockingAction("Updating password...", async () => {
+        await adminChangePasswordRemote(passwordDraft.userId, nextPassword);
+        setPasswordDraft(null);
+      }).catch((error: unknown) => {
+        window.alert(error instanceof Error ? error.message : "Unable to update password.");
+      });
       return;
     }
     mutateAppData((draft) => {
@@ -3021,13 +3028,12 @@ function normalizeAppDataCustomers(source: AppData) {
       return;
     }
     if (backendConfigured) {
-      void adminToggleUserActiveRemote(userId)
-        .then(async () => {
-          await refreshRemoteState({ keepUser: true });
-        })
-        .catch((error: unknown) => {
-          window.alert(error instanceof Error ? error.message : "Unable to update user access.");
-        });
+      void runBlockingAction(targetUser.active ? "Disabling user..." : "Enabling user...", async () => {
+        await adminToggleUserActiveRemote(userId);
+        await refreshRemoteState({ keepUser: true });
+      }).catch((error: unknown) => {
+        window.alert(error instanceof Error ? error.message : "Unable to update user access.");
+      });
       return;
     }
     mutateAppData((draft) => {
@@ -5612,10 +5618,23 @@ function normalizeAppDataCustomers(source: AppData) {
           </div>
           <div className="button-row">
             <button className="secondary-button" type="button" onClick={() => { setCheckoutState(null); setReplacementItemForm({ itemId: "", quantity: 1 }); }}>Cancel</button>
-            <button className="primary-button" type="button" onClick={finalizeCheckout} disabled={remoteSaving}>{checkoutState.mode === "bill_replacement" ? "Issue Replacement Bill" : "Issue Bill"}</button>
+            <button
+              className="primary-button"
+              type="button"
+              onClick={() =>
+                void runBlockingAction(
+                  checkoutState.mode === "bill_replacement" ? "Issuing replacement bill..." : "Issuing bill...",
+                  finalizeCheckout
+                )
+              }
+              disabled={remoteSaving || Boolean(blockingActionLabel)}
+            >
+              {checkoutState.mode === "bill_replacement" ? "Issue Replacement Bill" : "Issue Bill"}
+            </button>
           </div>
         </Modal>
       )}
+      {blockingActionLabel && <LoadingOverlay label={blockingActionLabel} />}
     </div>
   );
 }
@@ -5887,5 +5906,17 @@ function formatNumericDraft(value: number, mode: NumericInputMode) {
 
 function Modal(props: { title: string; onClose: () => void; children: ReactNode; wide?: boolean }) {
   return <div className="modal-backdrop" role="presentation" onClick={props.onClose}><div className={`modal-card ${props.wide ? "is-wide" : ""}`} role="dialog" aria-modal="true" aria-label={props.title} onClick={(event) => event.stopPropagation()}><div className="modal-header"><h2>{props.title}</h2><button className="ghost-button" type="button" onClick={props.onClose}>Close</button></div>{props.children}</div></div>;
+}
+
+function LoadingOverlay(props: { label: string }) {
+  return (
+    <div className="loading-overlay" role="status" aria-live="polite" aria-label={props.label}>
+      <div className="loading-overlay-card">
+        <div className="loading-spinner" />
+        <strong>{props.label}</strong>
+        <span className="muted">Please wait while the request is being completed.</span>
+      </div>
+    </div>
+  );
 }
 
