@@ -6,12 +6,18 @@ const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
 const supabaseServiceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
 
 export function createAdminClient() {
+  if (!supabaseUrl || !supabaseServiceRoleKey) {
+    throw new Error("Supabase edge function is missing service-role configuration.");
+  }
   return createClient(supabaseUrl, supabaseServiceRoleKey, {
     auth: { autoRefreshToken: false, persistSession: false }
   });
 }
 
 export function createUserClient(authHeader: string) {
+  if (!supabaseUrl || !supabaseAnonKey) {
+    throw new Error("Supabase edge function is missing anon-key configuration.");
+  }
   return createClient(supabaseUrl, supabaseAnonKey, {
     global: {
       headers: {
@@ -38,7 +44,20 @@ export async function requireAdmin(request: Request) {
     return { error: jsonResponse({ error: "Unauthorized" }, 401) };
   }
 
-  const userClient = createUserClient(authHeader);
+  let userClient;
+  let adminClient;
+  try {
+    userClient = createUserClient(authHeader);
+    adminClient = createAdminClient();
+  } catch (error) {
+    return {
+      error: jsonResponse(
+        { error: error instanceof Error ? error.message : "Supabase function configuration is incomplete." },
+        500
+      )
+    };
+  }
+
   const {
     data: { user },
     error: userError
@@ -48,7 +67,6 @@ export async function requireAdmin(request: Request) {
     return { error: jsonResponse({ error: "Unauthorized" }, 401) };
   }
 
-  const adminClient = createAdminClient();
   const { data: profile, error: profileError } = await adminClient
     .from("profiles")
     .select("id, role, active")

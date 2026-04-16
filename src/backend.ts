@@ -1,5 +1,8 @@
 import {
   createClient,
+  FunctionsFetchError,
+  FunctionsHttpError,
+  FunctionsRelayError,
   type RealtimeChannel,
   type SupabaseClient
 } from "@supabase/supabase-js";
@@ -215,37 +218,59 @@ export function subscribeToRemoteAppData(onChange: (snapshot: RemoteAppDataSnaps
 }
 
 export async function adminCreateUserRemote(payload: Required<Pick<AdminUserPayload, "name" | "username" | "role" | "password">>): Promise<void> {
-  const { error } = await getSupabase().functions.invoke("admin-create-user", {
-    body: payload
-  });
-  if (error) {
-    throw error;
-  }
+  await invokeProtectedFunction("admin-create-user", payload);
 }
 
 export async function adminUpdateUserRemote(payload: Required<Pick<AdminUserPayload, "id" | "name" | "username" | "role">>): Promise<void> {
-  const { error } = await getSupabase().functions.invoke("admin-update-user", {
-    body: payload
-  });
-  if (error) {
-    throw error;
-  }
+  await invokeProtectedFunction("admin-update-user", payload);
 }
 
 export async function adminChangePasswordRemote(userId: string, password: string): Promise<void> {
-  const { error } = await getSupabase().functions.invoke("admin-change-password", {
-    body: { userId, password }
-  });
-  if (error) {
-    throw error;
-  }
+  await invokeProtectedFunction("admin-change-password", { userId, password });
 }
 
 export async function adminToggleUserActiveRemote(userId: string): Promise<void> {
-  const { error } = await getSupabase().functions.invoke("admin-toggle-user-active", {
-    body: { userId }
-  });
-  if (error) {
-    throw error;
+  await invokeProtectedFunction("admin-toggle-user-active", { userId });
+}
+
+async function invokeProtectedFunction(functionName: string, body: Record<string, unknown>): Promise<void> {
+  const supabase = getSupabase();
+  const {
+    data: { session }
+  } = await supabase.auth.getSession();
+
+  if (!session?.access_token) {
+    throw new Error("Your session expired. Sign in again.");
   }
+
+  const { error } = await supabase.functions.invoke(functionName, {
+    body,
+    headers: {
+      Authorization: `Bearer ${session.access_token}`
+    }
+  });
+
+  if (error) {
+    throw new Error(await resolveFunctionErrorMessage(error));
+  }
+}
+
+async function resolveFunctionErrorMessage(error: unknown): Promise<string> {
+  if (error instanceof FunctionsHttpError) {
+    try {
+      const payload = await error.context.json();
+      if (payload && typeof payload.error === "string" && payload.error.trim()) {
+        return payload.error;
+      }
+    } catch {
+      // Ignore JSON parsing errors and fall back below.
+    }
+    return "The server rejected this request.";
+  }
+
+  if (error instanceof FunctionsRelayError || error instanceof FunctionsFetchError) {
+    return error.message || "Unable to reach the server function.";
+  }
+
+  return error instanceof Error ? error.message : "Unexpected server error.";
 }

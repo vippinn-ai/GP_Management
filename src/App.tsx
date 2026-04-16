@@ -28,8 +28,10 @@ import {
 import type {
   AppData,
   AppliedDiscount,
+  Bill,
   BillLine,
   BusinessProfile,
+  Customer,
   CustomerTab,
   CustomerTabItem,
   DiscountType,
@@ -63,10 +65,11 @@ import {
   toMinuteOfDay
 } from "./utils";
 
-type TabId = "dashboard" | "sale" | "inventory" | "reports" | "settings" | "users";
+type TabId = "dashboard" | "sale" | "inventory" | "reports" | "customers" | "settings" | "users";
 
 interface StartSessionDraft {
   stationId: string;
+  customerId?: string;
   customerName: string;
   customerPhone: string;
   playMode: PlayMode;
@@ -80,6 +83,9 @@ interface CheckoutState {
   customerTabId?: string;
   replacementBillId?: string;
   closedAt?: string;
+  sessionStartedAt?: string;
+  sessionEndedAt?: string;
+  customerId?: string;
   customerName: string;
   customerPhone: string;
   paymentMode: PaymentMode;
@@ -96,8 +102,30 @@ interface DraftLineDiscountMap {
 }
 
 interface CustomerTabDraft {
+  customerId?: string;
   customerName: string;
   customerPhone: string;
+}
+
+interface SessionEditDraft {
+  sessionId: string;
+  customerId?: string;
+  customerName: string;
+  customerPhone: string;
+  startedAt: string;
+}
+
+interface CustomerTabEditDraft {
+  customerTabId: string;
+  customerId?: string;
+  customerName: string;
+  customerPhone: string;
+}
+
+interface CustomerProfileEditDraft {
+  customerId: string;
+  name: string;
+  phone: string;
 }
 
 interface UserEditDraft {
@@ -129,22 +157,23 @@ const DEFAULT_EXPENSE_CATEGORIES = ["Utilities", "Rent", "Internet", "Salary", "
 const tabsByRole: Record<Role, Array<{ id: TabId; label: string }>> = {
   admin: [
     { id: "dashboard", label: "Live Dashboard" },
-    { id: "sale", label: "Customer Tabs" },
+    { id: "sale", label: "Consumables Tab" },
     { id: "inventory", label: "Inventory" },
     { id: "reports", label: "Reports" },
+    { id: "customers", label: "Customer Profiles" },
     { id: "settings", label: "Settings" },
     { id: "users", label: "Users" }
   ],
   manager: [
     { id: "dashboard", label: "Live Dashboard" },
-    { id: "sale", label: "Customer Tabs" },
+    { id: "sale", label: "Consumables Tab" },
     { id: "inventory", label: "Inventory" },
     { id: "reports", label: "Reports" },
     { id: "settings", label: "Settings" }
   ],
   receptionist: [
     { id: "dashboard", label: "Live Dashboard" },
-    { id: "sale", label: "Customer Tabs" }
+    { id: "sale", label: "Consumables Tab" }
   ]
 };
 
@@ -261,6 +290,37 @@ function toLocalDateKey(value: string | Date): string {
   return `${year}-${month}-${day}`;
 }
 
+function formatDateTimeInputValue(value?: string) {
+  if (!value) {
+    return "";
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+  const year = date.getFullYear();
+  const month = `${date.getMonth() + 1}`.padStart(2, "0");
+  const day = `${date.getDate()}`.padStart(2, "0");
+  const hours = `${date.getHours()}`.padStart(2, "0");
+  const minutes = `${date.getMinutes()}`.padStart(2, "0");
+  return `${year}-${month}-${day}T${hours}:${minutes}`;
+}
+
+function parseDateTimeInputValue(value: string) {
+  if (!value.trim()) {
+    return "";
+  }
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return "";
+  }
+  return parsed.toISOString();
+}
+
+function formatAuditValue(value?: string) {
+  return value?.trim() ? value.trim() : "blank";
+}
+
 function addDays(date: Date, days: number) {
   const next = new Date(date);
   next.setDate(next.getDate() + days);
@@ -373,32 +433,11 @@ function addAuditLog(
   });
 }
 
-function upsertCustomer(appData: AppData, customerName?: string, customerPhone?: string) {
-  const name = customerName?.trim();
-  const phone = customerPhone?.trim();
-  if (!name && !phone) {
-    return;
-  }
-  const existing = appData.customers.find(
-    (entry) => (phone && entry.phone === phone) || (name && entry.name === name)
-  );
-  if (existing) {
-    existing.name = name || existing.name;
-    existing.phone = phone || existing.phone;
-    existing.lastVisitAt = new Date().toISOString();
-    return;
-  }
-  appData.customers.unshift({
-    id: createId("customer"),
-    name,
-    phone,
-    lastVisitAt: new Date().toISOString()
-  });
-}
-
 export default function App() {
   const backendConfigured = isBackendConfigured();
-  const [appData, setAppData] = useState<AppData>(() => (backendConfigured ? cloneValue(seedAppData) : loadAppData()));
+  const [appData, setAppData] = useState<AppData>(() =>
+    normalizeAppDataCustomers(backendConfigured ? cloneValue(seedAppData) : loadAppData())
+  );
   const [activeUserId, setActiveUserId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<TabId>("dashboard");
   const [online, setOnline] = useState<boolean>(navigator.onLine);
@@ -422,7 +461,14 @@ export default function App() {
   const [manageSessionId, setManageSessionId] = useState<string | null>(null);
   const [checkoutState, setCheckoutState] = useState<CheckoutState | null>(null);
   const [customerTabSearch, setCustomerTabSearch] = useState("");
+  const [customerProfileSearch, setCustomerProfileSearch] = useState("");
+  const [customerProfileSort, setCustomerProfileSort] = useState<"last_visit" | "total_spend" | "visit_count">("last_visit");
+  const [inventoryItemSearch, setInventoryItemSearch] = useState("");
   const [selectedCustomerTabId, setSelectedCustomerTabId] = useState<string | null>(null);
+  const [selectedCustomerProfileId, setSelectedCustomerProfileId] = useState<string | null>(null);
+  const [editSessionDraft, setEditSessionDraft] = useState<SessionEditDraft | null>(null);
+  const [editCustomerTabDraft, setEditCustomerTabDraft] = useState<CustomerTabEditDraft | null>(null);
+  const [editCustomerProfileDraft, setEditCustomerProfileDraft] = useState<CustomerProfileEditDraft | null>(null);
   const [customerTabDraft, setCustomerTabDraft] = useState<CustomerTabDraft>({
     customerName: "",
     customerPhone: ""
@@ -458,6 +504,9 @@ export default function App() {
   });
   const [useCustomItemCategory, setUseCustomItemCategory] = useState(false);
   const [customItemCategory, setCustomItemCategory] = useState("");
+  const [editItemForm, setEditItemForm] = useState<InventoryItem | null>(null);
+  const [useCustomEditItemCategory, setUseCustomEditItemCategory] = useState(false);
+  const [customEditItemCategory, setCustomEditItemCategory] = useState("");
   const [inventoryAction, setInventoryAction] = useState({
     itemId: "",
     quantity: 1,
@@ -504,11 +553,14 @@ export default function App() {
     notes: "",
     createdByUserId: ""
   });
+  const filteredInventoryItems = appData.inventoryItems.filter((item) =>
+    `${item.name} ${item.category}`.toLowerCase().includes(inventoryItemSearch.trim().toLowerCase())
+  );
 
   async function refreshRemoteState(options?: { keepUser?: boolean }) {
     const snapshot = await loadRemoteAppDataSnapshot();
     skipRemotePersistRef.current = true;
-    setAppData(snapshot.appData);
+    setAppData(normalizeAppDataCustomers(snapshot.appData));
     setRemoteVersion(snapshot.version);
     if (!options?.keepUser) {
       const profile = await fetchCurrentProfile();
@@ -566,6 +618,138 @@ export default function App() {
     };
   }, [activeUserId, appData, backendConfigured, remoteLoading]);
 
+function normalizeCustomerName(value?: string) {
+  return value?.trim().replace(/\s+/g, " ").toLowerCase() ?? "";
+}
+
+function normalizeCustomerPhone(value?: string) {
+  const digits = value?.replace(/[^\d+]/g, "").trim() ?? "";
+  return digits.replace(/(?!^)\+/g, "");
+}
+
+function getCustomerDisplayName(name?: string, phone?: string) {
+  return name?.trim() || phone?.trim() || "Walk-in";
+}
+
+function findCustomerProfileMatch(appData: AppData, customerName?: string, customerPhone?: string) {
+  const normalizedPhone = normalizeCustomerPhone(customerPhone);
+  const normalizedName = normalizeCustomerName(customerName);
+  if (normalizedPhone) {
+    return appData.customers.find((customer) => normalizeCustomerPhone(customer.phone) === normalizedPhone);
+  }
+  if (!normalizedName) {
+    return undefined;
+  }
+  return appData.customers.find(
+    (customer) =>
+      !normalizeCustomerPhone(customer.phone) &&
+      normalizeCustomerName(customer.name) === normalizedName
+  );
+}
+
+function resolveCustomerProfile(
+  appData: AppData,
+  customerName?: string,
+  customerPhone?: string,
+  visitAt = new Date().toISOString()
+) {
+  const trimmedName = customerName?.trim() ?? "";
+  const trimmedPhone = customerPhone?.trim() ?? "";
+  if (!trimmedName && !trimmedPhone) {
+    return undefined;
+  }
+  const existing = findCustomerProfileMatch(appData, trimmedName, trimmedPhone);
+  if (existing) {
+    existing.name = getCustomerDisplayName(trimmedName, trimmedPhone);
+    existing.phone = trimmedPhone || existing.phone;
+    existing.createdAt = existing.createdAt || existing.lastVisitAt || visitAt;
+    existing.lastVisitAt = visitAt;
+    return existing.id;
+  }
+  const customerId = createId("customer");
+  appData.customers.unshift({
+    id: customerId,
+    name: getCustomerDisplayName(trimmedName, trimmedPhone),
+    phone: trimmedPhone || undefined,
+    createdAt: visitAt,
+    lastVisitAt: visitAt
+  });
+  return customerId;
+}
+
+function normalizeAppDataCustomers(source: AppData) {
+  const appData = cloneValue(source);
+  const normalizedCustomers: Customer[] = [];
+  const customerIdMap = new Map<string, string>();
+
+  function upsertNormalizedCustomer(rawCustomer: Customer) {
+    const createdAt = rawCustomer.createdAt || rawCustomer.lastVisitAt || new Date().toISOString();
+    const lastVisitAt = rawCustomer.lastVisitAt || createdAt;
+    const name = getCustomerDisplayName(rawCustomer.name, rawCustomer.phone);
+    const match = findCustomerProfileMatch(
+      { ...appData, customers: normalizedCustomers },
+      name,
+      rawCustomer.phone
+    );
+    if (match) {
+      match.name = getCustomerDisplayName(name, rawCustomer.phone);
+      match.phone = rawCustomer.phone?.trim() || match.phone;
+      if (new Date(lastVisitAt).getTime() > new Date(match.lastVisitAt).getTime()) {
+        match.lastVisitAt = lastVisitAt;
+      }
+      if (!match.createdAt || new Date(createdAt).getTime() < new Date(match.createdAt).getTime()) {
+        match.createdAt = createdAt;
+      }
+      customerIdMap.set(rawCustomer.id, match.id);
+      return match.id;
+    }
+    const normalizedCustomer: Customer = {
+      id: rawCustomer.id || createId("customer"),
+      name,
+      phone: rawCustomer.phone?.trim() || undefined,
+      createdAt,
+      lastVisitAt,
+      notes: rawCustomer.notes
+    };
+    normalizedCustomers.push(normalizedCustomer);
+    customerIdMap.set(rawCustomer.id, normalizedCustomer.id);
+    return normalizedCustomer.id;
+  }
+
+  for (const customer of appData.customers) {
+    upsertNormalizedCustomer(customer);
+  }
+
+  function resolveHistoricalCustomer(customerId: string | undefined, customerName?: string, customerPhone?: string, fallbackVisitAt?: string) {
+    if (customerId && customerIdMap.has(customerId)) {
+      return customerIdMap.get(customerId);
+    }
+    return resolveCustomerProfile(
+      { ...appData, customers: normalizedCustomers },
+      customerName,
+      customerPhone,
+      fallbackVisitAt ?? new Date().toISOString()
+    );
+  }
+
+  appData.sessions = appData.sessions.map((session) => ({
+    ...session,
+    customerId: resolveHistoricalCustomer(session.customerId, session.customerName, session.customerPhone, session.startedAt)
+  }));
+  appData.customerTabs = appData.customerTabs.map((tab) => ({
+    ...tab,
+    customerId: resolveHistoricalCustomer(tab.customerId, tab.customerName, tab.customerPhone, tab.createdAt)
+  }));
+  appData.bills = appData.bills.map((bill) => ({
+    ...bill,
+    customerId: resolveHistoricalCustomer(bill.customerId, bill.customerName, bill.customerPhone, bill.issuedAt)
+  }));
+  appData.customers = normalizedCustomers.sort(
+    (left, right) => new Date(right.lastVisitAt).getTime() - new Date(left.lastVisitAt).getTime()
+  );
+  return appData;
+}
+
   useEffect(() => {
     setBusinessDraft(appData.businessProfile);
   }, [appData.businessProfile]);
@@ -588,7 +772,7 @@ export default function App() {
     }
     return subscribeToRemoteAppData((snapshot) => {
       skipRemotePersistRef.current = true;
-      setAppData(snapshot.appData);
+      setAppData(normalizeAppDataCustomers(snapshot.appData));
       setRemoteVersion(snapshot.version);
       setRemoteError("");
     });
@@ -613,6 +797,7 @@ export default function App() {
   const canManageUsers = activeUser?.role === "admin";
   const canVoidRefundBills = activeUser?.role === "admin";
   const canReplaceIssuedBills = activeUser?.role === "admin";
+  const canEditActiveSessionDetails = activeUser?.role === "admin";
   const isManagerReadOnly = activeUser?.role === "manager";
   const pageTitle =
     activeTab === "sale"
@@ -671,6 +856,177 @@ export default function App() {
     (item) => item.active && item.category === "Arcade"
   );
   const defaultArcadeInventoryItem = arcadeInventoryItems[0] ?? null;
+  const activeFinancialBills = appData.bills.filter((bill) => bill.status === "issued");
+
+  const customerAnalytics = (() => {
+    const statsMap = new Map<
+      string,
+      {
+        customer: Customer;
+        bills: Bill[];
+        totalSpend: number;
+        visitCount: number;
+        lastVisitAt: string;
+        favoriteStationName?: string;
+      }
+    >();
+    const stationTotals = new Map<string, { name: string; count: number }>();
+    const hourTotals = new Map<number, number>();
+    const weekdayTotals = new Map<number, number>();
+
+    function getBillVisitAt(bill: Bill) {
+      const linkedSession = bill.sessionId
+        ? appData.sessions.find((session) => session.id === bill.sessionId)
+        : undefined;
+      if (linkedSession?.startedAt) {
+        return linkedSession.startedAt;
+      }
+      const linkedTab = appData.customerTabs.find((tab) => tab.closedBillId === bill.id);
+      if (linkedTab?.createdAt) {
+        return linkedTab.createdAt;
+      }
+      return bill.issuedAt;
+    }
+
+    for (const customer of appData.customers) {
+      statsMap.set(customer.id, {
+        customer,
+        bills: [],
+        totalSpend: 0,
+        visitCount: 0,
+        lastVisitAt: customer.lastVisitAt,
+        favoriteStationName: undefined
+      });
+    }
+
+    for (const bill of activeFinancialBills) {
+      if (!bill.customerId) {
+        continue;
+      }
+      const customer = appData.customers.find((entry) => entry.id === bill.customerId);
+      if (!customer) {
+        continue;
+      }
+      const visitAt = getBillVisitAt(bill);
+      const current =
+        statsMap.get(customer.id) ??
+        {
+          customer,
+          bills: [],
+          totalSpend: 0,
+          visitCount: 0,
+          lastVisitAt: visitAt,
+          favoriteStationName: undefined
+        };
+      current.bills.push(bill);
+      current.totalSpend += bill.total;
+      current.visitCount += 1;
+      if (new Date(visitAt).getTime() > new Date(current.lastVisitAt).getTime()) {
+        current.lastVisitAt = visitAt;
+      }
+      if (bill.stationId) {
+        const stationName =
+          appData.stations.find((station) => station.id === bill.stationId)?.name ??
+          "Unknown station";
+        const existingStation = stationTotals.get(stationName) ?? { name: stationName, count: 0 };
+        existingStation.count += 1;
+        stationTotals.set(stationName, existingStation);
+      }
+      const visitDate = new Date(visitAt);
+      hourTotals.set(visitDate.getHours(), (hourTotals.get(visitDate.getHours()) ?? 0) + 1);
+      weekdayTotals.set(visitDate.getDay(), (weekdayTotals.get(visitDate.getDay()) ?? 0) + 1);
+      statsMap.set(customer.id, current);
+    }
+
+    for (const stats of statsMap.values()) {
+      const stationCounts = new Map<string, number>();
+      for (const bill of stats.bills) {
+        const stationName =
+          (bill.stationId && appData.stations.find((station) => station.id === bill.stationId)?.name) ||
+          "Consumables Tab";
+        stationCounts.set(stationName, (stationCounts.get(stationName) ?? 0) + 1);
+      }
+      stats.favoriteStationName = Array.from(stationCounts.entries()).sort((left, right) => right[1] - left[1])[0]?.[0];
+    }
+
+    const stats = Array.from(statsMap.values()).sort(
+      (left, right) => new Date(right.lastVisitAt).getTime() - new Date(left.lastVisitAt).getTime()
+    );
+    const repeatCustomers = stats.filter((entry) => entry.visitCount > 1);
+    const totalSpend = sumBy(stats, (entry) => entry.totalSpend);
+    const nowDate = new Date(now);
+    const thirtyDaysAgo = new Date(nowDate);
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    const topSpend = [...stats].filter((entry) => entry.totalSpend > 0).sort((left, right) => right.totalSpend - left.totalSpend)[0];
+    const topVisits = [...stats].filter((entry) => entry.visitCount > 0).sort((left, right) => right.visitCount - left.visitCount)[0];
+    const recentHighValueCustomers = [...stats]
+      .filter((entry) => entry.totalSpend > 0)
+      .sort((left, right) => right.totalSpend - left.totalSpend)
+      .slice(0, 5);
+    const atRiskCustomers = stats.filter(
+      (entry) => entry.visitCount > 1 && new Date(entry.lastVisitAt).getTime() < thirtyDaysAgo.getTime()
+    );
+    const peakHourEntry = Array.from(hourTotals.entries()).sort((left, right) => right[1] - left[1])[0];
+    const peakWeekdayEntry = Array.from(weekdayTotals.entries()).sort((left, right) => right[1] - left[1])[0];
+    const mostPlayedStation = Array.from(stationTotals.values()).sort((left, right) => right.count - left.count)[0];
+
+    return {
+      stats,
+      topSpend,
+      topVisits,
+      totalProfiles: appData.customers.length,
+      repeatCustomersCount: repeatCustomers.length,
+      repeatRate: stats.length ? (repeatCustomers.length / stats.length) * 100 : 0,
+      averageSpendPerCustomer: appData.customers.length ? totalSpend / appData.customers.length : 0,
+      oneTimeCustomersCount: stats.filter((entry) => entry.visitCount === 1).length,
+      activeCustomersCount: stats.filter(
+        (entry) => new Date(entry.lastVisitAt).getTime() >= thirtyDaysAgo.getTime()
+      ).length,
+      mostPlayedStation: mostPlayedStation?.name,
+      peakHourLabel:
+        peakHourEntry !== undefined
+          ? new Intl.DateTimeFormat("en-IN", { hour: "numeric", minute: "2-digit" }).format(
+              new Date(2026, 0, 1, peakHourEntry[0], 0, 0)
+            )
+          : "No data",
+      peakWeekdayLabel:
+        peakWeekdayEntry !== undefined
+          ? new Intl.DateTimeFormat("en-IN", { weekday: "long" }).format(new Date(2026, 0, 4 + peakWeekdayEntry[0]))
+          : "No data",
+      recentHighValueCustomers,
+      atRiskCustomers
+    };
+  })();
+  const selectedCustomerProfile =
+    (selectedCustomerProfileId
+      ? appData.customers.find((customer) => customer.id === selectedCustomerProfileId)
+      : undefined) ??
+    customerAnalytics.stats[0]?.customer ??
+    null;
+  const selectedCustomerProfileStats =
+    (selectedCustomerProfile
+      ? customerAnalytics.stats.find((entry) => entry.customer.id === selectedCustomerProfile.id)
+      : undefined) ?? null;
+  const filteredCustomerProfiles = [...customerAnalytics.stats]
+    .filter((entry) => {
+      const searchValue = customerProfileSearch.trim().toLowerCase();
+      if (!searchValue) {
+        return true;
+      }
+      return (
+        entry.customer.name.toLowerCase().includes(searchValue) ||
+        (entry.customer.phone ?? "").toLowerCase().includes(searchValue)
+      );
+    })
+    .sort((left, right) => {
+      if (customerProfileSort === "total_spend") {
+        return right.totalSpend - left.totalSpend;
+      }
+      if (customerProfileSort === "visit_count") {
+        return right.visitCount - left.visitCount;
+      }
+      return new Date(right.lastVisitAt).getTime() - new Date(left.lastVisitAt).getTime();
+    });
 
   useEffect(() => {
     if (selectedCustomerTabId && !openCustomerTabs.some((tab) => tab.id === selectedCustomerTabId)) {
@@ -680,6 +1036,16 @@ export default function App() {
       setSelectedCustomerTabId(openCustomerTabs[0].id);
     }
   }, [openCustomerTabs, selectedCustomerTabId]);
+
+  useEffect(() => {
+    if (selectedCustomerProfileId && !appData.customers.some((customer) => customer.id === selectedCustomerProfileId)) {
+      setSelectedCustomerProfileId(customerAnalytics.stats[0]?.customer.id ?? null);
+      return;
+    }
+    if (!selectedCustomerProfileId && customerAnalytics.stats[0]) {
+      setSelectedCustomerProfileId(customerAnalytics.stats[0].customer.id);
+    }
+  }, [appData.customers, customerAnalytics.stats, selectedCustomerProfileId]);
 
   useEffect(() => {
     if (!activeUser) {
@@ -723,6 +1089,7 @@ export default function App() {
   function createStartSessionDraft(station?: Station | null): StartSessionDraft {
     return {
       stationId: station?.id ?? "",
+      customerId: undefined,
       customerName: "",
       customerPhone: "",
       playMode: station?.ltpEnabled ? "solo" : "group",
@@ -733,8 +1100,16 @@ export default function App() {
 
   function getFrozenEndAtForSession(sessionId: string) {
     return checkoutState?.mode === "session" && checkoutState.sessionId === sessionId
-      ? checkoutState.closedAt ?? now
+      ? checkoutState.sessionEndedAt ?? checkoutState.closedAt ?? now
       : now;
+  }
+
+  function getCheckoutSessionPreview(session: Session, state: CheckoutState) {
+    return {
+      ...session,
+      startedAt: state.sessionStartedAt ?? session.startedAt,
+      endedAt: state.sessionEndedAt ?? state.closedAt ?? session.endedAt
+    };
   }
 
   function getSessionReservedQuantity(itemId: string, ignoreSessionId?: string) {
@@ -787,6 +1162,10 @@ export default function App() {
     return appData.customerTabs.find((tab) => tab.id === customerTabId);
   }
 
+  function getCustomerById(customerId?: string) {
+    return customerId ? appData.customers.find((customer) => customer.id === customerId) : undefined;
+  }
+
   function getBillById(billId: string) {
     return appData.bills.find((bill) => bill.id === billId);
   }
@@ -812,11 +1191,20 @@ export default function App() {
     setCustomItemCategory("");
   }
 
+  function closeEditInventoryModal() {
+    setEditItemForm(null);
+    setUseCustomEditItemCategory(false);
+    setCustomEditItemCategory("");
+  }
+
   function beginEditInventoryItem(item: InventoryItem) {
-    setItemForm(item);
+    setEditItemForm({
+      ...item,
+      barcode: item.barcode ?? ""
+    });
     const isKnownCategory = inventoryCategoryOptions.includes(item.category);
-    setUseCustomItemCategory(!isKnownCategory);
-    setCustomItemCategory(isKnownCategory ? "" : item.category);
+    setUseCustomEditItemCategory(!isKnownCategory);
+    setCustomEditItemCategory(isKnownCategory ? "" : item.category);
   }
 
   function getInventoryState(item: InventoryItem): InventoryState {
@@ -878,7 +1266,7 @@ export default function App() {
         .then(async (profile) => {
           const snapshot = await loadRemoteAppDataSnapshot();
           skipRemotePersistRef.current = true;
-          setAppData(snapshot.appData);
+          setAppData(normalizeAppDataCustomers(snapshot.appData));
           setRemoteVersion(snapshot.version);
           setActiveUserId(profile.id);
           setLoginError("");
@@ -953,6 +1341,11 @@ export default function App() {
       });
     }
     mutateAppData((draft) => {
+      const customerId = resolveCustomerProfile(
+        draft,
+        startSessionDraft.customerName,
+        startSessionDraft.customerPhone
+      );
       draft.sessions.unshift({
         id: createId("session"),
         stationId: station.id,
@@ -960,6 +1353,7 @@ export default function App() {
         mode: station.mode,
         startedAt: new Date().toISOString(),
         status: "active",
+        customerId,
         customerName: startSessionDraft.customerName.trim() || undefined,
         customerPhone: startSessionDraft.customerPhone.trim() || undefined,
         playMode: sessionPlayMode,
@@ -1073,6 +1467,66 @@ export default function App() {
     });
   }
 
+  function beginEditSessionDetails(session: Session) {
+    if (!canEditActiveSessionDetails) {
+      return;
+    }
+    setEditSessionDraft({
+      sessionId: session.id,
+      customerId: session.customerId,
+      customerName: session.customerName ?? "",
+      customerPhone: session.customerPhone ?? "",
+      startedAt: formatDateTimeInputValue(session.startedAt)
+    });
+  }
+
+  function saveSessionDetails(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!activeUser || !canEditActiveSessionDetails || !editSessionDraft) {
+      return;
+    }
+    const sourceSession = getSessionById(editSessionDraft.sessionId);
+    if (!sourceSession || sourceSession.status === "closed") {
+      return;
+    }
+    const nextStartedAt = parseDateTimeInputValue(editSessionDraft.startedAt);
+    if (sourceSession.mode === "timed" && !nextStartedAt) {
+      window.alert("Start time is required.");
+      return;
+    }
+    if (sourceSession.mode === "timed" && new Date(nextStartedAt).getTime() > new Date(now).getTime()) {
+      window.alert("Start time cannot be in the future.");
+      return;
+    }
+    mutateAppData((draft) => {
+      const session = draft.sessions.find((entry) => entry.id === editSessionDraft.sessionId && entry.status !== "closed");
+      if (!session) {
+        return;
+      }
+      const nextCustomerName = editSessionDraft.customerName.trim() || undefined;
+      const nextCustomerPhone = editSessionDraft.customerPhone.trim() || undefined;
+      const customerId = resolveCustomerProfile(draft, nextCustomerName, nextCustomerPhone, session.startedAt);
+      const changes: string[] = [];
+      if ((session.customerName ?? "") !== (nextCustomerName ?? "")) {
+        changes.push(`customer name: ${formatAuditValue(session.customerName)} -> ${formatAuditValue(nextCustomerName)}`);
+      }
+      if ((session.customerPhone ?? "") !== (nextCustomerPhone ?? "")) {
+        changes.push(`customer phone: ${formatAuditValue(session.customerPhone)} -> ${formatAuditValue(nextCustomerPhone)}`);
+      }
+      session.customerId = customerId;
+      session.customerName = nextCustomerName;
+      session.customerPhone = nextCustomerPhone;
+      if (session.mode === "timed" && nextStartedAt && session.startedAt !== nextStartedAt) {
+        changes.push(`start time: ${formatDateTime(session.startedAt)} -> ${formatDateTime(nextStartedAt)}`);
+        session.startedAt = nextStartedAt;
+      }
+      if (changes.length > 0) {
+        addAuditLog(draft, activeUser.id, "session_details_updated", "session", session.id, `Updated ${session.stationNameSnapshot}: ${changes.join("; ")}`);
+      }
+    });
+    setEditSessionDraft(null);
+  }
+
   function openSessionCheckout(sessionId: string) {
     const session = getSessionById(sessionId);
     if (!session) {
@@ -1083,6 +1537,9 @@ export default function App() {
       mode: "session",
       sessionId,
       closedAt,
+      sessionStartedAt: session.startedAt,
+      sessionEndedAt: closedAt,
+      customerId: session.customerId,
       customerName: session.customerName || "",
       customerPhone: session.customerPhone || "",
       paymentMode: "cash",
@@ -1117,19 +1574,27 @@ export default function App() {
       window.alert("Customer name is required to open a tab.");
       return;
     }
+    const matchingCustomer = draftValue.customerId
+      ? getCustomerById(draftValue.customerId)
+      : findCustomerProfileMatch(appData, customerName, customerPhone);
     const existing = appData.customerTabs.find(
       (tab) =>
         tab.status === "open" &&
-        (tab.customerName.trim().toLowerCase() === customerName.toLowerCase() ||
+        ((matchingCustomer && tab.customerId === matchingCustomer.id) ||
+          tab.customerName.trim().toLowerCase() === customerName.toLowerCase() ||
           (customerPhone && tab.customerPhone?.trim() === customerPhone))
     );
     if (existing) {
       setSelectedCustomerTabId(existing.id);
       if (options?.updateSaleDraft) {
-        setCustomerTabDraft({ customerName: existing.customerName, customerPhone: existing.customerPhone ?? "" });
+        setCustomerTabDraft({
+          customerId: existing.customerId,
+          customerName: existing.customerName,
+          customerPhone: existing.customerPhone ?? ""
+        });
       }
       if (options?.clearDraft) {
-        setDashboardCustomerTabDraft({ customerName: "", customerPhone: "" });
+        setDashboardCustomerTabDraft({ customerId: undefined, customerName: "", customerPhone: "" });
       }
       if (options?.switchToSale) {
         setActiveTab("sale");
@@ -1138,9 +1603,13 @@ export default function App() {
     }
 
     const tabId = createId("customer-tab");
+    let resolvedCustomerId = matchingCustomer?.id;
     mutateAppData((draft) => {
+      const customerId = resolveCustomerProfile(draft, customerName, customerPhone);
+      resolvedCustomerId = customerId;
       draft.customerTabs.unshift({
         id: tabId,
+        customerId,
         customerName,
         customerPhone: customerPhone || undefined,
         status: "open",
@@ -1151,10 +1620,10 @@ export default function App() {
     });
     setSelectedCustomerTabId(tabId);
     if (options?.updateSaleDraft) {
-      setCustomerTabDraft({ customerName, customerPhone });
+      setCustomerTabDraft({ customerId: resolvedCustomerId, customerName, customerPhone });
     }
     if (options?.clearDraft) {
-      setDashboardCustomerTabDraft({ customerName: "", customerPhone: "" });
+      setDashboardCustomerTabDraft({ customerId: undefined, customerName: "", customerPhone: "" });
     }
     if (options?.switchToSale) {
       setActiveTab("sale");
@@ -1168,6 +1637,135 @@ export default function App() {
       clearDraft: true,
       switchToSale: false
     });
+  }
+
+  function beginEditCustomerTabDetails(tab: CustomerTab) {
+    if (!canEditActiveSessionDetails || tab.status !== "open") {
+      return;
+    }
+    setEditCustomerTabDraft({
+      customerTabId: tab.id,
+      customerId: tab.customerId,
+      customerName: tab.customerName,
+      customerPhone: tab.customerPhone ?? ""
+    });
+  }
+
+  function saveCustomerTabDetails(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!activeUser || !canEditActiveSessionDetails || !editCustomerTabDraft) {
+      return;
+    }
+    const nextCustomerName = editCustomerTabDraft.customerName.trim();
+    if (!nextCustomerName) {
+      window.alert("Customer name is required.");
+      return;
+    }
+    const nextCustomerPhone = editCustomerTabDraft.customerPhone.trim() || undefined;
+    let resolvedCustomerId = editCustomerTabDraft.customerId;
+    mutateAppData((draft) => {
+      const tab = draft.customerTabs.find((entry) => entry.id === editCustomerTabDraft.customerTabId && entry.status === "open");
+      if (!tab) {
+        return;
+      }
+      const customerId = resolveCustomerProfile(draft, nextCustomerName, nextCustomerPhone, tab.createdAt);
+      resolvedCustomerId = customerId;
+      const changes: string[] = [];
+      if (tab.customerName !== nextCustomerName) {
+        changes.push(`customer name: ${formatAuditValue(tab.customerName)} -> ${formatAuditValue(nextCustomerName)}`);
+      }
+      if ((tab.customerPhone ?? "") !== (nextCustomerPhone ?? "")) {
+        changes.push(`customer phone: ${formatAuditValue(tab.customerPhone)} -> ${formatAuditValue(nextCustomerPhone)}`);
+      }
+      tab.customerId = customerId;
+      tab.customerName = nextCustomerName;
+      tab.customerPhone = nextCustomerPhone;
+      if (changes.length > 0) {
+        addAuditLog(draft, activeUser.id, "customer_tab_details_updated", "customer_tab", tab.id, `Updated customer tab: ${changes.join("; ")}`);
+      }
+    });
+    setCustomerTabDraft({
+      customerId: resolvedCustomerId,
+      customerName: nextCustomerName,
+      customerPhone: nextCustomerPhone ?? ""
+    });
+    setEditCustomerTabDraft(null);
+  }
+
+  function beginEditCustomerProfile(customer: Customer) {
+    if (!canManageUsers) {
+      return;
+    }
+    setEditCustomerProfileDraft({
+      customerId: customer.id,
+      name: customer.name,
+      phone: customer.phone ?? ""
+    });
+  }
+
+  function saveCustomerProfile(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!activeUser || !canManageUsers || !editCustomerProfileDraft) {
+      return;
+    }
+    const nextName = editCustomerProfileDraft.name.trim();
+    const nextPhone = editCustomerProfileDraft.phone.trim();
+    if (!nextName) {
+      window.alert("Customer name is required.");
+      return;
+    }
+    const duplicate = appData.customers.find((customer) => {
+      if (customer.id === editCustomerProfileDraft.customerId) {
+        return false;
+      }
+      const samePhone = nextPhone && normalizeCustomerPhone(customer.phone) === normalizeCustomerPhone(nextPhone);
+      const sameNameOnly =
+        !nextPhone &&
+        !normalizeCustomerPhone(customer.phone) &&
+        normalizeCustomerName(customer.name) === normalizeCustomerName(nextName);
+      return samePhone || sameNameOnly;
+    });
+    if (duplicate) {
+      window.alert("Another customer profile already uses the same phone or name.");
+      return;
+    }
+    mutateAppData((draft) => {
+      const customer = draft.customers.find((entry) => entry.id === editCustomerProfileDraft.customerId);
+      if (!customer) {
+        return;
+      }
+      const previousName = customer.name;
+      const previousPhone = customer.phone;
+      customer.name = nextName;
+      customer.phone = nextPhone || undefined;
+      for (const session of draft.sessions) {
+        if (session.customerId === customer.id) {
+          session.customerName = nextName;
+          session.customerPhone = nextPhone || undefined;
+        }
+      }
+      for (const tab of draft.customerTabs) {
+        if (tab.customerId === customer.id) {
+          tab.customerName = nextName;
+          tab.customerPhone = nextPhone || undefined;
+        }
+      }
+      for (const bill of draft.bills) {
+        if (bill.customerId === customer.id) {
+          bill.customerName = nextName;
+          bill.customerPhone = nextPhone || undefined;
+        }
+      }
+      addAuditLog(
+        draft,
+        activeUser.id,
+        "customer_profile_updated",
+        "customer",
+        customer.id,
+        `Updated customer profile: name ${formatAuditValue(previousName)} -> ${formatAuditValue(nextName)}; phone ${formatAuditValue(previousPhone)} -> ${formatAuditValue(nextPhone)}`
+      );
+    });
+    setEditCustomerProfileDraft(null);
   }
 
   function addItemToCustomerTab(item: InventoryItem) {
@@ -1253,6 +1851,7 @@ export default function App() {
     setCheckoutState({
       mode: "customer_tab",
       customerTabId: selectedCustomerTab.id,
+      customerId: selectedCustomerTab.customerId,
       customerName: selectedCustomerTab.customerName,
       customerPhone: selectedCustomerTab.customerPhone ?? "",
       paymentMode: "cash",
@@ -1268,6 +1867,7 @@ export default function App() {
     }
     setSelectedCustomerTabId(tab.id);
     setCustomerTabDraft({
+      customerId: tab.customerId,
       customerName: tab.customerName,
       customerPhone: tab.customerPhone ?? ""
     });
@@ -1282,12 +1882,14 @@ export default function App() {
     }
     setSelectedCustomerTabId(tab.id);
     setCustomerTabDraft({
+      customerId: tab.customerId,
       customerName: tab.customerName,
       customerPhone: tab.customerPhone ?? ""
     });
     setCheckoutState({
       mode: "customer_tab",
       customerTabId: tab.id,
+      customerId: tab.customerId,
       customerName: tab.customerName,
       customerPhone: tab.customerPhone ?? "",
       paymentMode: "cash",
@@ -1386,6 +1988,7 @@ export default function App() {
     setCheckoutState({
       mode: "bill_replacement",
       replacementBillId: billId,
+      customerId: bill.customerId,
       customerName: bill.customerName ?? "",
       customerPhone: bill.customerPhone ?? "",
       paymentMode: bill.paymentMode,
@@ -1514,7 +2117,7 @@ export default function App() {
         const remoteSession = baseAppData.sessions.find((entry) => entry.id === checkoutState.sessionId);
         if (!remoteSession || remoteSession.status === "closed") {
           skipRemotePersistRef.current = true;
-          setAppData(baseAppData);
+          setAppData(normalizeAppDataCustomers(baseAppData));
           setCheckoutState(null);
           setManageSessionId(null);
           window.alert("This session was already closed from another browser. Latest data has been loaded.");
@@ -1525,7 +2128,7 @@ export default function App() {
         const remoteTab = baseAppData.customerTabs.find((entry) => entry.id === checkoutState.customerTabId);
         if (!remoteTab || remoteTab.status === "closed") {
           skipRemotePersistRef.current = true;
-          setAppData(baseAppData);
+          setAppData(normalizeAppDataCustomers(baseAppData));
           setCheckoutState(null);
           window.alert("This consumables tab was already closed from another browser. Latest data has been loaded.");
           return;
@@ -1535,14 +2138,14 @@ export default function App() {
         const remoteBill = baseAppData.bills.find((entry) => entry.id === checkoutState.replacementBillId);
         if (!remoteBill || remoteBill.status !== "issued") {
           skipRemotePersistRef.current = true;
-          setAppData(baseAppData);
+          setAppData(normalizeAppDataCustomers(baseAppData));
           setCheckoutState(null);
           window.alert("This bill was already changed from another browser. Latest data has been loaded.");
           return;
         }
       }
       skipRemotePersistRef.current = true;
-      setAppData(baseAppData);
+      setAppData(normalizeAppDataCustomers(baseAppData));
     }
     function getAvailableStockFromData(
       data: AppData,
@@ -1564,11 +2167,15 @@ export default function App() {
     }
     const issuedAt = new Date().toISOString();
     const effectiveClosedAt =
-      checkoutState.mode === "session" ? checkoutState.closedAt ?? issuedAt : issuedAt;
+      checkoutState.mode === "session" ? checkoutState.sessionEndedAt ?? checkoutState.closedAt ?? issuedAt : issuedAt;
     const session =
       checkoutState.mode === "session" && checkoutState.sessionId
         ? baseAppData.sessions.find((entry) => entry.id === checkoutState.sessionId)
         : undefined;
+    const previewSession =
+      checkoutState.mode === "session" && session
+        ? getCheckoutSessionPreview(session, checkoutState)
+        : session;
     const customerTab =
       checkoutState.mode === "customer_tab" && checkoutState.customerTabId
         ? baseAppData.customerTabs.find((entry) => entry.id === checkoutState.customerTabId)
@@ -1578,11 +2185,24 @@ export default function App() {
         ? baseAppData.bills.find((entry) => entry.id === checkoutState.replacementBillId)
         : undefined;
     const sourceLines =
-      checkoutState.mode === "session" && session
-        ? getSessionCheckoutLines(session, calculateSessionCharge(session, baseAppData.sessionPauseLogs, effectiveClosedAt))
+      checkoutState.mode === "session" && previewSession
+        ? getSessionCheckoutLines(previewSession, calculateSessionCharge(previewSession, baseAppData.sessionPauseLogs, effectiveClosedAt))
         : checkoutState.mode === "customer_tab"
           ? getCustomerTabCheckoutLines(customerTab?.items ?? [])
           : checkoutState.replacementLines ?? [];
+    if (previewSession) {
+      const startedAt = new Date(previewSession.startedAt);
+      const endedAt = new Date(effectiveClosedAt);
+      const nowDate = new Date(now);
+      if (startedAt.getTime() > endedAt.getTime()) {
+        window.alert("Session start time cannot be later than end time.");
+        return;
+      }
+      if (endedAt.getTime() > nowDate.getTime()) {
+        window.alert("Session end time cannot be in the future.");
+        return;
+      }
+    }
     if (customerTab) {
       const unavailableLine = sourceLines.find((line) => {
         if (!line.inventoryItemId) {
@@ -1692,35 +2312,41 @@ export default function App() {
             appliedAt: issuedAt
           }
         : undefined;
-    const billNumber = formatBillNumber(baseAppData, issuedAt);
-    const issuedBill = {
-      id: billId,
-      billNumber,
-      status: "issued" as const,
-      createdAt: issuedAt,
-      issuedAt,
-      issuedByUserId: activeUser.id,
-      customerName: checkoutState.customerName.trim() || undefined,
-      customerPhone: checkoutState.customerPhone.trim() || undefined,
-      paymentMode: checkoutState.paymentMode,
-      stationId: session?.stationId ?? replacementBill?.stationId,
-      sessionId: session?.id ?? replacementBill?.sessionId,
-      subtotal: preview.subtotal,
-      totalDiscountAmount: preview.lineDiscountAmount + preview.billDiscountAmount,
-      billDiscountAmount: preview.billDiscountAmount,
-      roundOffEnabled: checkoutState.roundOffEnabled,
-      roundOffAmount: preview.roundOffAmount,
-      total: preview.total,
-      lineDiscounts,
-      billDiscount,
-      lines: preview.processedLines,
-      receiptType: "digital" as const,
-      replacementOfBillId: replacementBill?.id,
-      replaceReason: replacementBill ? checkoutState.replaceReason?.trim() : undefined
-    };
-
     const nextAppData = cloneValue(baseAppData);
     const draft = nextAppData;
+      const billCustomerId = resolveCustomerProfile(
+        draft,
+        checkoutState.customerName,
+        checkoutState.customerPhone,
+        previewSession?.startedAt ?? customerTab?.createdAt ?? issuedAt
+      );
+      const billNumber = formatBillNumber(draft, issuedAt);
+      const issuedBill = {
+        id: billId,
+        billNumber,
+        status: "issued" as const,
+        createdAt: issuedAt,
+        issuedAt,
+        issuedByUserId: activeUser.id,
+        customerId: billCustomerId,
+        customerName: checkoutState.customerName.trim() || undefined,
+        customerPhone: checkoutState.customerPhone.trim() || undefined,
+        paymentMode: checkoutState.paymentMode,
+        stationId: previewSession?.stationId ?? replacementBill?.stationId,
+        sessionId: previewSession?.id ?? replacementBill?.sessionId,
+        subtotal: preview.subtotal,
+        totalDiscountAmount: preview.lineDiscountAmount + preview.billDiscountAmount,
+        billDiscountAmount: preview.billDiscountAmount,
+        roundOffEnabled: checkoutState.roundOffEnabled,
+        roundOffAmount: preview.roundOffAmount,
+        total: preview.total,
+        lineDiscounts,
+        billDiscount,
+        lines: preview.processedLines,
+        receiptType: "digital" as const,
+        replacementOfBillId: replacementBill?.id,
+        replaceReason: replacementBill ? checkoutState.replaceReason?.trim() : undefined
+      };
       draft.bills.unshift(issuedBill);
       draft.payments.unshift({
         id: createId("payment"),
@@ -1788,6 +2414,10 @@ export default function App() {
       if (session) {
         const targetSession = draft.sessions.find((entry) => entry.id === session.id);
         if (targetSession) {
+          targetSession.startedAt = checkoutState.sessionStartedAt ?? targetSession.startedAt;
+          targetSession.customerId = billCustomerId;
+          targetSession.customerName = checkoutState.customerName.trim() || undefined;
+          targetSession.customerPhone = checkoutState.customerPhone.trim() || undefined;
           targetSession.status = "closed";
           targetSession.endedAt = effectiveClosedAt;
           targetSession.closedBillId = billId;
@@ -1800,6 +2430,9 @@ export default function App() {
       if (customerTab) {
         const targetTab = draft.customerTabs.find((entry) => entry.id === customerTab.id);
         if (targetTab) {
+          targetTab.customerId = billCustomerId;
+          targetTab.customerName = checkoutState.customerName.trim() || targetTab.customerName;
+          targetTab.customerPhone = checkoutState.customerPhone.trim() || undefined;
           targetTab.status = "closed";
           targetTab.closedAt = issuedAt;
           targetTab.closedBillId = billId;
@@ -1807,7 +2440,36 @@ export default function App() {
           targetTab.closeReason = undefined;
         }
       }
-      upsertCustomer(draft, checkoutState.customerName, checkoutState.customerPhone);
+      if (session) {
+        const detailChanges: string[] = [];
+        if ((session.customerName ?? "") !== checkoutState.customerName.trim()) {
+          detailChanges.push(`customer name: ${formatAuditValue(session.customerName)} -> ${formatAuditValue(checkoutState.customerName)}`);
+        }
+        if ((session.customerPhone ?? "") !== checkoutState.customerPhone.trim()) {
+          detailChanges.push(`customer phone: ${formatAuditValue(session.customerPhone)} -> ${formatAuditValue(checkoutState.customerPhone)}`);
+        }
+        if ((checkoutState.sessionStartedAt ?? session.startedAt) !== session.startedAt) {
+          detailChanges.push(`start time: ${formatDateTime(session.startedAt)} -> ${formatDateTime(checkoutState.sessionStartedAt ?? session.startedAt)}`);
+        }
+        if (effectiveClosedAt !== (checkoutState.closedAt ?? effectiveClosedAt)) {
+          detailChanges.push(`end time: ${formatDateTime(checkoutState.closedAt ?? effectiveClosedAt)} -> ${formatDateTime(effectiveClosedAt)}`);
+        }
+        if (detailChanges.length > 0) {
+          addAuditLog(draft, activeUser.id, "session_checkout_details_updated", "session", session.id, `Updated during checkout: ${detailChanges.join("; ")}`);
+        }
+      }
+      if (customerTab) {
+        const detailChanges: string[] = [];
+        if (customerTab.customerName !== checkoutState.customerName.trim()) {
+          detailChanges.push(`customer name: ${formatAuditValue(customerTab.customerName)} -> ${formatAuditValue(checkoutState.customerName)}`);
+        }
+        if ((customerTab.customerPhone ?? "") !== checkoutState.customerPhone.trim()) {
+          detailChanges.push(`customer phone: ${formatAuditValue(customerTab.customerPhone)} -> ${formatAuditValue(checkoutState.customerPhone)}`);
+        }
+        if (detailChanges.length > 0) {
+          addAuditLog(draft, activeUser.id, "customer_tab_checkout_details_updated", "customer_tab", customerTab.id, `Updated during checkout: ${detailChanges.join("; ")}`);
+        }
+      }
       addAuditLog(
         draft,
         activeUser.id,
@@ -1823,17 +2485,17 @@ export default function App() {
       }
     if (backendConfigured) {
       skipRemotePersistRef.current = true;
-      setAppData(nextAppData);
+      setAppData(normalizeAppDataCustomers(nextAppData));
       await saveRemoteSnapshot(nextAppData, baseVersion);
     } else {
-      setAppData(nextAppData);
+      setAppData(normalizeAppDataCustomers(nextAppData));
     }
 
     setSelectedReceiptBillId(billId);
     setCheckoutState(null);
     setManageSessionId(null);
     setSelectedCustomerTabId(null);
-    setCustomerTabDraft({ customerName: "", customerPhone: "" });
+    setCustomerTabDraft({ customerId: undefined, customerName: "", customerPhone: "" });
     setReplacementItemForm({ itemId: "", quantity: 1 });
     openReceiptWindow(nextAppData.businessProfile, issuedBill, nextAppData.bills);
     downloadReceiptPdf(nextAppData.businessProfile, issuedBill, nextAppData.bills);
@@ -1880,6 +2542,36 @@ export default function App() {
       }
     });
     resetItemForm();
+  }
+
+  function saveEditedInventoryItem(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!activeUser || !canEditInventory || !editItemForm) {
+      return;
+    }
+    const resolvedCategory = (useCustomEditItemCategory ? customEditItemCategory : editItemForm.category).trim();
+    if (!resolvedCategory) {
+      window.alert("Category is required.");
+      return;
+    }
+    mutateAppData((draft) => {
+      const existing = draft.inventoryItems.find((item) => item.id === editItemForm.id);
+      if (!existing) {
+        return;
+      }
+      Object.assign(existing, {
+        ...editItemForm,
+        name: editItemForm.name.trim(),
+        category: resolvedCategory,
+        unit: "piece",
+        barcode: editItemForm.barcode?.trim() || undefined
+      });
+      if (!draft.inventoryCategories.includes(resolvedCategory)) {
+        draft.inventoryCategories.push(resolvedCategory);
+      }
+      addAuditLog(draft, activeUser.id, "inventory_updated", "inventory_item", existing.id, `Updated ${existing.name}.`);
+    });
+    closeEditInventoryModal();
   }
 
   function recordStockMovement(type: StockMovementType) {
@@ -2460,10 +3152,11 @@ export default function App() {
     checkoutState?.mode === "session" && checkoutState.sessionId
       ? (() => {
           const session = getSessionById(checkoutState.sessionId);
+          const previewSession = session ? getCheckoutSessionPreview(session, checkoutState) : null;
           return session
             ? getSessionCheckoutLines(
-                session,
-                getSessionChargeSummary(session, checkoutState.closedAt ?? now)
+                previewSession ?? session,
+                getSessionChargeSummary(previewSession ?? session, checkoutState.sessionEndedAt ?? checkoutState.closedAt ?? now)
               )
             : [];
         })()
@@ -2866,26 +3559,15 @@ export default function App() {
                       ))}
                   </select>
                 </label>
-                <label>
-                  <span>Customer Name</span>
-                  <input
-                    value={startSessionDraft.customerName}
-                    onChange={(event) =>
-                      setStartSessionDraft((previous) => ({ ...previous, customerName: event.target.value }))
-                    }
-                    placeholder="Optional"
-                  />
-                </label>
-                <label>
-                  <span>Customer Phone</span>
-                  <input
-                    value={startSessionDraft.customerPhone}
-                    onChange={(event) =>
-                      setStartSessionDraft((previous) => ({ ...previous, customerPhone: event.target.value }))
-                    }
-                    placeholder="Optional"
-                  />
-                </label>
+                <CustomerAutocompleteFields
+                  customers={appData.customers}
+                  customerId={startSessionDraft.customerId}
+                  customerName={startSessionDraft.customerName}
+                  customerPhone={startSessionDraft.customerPhone}
+                  namePlaceholder="Optional"
+                  phonePlaceholder="Optional"
+                  onChange={(next) => setStartSessionDraft((previous) => ({ ...previous, ...next }))}
+                />
                 {selectedStartStation?.ltpEnabled && (
                   <label>
                     <span>Play Mode</span>
@@ -2963,27 +3645,16 @@ export default function App() {
                   <p>Open a food, drink, or sheesha tab directly from the dashboard.</p>
                 </div>
                 <form className="form-grid dashboard-starter-form" onSubmit={createDashboardCustomerTab}>
-                  <label>
-                    <span>Customer Name</span>
-                    <input
-                      required
-                      value={dashboardCustomerTabDraft.customerName}
-                      onChange={(event) =>
-                        setDashboardCustomerTabDraft((previous) => ({ ...previous, customerName: event.target.value }))
-                      }
-                      placeholder="Enter customer name"
-                    />
-                  </label>
-                  <label>
-                    <span>Customer Phone</span>
-                    <input
-                      value={dashboardCustomerTabDraft.customerPhone}
-                      onChange={(event) =>
-                        setDashboardCustomerTabDraft((previous) => ({ ...previous, customerPhone: event.target.value }))
-                      }
-                      placeholder="Optional"
-                    />
-                  </label>
+                  <CustomerAutocompleteFields
+                    customers={appData.customers}
+                    customerId={dashboardCustomerTabDraft.customerId}
+                    customerName={dashboardCustomerTabDraft.customerName}
+                    customerPhone={dashboardCustomerTabDraft.customerPhone}
+                    required
+                    namePlaceholder="Enter customer name"
+                    phonePlaceholder="Optional"
+                    onChange={(next) => setDashboardCustomerTabDraft((previous) => ({ ...previous, ...next }))}
+                  />
                   <div className="starter-submit-slot">
                     <button className="primary-button" type="submit">
                       Start Consumable Session
@@ -3093,27 +3764,16 @@ export default function App() {
                   <p>One active tab per customer. Reusing a customer automatically opens their current tab.</p>
                 </div>
                 <form className="form-grid" onSubmit={createOrSelectCustomerTab}>
-                  <label>
-                    <span>Customer Name</span>
-                    <input
-                      required
-                      value={customerTabDraft.customerName}
-                      onChange={(event) =>
-                        setCustomerTabDraft((previous) => ({ ...previous, customerName: event.target.value }))
-                      }
-                      placeholder="Enter customer name"
-                    />
-                  </label>
-                  <label>
-                    <span>Customer Phone</span>
-                    <input
-                      value={customerTabDraft.customerPhone}
-                      onChange={(event) =>
-                        setCustomerTabDraft((previous) => ({ ...previous, customerPhone: event.target.value }))
-                      }
-                      placeholder="Optional"
-                    />
-                  </label>
+                  <CustomerAutocompleteFields
+                    customers={appData.customers}
+                    customerId={customerTabDraft.customerId}
+                    customerName={customerTabDraft.customerName}
+                    customerPhone={customerTabDraft.customerPhone}
+                    required
+                    namePlaceholder="Enter customer name"
+                    phonePlaceholder="Optional"
+                    onChange={(next) => setCustomerTabDraft((previous) => ({ ...previous, ...next }))}
+                  />
                   <button className="primary-button" type="submit">
                     Open / Find Tab
                   </button>
@@ -3128,6 +3788,7 @@ export default function App() {
                       onClick={() => {
                         setSelectedCustomerTabId(tab.id);
                         setCustomerTabDraft({
+                          customerId: tab.customerId,
                           customerName: tab.customerName,
                           customerPhone: tab.customerPhone ?? ""
                         });
@@ -3179,6 +3840,11 @@ export default function App() {
                     <strong>{currency(selectedCustomerTab ? getCustomerTabTotal(selectedCustomerTab) : 0)}</strong>
                   </div>
                   <div className="button-row">
+                    {selectedCustomerTab && canEditActiveSessionDetails && (
+                      <button className="secondary-button" type="button" onClick={() => beginEditCustomerTabDetails(selectedCustomerTab)}>
+                        Edit Tab Details
+                      </button>
+                    )}
                     {selectedCustomerTab && (
                       <button className="ghost-button danger" type="button" onClick={() => rejectCustomerTab(selectedCustomerTab.id)}>
                         Reject Tab
@@ -3207,7 +3873,7 @@ export default function App() {
               {canEditInventory && (
               <div className="section-block reports-summary-block">
                 <div className="section-block-header">
-                  <h3>{itemForm.id ? "Update Item" : "Add New Item"}</h3>
+                  <h3>Add New Item</h3>
                   <p>Define price, opening stock, barcode, alert threshold, and reusable behavior.</p>
                 </div>
               <form className="form-grid" onSubmit={upsertInventoryItem}>
@@ -3258,8 +3924,7 @@ export default function App() {
                 <label className="checkbox-field"><input type="checkbox" checked={itemForm.isReusable} onChange={(event) => setItemForm((p) => ({ ...p, isReusable: event.target.checked }))} /><span>Reusable item</span></label>
                 <label className="checkbox-field"><input type="checkbox" checked={itemForm.active} onChange={(event) => setItemForm((p) => ({ ...p, active: event.target.checked }))} /><span>Item active</span></label>
                 <div className="button-row">
-                  <button className="primary-button" type="submit">{itemForm.id ? "Update Item" : "Create Item"}</button>
-                  {itemForm.id && <button className="secondary-button" type="button" onClick={resetItemForm}>Clear</button>}
+                  <button className="primary-button" type="submit">Create Item</button>
                 </div>
               </form>
               </div>
@@ -3269,11 +3934,24 @@ export default function App() {
                   <h3>Current Items</h3>
                   <p>{canEditInventory ? "Review stock position, barcode setup, and quick edit access." : "Review stock position, barcode setup, and alert status."}</p>
                 </div>
+              <input
+                className="search-input"
+                value={inventoryItemSearch}
+                onChange={(event) => setInventoryItemSearch(event.target.value)}
+                placeholder="Search by item name or category"
+              />
               <div className="table-wrap">
                 <table>
                   <thead><tr><th>Item</th><th>Category</th><th>Type</th><th>Price</th><th>Stock</th><th>Threshold</th><th>Status</th><th>Barcode</th>{canEditInventory && <th />}</tr></thead>
                   <tbody>
-                    {appData.inventoryItems.map((item) => (
+                    {filteredInventoryItems.length === 0 && (
+                      <tr>
+                        <td colSpan={canEditInventory ? 9 : 8}>
+                          <div className="empty-state">No inventory items match this search.</div>
+                        </td>
+                      </tr>
+                    )}
+                    {filteredInventoryItems.map((item) => (
                       <tr key={item.id}>
                         <td>{item.name}</td>
                         <td>{item.category}</td>
@@ -3699,6 +4377,247 @@ export default function App() {
           </>
         )}
 
+        {activeTab === "customers" && activeUser.role === "admin" && (
+          <section className="section-grid sales-layout customer-profiles-layout">
+            <div className="panel">
+              <div className="panel-header">
+                <div>
+                  <h2>Customer Analytics</h2>
+                  <p>Track repeat visits, top spenders, business timing, and offline follow-up opportunities.</p>
+                </div>
+              </div>
+              <div className="reports-kpi-grid">
+                <div className="report-kpi-card is-primary">
+                  <span className="muted">Total Profiles</span>
+                  <strong>{customerAnalytics.totalProfiles}</strong>
+                </div>
+                <div className="report-kpi-card is-primary">
+                  <span className="muted">Repeat Customers</span>
+                  <strong>{customerAnalytics.repeatCustomersCount}</strong>
+                  <span className="muted">{customerAnalytics.repeatRate.toFixed(1)}% repeat rate</span>
+                </div>
+                <div className="report-kpi-card is-primary">
+                  <span className="muted">Average Spend / Customer</span>
+                  <strong>{currency(customerAnalytics.averageSpendPerCustomer)}</strong>
+                </div>
+              </div>
+              <div className="insight-grid">
+                <div className="insight-card">
+                  <span className="muted">Top Customer by Spend</span>
+                  <strong>{customerAnalytics.topSpend?.customer.name ?? "No data"}</strong>
+                  <span className="muted">{customerAnalytics.topSpend ? currency(customerAnalytics.topSpend.totalSpend) : "No issued bills yet"}</span>
+                </div>
+                <div className="insight-card">
+                  <span className="muted">Top Customer by Visits</span>
+                  <strong>{customerAnalytics.topVisits?.customer.name ?? "No data"}</strong>
+                  <span className="muted">{customerAnalytics.topVisits ? `${customerAnalytics.topVisits.visitCount} visits` : "No issued bills yet"}</span>
+                </div>
+                <div className="insight-card">
+                  <span className="muted">Customer Mix</span>
+                  <strong>{customerAnalytics.activeCustomersCount} active</strong>
+                  <span className="muted">{customerAnalytics.oneTimeCustomersCount} one-time customers</span>
+                </div>
+              </div>
+              <div className="section-block section-block-muted">
+                <div className="section-block-header">
+                  <h3>Owner Insights</h3>
+                  <p>Operational and marketing signals from issued customer bills.</p>
+                </div>
+                <div className="insight-grid">
+                  <div className="insight-card">
+                    <span className="muted">Most-Played Station</span>
+                    <strong>{customerAnalytics.mostPlayedStation ?? "No data"}</strong>
+                  </div>
+                  <div className="insight-card">
+                    <span className="muted">Peak Visit Hour</span>
+                    <strong>{customerAnalytics.peakHourLabel}</strong>
+                  </div>
+                  <div className="insight-card">
+                    <span className="muted">Peak Weekday</span>
+                    <strong>{customerAnalytics.peakWeekdayLabel}</strong>
+                  </div>
+                </div>
+                <div className="section-grid customer-insight-lists">
+                  <div className="section-block">
+                    <div className="section-block-header">
+                      <h3>Top Customers by Spend</h3>
+                    </div>
+                    <div className="activity-list compact-list">
+                      {customerAnalytics.stats.filter((entry) => entry.totalSpend > 0).slice().sort((left, right) => right.totalSpend - left.totalSpend).slice(0, 5).map((entry) => (
+                        <div key={entry.customer.id} className="activity-row">
+                          <strong>{entry.customer.name}</strong>
+                          <span className="muted">{currency(entry.totalSpend)}</span>
+                        </div>
+                      ))}
+                      {customerAnalytics.stats.every((entry) => entry.totalSpend <= 0) && <div className="empty-state">No issued customer spend yet.</div>}
+                    </div>
+                  </div>
+                  <div className="section-block">
+                    <div className="section-block-header">
+                      <h3>Top Customers by Visits</h3>
+                    </div>
+                    <div className="activity-list compact-list">
+                      {customerAnalytics.stats.filter((entry) => entry.visitCount > 0).slice().sort((left, right) => right.visitCount - left.visitCount).slice(0, 5).map((entry) => (
+                        <div key={entry.customer.id} className="activity-row">
+                          <strong>{entry.customer.name}</strong>
+                          <span className="muted">{entry.visitCount} visits</span>
+                        </div>
+                      ))}
+                      {customerAnalytics.stats.every((entry) => entry.visitCount <= 0) && <div className="empty-state">No visit history yet.</div>}
+                    </div>
+                  </div>
+                  <div className="section-block">
+                    <div className="section-block-header">
+                      <h3>Recent High-Value Customers</h3>
+                    </div>
+                    <div className="activity-list compact-list">
+                      {customerAnalytics.recentHighValueCustomers.length > 0 ? customerAnalytics.recentHighValueCustomers.map((entry) => (
+                        <div key={entry.customer.id} className="activity-row">
+                          <strong>{entry.customer.name}</strong>
+                          <span className="muted">{currency(entry.totalSpend)} · {formatDateTime(entry.lastVisitAt)}</span>
+                        </div>
+                      )) : <div className="empty-state">No high-value history yet.</div>}
+                    </div>
+                  </div>
+                  <div className="section-block">
+                    <div className="section-block-header">
+                      <h3>At-Risk Customers</h3>
+                    </div>
+                    <div className="activity-list compact-list">
+                      {customerAnalytics.atRiskCustomers.length > 0 ? customerAnalytics.atRiskCustomers.slice(0, 5).map((entry) => (
+                        <div key={entry.customer.id} className="activity-row">
+                          <strong>{entry.customer.name}</strong>
+                          <span className="muted">Last visit {formatDateTime(entry.lastVisitAt)}</span>
+                        </div>
+                      )) : <div className="empty-state">No at-risk customers right now.</div>}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="panel">
+              <div className="panel-header">
+                <div>
+                  <h2>Customer Directory</h2>
+                  <p>Search by customer name or phone, then review or edit the selected profile.</p>
+                </div>
+              </div>
+              <div className="form-grid">
+                <label>
+                  <span>Search</span>
+                  <input
+                    value={customerProfileSearch}
+                    onChange={(event) => setCustomerProfileSearch(event.target.value)}
+                    placeholder="Search by name or phone"
+                  />
+                </label>
+                <label>
+                  <span>Sort By</span>
+                  <select
+                    value={customerProfileSort}
+                    onChange={(event) =>
+                      setCustomerProfileSort(event.target.value as "last_visit" | "total_spend" | "visit_count")
+                    }
+                  >
+                    <option value="last_visit">Last Visit</option>
+                    <option value="total_spend">Total Spend</option>
+                    <option value="visit_count">Visit Count</option>
+                  </select>
+                </label>
+              </div>
+              <div className="section-block customer-profile-directory">
+                <div className="activity-list compact-list">
+                  {filteredCustomerProfiles.length > 0 ? filteredCustomerProfiles.map((entry) => (
+                    <button
+                      key={entry.customer.id}
+                      type="button"
+                      className={`tab-chip ${selectedCustomerProfile?.id === entry.customer.id ? "is-active" : ""}`}
+                      onClick={() => setSelectedCustomerProfileId(entry.customer.id)}
+                    >
+                      <strong>{entry.customer.name}</strong>
+                      <span>{entry.customer.phone || "No phone"}</span>
+                      <span className="muted">{entry.visitCount} visits · {currency(entry.totalSpend)}</span>
+                    </button>
+                  )) : <div className="empty-state">No customer profiles match this search.</div>}
+                </div>
+              </div>
+              <div className="section-block section-block-muted">
+                <div className="panel-header">
+                  <div>
+                    <h2>Selected Customer</h2>
+                    <p>Profile details and billed visit history for the chosen customer.</p>
+                  </div>
+                  {selectedCustomerProfile && (
+                    <button className="secondary-button" type="button" onClick={() => beginEditCustomerProfile(selectedCustomerProfile)}>
+                      Edit Profile
+                    </button>
+                  )}
+                </div>
+                {selectedCustomerProfile && selectedCustomerProfileStats ? (
+                  <>
+                    <div className="reports-support-grid">
+                      <div className="report-kpi-card is-secondary">
+                        <span className="muted">Customer</span>
+                        <strong>{selectedCustomerProfile.name}</strong>
+                        <span className="muted">{selectedCustomerProfile.phone || "No phone recorded"}</span>
+                      </div>
+                      <div className="report-kpi-card is-secondary">
+                        <span className="muted">Visits</span>
+                        <strong>{selectedCustomerProfileStats.visitCount}</strong>
+                        <span className="muted">Average bill {currency(selectedCustomerProfileStats.visitCount ? selectedCustomerProfileStats.totalSpend / selectedCustomerProfileStats.visitCount : 0)}</span>
+                      </div>
+                      <div className="report-kpi-card is-secondary">
+                        <span className="muted">Favorite Station</span>
+                        <strong>{selectedCustomerProfileStats.favoriteStationName ?? "Consumables Tab"}</strong>
+                        <span className="muted">Last visit {formatDateTime(selectedCustomerProfileStats.lastVisitAt)}</span>
+                      </div>
+                    </div>
+                    <div className="analysis-list">
+                      <div className="line-item-row">
+                        <strong>Total Spend</strong>
+                        <span className="muted">{currency(selectedCustomerProfileStats.totalSpend)}</span>
+                      </div>
+                      <div className="line-item-row">
+                        <strong>Created</strong>
+                        <span className="muted">{formatDateTime(selectedCustomerProfile.createdAt)}</span>
+                      </div>
+                      <div className="line-item-row">
+                        <strong>Last Visit</strong>
+                        <span className="muted">{formatDateTime(selectedCustomerProfileStats.lastVisitAt)}</span>
+                      </div>
+                    </div>
+                    <div className="section-block">
+                      <div className="section-block-header">
+                        <h3>Recent Billed Visits</h3>
+                      </div>
+                      <div className="activity-list compact-list">
+                        {selectedCustomerProfileStats.bills.length > 0 ? selectedCustomerProfileStats.bills
+                          .slice()
+                          .sort((left, right) => new Date(right.issuedAt).getTime() - new Date(left.issuedAt).getTime())
+                          .slice(0, 8)
+                          .map((bill) => (
+                            <div key={bill.id} className="activity-row">
+                              <div>
+                                <strong>{bill.billNumber}</strong>
+                                <div className="muted">
+                                  {(bill.stationId && appData.stations.find((station) => station.id === bill.stationId)?.name) || "Consumables Tab"} · {formatDateTime(bill.issuedAt)}
+                                </div>
+                              </div>
+                              <span className="muted">{currency(bill.total)}</span>
+                            </div>
+                          )) : <div className="empty-state">No billed visits for this customer yet.</div>}
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  <div className="empty-state">Select a customer profile to review its details.</div>
+                )}
+              </div>
+            </div>
+          </section>
+        )}
+
         {activeTab === "settings" && (activeUser.role === "manager" || activeUser.role === "admin") && (
           <section className="section-grid settings-layout">
             {isManagerReadOnly && <div className="read-only-banner field-span-full">Manager view: read-only access on this page.</div>}
@@ -3922,6 +4841,188 @@ export default function App() {
         </Modal>
       )}
 
+      {editCustomerTabDraft && (
+        <Modal title="Edit Tab Details" onClose={() => setEditCustomerTabDraft(null)}>
+          <form className="form-grid" onSubmit={saveCustomerTabDetails}>
+            <CustomerAutocompleteFields
+              customers={appData.customers}
+              customerId={editCustomerTabDraft.customerId}
+              customerName={editCustomerTabDraft.customerName}
+              customerPhone={editCustomerTabDraft.customerPhone}
+              required
+              phonePlaceholder="Optional"
+              onChange={(next) =>
+                setEditCustomerTabDraft((previous) => (previous ? { ...previous, ...next } : previous))
+              }
+            />
+            <div className="button-row field-span-full">
+              <button className="secondary-button" type="button" onClick={() => setEditCustomerTabDraft(null)}>
+                Cancel
+              </button>
+              <button className="primary-button" type="submit">
+                Save Tab Details
+              </button>
+            </div>
+          </form>
+        </Modal>
+      )}
+
+      {editCustomerProfileDraft && (
+        <Modal title="Edit Customer Profile" onClose={() => setEditCustomerProfileDraft(null)}>
+          <form className="form-grid" onSubmit={saveCustomerProfile}>
+            <label>
+              <span>Customer Name</span>
+              <input
+                required
+                value={editCustomerProfileDraft.name}
+                onChange={(event) =>
+                  setEditCustomerProfileDraft((previous) =>
+                    previous ? { ...previous, name: event.target.value } : previous
+                  )
+                }
+              />
+            </label>
+            <label>
+              <span>Customer Phone</span>
+              <input
+                value={editCustomerProfileDraft.phone}
+                placeholder="Optional"
+                onChange={(event) =>
+                  setEditCustomerProfileDraft((previous) =>
+                    previous ? { ...previous, phone: event.target.value } : previous
+                  )
+                }
+              />
+            </label>
+            <div className="button-row field-span-full">
+              <button className="secondary-button" type="button" onClick={() => setEditCustomerProfileDraft(null)}>
+                Cancel
+              </button>
+              <button className="primary-button" type="submit">
+                Save Profile
+              </button>
+            </div>
+          </form>
+        </Modal>
+      )}
+
+      {editItemForm && (
+        <Modal title={`Edit Inventory Item${editItemForm.name ? ` - ${editItemForm.name}` : ""}`} onClose={closeEditInventoryModal}>
+          <form className="form-grid" onSubmit={saveEditedInventoryItem}>
+            <label>
+              <span>Item Name</span>
+              <input
+                required
+                value={editItemForm.name}
+                onChange={(event) => setEditItemForm((previous) => (previous ? { ...previous, name: event.target.value } : previous))}
+              />
+            </label>
+            <label>
+              <span>Category</span>
+              <select
+                value={useCustomEditItemCategory ? "__other__" : editItemForm.category}
+                onChange={(event) => {
+                  const nextValue = event.target.value;
+                  if (nextValue === "__other__") {
+                    setUseCustomEditItemCategory(true);
+                    setCustomEditItemCategory(editItemForm.category);
+                    return;
+                  }
+                  setUseCustomEditItemCategory(false);
+                  setCustomEditItemCategory("");
+                  setEditItemForm((previous) => (previous ? { ...previous, category: nextValue } : previous));
+                }}
+              >
+                <option value="">Select category</option>
+                {inventoryCategoryOptions.map((category) => (
+                  <option key={category} value={category}>
+                    {category}
+                  </option>
+                ))}
+                <option value="__other__">Other</option>
+              </select>
+            </label>
+            {useCustomEditItemCategory && (
+              <label>
+                <span>New Category</span>
+                <input
+                  required
+                  value={customEditItemCategory}
+                  onChange={(event) => {
+                    setCustomEditItemCategory(event.target.value);
+                    setEditItemForm((previous) => (previous ? { ...previous, category: event.target.value } : previous));
+                  }}
+                  placeholder="Enter new category"
+                />
+              </label>
+            )}
+            <label>
+              <span>Price</span>
+              <NumericInput
+                required
+                mode="decimal"
+                min={0}
+                value={editItemForm.price}
+                onValueChange={(value) => setEditItemForm((previous) => (previous ? { ...previous, price: value } : previous))}
+              />
+            </label>
+            <label>
+              <span>Opening Stock</span>
+              <NumericInput
+                required
+                min={0}
+                value={editItemForm.stockQty}
+                onValueChange={(value) => setEditItemForm((previous) => (previous ? { ...previous, stockQty: value } : previous))}
+              />
+            </label>
+            <label>
+              <span>Low Stock Threshold</span>
+              <NumericInput
+                required
+                min={0}
+                value={editItemForm.lowStockThreshold}
+                onValueChange={(value) =>
+                  setEditItemForm((previous) => (previous ? { ...previous, lowStockThreshold: value } : previous))
+                }
+              />
+            </label>
+            <label>
+              <span>Barcode</span>
+              <input
+                value={editItemForm.barcode}
+                onChange={(event) => setEditItemForm((previous) => (previous ? { ...previous, barcode: event.target.value } : previous))}
+              />
+            </label>
+            <label className="checkbox-field">
+              <input
+                type="checkbox"
+                checked={editItemForm.isReusable}
+                onChange={(event) =>
+                  setEditItemForm((previous) => (previous ? { ...previous, isReusable: event.target.checked } : previous))
+                }
+              />
+              <span>Reusable item</span>
+            </label>
+            <label className="checkbox-field">
+              <input
+                type="checkbox"
+                checked={editItemForm.active}
+                onChange={(event) => setEditItemForm((previous) => (previous ? { ...previous, active: event.target.checked } : previous))}
+              />
+              <span>Item active</span>
+            </label>
+            <div className="button-row field-span-full">
+              <button className="secondary-button" type="button" onClick={closeEditInventoryModal}>
+                Cancel
+              </button>
+              <button className="primary-button" type="submit">
+                Update Item
+              </button>
+            </div>
+          </form>
+        </Modal>
+      )}
+
       {showStartSessionModal && (
         <Modal
           title="Start New Session"
@@ -3958,26 +5059,16 @@ export default function App() {
                   ))}
               </select>
             </label>
-            <label>
-              <span>Customer Name</span>
-              <input
-                value={startSessionDraft.customerName}
-                onChange={(event) =>
-                  setStartSessionDraft((previous) => ({ ...previous, customerName: event.target.value }))
-                }
-                placeholder="Optional"
-              />
-            </label>
-            <label className="field-span-full">
-              <span>Customer Phone</span>
-              <input
-                value={startSessionDraft.customerPhone}
-                onChange={(event) =>
-                  setStartSessionDraft((previous) => ({ ...previous, customerPhone: event.target.value }))
-                }
-                placeholder="Optional"
-              />
-            </label>
+            <CustomerAutocompleteFields
+              customers={appData.customers}
+              customerId={startSessionDraft.customerId}
+              customerName={startSessionDraft.customerName}
+              customerPhone={startSessionDraft.customerPhone}
+              namePlaceholder="Optional"
+              phonePlaceholder="Optional"
+              phoneFieldClassName="field-span-full"
+              onChange={(next) => setStartSessionDraft((previous) => ({ ...previous, ...next }))}
+            />
             {selectedStartStation?.ltpEnabled && (
               <label className="field-span-full">
                 <span>Play Mode</span>
@@ -4059,7 +5150,13 @@ export default function App() {
       )}
 
       {managedSession && managedSessionCharge && (
-        <Modal title={managedSession.stationNameSnapshot} onClose={() => setManageSessionId(null)}>
+        <Modal
+          title={managedSession.stationNameSnapshot}
+          onClose={() => {
+            setManageSessionId(null);
+            setEditSessionDraft((previous) => (previous?.sessionId === managedSession.id ? null : previous));
+          }}
+        >
           <div className="metrics-row">
             <MetricCard label={managedSession.mode === "timed" ? "Live bill" : "Current total"} value={currency(getSessionLiveTotal(managedSession, getFrozenEndAtForSession(managedSession.id)))} />
             {managedSession.mode === "timed" ? (
@@ -4077,6 +5174,49 @@ export default function App() {
           <div className="frozen-billing-banner">
             Add consumables to the live session here. The running game time is not changed by this action.
           </div>
+          {editSessionDraft?.sessionId === managedSession.id && (
+            <div className="section-block section-block-muted">
+              <div className="section-block-header">
+                <h3>Edit Session Details</h3>
+                <p>Admin-only corrections for customer details and timed session start time.</p>
+              </div>
+              <form className="form-grid" onSubmit={saveSessionDetails}>
+                <CustomerAutocompleteFields
+                  customers={appData.customers}
+                  customerId={editSessionDraft.customerId}
+                  customerName={editSessionDraft.customerName}
+                  customerPhone={editSessionDraft.customerPhone}
+                  namePlaceholder="Optional"
+                  phonePlaceholder="Optional"
+                  onChange={(next) =>
+                    setEditSessionDraft((previous) => (previous ? { ...previous, ...next } : previous))
+                  }
+                />
+                {managedSession.mode === "timed" && (
+                  <label className="field-span-full">
+                    <span>Session Start Time</span>
+                    <input
+                      type="datetime-local"
+                      value={editSessionDraft.startedAt}
+                      onChange={(event) =>
+                        setEditSessionDraft((previous) =>
+                          previous ? { ...previous, startedAt: event.target.value } : previous
+                        )
+                      }
+                    />
+                  </label>
+                )}
+                <div className="button-row field-span-full">
+                  <button className="secondary-button" type="button" onClick={() => setEditSessionDraft(null)}>
+                    Cancel
+                  </button>
+                  <button className="primary-button" type="submit">
+                    Save Session Details
+                  </button>
+                </div>
+              </form>
+            </div>
+          )}
           <div className="panel-header compact-header">
             <div>
               <h2>Session Consumables</h2>
@@ -4121,6 +5261,17 @@ export default function App() {
             </>
           )}
           <div className="button-row">
+            {canEditActiveSessionDetails && (
+              <button
+                className="secondary-button"
+                type="button"
+                onClick={() =>
+                  editSessionDraft?.sessionId === managedSession.id ? setEditSessionDraft(null) : beginEditSessionDetails(managedSession)
+                }
+              >
+                {editSessionDraft?.sessionId === managedSession.id ? "Hide Session Details" : "Edit Session Details"}
+              </button>
+            )}
             {managedSession.mode === "timed" && (managedSession.status === "active" ? <button className="secondary-button session-action-button is-pause" type="button" onClick={() => toggleSessionPause(managedSession.id, true)}>|| Pause Session</button> : <button className="secondary-button session-action-button is-resume" type="button" onClick={() => toggleSessionPause(managedSession.id, false)}>&gt; Resume Session</button>)}
             <button className="ghost-button danger" type="button" onClick={() => rejectSession(managedSession.id)}>Reject Session</button>
             <button className="primary-button" type="button" onClick={() => openSessionCheckout(managedSession.id)}>Proceed to Checkout</button>
@@ -4144,10 +5295,44 @@ export default function App() {
           wide
         >
           <div className="form-grid three-columns">
-            <label><span>Customer Name</span><input value={checkoutState.customerName} onChange={(event) => setCheckoutState((p) => p ? { ...p, customerName: event.target.value } : p)} /></label>
-            <label><span>Customer Phone</span><input value={checkoutState.customerPhone} onChange={(event) => setCheckoutState((p) => p ? { ...p, customerPhone: event.target.value } : p)} /></label>
+            <CustomerAutocompleteFields
+              customers={appData.customers}
+              customerId={checkoutState.customerId}
+              customerName={checkoutState.customerName}
+              customerPhone={checkoutState.customerPhone}
+              disabled={!canEditActiveSessionDetails && checkoutState.mode !== "bill_replacement"}
+              onChange={(next) => setCheckoutState((p) => (p ? { ...p, ...next } : p))}
+            />
             <label><span>Payment Mode</span><select value={checkoutState.paymentMode} onChange={(event) => setCheckoutState((p) => p ? { ...p, paymentMode: event.target.value as PaymentMode } : p)}><option value="cash">Cash</option><option value="upi">UPI</option></select></label>
           </div>
+          {checkoutSession && checkoutSession.mode === "timed" && canEditActiveSessionDetails && (
+            <div className="form-grid">
+              <label>
+                <span>Session Start Time</span>
+                <input
+                  type="datetime-local"
+                  value={formatDateTimeInputValue(checkoutState.sessionStartedAt)}
+                  onChange={(event) =>
+                    setCheckoutState((previous) =>
+                      previous ? { ...previous, sessionStartedAt: parseDateTimeInputValue(event.target.value) } : previous
+                    )
+                  }
+                />
+              </label>
+              <label>
+                <span>Session End Time</span>
+                <input
+                  type="datetime-local"
+                  value={formatDateTimeInputValue(checkoutState.sessionEndedAt)}
+                  onChange={(event) =>
+                    setCheckoutState((previous) =>
+                      previous ? { ...previous, sessionEndedAt: parseDateTimeInputValue(event.target.value) } : previous
+                    )
+                  }
+                />
+              </label>
+            </div>
+          )}
           <div className="form-grid">
             <label className="checkbox-field">
               <input
@@ -4217,7 +5402,7 @@ export default function App() {
           {checkoutSession && (
             <>
               <div className="frozen-billing-banner">
-                Billing frozen at {formatDateTime(checkoutState.closedAt ?? now)}. The session timer is stopped for this checkout.
+                Billing frozen at {formatDateTime(checkoutState.sessionEndedAt ?? checkoutState.closedAt ?? now)}. The session timer is stopped for this checkout.
               </div>
               {checkoutSession.ltpEligible && checkoutSession.playMode === "solo" && (
                 <div className="form-grid">
@@ -4432,6 +5617,112 @@ export default function App() {
         </Modal>
       )}
     </div>
+  );
+}
+
+function CustomerAutocompleteFields(props: {
+  customers: Customer[];
+  customerId?: string;
+  customerName: string;
+  customerPhone: string;
+  onChange: (next: { customerId?: string; customerName: string; customerPhone: string }) => void;
+  required?: boolean;
+  disabled?: boolean;
+  namePlaceholder?: string;
+  phonePlaceholder?: string;
+  nameFieldClassName?: string;
+  phoneFieldClassName?: string;
+}) {
+  const [suggestionsOpen, setSuggestionsOpen] = useState(false);
+  const suggestions = (() => {
+    const normalizedQuery = props.customerName.trim().replace(/\s+/g, " ").toLowerCase();
+    const normalizedPhoneQuery = (props.customerName.match(/[\d+]+/g)?.join("") ?? "").replace(/(?!^)\+/g, "");
+    if (!normalizedQuery && !normalizedPhoneQuery) {
+      return [] as Customer[];
+    }
+    return [...props.customers]
+      .filter((customer) => {
+        const customerName = customer.name.trim().replace(/\s+/g, " ").toLowerCase();
+        const customerPhone = (customer.phone?.match(/[\d+]+/g)?.join("") ?? "").replace(/(?!^)\+/g, "");
+        return (
+          customerName.includes(normalizedQuery) ||
+          (normalizedPhoneQuery ? customerPhone.includes(normalizedPhoneQuery) : false)
+        );
+      })
+      .sort((left, right) => {
+        const leftName = left.name.trim().replace(/\s+/g, " ").toLowerCase();
+        const rightName = right.name.trim().replace(/\s+/g, " ").toLowerCase();
+        const leftStarts = leftName.startsWith(normalizedQuery) ? 1 : 0;
+        const rightStarts = rightName.startsWith(normalizedQuery) ? 1 : 0;
+        if (leftStarts !== rightStarts) {
+          return rightStarts - leftStarts;
+        }
+        return new Date(right.lastVisitAt).getTime() - new Date(left.lastVisitAt).getTime();
+      })
+      .slice(0, 6);
+  })();
+
+  return (
+    <>
+      <label className={props.nameFieldClassName}>
+        <span>Customer Name</span>
+        <div className="customer-autocomplete">
+          <input
+            required={props.required}
+            disabled={props.disabled}
+            value={props.customerName}
+            placeholder={props.namePlaceholder}
+            onFocus={() => setSuggestionsOpen(true)}
+            onBlur={() => window.setTimeout(() => setSuggestionsOpen(false), 120)}
+            onChange={(event) =>
+              props.onChange({
+                customerId: undefined,
+                customerName: event.target.value,
+                customerPhone: props.customerPhone
+              })
+            }
+          />
+          {suggestionsOpen && suggestions.length > 0 && (
+            <div className="customer-suggestion-list">
+              {suggestions.map((customer) => (
+                <button
+                  key={customer.id}
+                  className="customer-suggestion"
+                  type="button"
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => {
+                    props.onChange({
+                      customerId: customer.id,
+                      customerName: customer.name,
+                      customerPhone: customer.phone ?? ""
+                    });
+                    setSuggestionsOpen(false);
+                  }}
+                >
+                  <strong>{customer.name}</strong>
+                  <span>{customer.phone || "No phone"}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      </label>
+      <label className={props.phoneFieldClassName}>
+        <span>Customer Phone</span>
+        <input
+          disabled={props.disabled}
+          value={props.customerPhone}
+          placeholder={props.phonePlaceholder}
+          onChange={(event) =>
+            props.onChange({
+              customerId: props.customerId,
+              customerName: props.customerName,
+              customerPhone: event.target.value
+            })
+          }
+        />
+      </label>
+    </>
   );
 }
 

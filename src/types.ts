@@ -73,6 +73,7 @@ export interface Session {
   startedAt: string;
   endedAt?: string;
   status: SessionStatus;
+  customerId?: string;
   customerName?: string;
   customerPhone?: string;
   playMode: PlayMode;
@@ -98,6 +99,7 @@ export interface CustomerTabItem {
 
 export interface CustomerTab {
   id: string;
+  customerId?: string;
   customerName: string;
   customerPhone?: string;
   status: "open" | "closed";
@@ -111,8 +113,9 @@ export interface CustomerTab {
 
 export interface Customer {
   id: string;
-  name?: string;
+  name: string;
   phone?: string;
+  createdAt: string;
   lastVisitAt: string;
   notes?: string;
 }
@@ -173,6 +176,7 @@ export interface Bill {
   createdAt: string;
   issuedAt: string;
   issuedByUserId: string;
+  customerId?: string;
   customerName?: string;
   customerPhone?: string;
   paymentMode: PaymentMode;

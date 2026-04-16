@@ -1,5 +1,5 @@
 import { corsHeaders } from "../_shared/cors.ts";
-import { createAdminClient, jsonResponse, requireAdmin } from "../_shared/admin.ts";
+import { jsonResponse, requireAdmin } from "../_shared/admin.ts";
 
 Deno.serve(async (request) => {
   if (request.method === "OPTIONS") {
@@ -17,7 +17,7 @@ Deno.serve(async (request) => {
       return jsonResponse({ error: "Missing required user fields." }, 400);
     }
 
-    const adminClient = createAdminClient();
+    const { adminClient } = guard;
     const hiddenEmail = `${crypto.randomUUID()}@users.breakperfect.local`;
 
     const { data: authUser, error: authError } = await adminClient.auth.admin.createUser({
