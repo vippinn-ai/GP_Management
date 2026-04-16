@@ -1271,9 +1271,9 @@ function normalizeAppDataCustomers(source: AppData) {
   function handleLogin(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (backendConfigured) {
-      setRemoteLoading(true);
-      void signInWithUsername(loginUsername, loginPassword)
-        .then(async (profile) => {
+      void runBlockingAction("Signing in...", async () => {
+        setRemoteLoading(true);
+        const profile = await signInWithUsername(loginUsername, loginPassword);
           const snapshot = await loadRemoteAppDataSnapshot();
           skipRemotePersistRef.current = true;
           setAppData(normalizeAppDataCustomers(snapshot.appData));
@@ -1308,7 +1308,8 @@ function normalizeAppDataCustomers(source: AppData) {
 
   function handleLogout() {
     if (backendConfigured) {
-      void signOutRemote().finally(() => {
+      void runBlockingAction("Signing out...", async () => {
+        await signOutRemote();
         setActiveUserId(null);
       });
       return;
@@ -3278,27 +3279,33 @@ function normalizeAppDataCustomers(source: AppData) {
 
   if (backendConfigured && remoteLoading) {
     return (
-      <LoginScreen
-        loginUsername={loginUsername}
-        loginPassword={loginPassword}
-        loginError={remoteError || loginError || "Connecting to production backend..."}
-        onUsernameChange={setLoginUsername}
-        onPasswordChange={setLoginPassword}
-        onSubmit={handleLogin}
-      />
+      <>
+        <LoginScreen
+          loginUsername={loginUsername}
+          loginPassword={loginPassword}
+          loginError={remoteError || loginError || "Connecting to production backend..."}
+          onUsernameChange={setLoginUsername}
+          onPasswordChange={setLoginPassword}
+          onSubmit={handleLogin}
+        />
+        {blockingActionLabel && <LoadingOverlay label={blockingActionLabel} />}
+      </>
     );
   }
 
   if (!activeUser) {
     return (
-      <LoginScreen
-        loginUsername={loginUsername}
-        loginPassword={loginPassword}
-        loginError={remoteError || loginError}
-        onUsernameChange={setLoginUsername}
-        onPasswordChange={setLoginPassword}
-        onSubmit={handleLogin}
-      />
+      <>
+        <LoginScreen
+          loginUsername={loginUsername}
+          loginPassword={loginPassword}
+          loginError={remoteError || loginError}
+          onUsernameChange={setLoginUsername}
+          onPasswordChange={setLoginPassword}
+          onSubmit={handleLogin}
+        />
+        {blockingActionLabel && <LoadingOverlay label={blockingActionLabel} />}
+      </>
     );
   }
 
@@ -5784,12 +5791,6 @@ function LoginScreen(props: { loginUsername: string; loginPassword: string; logi
             {props.loginError && <div className="error-text field-span-full">{props.loginError}</div>}
             <button className="primary-button field-span-full" type="submit">Sign In</button>
           </form>
-          <div className="credentials-panel">
-            <strong>Seed accounts</strong>
-            <div className="muted">admin / admin123</div>
-            <div className="muted">manager / manager123</div>
-            <div className="muted">reception / reception123</div>
-          </div>
         </section>
       </div>
     </div>
