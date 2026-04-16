@@ -1,5 +1,5 @@
 {
-  "name": "gp-management-staging",
+  "name": "gp-management-staging-pages",
   "compatibility_date": "2026-04-16",
   "assets": {
     "directory": "./dist"
