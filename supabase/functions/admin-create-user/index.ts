@@ -6,6 +6,11 @@ Deno.serve(async (request) => {
     return new Response("ok", { headers: corsHeaders });
   }
 
+  const contentLength = Number(request.headers.get("content-length") ?? "0");
+  if (contentLength > 4096) {
+    return jsonResponse({ error: "Request too large." }, 413);
+  }
+
   const guard = await requireAdmin(request);
   if ("error" in guard) {
     return guard.error;
@@ -17,7 +22,18 @@ Deno.serve(async (request) => {
       return jsonResponse({ error: "Missing required user fields." }, 400);
     }
 
+    if (password.length < 8) {
+      return jsonResponse({ error: "Password must be at least 8 characters." }, 400);
+    }
+
     const { adminClient } = guard;
+
+    // Supabase Auth requires an email for every user account.
+    // This app uses username+password auth, not email auth.
+    // A UUID-based synthetic email is used as a workaround.
+    // email_confirm: true skips the confirmation flow.
+    // The auth_email column on profiles is the source of truth for lookups.
+    // Do not change this pattern without updating resolve-login-email accordingly.
     const hiddenEmail = `${crypto.randomUUID()}@users.breakperfect.local`;
 
     const { data: authUser, error: authError } = await adminClient.auth.admin.createUser({

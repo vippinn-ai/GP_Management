@@ -1,4 +1,5 @@
 import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "react";
+import { useClock } from "./hooks/useClock";
 import brandLogo from "../Branding/Logo.png";
 import {
   buildReceiptPreviewModel,
@@ -449,9 +450,9 @@ export default function App() {
   const [activeUserId, setActiveUserId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<TabId>("dashboard");
   const [online, setOnline] = useState<boolean>(navigator.onLine);
-  const [now, setNow] = useState<string>(new Date().toISOString());
-  const [loginUsername, setLoginUsername] = useState("admin");
-  const [loginPassword, setLoginPassword] = useState("admin123");
+  const now = useClock();
+  const [loginUsername, setLoginUsername] = useState("");
+  const [loginPassword, setLoginPassword] = useState("");
   const [loginError, setLoginError] = useState("");
   const [remoteLoading, setRemoteLoading] = useState(false);
   const [remoteError, setRemoteError] = useState("");
@@ -594,7 +595,6 @@ export default function App() {
           ? error.message
           : "Remote data changed in another browser. Please retry after the latest data loads.";
       setRemoteError(message);
-      window.alert(message);
       throw error;
     } finally {
       setRemoteSaving(false);
@@ -765,16 +765,27 @@ function normalizeAppDataCustomers(source: AppData) {
   }, [appData.businessProfile]);
 
   useEffect(() => {
-    const timerId = window.setInterval(() => setNow(new Date().toISOString()), 1000);
-    return () => window.clearInterval(timerId);
-  }, []);
-
-  useEffect(() => {
     if (!backendConfigured) {
       return;
     }
-    void signOutRemote().catch(() => undefined);
-  }, [backendConfigured]);
+    setRemoteLoading(true);
+    fetchCurrentProfile()
+      .then((profile) => {
+        if (!profile || !profile.active) {
+          setActiveUserId(null);
+          return;
+        }
+        return loadRemoteAppDataSnapshot().then((snapshot) => {
+          skipRemotePersistRef.current = true;
+          setAppData(normalizeAppDataCustomers(snapshot.appData));
+          setRemoteVersion(snapshot.version);
+          setActiveUserId(profile.id);
+          setActiveTab("dashboard");
+        });
+      })
+      .catch(() => setActiveUserId(null))
+      .finally(() => setRemoteLoading(false));
+  }, [backendConfigured]); // runs once on mount — backendConfigured is stable (derived from env vars)
 
   useEffect(() => {
     if (!backendConfigured || !activeUserId) {
@@ -3365,6 +3376,14 @@ function normalizeAppDataCustomers(source: AppData) {
           <div className={`status-pill ${online ? "is-online" : "is-offline"}`}>
             {remoteSaving ? "Syncing" : online ? "Online" : "Offline fallback"}
           </div>
+          {remoteError && (
+            <div className="remote-error-banner" role="alert">
+              <span>{remoteError}</span>
+              <button type="button" className="ghost-button" onClick={() => setRemoteError("")}>
+                Dismiss
+              </button>
+            </div>
+          )}
           <div className="helper-text">
             {backendConfigured
               ? "Live data is synced through the production backend."
