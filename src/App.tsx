@@ -454,7 +454,7 @@ export default function App() {
   const [loginUsername, setLoginUsername] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
   const [loginError, setLoginError] = useState("");
-  const [remoteLoading, setRemoteLoading] = useState(false);
+  const [remoteLoading, setRemoteLoading] = useState(backendConfigured);
   const [remoteError, setRemoteError] = useState("");
   const [remoteVersion, setRemoteVersion] = useState(0);
   const [remoteSaving, setRemoteSaving] = useState(false);
