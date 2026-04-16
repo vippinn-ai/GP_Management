@@ -12,3 +12,7 @@ yarn-error.log*
 dev-server.log
 dev-server.err
 supabase/.temp/
+
+.dev.vars*
+!.dev.vars.example
+!.env.example
