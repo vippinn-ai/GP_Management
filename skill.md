@@ -180,14 +180,14 @@ Full checklist in `deploymentrules.md` → "Checklist: After Schema Changes"
 
 ## Ongoing Improvement Work (Refactor Plan)
 
-The codebase has a documented list of improvements in `C:\Users\91880\.claude\plans\lovely-conjuring-fern.md`. These are organized into phases from most urgent to least:
+The full improvement roadmap lives in `plan.md` in this repo. Current status:
 
 | Phase | What | Status |
 |---|---|---|
-| 1 | Fix session/refresh bug | ⬜ Pending |
-| 2 | CORS + rate limiting + input guards | ⬜ Pending |
-| 3 | Error boundaries + re-render fix | ⬜ Pending |
-| 4 | Cloudflare security headers | ⬜ Pending |
+| 1 | Fix session/refresh bug | ✅ Done |
+| 2 | CORS + rate limiting + input guards | 🔧 Code done, re-deploy edge functions |
+| 3 | Error boundaries + re-render fix | ✅ Done |
+| 4 | Cloudflare security headers | ✅ Done |
 | 5 | Extract types, utils, hooks from App.tsx | ⬜ Pending |
 | 6 | Decompose App.tsx into feature panels | ⬜ Pending |
 | 7 | Loading skeleton + UX validation | ⬜ Pending |
