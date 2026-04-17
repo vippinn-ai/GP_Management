@@ -3321,19 +3321,7 @@ function normalizeAppDataCustomers(source: AppData) {
   const occupiedItems = appData.inventoryItems.filter((item) => item.active && getInventoryState(item) === "occupied");
 
   if (backendConfigured && remoteLoading) {
-    return (
-      <>
-        <LoginScreen
-          loginUsername={loginUsername}
-          loginPassword={loginPassword}
-          loginError={remoteError || loginError || "Connecting to production backend..."}
-          onUsernameChange={setLoginUsername}
-          onPasswordChange={setLoginPassword}
-          onSubmit={handleLogin}
-        />
-        {blockingActionLabel && <LoadingOverlay label={blockingActionLabel} />}
-      </>
-    );
+    return <AppLoadingScreen />;
   }
 
   if (!activeUser) {
@@ -5865,6 +5853,15 @@ function CustomerAutocompleteFields(props: {
         />
       </label>
     </>
+  );
+}
+
+function AppLoadingScreen() {
+  return (
+    <div className="app-loading-screen" role="status" aria-label="Loading application">
+      <div className="app-loading-spinner" />
+      <p className="app-loading-label">Loading…</p>
+    </div>
   );
 }
 

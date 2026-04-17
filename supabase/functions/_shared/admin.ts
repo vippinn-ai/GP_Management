@@ -1,5 +1,5 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
-import { corsHeaders } from "./cors.ts";
+import { getCorsHeaders } from "./cors.ts";
 
 const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
 const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
@@ -19,29 +19,27 @@ export function createUserClient(authHeader: string) {
     throw new Error("Supabase edge function is missing anon-key configuration.");
   }
   return createClient(supabaseUrl, supabaseAnonKey, {
-    global: {
-      headers: {
-        Authorization: authHeader
-      }
-    },
+    global: { headers: { Authorization: authHeader } },
     auth: { autoRefreshToken: false, persistSession: false }
   });
 }
 
-export function jsonResponse(body: unknown, status = 200) {
+export function jsonResponse(body: unknown, status = 200, origin: string | null = null) {
   return new Response(JSON.stringify(body), {
     status,
     headers: {
-      ...corsHeaders,
+      ...getCorsHeaders(origin),
       "Content-Type": "application/json"
     }
   });
 }
 
 export async function requireAdmin(request: Request) {
+  const origin = request.headers.get("Origin");
   const authHeader = request.headers.get("Authorization");
+
   if (!authHeader) {
-    return { error: jsonResponse({ error: "Unauthorized" }, 401) };
+    return { error: jsonResponse({ error: "Unauthorized" }, 401, origin) };
   }
 
   let userClient;
@@ -53,18 +51,16 @@ export async function requireAdmin(request: Request) {
     return {
       error: jsonResponse(
         { error: error instanceof Error ? error.message : "Supabase function configuration is incomplete." },
-        500
+        500,
+        origin
       )
     };
   }
 
-  const {
-    data: { user },
-    error: userError
-  } = await userClient.auth.getUser();
+  const { data: { user }, error: userError } = await userClient.auth.getUser();
 
   if (userError || !user) {
-    return { error: jsonResponse({ error: "Unauthorized" }, 401) };
+    return { error: jsonResponse({ error: "Unauthorized" }, 401, origin) };
   }
 
   const { data: profile, error: profileError } = await adminClient
@@ -74,8 +70,8 @@ export async function requireAdmin(request: Request) {
     .maybeSingle();
 
   if (profileError || !profile || profile.role !== "admin" || !profile.active) {
-    return { error: jsonResponse({ error: "Admin access required" }, 403) };
+    return { error: jsonResponse({ error: "Admin access required" }, 403, origin) };
   }
 
-  return { adminClient, actorId: user.id };
+  return { adminClient, actorId: user.id, origin };
 }
