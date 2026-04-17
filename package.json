@@ -7,6 +7,8 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
+    "deploy:staging": "tsc -b && vite build --mode staging && wrangler deploy --name gp-management-staging-pages",
+    "deploy:production": "tsc -b && vite build --mode production && wrangler deploy --name management",
     "bootstrap:production": "node scripts/bootstrap-production.mjs scripts/production-config.sample.json"
   },
   "dependencies": {
