@@ -6,6 +6,10 @@
   line-height: 1.4;
 }
 
+html {
+  font-size: 80%;
+}
+
 * {
   box-sizing: border-box;
 }
@@ -26,21 +30,21 @@ select {
 button {
   cursor: pointer;
   border: 0;
-  border-radius: 12px;
+  border-radius: 0.75rem;
   padding: 0.8rem 1rem;
   background: #17382d;
   color: #fff;
-  min-height: 46px;
+  min-height: 2.875rem;
 }
 
 input,
 select {
   width: 100%;
   border: 1px solid #c5d3cb;
-  border-radius: 12px;
+  border-radius: 0.75rem;
   padding: 0.8rem 0.9rem;
   background: #fff;
-  min-height: 46px;
+  min-height: 2.875rem;
 }
 
 table {
@@ -59,7 +63,7 @@ td {
 .app-shell {
   min-height: 100vh;
   display: grid;
-  grid-template-columns: 340px 1fr;
+  grid-template-columns: 21.25rem 1fr;
 }
 
 .sidebar {
@@ -99,16 +103,16 @@ td {
 }
 
 .login-brand .brand-mark {
-  width: 180px;
-  height: 110px;
-  border-radius: 20px;
+  width: 11.25rem;
+  height: 6.875rem;
+  border-radius: 1.25rem;
   flex: 0 0 auto;
 }
 
 .brand-mark {
-  width: 72px;
-  height: 72px;
-  border-radius: 16px;
+  width: 4.5rem;
+  height: 4.5rem;
+  border-radius: 1rem;
   display: grid;
   place-items: center;
   background: linear-gradient(160deg, #3ca97c, #1d6b4d);
@@ -118,9 +122,9 @@ td {
 }
 
 .app-brand .brand-mark {
-  width: 260px;
-  height: 150px;
-  border-radius: 20px;
+  width: 16.25rem;
+  height: 9.375rem;
+  border-radius: 1.25rem;
 }
 
 .image-mark {
@@ -128,7 +132,7 @@ td {
   overflow: hidden;
   border: 1px solid rgba(255, 255, 255, 0.08);
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.03);
-  padding: 10px 12px;
+  padding: 0.625rem 0.75rem;
 }
 
 .image-mark img {
@@ -141,8 +145,8 @@ td {
 }
 
 .brand-mark.small {
-  width: 52px;
-  height: 52px;
+  width: 3.25rem;
+  height: 3.25rem;
 }
 
 .nav-list {
@@ -173,7 +177,7 @@ td {
   display: grid;
   gap: 0.75rem;
   padding: 0.9rem 1rem;
-  border-radius: 18px;
+  border-radius: 1.125rem;
   background: linear-gradient(180deg, rgba(255, 196, 52, 0.16), rgba(176, 119, 16, 0.2));
   border: 1px solid rgba(255, 202, 79, 0.26);
   transition: background 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
@@ -198,7 +202,7 @@ td {
 }
 
 .sidebar-user-action {
-  min-height: 42px;
+  min-height: 2.625rem;
 }
 
 .status-pill {
@@ -233,8 +237,8 @@ td {
 }
 
 .app-loading-spinner {
-  width: 40px;
-  height: 40px;
+  width: 2.5rem;
+  height: 2.5rem;
   border: 3px solid rgba(255, 255, 255, 0.1);
   border-top-color: #42c58a;
   border-radius: 50%;
@@ -257,7 +261,7 @@ td {
   padding: 0.5rem 0.75rem;
   background: rgba(192, 57, 43, 0.15);
   border: 1px solid rgba(192, 57, 43, 0.3);
-  border-radius: 6px;
+  border-radius: 0.375rem;
   font-size: 0.78rem;
   color: #f08080;
   line-height: 1.4;
@@ -351,7 +355,7 @@ td {
 .dashboard-tile {
   background: rgba(255, 255, 255, 0.92);
   border: 1px solid rgba(187, 204, 194, 0.8);
-  border-radius: 22px;
+  border-radius: 1.375rem;
   box-shadow: 0 18px 48px rgba(22, 48, 36, 0.08);
   padding: 1.25rem;
   display: flex;
@@ -400,7 +404,7 @@ td {
 .modal-card {
   background: rgba(255, 255, 255, 0.92);
   border: 1px solid rgba(187, 204, 194, 0.8);
-  border-radius: 22px;
+  border-radius: 1.375rem;
   box-shadow: 0 18px 48px rgba(22, 48, 36, 0.08);
 }
 
@@ -427,7 +431,7 @@ td {
 .section-block {
   margin-top: 1.15rem;
   padding: 1rem;
-  border-radius: 18px;
+  border-radius: 1.125rem;
   border: 1px solid #d7e3db;
   background: rgba(248, 251, 249, 0.96);
 }
@@ -489,7 +493,7 @@ td {
 
 .report-filter-inline {
   display: grid;
-  grid-template-columns: minmax(190px, 240px) auto;
+  grid-template-columns: minmax(11.875rem, 15rem) auto;
   justify-content: end;
   justify-self: end;
   align-items: end;
@@ -543,7 +547,7 @@ td {
 .report-kpi-card {
   min-width: 0;
   padding: 1rem 1rem 0.9rem;
-  border-radius: 18px;
+  border-radius: 1.125rem;
   display: grid;
   gap: 0.35rem;
   border: 1px solid #d8e5dc;
@@ -568,18 +572,18 @@ td {
 }
 
 .reports-summary-block .insight-card {
-  border-radius: 18px;
+  border-radius: 1.125rem;
 }
 
 .metric-card {
   padding: 1rem;
-  min-width: 150px;
+  min-width: 9.375rem;
   display: grid;
   gap: 0.35rem;
 }
 
 .today-metric-card {
-  min-width: 240px;
+  min-width: 15rem;
 }
 
 .today-metric-card strong {
@@ -606,7 +610,7 @@ td {
 .station-grid,
 .catalog-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(13.75rem, 1fr));
   gap: 1rem;
 }
 
@@ -670,7 +674,7 @@ td {
 .empty-card-copy,
 .empty-state {
   padding: 1rem;
-  border-radius: 16px;
+  border-radius: 1rem;
   background: #f4f8f5;
   color: #4c6559;
 }
@@ -678,7 +682,7 @@ td {
 .read-only-banner {
   margin-top: 0.9rem;
   padding: 0.8rem 0.95rem;
-  border-radius: 14px;
+  border-radius: 0.875rem;
   border: 1px solid #d9e4dc;
   background: #f5f8f6;
   color: #476156;
@@ -728,7 +732,7 @@ td {
   display: grid;
   gap: 0.4rem;
   padding: 0.5rem;
-  border-radius: 16px;
+  border-radius: 1rem;
   border: 1px solid #d7e3db;
   background: rgba(255, 255, 255, 0.98);
   box-shadow: 0 16px 32px rgba(22, 48, 36, 0.12);
@@ -737,7 +741,7 @@ td {
 .customer-suggestion {
   min-height: auto;
   text-align: left;
-  border-radius: 12px;
+  border-radius: 0.75rem;
   padding: 0.75rem 0.85rem;
   background: #f6faf7;
   color: #10211a;
@@ -809,7 +813,7 @@ td {
 .tab-chip-grid {
   display: grid;
   gap: 0.75rem;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(11.25rem, 1fr));
   margin-top: 1rem;
 }
 
@@ -819,7 +823,7 @@ td {
   gap: 0.25rem;
   min-height: auto;
   padding: 0.85rem 0.95rem;
-  border-radius: 16px;
+  border-radius: 1rem;
   background: #f6faf7;
   color: #10211a;
   border: 1px solid #d8e4dc;
@@ -841,7 +845,7 @@ td {
 .line-item-row,
 .activity-row {
   padding: 0.9rem 1rem;
-  border-radius: 16px;
+  border-radius: 1rem;
   background: #f6faf7;
 }
 
@@ -857,7 +861,7 @@ td {
   gap: 1rem;
   align-items: center;
   padding: 0.85rem 1rem;
-  border-radius: 16px;
+  border-radius: 1rem;
   border: 1px solid #d7e3db;
   background: #f7fbf8;
 }
@@ -915,7 +919,7 @@ td {
 
 .insight-card {
   padding: 1rem;
-  border-radius: 18px;
+  border-radius: 1.125rem;
   background: linear-gradient(180deg, #f6faf7, #eef6f1);
   border: 1px solid #d8e5dc;
   display: grid;
@@ -940,11 +944,11 @@ td {
 .table-wrap {
   overflow: auto;
   -webkit-overflow-scrolling: touch;
-  border-radius: 16px;
+  border-radius: 1rem;
 }
 
 .table-wrap table {
-  min-width: 720px;
+  min-width: 45rem;
 }
 
 .bill-register-wrap {
@@ -961,7 +965,7 @@ td {
 
 .reports-workspace {
   display: grid;
-  grid-template-columns: minmax(0, 1.15fr) minmax(320px, 0.85fr);
+  grid-template-columns: minmax(0, 1.15fr) minmax(20rem, 0.85fr);
   gap: 1rem;
   align-items: start;
 }
@@ -1005,7 +1009,7 @@ td {
   margin: 0 auto;
   padding: 1.25rem 1rem;
   border: 1px solid #d6ddd3;
-  border-radius: 24px;
+  border-radius: 1.5rem;
   background: #fff;
   box-shadow: 0 14px 34px rgba(17, 24, 19, 0.08);
 }
@@ -1020,7 +1024,7 @@ td {
   width: fit-content;
   margin: 0 auto 0.6rem;
   padding: 0.6rem 0.8rem;
-  border-radius: 20px;
+  border-radius: 1.25rem;
   background: #050505;
 }
 
@@ -1113,7 +1117,7 @@ td {
 .expense-breakdown-card {
   padding: 1rem;
   border: 1px solid #d8e5dc;
-  border-radius: 18px;
+  border-radius: 1.125rem;
   background: rgba(255, 255, 255, 0.78);
   display: grid;
   gap: 0.7rem;
@@ -1142,7 +1146,7 @@ td {
 
 .frozen-billing-banner {
   padding: 0.9rem 1rem;
-  border-radius: 16px;
+  border-radius: 1rem;
   background: #eef7f0;
   border: 1px solid #c7ddcc;
   color: #224a35;
@@ -1153,12 +1157,12 @@ td {
 .session-item-adder {
   display: grid;
   gap: 0.6rem;
-  grid-template-columns: 120px 1fr;
+  grid-template-columns: 7.5rem 1fr;
   align-items: center;
 }
 
 .session-item-adder {
-  grid-template-columns: 1fr 90px auto;
+  grid-template-columns: 1fr 5.625rem auto;
   margin-bottom: 1rem;
 }
 
@@ -1168,7 +1172,7 @@ td {
   gap: 1rem;
   align-items: start;
   padding: 0.9rem 1rem;
-  border-radius: 16px;
+  border-radius: 1rem;
   background: #f6faf7;
 }
 
@@ -1223,13 +1227,13 @@ td {
 }
 
 .login-card {
-  width: min(640px, 100%);
+  width: min(40rem, 100%);
   display: grid;
   gap: 1.25rem;
 }
 
 .login-layout {
-  width: min(980px, 100%);
+  width: min(61.25rem, 100%);
   grid-template-columns: 1.05fr 0.95fr;
   padding: 0;
   overflow: hidden;
@@ -1237,7 +1241,7 @@ td {
 
 .credentials-panel {
   padding: 1rem;
-  border-radius: 16px;
+  border-radius: 1rem;
   background: #f2f7f4;
 }
 
@@ -1258,15 +1262,15 @@ td {
 }
 
 .login-logo-frame {
-  width: min(100%, 360px);
-  min-height: 220px;
-  border-radius: 28px;
+  width: min(100%, 22.5rem);
+  min-height: 13.75rem;
+  border-radius: 1.75rem;
   background: #000;
   border: 1px solid rgba(255, 255, 255, 0.08);
   box-shadow:
     inset 0 0 0 1px rgba(255, 255, 255, 0.02),
     0 24px 44px rgba(0, 0, 0, 0.34);
-  padding: 18px;
+  padding: 1.125rem;
   display: grid;
   place-items: center;
 }
@@ -1369,7 +1373,7 @@ td {
   justify-items: center;
   gap: 0.65rem;
   padding: 1.4rem 1.5rem;
-  border-radius: 22px;
+  border-radius: 1.375rem;
   border: 1px solid rgba(187, 204, 194, 0.9);
   background: rgba(255, 255, 255, 0.96);
   box-shadow: 0 20px 48px rgba(22, 48, 36, 0.16);
@@ -1377,10 +1381,10 @@ td {
 }
 
 .loading-spinner {
-  width: 44px;
-  height: 44px;
+  width: 2.75rem;
+  height: 2.75rem;
   border-radius: 999px;
-  border: 4px solid rgba(23, 56, 45, 0.16);
+  border: 0.25rem solid rgba(23, 56, 45, 0.16);
   border-top-color: #1e6a4d;
   animation: loading-spin 0.9s linear infinite;
 }
@@ -1392,13 +1396,13 @@ td {
 }
 
 .modal-card {
-  width: min(760px, 100%);
+  width: min(47.5rem, 100%);
   max-height: 90vh;
   overflow: auto;
 }
 
 .modal-card.is-wide {
-  width: min(1100px, 100%);
+  width: min(68.75rem, 100%);
 }
 
 .modal-header {
@@ -1415,22 +1419,18 @@ td {
 
 @media (max-width: 1400px) {
   .app-shell {
-    grid-template-columns: 300px 1fr;
+    grid-template-columns: 18.75rem 1fr;
   }
 
   .app-brand .brand-mark {
-    width: 220px;
-    height: 132px;
+    width: 13.75rem;
+    height: 8.25rem;
   }
 }
 
 @media (min-width: 1440px) {
-  body {
-    font-size: 15px;
-  }
-
   .app-shell {
-    grid-template-columns: 300px 1fr;
+    grid-template-columns: 18.75rem 1fr;
   }
 
   .sidebar {
@@ -1439,8 +1439,8 @@ td {
   }
 
   .app-brand .brand-mark {
-    width: 224px;
-    height: 132px;
+    width: 14rem;
+    height: 8.25rem;
   }
 
   .main-content {
@@ -1464,18 +1464,18 @@ td {
   }
 
   .metric-card {
-    min-width: 136px;
+    min-width: 8.5rem;
     padding: 0.85rem;
   }
 
   .today-metric-card {
-    min-width: 220px;
+    min-width: 13.75rem;
   }
 
   .station-grid,
   .catalog-grid {
     gap: 0.85rem;
-    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(12.5rem, 1fr));
   }
 
   .station-card {
@@ -1562,8 +1562,8 @@ td {
   }
 
   .app-brand .brand-mark {
-    width: 180px;
-    height: 104px;
+    width: 11.25rem;
+    height: 6.5rem;
   }
 
   .nav-list {
@@ -1603,11 +1603,11 @@ td {
   }
 
   .topbar-actions .metric-card {
-    flex: 1 1 220px;
+    flex: 1 1 13.75rem;
   }
 
   .metrics-row .metric-card {
-    flex: 1 1 180px;
+    flex: 1 1 11.25rem;
   }
 
   .login-layout {
@@ -1640,8 +1640,8 @@ td {
   }
 
   .app-brand .brand-mark {
-    width: min(100%, 240px);
-    height: 126px;
+    width: min(100%, 15rem);
+    height: 7.875rem;
   }
 
   .topbar,
@@ -1761,7 +1761,7 @@ td {
   }
 
   .table-wrap table {
-    min-width: 640px;
+    min-width: 40rem;
     font-size: 0.92rem;
   }
 
@@ -1771,7 +1771,7 @@ td {
   }
 
   .login-logo-frame {
-    min-height: 180px;
+    min-height: 11.25rem;
   }
 
   .modal-backdrop {
@@ -1784,7 +1784,7 @@ td {
   .modal-card.is-wide {
     width: 100%;
     max-height: none;
-    border-radius: 18px;
+    border-radius: 1.125rem;
   }
 
   .login-page {
@@ -1804,8 +1804,8 @@ td {
   }
 
   .login-logo-frame {
-    min-height: 160px;
-    padding: 14px;
+    min-height: 10rem;
+    padding: 0.875rem;
   }
 
   .login-hero-copy h1 {
