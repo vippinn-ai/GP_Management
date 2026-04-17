@@ -1,32 +1,32 @@
-import { corsHeaders } from "../_shared/cors.ts";
+import { getCorsHeaders } from "../_shared/cors.ts";
 import { createAdminClient, jsonResponse } from "../_shared/admin.ts";
 import { checkRateLimit } from "../_shared/rateLimit.ts";
 
 Deno.serve(async (request) => {
+  const origin = request.headers.get("Origin");
+
   if (request.method === "OPTIONS") {
-    return new Response("ok", { headers: corsHeaders });
+    return new Response("ok", { headers: getCorsHeaders(origin) });
   }
 
   // Rate limit: 10 attempts per minute per IP.
-  // cf-connecting-ip is set by Cloudflare on all requests passing through their network.
   const clientIp =
     request.headers.get("cf-connecting-ip") ??
     request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ??
     "unknown";
 
   if (!checkRateLimit(`login:${clientIp}`, 10, 60_000)) {
-    return jsonResponse({ error: "Too many attempts. Please wait before trying again." }, 429);
+    return jsonResponse({ error: "Too many attempts. Please wait before trying again." }, 429, origin);
   }
 
   try {
     const { username } = await request.json();
     if (!username?.trim()) {
-      return jsonResponse({ error: "Username is required." }, 400);
+      return jsonResponse({ error: "Username is required." }, 400, origin);
     }
 
-    // Return 401 (not 400) to avoid leaking that the input was too long vs. not found.
     if (username.trim().length > 64) {
-      return jsonResponse({ error: "Invalid username or password." }, 401);
+      return jsonResponse({ error: "Invalid username or password." }, 401, origin);
     }
 
     const adminClient = createAdminClient();
@@ -37,11 +37,11 @@ Deno.serve(async (request) => {
       .maybeSingle();
 
     if (error || !profile || !profile.active) {
-      return jsonResponse({ error: "Invalid username or password." }, 401);
+      return jsonResponse({ error: "Invalid username or password." }, 401, origin);
     }
 
-    return jsonResponse({ email: profile.auth_email });
+    return jsonResponse({ email: profile.auth_email }, 200, origin);
   } catch {
-    return jsonResponse({ error: "Unable to resolve username." }, 500);
+    return jsonResponse({ error: "Unable to resolve username." }, 500, origin);
   }
 });
