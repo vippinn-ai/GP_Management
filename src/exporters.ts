@@ -328,7 +328,7 @@ export function buildReceiptPreviewModel(business: BusinessProfile, bill: Bill, 
       id: line.id,
       title: line.description,
       detail: `${line.quantity} × ${currency(line.unitPrice)}`,
-      amount: currency(line.total)
+      amount: currency(line.subtotal)  // show undiscounted line total; discounts shown as separate entries below
     })),
     ...bill.lineDiscounts.map((discount) => ({
       id: discount.id,
