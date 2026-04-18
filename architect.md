@@ -75,19 +75,37 @@ The app is a **client-rendered single-page application**. There is no traditiona
 
 ```
 src/
-├── App.tsx           # Entire application UI (~6000 lines — monolith, planned for refactor)
-├── main.tsx          # Entry point — mounts App inside ErrorBoundary
-├── ErrorBoundary.tsx # React class component — catches rendering crashes
-├── backend.ts        # All Supabase communication (auth + data)
-├── types.ts          # All TypeScript interfaces and types
-├── utils.ts          # Pure utility functions (formatting, date, math)
-├── pricing.ts        # Session charge calculation engine
-├── exporters.ts      # PDF and Excel export logic
-├── storage.ts        # localStorage read/write + AppData hydration
-├── seed.ts           # Default/empty data shape for new environments
-├── styles.css        # Global CSS (rem-based, 80% root font-size)
-└── hooks/
-    └── useClock.ts   # 1-second interval clock hook
+├── App.tsx              # Root component — state, event handlers, modal orchestration
+├── main.tsx             # Entry point — mounts App inside ErrorBoundary
+├── ErrorBoundary.tsx    # React class component — catches rendering crashes
+├── backend.ts           # All Supabase communication (auth + data)
+├── types.ts             # All TypeScript interfaces and types
+├── utils.ts             # Pure utility functions (formatting, date, math)
+├── pricing.ts           # Session charge calculation engine
+├── billing.ts           # Pure billing/payment logic (checkout, settlement, validation)
+├── exporters.ts         # PDF and Excel export logic
+├── storage.ts           # localStorage read/write + AppData hydration
+├── styles.css           # Global CSS (rem-based, 80% root font-size)
+├── hooks/
+│   ├── useClock.ts      # 1-second interval clock hook
+│   └── useAppSync.ts    # Supabase realtime + debounced save hook
+├── components/
+│   ├── Modal.tsx
+│   ├── MetricCard.tsx
+│   ├── NumericInput.tsx
+│   ├── LoginScreen.tsx
+│   ├── AppLoadingScreen.tsx
+│   ├── LoadingOverlay.tsx
+│   └── CustomerAutocompleteFields.tsx
+└── panels/
+    ├── DashboardPanel.tsx
+    ├── SalePanel.tsx
+    ├── BillRegisterPanel.tsx
+    ├── InventoryPanel.tsx
+    ├── ReportsPanel.tsx
+    ├── CustomersPanel.tsx
+    ├── SettingsPanel.tsx
+    └── UsersPanel.tsx
 ```
 
 ### Component Structure
@@ -107,11 +125,12 @@ The entire UI lives in `App.tsx` as a single component tree. It renders differen
         └── Main Content
             ├── DashboardPanel    (activeTab = "dashboard")
             ├── SalePanel         (activeTab = "sale")
+            ├── BillRegisterPanel (activeTab = "bills")
             ├── InventoryPanel    (activeTab = "inventory")
-            ├── ReportsPanel      (activeTab = "reports")
+            ├── ReportsPanel      (activeTab = "reports")   [renamed from "Analytics"]
             ├── CustomersPanel    (activeTab = "customers")
             ├── SettingsPanel     (activeTab = "settings")
-            └── UsersPanel        (activeTab = "users")  [admin/manager only]
+            └── UsersPanel        (activeTab = "users")
 ```
 
 ### State Management
@@ -396,18 +415,41 @@ Bill
 └── total                  ← what the customer actually pays
 ```
 
+### Payment modes
+
+| Mode | Meaning |
+|---|---|
+| `cash` | Full amount paid in cash |
+| `upi` | Full amount paid via UPI |
+| `split` | Amount split between cash and UPI (must sum to total) |
+| `deferred` | Pay-later — customer may pay a partial upfront amount; remainder tracked as a pending debt |
+
 ### Bill statuses
 
 | Status | Meaning |
 |---|---|
-| `issued` | Normal paid bill |
-| `voided` | Cancelled (stock is reversed) |
+| `issued` | Fully paid bill |
+| `pending` | Deferred bill with outstanding balance (`amountDue > 0`) |
+| `voided` | Cancelled (stock is reversed for issued bills; for pending bills written off as bad debt, stock is NOT reversed since goods were already consumed) |
 | `refunded` | Money returned to customer |
 | `replaced` | Superseded by a corrected replacement bill |
 
+### Pending bill tracking
+
+Bills with `paymentMode = "deferred"` may have a partial upfront payment collected at checkout. The bill is saved with:
+- `amountPaid` — amount collected so far
+- `amountDue` — remaining balance (= `total - amountPaid`)
+- `status = "pending"` — until fully settled
+
+When a pending bill is settled (partially or fully), a new `Payment` record is created and `amountPaid`/`amountDue` are updated. Full settlement sets `status = "issued"` and stamps `settledAt` + `settledByUserId` on the bill.
+
+Admins can write off a pending bill as bad debt (sets `status = "voided"` with a required reason). Stock is intentionally not reversed.
+
+The pure billing logic (validation, payment record construction, settlement computation) lives in `src/billing.ts` and is covered by unit tests.
+
 ### Stock deduction
 
-When a bill is issued, each `inventory_item` line deducts from `stockQty` and creates a `StockMovement` record. If a bill is voided, a `void_refund_reversal` movement adds the stock back.
+When a bill is issued, each `inventory_item` line deducts from `stockQty` and creates a `StockMovement` record. If a bill is voided, a `void_refund_reversal` movement adds the stock back. Pending bills written off as bad debt do **not** reverse stock.
 
 ---
 
@@ -437,6 +479,10 @@ Disabled users (active = false) cannot read data — the RLS function returns fa
 - Passwords are validated server-side (minimum 8 characters)
 - CORS is restricted to known origins via `ALLOWED_ORIGIN` environment secret
 
+### Local mode password storage
+
+In local mode (no Supabase), passwords are hashed using **PBKDF2** (SubtleCrypto, SHA-256, 100 000 iterations, random 16-byte salt) before being stored in `localStorage`. The stored format is `pbkdf2:<base64salt>:<base64hash>`. Login uses async comparison via `verifyPassword()`. Backward compatibility is maintained: if a stored password does not start with `pbkdf2:`, it is compared as plaintext (for any passwords created before the hashing was introduced).
+
 ### What is NOT protected
 
 - The Supabase `anon` key is embedded in the built JavaScript bundle (this is by design and expected — it is not a secret, just a public identifier)
@@ -455,7 +501,7 @@ Disabled users (active = false) cannot read data — the RLS function returns fa
 | **Auth users** | Staging users | Staging users | Production users (separate accounts) |
 | **Edge functions** | Calls staging Supabase functions | Staging functions | Production functions (separately deployed) |
 | **ALLOWED_ORIGIN secret** | `...,http://localhost:4173` | Staging worker URL | Production worker URL |
-| **How to deploy** | `npm run dev` | `git push` to GitHub | `npm run deploy:production` (manual) |
+| **How to deploy** | `npm run dev` | `npm run deploy:staging` (manual, after `git push`) | `npm run deploy:production` (manual) |
 | **Build credentials** | `.env.local` | `.env.staging` | `.env.production` |
 | **Triggered by** | Developer | GitHub push | Deliberate manual action |
 | **Safe to break?** | Yes | Yes | No |
@@ -483,6 +529,30 @@ This means:
 - **`ALLOWED_ORIGIN` secret** (different per Supabase project)
 - **Data** (staging has test data; production has real business data)
 - **User accounts** (separate auth users in each Supabase project)
+
+---
+
+## Tab Permissions Model
+
+Each user has a **role** (`admin`, `manager`, `receptionist`) that determines their default tab access, defined in `src/constants.ts`:
+
+```
+admin       → dashboard, sale, bills, inventory, reports, customers, settings, users
+manager     → dashboard, sale, bills, inventory, reports, settings
+receptionist → dashboard, sale, bills
+```
+
+Admins can grant **additive** extra tab access to any individual user via the Users panel. These are stored as `tabPermissions?: TabId[]` on the user record (in `app_state.data.users`). The field stores only the *extra* grants — tabs already in the role default are never stored here.
+
+At runtime, `visibleTabs` is computed by merging role defaults with any extra grants:
+```typescript
+const extras = ALL_TABS.filter(t => user.tabPermissions?.includes(t.id) && !roleDefaultIds.has(t.id));
+visibleTabs = [...roleTabs, ...extras];
+```
+
+Panel rendering and nav tabs both use `canAccessTab(tabId)` — a function derived from `visibleTabs`. Write-action permissions (`canEditInventory`, `canEditSettings`, etc.) remain role-gated regardless of tab grants.
+
+In backend mode, `tabPermissions` is saved to the `app_state` JSON blob (not the `profiles` table) via `mutateAppData` after the `adminUpdateUserRemote` call completes.
 
 ---
 
@@ -532,12 +602,12 @@ This means:
 
 These are documented gaps to address in future development phases:
 
-| Item | Impact | Planned Phase |
+| Item | Impact | Status |
 |---|---|---|
-| `App.tsx` is ~6000 lines (one file for all UI) | Hard to navigate, slow to edit, hard to test | Phase 6 — split into panel components |
-| No automated tests | Regressions found manually | Phase 8 — Vitest + Testing Library |
-| No ESLint / Prettier | Code style inconsistencies over time | Phase 8 |
-| `seed.ts` contains demo passwords in the JS bundle | Cosmetic (not a real credential) | Phase 6 — replace with empty defaults |
+| ~~`App.tsx` is ~6000 lines (one file for all UI)~~ | ~~Hard to navigate, slow to edit, hard to test~~ | ✅ Resolved — split into `src/panels/` and `src/components/` |
+| ~~No automated tests~~ | ~~Regressions found manually~~ | ✅ Resolved — Vitest unit tests added (`billing.test.ts`, `pricing.test.ts`, `utils.test.ts`) |
+| ~~`seed.ts` contains demo passwords in the JS bundle~~ | ~~Cosmetic (not a real credential)~~ | ✅ Resolved — `seed.ts` deleted |
+| No ESLint / Prettier enforced in CI | Code style inconsistencies over time | Config files added locally; not yet enforced in CI |
 | App data grows unboundedly | Large JSON blob after months of operation | Future — archive old bills/sessions |
 | Rate limiter is per-isolate (not global) | Less effective against distributed brute force | Future — use Cloudflare KV for global state |
 | No error tracking (Sentry etc.) | Production errors are invisible | Future — add if user base grows |
