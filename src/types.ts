@@ -291,3 +291,96 @@ export interface DraftBillLine {
   inventoryItemId?: string;
   discount?: DraftDiscountInput;
 }
+
+export type TabId = "dashboard" | "sale" | "inventory" | "reports" | "customers" | "settings" | "users";
+export type NumericInputMode = "integer" | "decimal";
+export type ReportPreset = "today" | "yesterday" | "last_7_days" | "this_month" | "last_month" | "this_year" | "custom";
+export type InventoryState = "out" | "low" | "healthy" | "occupied" | "available";
+
+export interface StartSessionDraft {
+  stationId: string;
+  customerId?: string;
+  customerName: string;
+  customerPhone: string;
+  playMode: PlayMode;
+  arcadeItemId: string;
+  arcadeQuantity: number;
+}
+
+export interface DraftLineDiscountMap {
+  [lineId: string]: DraftDiscountInput | undefined;
+}
+
+export interface CheckoutState {
+  mode: "session" | "customer_tab" | "bill_replacement";
+  sessionId?: string;
+  customerTabId?: string;
+  replacementBillId?: string;
+  closedAt?: string;
+  sessionStartedAt?: string;
+  sessionEndedAt?: string;
+  customerId?: string;
+  customerName: string;
+  customerPhone: string;
+  paymentMode: PaymentMode;
+  roundOffEnabled: boolean;
+  lineDiscounts: DraftLineDiscountMap;
+  billDiscount?: DraftDiscountInput;
+  ltpOutcome?: LtpOutcome;
+  replacementLines?: DraftBillLine[];
+  replaceReason?: string;
+}
+
+export interface CustomerTabDraft {
+  customerId?: string;
+  customerName: string;
+  customerPhone: string;
+}
+
+export interface SessionEditDraft {
+  sessionId: string;
+  customerId?: string;
+  customerName: string;
+  customerPhone: string;
+  startedAt: string;
+}
+
+export interface CustomerTabEditDraft {
+  customerTabId: string;
+  customerId?: string;
+  customerName: string;
+  customerPhone: string;
+}
+
+export interface CustomerProfileEditDraft {
+  customerId: string;
+  name: string;
+  phone: string;
+}
+
+export interface StationEditDraft {
+  id: string;
+  name: string;
+  mode: StationMode;
+  active: boolean;
+  ltpEnabled: boolean;
+}
+
+export interface UserEditDraft {
+  id: string;
+  name: string;
+  username: string;
+  role: Role;
+}
+
+export interface UserPasswordDraft {
+  userId: string;
+  password: string;
+  confirmPassword: string;
+}
+
+export interface ReportFilterState {
+  preset: ReportPreset;
+  fromDate?: string;
+  toDate?: string;
+}

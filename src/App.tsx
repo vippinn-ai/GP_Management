@@ -1,5 +1,6 @@
 import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "react";
 import { useClock } from "./hooks/useClock";
+import { useAppSync } from "./hooks/useAppSync";
 import brandLogo from "../Branding/Logo.png";
 import {
   buildReceiptPreviewModel,
@@ -11,7 +12,7 @@ import {
   type ReportRow
 } from "./exporters";
 import { calculateSessionCharge } from "./pricing";
-import { loadAppData, saveAppData } from "./storage";
+import { loadAppData } from "./storage";
 import { seedAppData } from "./seed";
 import {
   adminChangePasswordRemote,
@@ -23,424 +24,80 @@ import {
   loadRemoteAppDataSnapshot,
   saveRemoteAppData,
   signInWithUsername,
-  signOutRemote,
-  subscribeToRemoteAppData
+  signOutRemote
 } from "./backend";
 import type {
   AppData,
   AppliedDiscount,
   Bill,
-  BillLine,
   BusinessProfile,
+  CheckoutState,
   Customer,
   CustomerTab,
+  CustomerTabDraft,
+  CustomerTabEditDraft,
   CustomerTabItem,
+  CustomerProfileEditDraft,
   DiscountType,
-  DraftBillLine,
-  DraftDiscountInput,
+  DraftLineDiscountMap,
   InventoryItem,
+  InventoryState,
   ExpenseTemplate,
   LtpOutcome,
+  NumericInputMode,
   PaymentMode,
   PlayMode,
   PricingRule,
+  ReportFilterState,
+  ReportPreset,
   Role,
   Session,
-  SessionChargeSummary,
+  SessionEditDraft,
   SessionItem,
+  StartSessionDraft,
   Station,
+  StationEditDraft,
   StockMovementType,
-  User
+  TabId,
+  User,
+  UserEditDraft,
+  UserPasswordDraft
 } from "./types";
+import { DEFAULT_INVENTORY_CATEGORIES, DEFAULT_EXPENSE_CATEGORIES, tabsByRole } from "./constants";
 import {
+  addAuditLog,
+  buildBillPreview,
   clampNumber,
+  cloneBillLinesForReplacement,
   cloneValue,
   createId,
   currency,
+  findCustomerProfileMatch,
+  formatAuditValue,
+  formatBillNumber,
+  formatDateTimeInputValue,
   formatDateTime,
   formatMinutes,
+  formatMonthLabel,
   formatTime,
+  getCustomerTabCheckoutLines,
+  getDiscountAmount,
+  getInventoryQuantityMap,
+  getMonthKeysInRange,
+  getPreviousRange,
+  getReportRange,
+  getSessionCheckoutLines,
   isToday,
   minuteToTimeLabel,
+  normalizeAppDataCustomers,
+  normalizeCustomerName,
+  normalizeCustomerPhone,
+  parseDateTimeInputValue,
+  resolveCustomerProfile,
   sumBy,
+  toLocalDateKey,
   toMinuteOfDay
 } from "./utils";
-
-type TabId = "dashboard" | "sale" | "inventory" | "reports" | "customers" | "settings" | "users";
-
-interface StartSessionDraft {
-  stationId: string;
-  customerId?: string;
-  customerName: string;
-  customerPhone: string;
-  playMode: PlayMode;
-  arcadeItemId: string;
-  arcadeQuantity: number;
-}
-
-interface CheckoutState {
-  mode: "session" | "customer_tab" | "bill_replacement";
-  sessionId?: string;
-  customerTabId?: string;
-  replacementBillId?: string;
-  closedAt?: string;
-  sessionStartedAt?: string;
-  sessionEndedAt?: string;
-  customerId?: string;
-  customerName: string;
-  customerPhone: string;
-  paymentMode: PaymentMode;
-  roundOffEnabled: boolean;
-  lineDiscounts: DraftLineDiscountMap;
-  billDiscount?: DraftDiscountInput;
-  ltpOutcome?: LtpOutcome;
-  replacementLines?: DraftBillLine[];
-  replaceReason?: string;
-}
-
-interface DraftLineDiscountMap {
-  [lineId: string]: DraftDiscountInput | undefined;
-}
-
-interface CustomerTabDraft {
-  customerId?: string;
-  customerName: string;
-  customerPhone: string;
-}
-
-interface SessionEditDraft {
-  sessionId: string;
-  customerId?: string;
-  customerName: string;
-  customerPhone: string;
-  startedAt: string;
-}
-
-interface CustomerTabEditDraft {
-  customerTabId: string;
-  customerId?: string;
-  customerName: string;
-  customerPhone: string;
-}
-
-interface CustomerProfileEditDraft {
-  customerId: string;
-  name: string;
-  phone: string;
-}
-
-interface StationEditDraft {
-  id: string;
-  name: string;
-  mode: Station["mode"];
-  active: boolean;
-  ltpEnabled: boolean;
-}
-
-interface UserEditDraft {
-  id: string;
-  name: string;
-  username: string;
-  role: Role;
-}
-
-interface UserPasswordDraft {
-  userId: string;
-  password: string;
-  confirmPassword: string;
-}
-
-type NumericInputMode = "integer" | "decimal";
-type ReportPreset = "today" | "yesterday" | "last_7_days" | "this_month" | "last_month" | "this_year" | "custom";
-type InventoryState = "out" | "low" | "healthy" | "occupied" | "available";
-
-interface ReportFilterState {
-  preset: ReportPreset;
-  fromDate?: string;
-  toDate?: string;
-}
-
-const DEFAULT_INVENTORY_CATEGORIES = ["Beverages", "Food", "Refill Sheesha", "Arcade"];
-const DEFAULT_EXPENSE_CATEGORIES = ["Utilities", "Rent", "Internet", "Salary", "Supplies", "Maintenance"];
-
-const tabsByRole: Record<Role, Array<{ id: TabId; label: string }>> = {
-  admin: [
-    { id: "dashboard", label: "Live Dashboard" },
-    { id: "sale", label: "Consumables Tab" },
-    { id: "inventory", label: "Inventory" },
-    { id: "reports", label: "Reports" },
-    { id: "customers", label: "Customer Profiles" },
-    { id: "settings", label: "Settings" },
-    { id: "users", label: "Users" }
-  ],
-  manager: [
-    { id: "dashboard", label: "Live Dashboard" },
-    { id: "sale", label: "Consumables Tab" },
-    { id: "inventory", label: "Inventory" },
-    { id: "reports", label: "Reports" },
-    { id: "settings", label: "Settings" }
-  ],
-  receptionist: [
-    { id: "dashboard", label: "Live Dashboard" },
-    { id: "sale", label: "Consumables Tab" }
-  ]
-};
-
-function getDiscountAmount(subtotal: number, discount?: DraftDiscountInput): number {
-  if (!discount || discount.value <= 0) {
-    return 0;
-  }
-  if (discount.type === "amount") {
-    return Math.min(subtotal, discount.value);
-  }
-  return Math.min(subtotal, (subtotal * discount.value) / 100);
-}
-
-function getSessionCheckoutLines(session: Session, chargeSummary: SessionChargeSummary): DraftBillLine[] {
-  const lines: DraftBillLine[] = [];
-  if (session.mode === "timed") {
-    lines.push({
-      id: `line-session-${session.id}`,
-      type: "session_charge",
-      description: `${session.stationNameSnapshot} session (${formatMinutes(chargeSummary.billedMinutes)})`,
-      quantity: 1,
-      unitPrice: chargeSummary.subtotal,
-      linkedSessionId: session.id
-    });
-  }
-  for (const item of session.items) {
-    lines.push({
-      id: `line-item-${item.id}`,
-      type: "inventory_item",
-      description: item.name,
-      quantity: item.quantity,
-      unitPrice: item.unitPrice,
-      inventoryItemId: item.inventoryItemId
-    });
-  }
-  return lines;
-}
-
-function getCustomerTabCheckoutLines(items: CustomerTabItem[]): DraftBillLine[] {
-  return items.map((item) => ({
-    id: item.id,
-    type: "inventory_item",
-    description: item.name,
-    quantity: item.quantity,
-    unitPrice: item.unitPrice,
-    inventoryItemId: item.inventoryItemId
-  }));
-}
-
-function cloneBillLinesForReplacement(bill: AppData["bills"][number]): DraftBillLine[] {
-  return bill.lines.map((line) => ({
-    id: line.id,
-    type: line.type,
-    description: line.description,
-    quantity: line.quantity,
-    unitPrice: line.unitPrice,
-    linkedSessionId: line.linkedSessionId,
-    inventoryItemId: line.inventoryItemId
-  }));
-}
-
-function getInventoryQuantityMap(lines: Array<{ inventoryItemId?: string; quantity: number }>) {
-  return lines.reduce<Record<string, number>>((totals, line) => {
-    if (!line.inventoryItemId) {
-      return totals;
-    }
-    totals[line.inventoryItemId] = (totals[line.inventoryItemId] ?? 0) + line.quantity;
-    return totals;
-  }, {});
-}
-
-function buildBillPreview(
-  lines: DraftBillLine[],
-  lineDiscounts: DraftLineDiscountMap,
-  billDiscount?: DraftDiscountInput,
-  roundOffEnabled = false
-) {
-  const processedLines = lines.map((line) => {
-    const subtotal = line.quantity * line.unitPrice;
-    const discountAmount = getDiscountAmount(subtotal, lineDiscounts[line.id]);
-    return {
-      id: line.id,
-      type: line.type,
-      description: line.description,
-      quantity: line.quantity,
-      unitPrice: line.unitPrice,
-      subtotal,
-      discountAmount,
-      total: subtotal - discountAmount,
-      linkedSessionId: line.linkedSessionId,
-      inventoryItemId: line.inventoryItemId
-    } satisfies BillLine;
-  });
-  const subtotal = sumBy(processedLines, (line) => line.subtotal);
-  const lineDiscountAmount = sumBy(processedLines, (line) => line.discountAmount);
-  const billDiscountAmount = getDiscountAmount(subtotal - lineDiscountAmount, billDiscount);
-  const netTotal = subtotal - lineDiscountAmount - billDiscountAmount;
-  const roundedTotal = roundOffEnabled ? Math.round(netTotal) : netTotal;
-  return {
-    processedLines,
-    subtotal,
-    lineDiscountAmount,
-    billDiscountAmount,
-    roundOffAmount: roundedTotal - netTotal,
-    total: roundedTotal
-  };
-}
-
-function toLocalDateKey(value: string | Date): string {
-  const date = typeof value === "string" ? new Date(value) : value;
-  const year = date.getFullYear();
-  const month = `${date.getMonth() + 1}`.padStart(2, "0");
-  const day = `${date.getDate()}`.padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
-
-function formatDateTimeInputValue(value?: string) {
-  if (!value) {
-    return "";
-  }
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return "";
-  }
-  const year = date.getFullYear();
-  const month = `${date.getMonth() + 1}`.padStart(2, "0");
-  const day = `${date.getDate()}`.padStart(2, "0");
-  const hours = `${date.getHours()}`.padStart(2, "0");
-  const minutes = `${date.getMinutes()}`.padStart(2, "0");
-  return `${year}-${month}-${day}T${hours}:${minutes}`;
-}
-
-function parseDateTimeInputValue(value: string) {
-  if (!value.trim()) {
-    return "";
-  }
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) {
-    return "";
-  }
-  return parsed.toISOString();
-}
-
-function formatAuditValue(value?: string) {
-  return value?.trim() ? value.trim() : "blank";
-}
-
-function addDays(date: Date, days: number) {
-  const next = new Date(date);
-  next.setDate(next.getDate() + days);
-  return next;
-}
-
-function startOfMonth(date: Date) {
-  return new Date(date.getFullYear(), date.getMonth(), 1);
-}
-
-function endOfMonth(date: Date) {
-  return new Date(date.getFullYear(), date.getMonth() + 1, 0);
-}
-
-function getReportRange(filter: ReportFilterState, nowValue: string) {
-  const today = new Date(nowValue);
-  const todayKey = toLocalDateKey(today);
-  const thisMonthStart = toLocalDateKey(startOfMonth(today));
-  const thisMonthEnd = toLocalDateKey(endOfMonth(today));
-  switch (filter.preset) {
-    case "today":
-      return { from: todayKey, to: todayKey, label: "Today" };
-    case "yesterday": {
-      const yesterday = toLocalDateKey(addDays(today, -1));
-      return { from: yesterday, to: yesterday, label: "Yesterday" };
-    }
-    case "last_7_days":
-      return { from: toLocalDateKey(addDays(today, -6)), to: todayKey, label: "Last 7 Days" };
-    case "this_month":
-      return { from: thisMonthStart, to: thisMonthEnd, label: "This Month" };
-    case "last_month": {
-      const lastMonthAnchor = new Date(today.getFullYear(), today.getMonth() - 1, 1);
-      return {
-        from: toLocalDateKey(startOfMonth(lastMonthAnchor)),
-        to: toLocalDateKey(endOfMonth(lastMonthAnchor)),
-        label: "Last Month"
-      };
-    }
-    case "this_year":
-      return { from: `${today.getFullYear()}-01-01`, to: `${today.getFullYear()}-12-31`, label: "This Year" };
-    case "custom":
-    default:
-      return {
-        from: filter.fromDate ?? todayKey,
-        to: filter.toDate ?? filter.fromDate ?? todayKey,
-        label:
-          filter.fromDate && filter.toDate
-            ? `${filter.fromDate} to ${filter.toDate}`
-            : "Custom Range"
-      };
-  }
-}
-
-function getPreviousRange(from: string, to: string) {
-  const fromDate = new Date(`${from}T12:00:00`);
-  const toDate = new Date(`${to}T12:00:00`);
-  const inclusiveDays = Math.max(1, Math.round((toDate.getTime() - fromDate.getTime()) / 86400000) + 1);
-  const previousTo = addDays(fromDate, -1);
-  const previousFrom = addDays(previousTo, -(inclusiveDays - 1));
-  return {
-    from: toLocalDateKey(previousFrom),
-    to: toLocalDateKey(previousTo),
-    label: inclusiveDays === 1 ? "previous day" : `previous ${inclusiveDays} days`
-  };
-}
-
-function getMonthKeysInRange(from: string, to: string) {
-  const months: string[] = [];
-  const cursor = new Date(`${from}T12:00:00`);
-  cursor.setDate(1);
-  const end = new Date(`${to}T12:00:00`);
-  end.setDate(1);
-
-  while (cursor <= end) {
-    months.push(`${cursor.getFullYear()}-${`${cursor.getMonth() + 1}`.padStart(2, "0")}`);
-    cursor.setMonth(cursor.getMonth() + 1);
-  }
-  return months;
-}
-
-function formatMonthLabel(monthKey: string) {
-  return new Intl.DateTimeFormat("en-IN", { month: "short", year: "numeric" }).format(
-    new Date(`${monthKey}-01T12:00:00`)
-  );
-}
-
-function formatBillNumber(appData: AppData, issuedAt: string): string {
-  const date = new Date(issuedAt);
-  const dayKey = `${date.getFullYear()}${`${date.getMonth() + 1}`.padStart(2, "0")}${`${date.getDate()}`.padStart(2, "0")}`;
-  const sequence = appData.bills.filter((bill) => bill.billNumber.startsWith(`BILL-${dayKey}`)).length + 1;
-  return `BILL-${dayKey}-${`${sequence}`.padStart(3, "0")}`;
-}
-
-function addAuditLog(
-  appData: AppData,
-  userId: string,
-  action: string,
-  entityType: string,
-  entityId: string,
-  message: string
-) {
-  appData.auditLogs.unshift({
-    id: createId("audit"),
-    action,
-    entityType,
-    entityId,
-    message,
-    createdAt: new Date().toISOString(),
-    userId
-  });
-}
 
 export default function App() {
   const backendConfigured = isBackendConfigured();
@@ -568,6 +225,23 @@ export default function App() {
     `${item.name} ${item.category}`.toLowerCase().includes(inventoryItemSearch.trim().toLowerCase())
   );
 
+  useAppSync({
+    backendConfigured,
+    activeUserId,
+    appData,
+    remoteLoading,
+    remoteVersion,
+    skipRemotePersistRef,
+    remoteSaveTimerRef,
+    setAppData,
+    setActiveUserId,
+    setRemoteVersion,
+    setRemoteLoading,
+    setRemoteError,
+    setRemoteSaving,
+    setActiveTab
+  });
+
   async function refreshRemoteState(options?: { keepUser?: boolean }) {
     const snapshot = await loadRemoteAppDataSnapshot();
     skipRemotePersistRef.current = true;
@@ -602,202 +276,8 @@ export default function App() {
   }
 
   useEffect(() => {
-    if (!backendConfigured) {
-      saveAppData(appData);
-      return;
-    }
-    if (!activeUserId || remoteLoading) {
-      return;
-    }
-    if (skipRemotePersistRef.current) {
-      skipRemotePersistRef.current = false;
-      return;
-    }
-    if (remoteSaveTimerRef.current) {
-      window.clearTimeout(remoteSaveTimerRef.current);
-    }
-    remoteSaveTimerRef.current = window.setTimeout(() => {
-      void saveRemoteSnapshot(appData).catch((error: unknown) => {
-        setRemoteError(error instanceof Error ? error.message : "Unable to sync app data.");
-      });
-    }, 250);
-    return () => {
-      if (remoteSaveTimerRef.current) {
-        window.clearTimeout(remoteSaveTimerRef.current);
-      }
-    };
-  }, [activeUserId, appData, backendConfigured, remoteLoading]);
-
-function normalizeCustomerName(value?: string) {
-  return value?.trim().replace(/\s+/g, " ").toLowerCase() ?? "";
-}
-
-function normalizeCustomerPhone(value?: string) {
-  const digits = value?.replace(/[^\d+]/g, "").trim() ?? "";
-  return digits.replace(/(?!^)\+/g, "");
-}
-
-function getCustomerDisplayName(name?: string, phone?: string) {
-  return name?.trim() || phone?.trim() || "Walk-in";
-}
-
-function findCustomerProfileMatch(appData: AppData, customerName?: string, customerPhone?: string) {
-  const normalizedPhone = normalizeCustomerPhone(customerPhone);
-  const normalizedName = normalizeCustomerName(customerName);
-  if (normalizedPhone) {
-    return appData.customers.find((customer) => normalizeCustomerPhone(customer.phone) === normalizedPhone);
-  }
-  if (!normalizedName) {
-    return undefined;
-  }
-  return appData.customers.find(
-    (customer) =>
-      !normalizeCustomerPhone(customer.phone) &&
-      normalizeCustomerName(customer.name) === normalizedName
-  );
-}
-
-function resolveCustomerProfile(
-  appData: AppData,
-  customerName?: string,
-  customerPhone?: string,
-  visitAt = new Date().toISOString()
-) {
-  const trimmedName = customerName?.trim() ?? "";
-  const trimmedPhone = customerPhone?.trim() ?? "";
-  if (!trimmedName && !trimmedPhone) {
-    return undefined;
-  }
-  const existing = findCustomerProfileMatch(appData, trimmedName, trimmedPhone);
-  if (existing) {
-    existing.name = getCustomerDisplayName(trimmedName, trimmedPhone);
-    existing.phone = trimmedPhone || existing.phone;
-    existing.createdAt = existing.createdAt || existing.lastVisitAt || visitAt;
-    existing.lastVisitAt = visitAt;
-    return existing.id;
-  }
-  const customerId = createId("customer");
-  appData.customers.unshift({
-    id: customerId,
-    name: getCustomerDisplayName(trimmedName, trimmedPhone),
-    phone: trimmedPhone || undefined,
-    createdAt: visitAt,
-    lastVisitAt: visitAt
-  });
-  return customerId;
-}
-
-function normalizeAppDataCustomers(source: AppData) {
-  const appData = cloneValue(source);
-  const normalizedCustomers: Customer[] = [];
-  const customerIdMap = new Map<string, string>();
-
-  function upsertNormalizedCustomer(rawCustomer: Customer) {
-    const createdAt = rawCustomer.createdAt || rawCustomer.lastVisitAt || new Date().toISOString();
-    const lastVisitAt = rawCustomer.lastVisitAt || createdAt;
-    const name = getCustomerDisplayName(rawCustomer.name, rawCustomer.phone);
-    const match = findCustomerProfileMatch(
-      { ...appData, customers: normalizedCustomers },
-      name,
-      rawCustomer.phone
-    );
-    if (match) {
-      match.name = getCustomerDisplayName(name, rawCustomer.phone);
-      match.phone = rawCustomer.phone?.trim() || match.phone;
-      if (new Date(lastVisitAt).getTime() > new Date(match.lastVisitAt).getTime()) {
-        match.lastVisitAt = lastVisitAt;
-      }
-      if (!match.createdAt || new Date(createdAt).getTime() < new Date(match.createdAt).getTime()) {
-        match.createdAt = createdAt;
-      }
-      customerIdMap.set(rawCustomer.id, match.id);
-      return match.id;
-    }
-    const normalizedCustomer: Customer = {
-      id: rawCustomer.id || createId("customer"),
-      name,
-      phone: rawCustomer.phone?.trim() || undefined,
-      createdAt,
-      lastVisitAt,
-      notes: rawCustomer.notes
-    };
-    normalizedCustomers.push(normalizedCustomer);
-    customerIdMap.set(rawCustomer.id, normalizedCustomer.id);
-    return normalizedCustomer.id;
-  }
-
-  for (const customer of appData.customers) {
-    upsertNormalizedCustomer(customer);
-  }
-
-  function resolveHistoricalCustomer(customerId: string | undefined, customerName?: string, customerPhone?: string, fallbackVisitAt?: string) {
-    if (customerId && customerIdMap.has(customerId)) {
-      return customerIdMap.get(customerId);
-    }
-    return resolveCustomerProfile(
-      { ...appData, customers: normalizedCustomers },
-      customerName,
-      customerPhone,
-      fallbackVisitAt ?? new Date().toISOString()
-    );
-  }
-
-  appData.sessions = appData.sessions.map((session) => ({
-    ...session,
-    customerId: resolveHistoricalCustomer(session.customerId, session.customerName, session.customerPhone, session.startedAt)
-  }));
-  appData.customerTabs = appData.customerTabs.map((tab) => ({
-    ...tab,
-    customerId: resolveHistoricalCustomer(tab.customerId, tab.customerName, tab.customerPhone, tab.createdAt)
-  }));
-  appData.bills = appData.bills.map((bill) => ({
-    ...bill,
-    customerId: resolveHistoricalCustomer(bill.customerId, bill.customerName, bill.customerPhone, bill.issuedAt)
-  }));
-  appData.customers = normalizedCustomers.sort(
-    (left, right) => new Date(right.lastVisitAt).getTime() - new Date(left.lastVisitAt).getTime()
-  );
-  return appData;
-}
-
-  useEffect(() => {
     setBusinessDraft(appData.businessProfile);
   }, [appData.businessProfile]);
-
-  useEffect(() => {
-    if (!backendConfigured) {
-      return;
-    }
-    setRemoteLoading(true);
-    fetchCurrentProfile()
-      .then((profile) => {
-        if (!profile || !profile.active) {
-          setActiveUserId(null);
-          return;
-        }
-        return loadRemoteAppDataSnapshot().then((snapshot) => {
-          skipRemotePersistRef.current = true;
-          setAppData(normalizeAppDataCustomers(snapshot.appData));
-          setRemoteVersion(snapshot.version);
-          setActiveUserId(profile.id);
-          setActiveTab("dashboard");
-        });
-      })
-      .catch(() => setActiveUserId(null))
-      .finally(() => setRemoteLoading(false));
-  }, [backendConfigured]); // runs once on mount — backendConfigured is stable (derived from env vars)
-
-  useEffect(() => {
-    if (!backendConfigured || !activeUserId) {
-      return;
-    }
-    return subscribeToRemoteAppData((snapshot) => {
-      skipRemotePersistRef.current = true;
-      setAppData(normalizeAppDataCustomers(snapshot.appData));
-      setRemoteVersion(snapshot.version);
-      setRemoteError("");
-    });
-  }, [activeUserId, backendConfigured]);
 
   useEffect(() => {
     const handleOnlineChange = () => setOnline(navigator.onLine);
