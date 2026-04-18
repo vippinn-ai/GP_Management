@@ -8,7 +8,8 @@ export const tabsByRole: Record<Role, Array<{ id: TabId; label: string }>> = {
     { id: "dashboard", label: "Live Dashboard" },
     { id: "sale", label: "Consumables Tab" },
     { id: "inventory", label: "Inventory" },
-    { id: "reports", label: "Reports" },
+    { id: "bills", label: "Bill Register" },
+    { id: "reports", label: "Analytics" },
     { id: "customers", label: "Customer Profiles" },
     { id: "settings", label: "Settings" },
     { id: "users", label: "Users" }
@@ -17,11 +18,25 @@ export const tabsByRole: Record<Role, Array<{ id: TabId; label: string }>> = {
     { id: "dashboard", label: "Live Dashboard" },
     { id: "sale", label: "Consumables Tab" },
     { id: "inventory", label: "Inventory" },
-    { id: "reports", label: "Reports" },
+    { id: "bills", label: "Bill Register" },
+    { id: "reports", label: "Analytics" },
     { id: "settings", label: "Settings" }
   ],
   receptionist: [
     { id: "dashboard", label: "Live Dashboard" },
-    { id: "sale", label: "Consumables Tab" }
+    { id: "sale", label: "Consumables Tab" },
+    { id: "bills", label: "Bill Register" }
   ]
 };
+
+/** All tabs that can be granted to a user beyond their role default. */
+export const ALL_TABS: Array<{ id: TabId; label: string }> = [
+  { id: "dashboard", label: "Live Dashboard" },
+  { id: "sale", label: "Consumables Tab" },
+  { id: "inventory", label: "Inventory" },
+  { id: "bills", label: "Bill Register" },
+  { id: "reports", label: "Analytics" },
+  { id: "customers", label: "Customer Profiles" },
+  { id: "settings", label: "Settings" },
+  { id: "users", label: "Users" }
+];

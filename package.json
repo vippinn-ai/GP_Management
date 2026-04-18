@@ -9,7 +9,10 @@
     "preview": "vite preview",
     "deploy:staging": "tsc -b && vite build --mode staging && wrangler deploy --name gp-management-staging-pages",
     "deploy:production": "tsc -b && vite build --mode production && wrangler deploy --name management",
-    "bootstrap:production": "node scripts/bootstrap-production.mjs scripts/production-config.sample.json"
+    "bootstrap:production": "node scripts/bootstrap-production.mjs scripts/production-config.sample.json",
+    "test": "vitest",
+    "test:ui": "vitest --ui",
+    "lint": "eslint src --ext ts,tsx"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.103.0",
@@ -19,11 +22,22 @@
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.1",
     "@types/react": "^19.1.2",
     "@types/react-dom": "^19.1.2",
     "@vitejs/plugin-react": "^5.0.0",
+    "@vitest/ui": "^4.1.4",
+    "eslint": "^10.2.1",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "jsdom": "^29.0.2",
+    "prettier": "^3.8.3",
     "supabase": "^2.91.1",
     "typescript": "^5.8.3",
-    "vite": "^6.3.5"
+    "typescript-eslint": "^8.58.2",
+    "vite": "^6.3.5",
+    "vitest": "^4.1.4"
   }
 }

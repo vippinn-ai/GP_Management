@@ -22,6 +22,7 @@ interface AdminUserPayload {
   username: string;
   role: Role;
   password?: string;
+  tabPermissions?: import("./types").TabId[];
 }
 
 interface RemoteAppStateRow {
@@ -231,6 +232,10 @@ export async function adminChangePasswordRemote(userId: string, password: string
 
 export async function adminToggleUserActiveRemote(userId: string): Promise<void> {
   await invokeProtectedFunction("admin-toggle-user-active", { userId });
+}
+
+export async function changeOwnPasswordRemote(password: string): Promise<void> {
+  await invokeProtectedFunction("change-own-password", { password });
 }
 
 async function invokeProtectedFunction(functionName: string, body: Record<string, unknown>): Promise<void> {

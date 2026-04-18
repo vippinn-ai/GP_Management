@@ -1,8 +1,9 @@
 export type Role = "admin" | "manager" | "receptionist";
 export type PaymentMode = "cash" | "upi";
+export type BillPaymentMode = "cash" | "upi" | "split" | "deferred";
 export type StationMode = "timed" | "unit_sale";
 export type SessionStatus = "active" | "paused" | "closed";
-export type BillStatus = "issued" | "voided" | "refunded" | "replaced";
+export type BillStatus = "issued" | "pending" | "voided" | "refunded" | "replaced";
 export type LineType = "session_charge" | "inventory_item" | "manual_charge";
 export type DiscountType = "amount" | "percentage";
 export type PlayMode = "group" | "solo";
@@ -20,6 +21,7 @@ export interface User {
   password?: string;
   role: Role;
   active: boolean;
+  tabPermissions?: TabId[];
 }
 
 export interface BusinessProfile {
@@ -179,9 +181,11 @@ export interface Bill {
   customerId?: string;
   customerName?: string;
   customerPhone?: string;
-  paymentMode: PaymentMode;
+  paymentMode: BillPaymentMode;
   stationId?: string;
   sessionId?: string;
+  amountPaid: number;
+  amountDue: number;
   subtotal: number;
   totalDiscountAmount: number;
   billDiscountAmount: number;
@@ -200,6 +204,8 @@ export interface Bill {
   voidedAt?: string;
   voidedByUserId?: string;
   voidReason?: string;
+  settledAt?: string;
+  settledByUserId?: string;
 }
 
 export interface Payment {
@@ -292,7 +298,7 @@ export interface DraftBillLine {
   discount?: DraftDiscountInput;
 }
 
-export type TabId = "dashboard" | "sale" | "inventory" | "reports" | "customers" | "settings" | "users";
+export type TabId = "dashboard" | "sale" | "inventory" | "bills" | "reports" | "customers" | "settings" | "users";
 export type NumericInputMode = "integer" | "decimal";
 export type ReportPreset = "today" | "yesterday" | "last_7_days" | "this_month" | "last_month" | "this_year" | "custom";
 export type InventoryState = "out" | "low" | "healthy" | "occupied" | "available";
@@ -322,7 +328,11 @@ export interface CheckoutState {
   customerId?: string;
   customerName: string;
   customerPhone: string;
-  paymentMode: PaymentMode;
+  paymentMode: BillPaymentMode;
+  splitCashAmount: number;
+  splitUpiAmount: number;
+  collectAmount: number;
+  collectMode: PaymentMode;
   roundOffEnabled: boolean;
   lineDiscounts: DraftLineDiscountMap;
   billDiscount?: DraftDiscountInput;
@@ -371,6 +381,7 @@ export interface UserEditDraft {
   name: string;
   username: string;
   role: Role;
+  tabPermissions?: TabId[];
 }
 
 export interface UserPasswordDraft {
@@ -383,4 +394,16 @@ export interface ReportFilterState {
   preset: ReportPreset;
   fromDate?: string;
   toDate?: string;
+}
+
+export interface SettlementDraft {
+  billId: string;
+  paymentMode: PaymentMode | "split";
+  cashAmount: number;
+  upiAmount: number;
+}
+
+export interface VoidPendingDraft {
+  billId: string;
+  reason: string;
 }

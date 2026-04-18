@@ -1,21 +1,33 @@
-import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useClock } from "./hooks/useClock";
 import { useAppSync } from "./hooks/useAppSync";
+import { Modal } from "./components/Modal";
+import { LoadingOverlay } from "./components/LoadingOverlay";
+import { AppLoadingScreen } from "./components/AppLoadingScreen";
+import { LoginScreen } from "./components/LoginScreen";
+import { MetricCard, TodayMetricCard } from "./components/MetricCard";
+import { NumericInput } from "./components/NumericInput";
+import { CustomerAutocompleteFields } from "./components/CustomerAutocompleteFields";
+import { UsersPanel } from "./panels/UsersPanel";
+import { SettingsPanel } from "./panels/SettingsPanel";
+import { InventoryPanel } from "./panels/InventoryPanel";
+import { CustomersPanel } from "./panels/CustomersPanel";
+import { ReportsPanel } from "./panels/ReportsPanel";
+import { SalePanel } from "./panels/SalePanel";
+import { DashboardPanel } from "./panels/DashboardPanel";
+import { BillRegisterPanel } from "./panels/BillRegisterPanel";
 import brandLogo from "../Branding/Logo.png";
 import {
   buildReceiptPreviewModel,
   downloadReceiptPdf,
-  exportRowsToCsv,
-  exportRowsToPdf,
-  exportRowsToXlsx,
   openReceiptWindow,
   type ReportRow
 } from "./exporters";
 import { calculateSessionCharge } from "./pricing";
 import { loadAppData } from "./storage";
-import { seedAppData } from "./seed";
 import {
   adminChangePasswordRemote,
+  changeOwnPasswordRemote,
   adminCreateUserRemote,
   adminToggleUserActiveRemote,
   adminUpdateUserRemote,
@@ -30,13 +42,14 @@ import type {
   AppData,
   AppliedDiscount,
   Bill,
+  BillPaymentMode,
+  BillStatus,
   BusinessProfile,
   CheckoutState,
   Customer,
   CustomerTab,
   CustomerTabDraft,
   CustomerTabEditDraft,
-  CustomerTabItem,
   CustomerProfileEditDraft,
   DiscountType,
   DraftLineDiscountMap,
@@ -44,12 +57,9 @@ import type {
   InventoryState,
   ExpenseTemplate,
   LtpOutcome,
-  NumericInputMode,
   PaymentMode,
   PlayMode,
-  PricingRule,
   ReportFilterState,
-  ReportPreset,
   Role,
   Session,
   SessionEditDraft,
@@ -61,9 +71,11 @@ import type {
   TabId,
   User,
   UserEditDraft,
-  UserPasswordDraft
+  UserPasswordDraft,
+  SettlementDraft,
+  VoidPendingDraft
 } from "./types";
-import { DEFAULT_INVENTORY_CATEGORIES, DEFAULT_EXPENSE_CATEGORIES, tabsByRole } from "./constants";
+import { DEFAULT_INVENTORY_CATEGORIES, DEFAULT_EXPENSE_CATEGORIES, tabsByRole, ALL_TABS } from "./constants";
 import {
   addAuditLog,
   buildBillPreview,
@@ -78,7 +90,6 @@ import {
   formatDateTimeInputValue,
   formatDateTime,
   formatMinutes,
-  formatMonthLabel,
   formatTime,
   getCustomerTabCheckoutLines,
   getDiscountAmount,
@@ -88,7 +99,6 @@ import {
   getReportRange,
   getSessionCheckoutLines,
   isToday,
-  minuteToTimeLabel,
   normalizeAppDataCustomers,
   normalizeCustomerName,
   normalizeCustomerPhone,
@@ -98,11 +108,38 @@ import {
   toLocalDateKey,
   toMinuteOfDay
 } from "./utils";
+import {
+  PAYMENT_TOLERANCE,
+  buildCheckoutPaymentResult,
+  computeSettlement,
+  getSettlementAmount,
+  validateCheckoutPayment
+} from "./billing";
+
+async function hashPassword(password: string): Promise<string> {
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const enc = new TextEncoder();
+  const key = await crypto.subtle.importKey("raw", enc.encode(password), "PBKDF2", false, ["deriveBits"]);
+  const bits = await crypto.subtle.deriveBits({ name: "PBKDF2", salt, iterations: 100_000, hash: "SHA-256" }, key, 256);
+  const toB64 = (buf: ArrayBuffer) => btoa(String.fromCharCode(...new Uint8Array(buf)));
+  return `pbkdf2:${toB64(salt.buffer)}:${toB64(bits)}`;
+}
+
+async function verifyPassword(password: string, stored: string): Promise<boolean> {
+  if (!stored.startsWith("pbkdf2:")) return password === stored; // backward compat: plaintext
+  const parts = stored.split(":");
+  if (parts.length !== 3) return false;
+  const salt = Uint8Array.from(atob(parts[1]), (c) => c.charCodeAt(0));
+  const enc = new TextEncoder();
+  const key = await crypto.subtle.importKey("raw", enc.encode(password), "PBKDF2", false, ["deriveBits"]);
+  const bits = await crypto.subtle.deriveBits({ name: "PBKDF2", salt, iterations: 100_000, hash: "SHA-256" }, key, 256);
+  return btoa(String.fromCharCode(...new Uint8Array(bits))) === parts[2];
+}
 
 export default function App() {
   const backendConfigured = isBackendConfigured();
   const [appData, setAppData] = useState<AppData>(() =>
-    normalizeAppDataCustomers(backendConfigured ? cloneValue(seedAppData) : loadAppData())
+    normalizeAppDataCustomers(loadAppData())
   );
   const [activeUserId, setActiveUserId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<TabId>("dashboard");
@@ -203,6 +240,11 @@ export default function App() {
   });
   const [editUserDraft, setEditUserDraft] = useState<UserEditDraft | null>(null);
   const [passwordDraft, setPasswordDraft] = useState<UserPasswordDraft | null>(null);
+  const [passwordError, setPasswordError] = useState("");
+  const [ownPasswordDraft, setOwnPasswordDraft] = useState<{ password: string; confirm: string } | null>(null);
+  const [ownPasswordError, setOwnPasswordError] = useState("");
+  const [settlementDraft, setSettlementDraft] = useState<SettlementDraft | null>(null);
+  const [voidPendingDraft, setVoidPendingDraft] = useState<VoidPendingDraft | null>(null);
   const [expenseForm, setExpenseForm] = useState({
     title: "",
     category: "Utilities",
@@ -290,14 +332,22 @@ export default function App() {
   }, []);
 
   const activeUser = appData.users.find((user) => user.id === activeUserId && user.active) ?? null;
-  const visibleTabs = activeUser ? tabsByRole[activeUser.role] : [];
-  const canAccessTab = (tabId: TabId) => visibleTabs.some((tab) => tab.id === tabId);
+  const visibleTabs = useMemo(() => {
+    if (!activeUser) return [];
+    const roleTabs = tabsByRole[activeUser.role];
+    if (!activeUser.tabPermissions?.length) return roleTabs;
+    const roleIds = new Set(roleTabs.map((t) => t.id));
+    const extras = ALL_TABS.filter((t) => activeUser.tabPermissions!.includes(t.id) && !roleIds.has(t.id));
+    return [...roleTabs, ...extras];
+  }, [activeUser]);
+  const canAccessTab = useCallback((tabId: TabId) => visibleTabs.some((tab) => tab.id === tabId), [visibleTabs]);
   const canEditInventory = activeUser?.role === "admin";
   const canEditReports = activeUser?.role === "admin";
   const canEditSettings = activeUser?.role === "admin";
   const canManageUsers = activeUser?.role === "admin";
   const canVoidRefundBills = activeUser?.role === "admin";
   const canReplaceIssuedBills = activeUser?.role === "admin";
+  const canSettlePendingBills = activeUser?.role === "admin" || activeUser?.role === "manager" || activeUser?.role === "receptionist";
   const canEditActiveSessionDetails = activeUser?.role === "admin";
   const isManagerReadOnly = activeUser?.role === "manager";
   const pageTitle =
@@ -357,7 +407,7 @@ export default function App() {
     (item) => item.active && item.category === "Arcade"
   );
   const defaultArcadeInventoryItem = arcadeInventoryItems[0] ?? null;
-  const activeFinancialBills = appData.bills.filter((bill) => bill.status === "issued");
+  const activeFinancialBills = appData.bills.filter((bill) => bill.status === "issued" || bill.status === "pending");
 
   const customerAnalytics = (() => {
     const statsMap = new Map<
@@ -420,7 +470,7 @@ export default function App() {
           favoriteStationName: undefined
         };
       current.bills.push(bill);
-      current.totalSpend += bill.total;
+      current.totalSpend += bill.amountPaid;
       current.visitCount += 1;
       if (new Date(visitAt).getTime() > new Date(current.lastVisitAt).getTime()) {
         current.lastVisitAt = visitAt;
@@ -770,6 +820,10 @@ export default function App() {
 
   function handleLogin(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    const trimmedUsername = loginUsername.trim();
+    if (!trimmedUsername) { setLoginError("Username is required."); return; }
+    if (!loginPassword.trim()) { setLoginError("Password is required."); return; }
+    if (trimmedUsername.length > 64) { setLoginError("Username is too long."); return; }
     if (backendConfigured) {
       void runBlockingAction("Signing in...", async () => {
         setRemoteLoading(true);
@@ -791,19 +845,51 @@ export default function App() {
         });
       return;
     }
-    const matchedUser = appData.users.find(
-      (user) =>
-        user.active &&
-        user.username.toLowerCase() === loginUsername.trim().toLowerCase() &&
-        user.password === loginPassword
+    const candidate = appData.users.find(
+      (user) => user.active && user.username.toLowerCase() === loginUsername.trim().toLowerCase()
     );
-    if (!matchedUser) {
-      setLoginError("Invalid username or password.");
+    void (async () => {
+      const matched = candidate && (await verifyPassword(loginPassword, candidate.password ?? "")) ? candidate : null;
+      if (!matched) {
+        setLoginError("Invalid username or password.");
+        return;
+      }
+      setLoginError("");
+      setActiveUserId(matched.id);
+      setActiveTab("dashboard");
+    })();
+  }
+
+  function handleChangeOwnPassword(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!ownPasswordDraft) return;
+    if (ownPasswordDraft.password.length < 8) {
+      setOwnPasswordError("Password must be at least 8 characters.");
       return;
     }
-    setLoginError("");
-    setActiveUserId(matchedUser.id);
-    setActiveTab("dashboard");
+    if (ownPasswordDraft.password !== ownPasswordDraft.confirm) {
+      setOwnPasswordError("Passwords do not match.");
+      return;
+    }
+    setOwnPasswordError("");
+    if (backendConfigured) {
+      void runBlockingAction("Updating password...", async () => {
+        await changeOwnPasswordRemote(ownPasswordDraft.password);
+        setOwnPasswordDraft(null);
+      }).catch((error: unknown) => {
+        setOwnPasswordError(error instanceof Error ? error.message : "Unable to update password.");
+      });
+    } else {
+      void (async () => {
+        if (!activeUser) return;
+        const hashed = await hashPassword(ownPasswordDraft.password);
+        mutateAppData((data) => {
+          const user = data.users.find((u) => u.id === activeUser.id);
+          if (user) user.password = hashed;
+        });
+        setOwnPasswordDraft(null);
+      })();
+    }
   }
 
   function handleLogout() {
@@ -1054,6 +1140,10 @@ export default function App() {
       customerName: session.customerName || "",
       customerPhone: session.customerPhone || "",
       paymentMode: "cash",
+      splitCashAmount: 0,
+      splitUpiAmount: 0,
+      collectAmount: 0,
+      collectMode: "cash" as const,
       roundOffEnabled: true,
       lineDiscounts: {},
       ltpOutcome:
@@ -1366,6 +1456,10 @@ export default function App() {
       customerName: selectedCustomerTab.customerName,
       customerPhone: selectedCustomerTab.customerPhone ?? "",
       paymentMode: "cash",
+      splitCashAmount: 0,
+      splitUpiAmount: 0,
+      collectAmount: 0,
+      collectMode: "cash" as const,
       roundOffEnabled: true,
       lineDiscounts: {}
     });
@@ -1404,6 +1498,10 @@ export default function App() {
       customerName: tab.customerName,
       customerPhone: tab.customerPhone ?? "",
       paymentMode: "cash",
+      splitCashAmount: 0,
+      splitUpiAmount: 0,
+      collectAmount: 0,
+      collectMode: "cash" as const,
       roundOffEnabled: true,
       lineDiscounts: {}
     });
@@ -1503,6 +1601,10 @@ export default function App() {
       customerName: bill.customerName ?? "",
       customerPhone: bill.customerPhone ?? "",
       paymentMode: bill.paymentMode,
+      splitCashAmount: 0,
+      splitUpiAmount: 0,
+      collectAmount: 0,
+      collectMode: "cash" as const,
       roundOffEnabled: bill.roundOffEnabled,
       lineDiscounts: replacementLineDiscounts,
       billDiscount: bill.billDiscount
@@ -1786,6 +1888,26 @@ export default function App() {
       window.alert("Bill discount reason is required.");
       return;
     }
+    const paymentValidationError = validateCheckoutPayment(
+      checkoutState.paymentMode,
+      checkoutState.splitCashAmount,
+      checkoutState.splitUpiAmount,
+      checkoutState.collectAmount,
+      preview.total
+    );
+    if (paymentValidationError) {
+      window.alert(paymentValidationError);
+      return;
+    }
+    const { amountPaid: billAmountPaid, amountDue: billAmountDue, status: billStatus, paymentRecords: checkoutPaymentRecords } =
+      buildCheckoutPaymentResult(
+        checkoutState.paymentMode,
+        checkoutState.splitCashAmount,
+        checkoutState.splitUpiAmount,
+        checkoutState.collectAmount,
+        checkoutState.collectMode,
+        preview.total
+      );
 
     const billId = createId("bill");
     const lineDiscounts: AppliedDiscount[] = [];
@@ -1835,7 +1957,7 @@ export default function App() {
       const issuedBill = {
         id: billId,
         billNumber,
-        status: "issued" as const,
+        status: billStatus,
         createdAt: issuedAt,
         issuedAt,
         issuedByUserId: activeUser.id,
@@ -1845,6 +1967,8 @@ export default function App() {
         paymentMode: checkoutState.paymentMode,
         stationId: previewSession?.stationId ?? replacementBill?.stationId,
         sessionId: previewSession?.id ?? replacementBill?.sessionId,
+        amountPaid: billAmountPaid,
+        amountDue: billAmountDue,
         subtotal: preview.subtotal,
         totalDiscountAmount: preview.lineDiscountAmount + preview.billDiscountAmount,
         billDiscountAmount: preview.billDiscountAmount,
@@ -1859,14 +1983,16 @@ export default function App() {
         replaceReason: replacementBill ? checkoutState.replaceReason?.trim() : undefined
       };
       draft.bills.unshift(issuedBill);
-      draft.payments.unshift({
-        id: createId("payment"),
-        billId,
-        mode: checkoutState.paymentMode,
-        amount: preview.total,
-        createdAt: issuedAt,
-        receivedByUserId: activeUser.id
-      });
+      for (const record of checkoutPaymentRecords) {
+        draft.payments.unshift({
+          id: createId("payment"),
+          billId,
+          mode: record.mode,
+          amount: record.amount,
+          createdAt: issuedAt,
+          receivedByUserId: activeUser.id
+        });
+      }
       if (replacementBill) {
         const originalBill = draft.bills.find((entry) => entry.id === replacementBill.id);
         if (originalBill && originalBill.status === "issued") {
@@ -1994,6 +2120,9 @@ export default function App() {
       if (ltpWinningSession && session) {
         addAuditLog(draft, activeUser.id, "ltp_discount_applied", "session", session.id, `Applied LTP win discount to ${session.stationNameSnapshot}.`);
       }
+      if (billStatus === "pending") {
+        addAuditLog(draft, activeUser.id, "bill_pending", "bill", billId, `${billNumber} issued as pending (due ₹${billAmountDue.toFixed(2)}).`);
+      }
     if (backendConfigured) {
       skipRemotePersistRef.current = true;
       setAppData(normalizeAppDataCustomers(nextAppData));
@@ -2010,6 +2139,88 @@ export default function App() {
     setReplacementItemForm({ itemId: "", quantity: 1 });
     openReceiptWindow(nextAppData.businessProfile, issuedBill, nextAppData.bills);
     downloadReceiptPdf(nextAppData.businessProfile, issuedBill, nextAppData.bills);
+  }
+
+  function settlePayment(draft: SettlementDraft): boolean {
+    if (!activeUser || !canSettlePendingBills) {
+      return false;
+    }
+    const bill = appData.bills.find((b) => b.id === draft.billId);
+    if (!bill || bill.status !== "pending") {
+      window.alert("Bill is not pending.");
+      return false;
+    }
+    const result = computeSettlement(bill.amountPaid, bill.amountDue, bill.total, draft);
+    if (result.error) {
+      window.alert(result.error);
+      return false;
+    }
+    const settledAt = new Date().toISOString();
+    const settlementAmount = getSettlementAmount(draft);
+    mutateAppData((data) => {
+      const target = data.bills.find((b) => b.id === draft.billId);
+      if (!target || target.status !== "pending") return;
+      target.amountPaid = result.newAmountPaid;
+      target.amountDue = result.newAmountDue;
+      target.status = result.newStatus;
+      if (result.newStatus === "issued") {
+        target.settledAt = settledAt;
+        target.settledByUserId = activeUser.id;
+      }
+      for (const record of result.paymentRecords) {
+        data.payments.unshift({
+          id: createId("payment"),
+          billId: draft.billId,
+          mode: record.mode,
+          amount: record.amount,
+          createdAt: settledAt,
+          receivedByUserId: activeUser.id
+        });
+      }
+      addAuditLog(
+        data,
+        activeUser.id,
+        "bill_settled",
+        "bill",
+        draft.billId,
+        `Settled ₹${settlementAmount.toFixed(2)} on ${target.billNumber}. Remaining due: ₹${result.newAmountDue.toFixed(2)}.`
+      );
+    });
+    return true;
+  }
+
+  function voidPendingBill(draft: VoidPendingDraft): boolean {
+    if (!activeUser || activeUser.role !== "admin") {
+      return false;
+    }
+    // Stock is intentionally NOT reversed: goods were consumed/session was played before the debt was written off.
+    const bill = appData.bills.find((b) => b.id === draft.billId);
+    if (!bill || bill.status !== "pending") {
+      window.alert("Bill is not pending.");
+      return false;
+    }
+    if (!draft.reason.trim()) {
+      window.alert("Void reason is required.");
+      return false;
+    }
+    const voidedAt = new Date().toISOString();
+    mutateAppData((data) => {
+      const target = data.bills.find((b) => b.id === draft.billId);
+      if (!target || target.status !== "pending") return;
+      target.status = "voided";
+      target.voidedAt = voidedAt;
+      target.voidedByUserId = activeUser.id;
+      target.voidReason = draft.reason.trim();
+      addAuditLog(
+        data,
+        activeUser.id,
+        "bill_voided_bad_debt",
+        "bill",
+        draft.billId,
+        `Voided pending bill ${target.billNumber} as bad debt. Reason: ${draft.reason.trim()}.`
+      );
+    });
+    return true;
   }
 
   function upsertInventoryItem(event: FormEvent<HTMLFormElement>) {
@@ -2253,19 +2464,22 @@ export default function App() {
       });
       return;
     }
-    mutateAppData((draft) => {
-      const userId = createId("user");
-      draft.users.push({
-        id: userId,
-        name: nextName,
-        username: nextUsername,
-        password: userForm.password,
-        role: userForm.role,
-        active: true
+    void (async () => {
+      const hashedPassword = await hashPassword(userForm.password);
+      mutateAppData((draft) => {
+        const userId = createId("user");
+        draft.users.push({
+          id: userId,
+          name: nextName,
+          username: nextUsername,
+          password: hashedPassword,
+          role: userForm.role,
+          active: true
+        });
+        addAuditLog(draft, activeUser.id, "user_created", "user", userId, `Created ${userForm.role} user ${nextUsername}.`);
       });
-      addAuditLog(draft, activeUser.id, "user_created", "user", userId, `Created ${userForm.role} user ${nextUsername}.`);
-    });
-    setUserForm({ name: "", username: "", password: "", role: "receptionist" });
+      setUserForm({ name: "", username: "", password: "", role: "receptionist" });
+    })();
   }
 
   function getActiveAdminCount(users = appData.users) {
@@ -2280,7 +2494,8 @@ export default function App() {
       id: user.id,
       name: user.name,
       username: user.username,
-      role: user.role
+      role: user.role,
+      tabPermissions: user.tabPermissions
     });
   }
 
@@ -2315,6 +2530,9 @@ export default function App() {
       window.alert("At least one active admin account must remain in the system.");
       return;
     }
+    const roleDefaultIds = new Set(tabsByRole[editUserDraft.role].map((t) => t.id));
+    const cleanedTabPermissions = editUserDraft.tabPermissions?.filter((id) => !roleDefaultIds.has(id));
+    const nextTabPermissions = cleanedTabPermissions?.length ? cleanedTabPermissions : undefined;
     if (backendConfigured) {
       void runBlockingAction("Updating user...", async () => {
         await adminUpdateUserRemote({
@@ -2325,6 +2543,12 @@ export default function App() {
         });
         setEditUserDraft(null);
         await refreshRemoteState({ keepUser: true });
+        // Patch tabPermissions into the freshly-reloaded app state and save to Supabase.
+        // refreshRemoteState consumes the skip flag so this mutateAppData triggers a remote save.
+        mutateAppData((data) => {
+          const user = data.users.find((u) => u.id === editUserDraft.id);
+          if (user) user.tabPermissions = nextTabPermissions;
+        });
       }).catch((error: unknown) => {
         window.alert(error instanceof Error ? error.message : "Unable to update user.");
       });
@@ -2338,6 +2562,7 @@ export default function App() {
       user.name = nextName;
       user.username = nextUsername;
       user.role = editUserDraft.role;
+      user.tabPermissions = nextTabPermissions;
       addAuditLog(draft, activeUser.id, "user_updated", "user", user.id, `Updated user ${user.username}.`);
     });
     setEditUserDraft(null);
@@ -2347,6 +2572,7 @@ export default function App() {
     if (!canManageUsers) {
       return;
     }
+    setPasswordError("");
     setPasswordDraft({
       userId: user.id,
       password: "",
@@ -2360,13 +2586,15 @@ export default function App() {
       return;
     }
     const nextPassword = passwordDraft.password;
-    if (!nextPassword.trim()) {
+    if (nextPassword.length < 8) {
+      setPasswordError("Password must be at least 8 characters.");
       return;
     }
-    if (passwordDraft.password !== passwordDraft.confirmPassword) {
-      window.alert("Password confirmation does not match.");
+    if (nextPassword !== passwordDraft.confirmPassword) {
+      setPasswordError("Passwords do not match.");
       return;
     }
+    setPasswordError("");
     const targetUser = appData.users.find((user) => user.id === passwordDraft.userId);
     if (!targetUser) {
       return;
@@ -2375,20 +2603,22 @@ export default function App() {
       void runBlockingAction("Updating password...", async () => {
         await adminChangePasswordRemote(passwordDraft.userId, nextPassword);
         setPasswordDraft(null);
+        setPasswordError("");
       }).catch((error: unknown) => {
-        window.alert(error instanceof Error ? error.message : "Unable to update password.");
+        setPasswordError(error instanceof Error ? error.message : "Unable to update password.");
       });
       return;
     }
-    mutateAppData((draft) => {
-      const user = draft.users.find((entry) => entry.id === passwordDraft.userId);
-      if (!user) {
-        return;
-      }
-      user.password = nextPassword;
-      addAuditLog(draft, activeUser.id, "user_password_changed", "user", user.id, `Changed password for ${user.username}.`);
-    });
-    setPasswordDraft(null);
+    void (async () => {
+      const hashedPassword = await hashPassword(nextPassword);
+      mutateAppData((draft) => {
+        const user = draft.users.find((entry) => entry.id === passwordDraft.userId);
+        if (!user) return;
+        user.password = hashedPassword;
+        addAuditLog(draft, activeUser.id, "user_password_changed", "user", user.id, `Changed password for ${user.username}.`);
+      });
+      setPasswordDraft(null);
+    })();
   }
 
   function createExpense(event: FormEvent<HTMLFormElement>) {
@@ -2779,9 +3009,11 @@ export default function App() {
         return totals;
       }, {})
     ).sort((left, right) => right[1] - left[1])[0] ?? null;
+  const issuedBillIds = new Set(issuedBills.map((bill) => bill.id));
+  const issuedBillPayments = appData.payments.filter((payment) => issuedBillIds.has(payment.billId));
   const paymentModeTotals = {
-    cash: sumBy(issuedBills.filter((bill) => bill.paymentMode === "cash"), (bill) => bill.total),
-    upi: sumBy(issuedBills.filter((bill) => bill.paymentMode === "upi"), (bill) => bill.total)
+    cash: sumBy(issuedBillPayments.filter((payment) => payment.mode === "cash"), (payment) => payment.amount),
+    upi: sumBy(issuedBillPayments.filter((payment) => payment.mode === "upi"), (payment) => payment.amount)
   };
   const cashExpenseByCategory = Object.entries(
     filteredExpenses.reduce<Record<string, number>>((totals, expense) => {
@@ -2799,6 +3031,8 @@ export default function App() {
   const outOfStockItems = appData.inventoryItems.filter((item) => item.active && getInventoryState(item) === "out");
   const lowStockItems = appData.inventoryItems.filter((item) => item.active && getInventoryState(item) === "low");
   const occupiedItems = appData.inventoryItems.filter((item) => item.active && getInventoryState(item) === "occupied");
+  const pendingBills = appData.bills.filter((b) => b.status === "pending");
+  const totalAmountDue = pendingBills.reduce((sum, b) => sum + b.amountDue, 0);
 
   if (backendConfigured && remoteLoading) {
     return <AppLoadingScreen />;
@@ -2864,14 +3098,25 @@ export default function App() {
                 <div className="muted">{activeUser.role.toUpperCase()}</div>
               </div>
             </div>
-            <button className="secondary-button sidebar-user-action" type="button" onClick={handleLogout}>
-              Log Out
-            </button>
+            <div className="sidebar-user-actions">
+              {backendConfigured && (
+                <button
+                  className="ghost-button sidebar-user-action"
+                  type="button"
+                  onClick={() => { setOwnPasswordDraft({ password: "", confirm: "" }); setOwnPasswordError(""); }}
+                >
+                  Change Password
+                </button>
+              )}
+              <button className="secondary-button sidebar-user-action" type="button" onClick={handleLogout}>
+                Log Out
+              </button>
+            </div>
           </div>
         </div>
       </aside>
 
-      <main className={`main-content ${activeTab === "dashboard" ? "is-dashboard-tab" : ""}`}>
+      <main className={`main-content ${activeTab === "dashboard" ? "is-dashboard-tab" : activeTab === "bills" ? "is-bills-tab" : ""}`}>
         <header className="topbar">
           <div>
             <h1>{pageTitle}</h1>
@@ -2888,1737 +3133,240 @@ export default function App() {
         </header>
 
         {activeTab === "dashboard" && (
-          <section className="section-grid dashboard-grid">
-            <div className="panel dashboard-column">
-              <div className="dashboard-tile">
-                <div className="panel-header">
-                  <div>
-                    <h2>Live Sessions</h2>
-                    <p>Monitor gaming sessions and open consumables tabs so nothing is left unbilled.</p>
-                  </div>
-                </div>
-                <div className="dashboard-tile-body panel-scroll">
-                  <div className="station-grid">
-                {stations.map((station) => {
-                  const session = getActiveSessionForStation(station.id);
-                  const isBillingFrozen =
-                    session &&
-                    checkoutState?.mode === "session" &&
-                    checkoutState.sessionId === session.id;
-                  return (
-                    <article key={station.id} className={`station-card ${session ? `is-${session.status}` : "is-available"}`}>
-                      <div className="station-card-header">
-                        <div>
-                          <h3>{station.name}</h3>
-                          <p>{session ? (isBillingFrozen ? "Billing" : session.status === "paused" ? "Paused" : "Running") : "Available"}</p>
-                        </div>
-                        <button
-                          className={session ? "ghost-button" : "station-start-link"}
-                          type="button"
-                          onClick={() =>
-                            session
-                              ? setManageSessionId(session.id)
-                              : (() => {
-                                  setStartSessionDraft(createStartSessionDraft(station));
-                                  setShowStartSessionModal(true);
-                                })()
-                          }
-                        >
-                          {session ? "Manage" : "Start"}
-                        </button>
-                      </div>
-                      {session ? (
-                        <>
-                          <div className="station-metrics">
-                            <div>
-                              <span className="muted">Started</span>
-                              <strong>{formatTime(session.startedAt)}</strong>
-                            </div>
-                            <div>
-                              <span className="muted">Live bill</span>
-                              <strong>{currency(getSessionLiveTotal(session, getFrozenEndAtForSession(session.id)))}</strong>
-                            </div>
-                            <div>
-                              <span className="muted">Customer</span>
-                              <strong>{session.customerName || "Walk-in"}</strong>
-                            </div>
-                          </div>
-                          <div className="button-row">
-                            <button
-                              className="secondary-button"
-                              type="button"
-                              onClick={() => setManageSessionId(session.id)}
-                            >
-                              Consumables
-                            </button>
-                            {session.mode === "timed" &&
-                              (session.status === "active" ? (
-                                <button type="button" onClick={() => toggleSessionPause(session.id, true)}>
-                                  Pause
-                                </button>
-                              ) : (
-                                <button type="button" onClick={() => toggleSessionPause(session.id, false)}>
-                                  Resume
-                                </button>
-                              ))}
-                            <button className="ghost-button danger" type="button" onClick={() => rejectSession(session.id)}>
-                              Reject
-                            </button>
-                            <button className="primary-button" type="button" onClick={() => openSessionCheckout(session.id)}>
-                              Close Bill
-                            </button>
-                          </div>
-                        </>
-                      ) : (
-                        <div className="empty-card-copy">
-                          Click <strong>Start</strong> to open the session form for this station.
-                        </div>
-                      )}
-                    </article>
-                  );
-                })}
-                {openCustomerTabs.map((tab) => (
-                  <article key={tab.id} className="station-card is-active customer-tab-live-card">
-                    <div className="station-card-header">
-                      <div>
-                        <h3>{tab.customerName}</h3>
-                        <p>Consumables tab</p>
-                      </div>
-                      <button
-                        className="ghost-button"
-                        type="button"
-                        onClick={() => openCustomerTabWorkspace(tab.id)}
-                      >
-                        Manage
-                      </button>
-                    </div>
-                    <div className="station-metrics">
-                      <div>
-                        <span className="muted">Opened</span>
-                        <strong>{formatTime(tab.createdAt)}</strong>
-                      </div>
-                      <div>
-                        <span className="muted">Live bill</span>
-                        <strong>{currency(getCustomerTabTotal(tab))}</strong>
-                      </div>
-                      <div>
-                        <span className="muted">Items</span>
-                        <strong>{`${tab.items.length}`}</strong>
-                      </div>
-                    </div>
-                    <div className="button-row">
-                      <button
-                        className="secondary-button"
-                        type="button"
-                        onClick={() => openCustomerTabWorkspace(tab.id)}
-                      >
-                        Manage Items
-                      </button>
-                      <button
-                        className="primary-button"
-                        type="button"
-                        onClick={() => beginCustomerTabCheckoutById(tab.id)}
-                      >
-                        Close Bill
-                      </button>
-                      <button className="ghost-button danger" type="button" onClick={() => rejectCustomerTab(tab.id)}>
-                        Reject
-                      </button>
-                    </div>
-                  </article>
-                ))}
-                {stations.length === 0 && openCustomerTabs.length === 0 && (
-                  <div className="empty-state">No live stations or open consumables tabs right now.</div>
-                )}
-                  </div>
-                </div>
-              </div>
-
-              <div className="dashboard-tile">
-                <div className="panel-header">
-                  <div>
-                    <h2>Recent Activity</h2>
-                    <p>Discounts, stock movements, and billing actions are all logged.</p>
-                  </div>
-                </div>
-                <div className="dashboard-tile-body panel-scroll">
-                  <div className="activity-list">
-                    {appData.auditLogs.slice(0, 8).map((entry) => (
-                      <div key={entry.id} className="activity-row">
-                        <strong>{entry.message}</strong>
-                        <span className="muted">{formatDateTime(entry.createdAt)}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div className="panel dashboard-column">
-              <div className="dashboard-tile">
-              <div className="panel-header">
-                <div>
-                  <h2>Start New Gaming Session</h2>
-                  <p>Use the station card Start button for the quickest flow, or start manually here.</p>
-                </div>
-              </div>
-              <div className="dashboard-tile-body panel-scroll">
-              <form className="form-grid dashboard-starter-form" onSubmit={startSession}>
-                <label>
-                  <span>Station</span>
-                  <select
-                    value={startSessionDraft.stationId}
-                    onChange={(event) =>
-                      setStartSessionDraft((previous) => {
-                        const nextStation = appData.stations.find((station) => station.id === event.target.value);
-                        return {
-                          ...previous,
-                          stationId: event.target.value,
-                          playMode: nextStation?.ltpEnabled ? previous.playMode : "group",
-                          arcadeItemId: nextStation?.mode === "unit_sale" ? defaultArcadeInventoryItem?.id ?? "" : "",
-                          arcadeQuantity: 1
-                        };
-                      })
-                    }
-                  >
-                    <option value="">Select station</option>
-                    {stations
-                      .filter((station) => !getActiveSessionForStation(station.id))
-                      .map((station) => (
-                        <option key={station.id} value={station.id}>
-                          {station.name}
-                        </option>
-                      ))}
-                  </select>
-                </label>
-                <CustomerAutocompleteFields
-                  customers={appData.customers}
-                  customerId={startSessionDraft.customerId}
-                  customerName={startSessionDraft.customerName}
-                  customerPhone={startSessionDraft.customerPhone}
-                  namePlaceholder="Optional"
-                  phonePlaceholder="Optional"
-                  onChange={(next) => setStartSessionDraft((previous) => ({ ...previous, ...next }))}
-                />
-                {selectedStartStation?.ltpEnabled && (
-                  <label>
-                    <span>Play Mode</span>
-                    <select
-                      value={startSessionDraft.playMode}
-                      onChange={(event) =>
-                        setStartSessionDraft((previous) => ({
-                          ...previous,
-                          playMode: event.target.value as PlayMode
-                        }))
-                      }
-                    >
-                      <option value="solo">Solo (LTP)</option>
-                      <option value="group">Group</option>
-                    </select>
-                  </label>
-                )}
-                {selectedStartStation?.mode === "unit_sale" && (
-                  <>
-                    {arcadeInventoryItems.length === 0 && (
-                      <div className="field-span-full error-text">
-                        Add an active `Arcade` inventory item first so this station can start with coin packs.
-                      </div>
-                    )}
-                    <label>
-                      <span>Coin Pack</span>
-                      <select
-                        value={startSessionDraft.arcadeItemId}
-                        onChange={(event) =>
-                          setStartSessionDraft((previous) => ({
-                            ...previous,
-                            arcadeItemId: event.target.value
-                          }))
-                        }
-                      >
-                        <option value="">Select coin pack</option>
-                        {arcadeInventoryItems.map((item) => (
-                          <option key={item.id} value={item.id}>
-                            {item.name} · {currency(item.price)} · {getInventoryPickerDetail(item)}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <label>
-                      <span>Upfront Packs</span>
-                      <NumericInput
-                        min={1}
-                        defaultValue={1}
-                        value={startSessionDraft.arcadeQuantity}
-                        onValueChange={(value) =>
-                          setStartSessionDraft((previous) => ({
-                            ...previous,
-                            arcadeQuantity: value
-                          }))
-                        }
-                      />
-                    </label>
-                    {selectedArcadeStartItem && (
-                      <div className="field-span-full helper-text">
-                        Default arcade entry: {selectedArcadeStartItem.name} at {currency(selectedArcadeStartItem.price)} each.
-                        Increase packs here if the customer wants more coins upfront.
-                      </div>
-                    )}
-                  </>
-                )}
-                <div className="starter-submit-slot">
-                  <button className="primary-button" type="submit" disabled={selectedStartStation?.mode === "unit_sale" && arcadeInventoryItems.length === 0}>
-                    Start Gaming Session
-                  </button>
-                </div>
-              </form>
-              <div className="section-block section-block-muted dashboard-subsection">
-                <div className="section-block-header">
-                  <h3>Start New Consumables Session</h3>
-                  <p>Open a food, drink, or sheesha tab directly from the dashboard.</p>
-                </div>
-                <form className="form-grid dashboard-starter-form" onSubmit={createDashboardCustomerTab}>
-                  <CustomerAutocompleteFields
-                    customers={appData.customers}
-                    customerId={dashboardCustomerTabDraft.customerId}
-                    customerName={dashboardCustomerTabDraft.customerName}
-                    customerPhone={dashboardCustomerTabDraft.customerPhone}
-                    required
-                    namePlaceholder="Enter customer name"
-                    phonePlaceholder="Optional"
-                    onChange={(next) => setDashboardCustomerTabDraft((previous) => ({ ...previous, ...next }))}
-                  />
-                  <div className="starter-submit-slot">
-                    <button className="primary-button" type="submit">
-                      Start Consumable Session
-                    </button>
-                  </div>
-                </form>
-              </div>
-              </div>
-              </div>
-
-              <div className="dashboard-tile">
-              <div className="panel-header">
-                <div>
-                  <h2>Inventory Alerts</h2>
-                  <p>Quick restock reminder for low, out-of-stock, and reusable occupied items.</p>
-                </div>
-              </div>
-              <div className="dashboard-tile-body panel-scroll">
-              <div className="metrics-row">
-                <MetricCard label="Low Stock" value={`${lowStockItems.length}`} />
-                <MetricCard label="Out of Stock" value={`${outOfStockItems.length}`} />
-                <MetricCard label="Occupied" value={`${occupiedItems.length}`} />
-              </div>
-              <div className="inventory-alert-list">
-                {appData.inventoryItems
-                  .filter((item) => item.active)
-                  .sort((left, right) => {
-                    const priority: Record<InventoryState, number> = {
-                      occupied: 0,
-                      out: 1,
-                      low: 2,
-                      available: 3,
-                      healthy: 4
-                    };
-                    const stateDelta = priority[getInventoryState(left)] - priority[getInventoryState(right)];
-                    if (stateDelta !== 0) {
-                      return stateDelta;
-                    }
-                    return getAvailableStock(left) - getAvailableStock(right);
-                  })
-                  .slice(0, 6)
-                  .map((item) => {
-                    const state = getInventoryState(item);
-                    return (
-                      <div key={item.id} className={`inventory-alert-row is-${state}`}>
-                        <div>
-                          <strong>{item.name}</strong>
-                          <div className="muted">
-                            {getInventoryStatusDetail(item)}
-                          </div>
-                        </div>
-                        <span className={`inventory-badge is-${state}`}>
-                          {getInventoryStateLabel(state)}
-                        </span>
-                      </div>
-                    );
-                  })}
-              </div>
-              </div>
-              </div>
-            </div>
-          </section>
+          <DashboardPanel
+            stations={stations}
+            openCustomerTabs={openCustomerTabs}
+            auditLogs={appData.auditLogs}
+            customers={appData.customers}
+            inventoryItems={appData.inventoryItems}
+            checkoutState={checkoutState}
+            startSessionDraft={startSessionDraft}
+            selectedStartStation={selectedStartStation}
+            arcadeInventoryItems={arcadeInventoryItems}
+            selectedArcadeStartItem={selectedArcadeStartItem}
+            dashboardCustomerTabDraft={dashboardCustomerTabDraft}
+            pendingBillsCount={pendingBills.length}
+            totalAmountDue={totalAmountDue}
+            lowStockItems={lowStockItems}
+            outOfStockItems={outOfStockItems}
+            occupiedItems={occupiedItems}
+            getActiveSessionForStation={getActiveSessionForStation}
+            getSessionLiveTotal={getSessionLiveTotal}
+            getFrozenEndAtForSession={getFrozenEndAtForSession}
+            getCustomerTabTotal={getCustomerTabTotal}
+            getInventoryState={getInventoryState}
+            getInventoryStateLabel={getInventoryStateLabel}
+            getInventoryStatusDetail={getInventoryStatusDetail}
+            getAvailableStock={getAvailableStock}
+            getInventoryPickerDetail={getInventoryPickerDetail}
+            createStartSessionDraft={createStartSessionDraft}
+            onStartSessionDraftChange={setStartSessionDraft}
+            onDashboardCustomerTabDraftChange={setDashboardCustomerTabDraft}
+            onSetManageSessionId={setManageSessionId}
+            onSetShowStartSessionModal={setShowStartSessionModal}
+            onToggleSessionPause={toggleSessionPause}
+            onRejectSession={rejectSession}
+            onOpenSessionCheckout={openSessionCheckout}
+            onOpenCustomerTabWorkspace={openCustomerTabWorkspace}
+            onBeginCustomerTabCheckoutById={beginCustomerTabCheckoutById}
+            onRejectCustomerTab={rejectCustomerTab}
+            onStartSession={startSession}
+            onCreateDashboardCustomerTab={createDashboardCustomerTab}
+          />
         )}
 
         {activeTab === "sale" && (
-          <section className="section-grid sales-layout">
-            <div className="panel">
-              <div className="panel-header">
-                <div>
-                  <h2>Consumables Catalog</h2>
-                  <p>Search by name or barcode and add items to the selected customer tab.</p>
-                </div>
-              </div>
-              <input
-                className="search-input"
-                value={customerTabSearch}
-                onChange={(event) => setCustomerTabSearch(event.target.value)}
-                placeholder="Search items..."
-              />
-              <div className="catalog-grid">
-                {appData.inventoryItems
-                  .filter((item) => item.active)
-                  .filter((item) =>
-                    `${item.name} ${item.category} ${item.barcode ?? ""}`.toLowerCase().includes(customerTabSearch.toLowerCase())
-                  )
-                  .map((item) => (
-                    <button key={item.id} type="button" className="catalog-card" onClick={() => addItemToCustomerTab(item)}>
-                      <strong>{item.name}</strong>
-                      <span>{item.category}</span>
-                      <span>{currency(item.price)}</span>
-                      <span className="muted">{getInventoryPickerDetail(item, undefined, selectedCustomerTab?.id)}</span>
-                    </button>
-                  ))}
-              </div>
-            </div>
-
-            <div className="panel">
-              <div className="panel-header">
-                <div>
-                  <h2>Consumables Tab</h2>
-                  <p>Track sheesha, food, and drink items for customers who pay when they leave.</p>
-                </div>
-              </div>
-              <div className="section-block">
-                <div className="section-block-header">
-                  <h3>Open or Find Customer Tab</h3>
-                  <p>One active tab per customer. Reusing a customer automatically opens their current tab.</p>
-                </div>
-                <form className="form-grid" onSubmit={createOrSelectCustomerTab}>
-                  <CustomerAutocompleteFields
-                    customers={appData.customers}
-                    customerId={customerTabDraft.customerId}
-                    customerName={customerTabDraft.customerName}
-                    customerPhone={customerTabDraft.customerPhone}
-                    required
-                    namePlaceholder="Enter customer name"
-                    phonePlaceholder="Optional"
-                    onChange={(next) => setCustomerTabDraft((previous) => ({ ...previous, ...next }))}
-                  />
-                  <button className="primary-button" type="submit">
-                    Open / Find Tab
-                  </button>
-                </form>
-                <div className="tab-chip-grid">
-                  {openCustomerTabs.length === 0 && <div className="empty-state">No open customer tabs yet.</div>}
-                  {openCustomerTabs.map((tab) => (
-                    <button
-                      key={tab.id}
-                      type="button"
-                      className={`tab-chip ${selectedCustomerTab?.id === tab.id ? "is-active" : ""}`}
-                      onClick={() => {
-                        setSelectedCustomerTabId(tab.id);
-                        setCustomerTabDraft({
-                          customerId: tab.customerId,
-                          customerName: tab.customerName,
-                          customerPhone: tab.customerPhone ?? ""
-                        });
-                      }}
-                    >
-                      <strong>{tab.customerName}</strong>
-                      <span>{currency(getCustomerTabTotal(tab))}</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <div className="section-block section-block-muted">
-                <div className="section-block-header">
-                  <h3>{selectedCustomerTab ? `${selectedCustomerTab.customerName}'s Tab` : "Current Tab"}</h3>
-                  <p>{selectedCustomerTab ? "Add items from the left panel and finalize when the customer leaves." : "Open a tab to begin tracking consumables."}</p>
-                </div>
-                <div className="line-items">
-                  {!selectedCustomerTab && <div className="empty-state">Open or select a customer tab first.</div>}
-                  {selectedCustomerTab && selectedCustomerTab.items.length === 0 && (
-                    <div className="empty-state">Add items from the left panel.</div>
-                  )}
-                  {selectedCustomerTab?.items.map((item: CustomerTabItem) => (
-                    <div key={item.id} className="line-item-row">
-                      <div>
-                        <strong>{item.name}</strong>
-                        <div className="muted">{currency(item.unitPrice)} each</div>
-                      </div>
-                      <label className="inline-field small">
-                        <span>Qty</span>
-                        <NumericInput
-                          value={item.quantity}
-                          min={1}
-                          defaultValue={1}
-                          onValueChange={(value) => updateCustomerTabItemQuantity(item.id, value)}
-                        />
-                      </label>
-                      <div className="button-row dense">
-                        <strong>{currency(item.unitPrice * item.quantity)}</strong>
-                        <button className="ghost-button danger" type="button" onClick={() => removeItemFromCustomerTab(item.id)}>
-                          Remove
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-                <div className="checkout-footer">
-                  <div className="checkout-total-block">
-                    <span className="muted">Tab total</span>
-                    <strong>{currency(selectedCustomerTab ? getCustomerTabTotal(selectedCustomerTab) : 0)}</strong>
-                  </div>
-                  <div className="button-row">
-                    {selectedCustomerTab && canEditActiveSessionDetails && (
-                      <button className="secondary-button" type="button" onClick={() => beginEditCustomerTabDetails(selectedCustomerTab)}>
-                        Edit Tab Details
-                      </button>
-                    )}
-                    {selectedCustomerTab && (
-                      <button className="ghost-button danger" type="button" onClick={() => rejectCustomerTab(selectedCustomerTab.id)}>
-                        Reject Tab
-                      </button>
-                    )}
-                    <button className="primary-button" type="button" onClick={beginCustomerTabCheckout}>
-                      Proceed to Checkout
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </section>
+          <SalePanel
+            inventoryItems={appData.inventoryItems}
+            customers={appData.customers}
+            customerTabSearch={customerTabSearch}
+            customerTabDraft={customerTabDraft}
+            openCustomerTabs={openCustomerTabs}
+            selectedCustomerTab={selectedCustomerTab}
+            editCustomerTabDraft={editCustomerTabDraft}
+            canEditActiveSessionDetails={canEditActiveSessionDetails}
+            getInventoryPickerDetail={getInventoryPickerDetail}
+            getCustomerTabTotal={getCustomerTabTotal}
+            onCustomerTabSearchChange={setCustomerTabSearch}
+            onCustomerTabDraftChange={setCustomerTabDraft}
+            onSelectCustomerTab={setSelectedCustomerTabId}
+            onEditCustomerTabDraftChange={setEditCustomerTabDraft}
+            onAddItemToCustomerTab={addItemToCustomerTab}
+            onCreateOrSelectCustomerTab={createOrSelectCustomerTab}
+            onUpdateCustomerTabItemQuantity={updateCustomerTabItemQuantity}
+            onRemoveItemFromCustomerTab={removeItemFromCustomerTab}
+            onBeginEditCustomerTabDetails={beginEditCustomerTabDetails}
+            onRejectCustomerTab={rejectCustomerTab}
+            onBeginCustomerTabCheckout={beginCustomerTabCheckout}
+            onSaveCustomerTabDetails={saveCustomerTabDetails}
+          />
         )}
 
-        {activeTab === "inventory" && (activeUser.role === "manager" || activeUser.role === "admin") && (
-          <section className="section-grid">
-            <div className="panel">
-              <div className="panel-header">
-                <div>
-                  <h2>Inventory Catalog</h2>
-                  <p>{canEditInventory ? "Create items, update prices, and keep barcode/search billing flexible." : "Review catalog, stock levels, and barcode setup in read-only mode."}</p>
-                </div>
-              </div>
-              {isManagerReadOnly && <div className="read-only-banner">Manager view: read-only access on this page.</div>}
-              {canEditInventory && (
-              <div className="section-block reports-summary-block">
-                <div className="section-block-header">
-                  <h3>Add New Item</h3>
-                  <p>Define price, opening stock, barcode, alert threshold, and reusable behavior.</p>
-                </div>
-              <form className="form-grid" onSubmit={upsertInventoryItem}>
-                <label><span>Item Name</span><input required value={itemForm.name} onChange={(event) => setItemForm((p) => ({ ...p, name: event.target.value }))} /></label>
-                <label>
-                  <span>Category</span>
-                  <select
-                    value={useCustomItemCategory ? "__other__" : itemForm.category}
-                    onChange={(event) => {
-                      const nextValue = event.target.value;
-                      if (nextValue === "__other__") {
-                        setUseCustomItemCategory(true);
-                        setCustomItemCategory(itemForm.category);
-                        return;
-                      }
-                      setUseCustomItemCategory(false);
-                      setCustomItemCategory("");
-                      setItemForm((p) => ({ ...p, category: nextValue }));
-                    }}
-                  >
-                    <option value="">Select category</option>
-                    {inventoryCategoryOptions.map((category) => (
-                      <option key={category} value={category}>
-                        {category}
-                      </option>
-                    ))}
-                    <option value="__other__">Other</option>
-                  </select>
-                </label>
-                {useCustomItemCategory && (
-                  <label>
-                    <span>New Category</span>
-                    <input
-                      required
-                      value={customItemCategory}
-                      onChange={(event) => {
-                        setCustomItemCategory(event.target.value);
-                        setItemForm((p) => ({ ...p, category: event.target.value }));
-                      }}
-                      placeholder="Enter new category"
-                    />
-                  </label>
-                )}
-                <label><span>Price</span><NumericInput required mode="decimal" min={0} value={itemForm.price} onValueChange={(value) => setItemForm((p) => ({ ...p, price: value }))} /></label>
-                <label><span>Opening Stock</span><NumericInput required min={0} value={itemForm.stockQty} onValueChange={(value) => setItemForm((p) => ({ ...p, stockQty: value }))} /></label>
-                <label><span>Low Stock Threshold</span><NumericInput required min={0} value={itemForm.lowStockThreshold} onValueChange={(value) => setItemForm((p) => ({ ...p, lowStockThreshold: value }))} /></label>
-                <label><span>Barcode</span><input value={itemForm.barcode} onChange={(event) => setItemForm((p) => ({ ...p, barcode: event.target.value }))} /></label>
-                <label className="checkbox-field"><input type="checkbox" checked={itemForm.isReusable} onChange={(event) => setItemForm((p) => ({ ...p, isReusable: event.target.checked }))} /><span>Reusable item</span></label>
-                <label className="checkbox-field"><input type="checkbox" checked={itemForm.active} onChange={(event) => setItemForm((p) => ({ ...p, active: event.target.checked }))} /><span>Item active</span></label>
-                <div className="button-row">
-                  <button className="primary-button" type="submit">Create Item</button>
-                </div>
-              </form>
-              </div>
-              )}
-              <div className="section-block section-block-muted">
-                <div className="section-block-header">
-                  <h3>Current Items</h3>
-                  <p>{canEditInventory ? "Review stock position, barcode setup, and quick edit access." : "Review stock position, barcode setup, and alert status."}</p>
-                </div>
-              <input
-                className="search-input"
-                value={inventoryItemSearch}
-                onChange={(event) => setInventoryItemSearch(event.target.value)}
-                placeholder="Search by item name or category"
-              />
-              <div className="table-wrap">
-                <table>
-                  <thead><tr><th>Item</th><th>Category</th><th>Type</th><th>Price</th><th>Stock</th><th>Threshold</th><th>Status</th><th>Barcode</th>{canEditInventory && <th />}</tr></thead>
-                  <tbody>
-                    {filteredInventoryItems.length === 0 && (
-                      <tr>
-                        <td colSpan={canEditInventory ? 9 : 8}>
-                          <div className="empty-state">No inventory items match this search.</div>
-                        </td>
-                      </tr>
-                    )}
-                    {filteredInventoryItems.map((item) => (
-                      <tr key={item.id}>
-                        <td>{item.name}</td>
-                        <td>{item.category}</td>
-                        <td>{item.isReusable ? "Reusable" : "Consumable"}</td>
-                        <td>{currency(item.price)}</td>
-                        <td>{item.stockQty}</td>
-                        <td>{item.lowStockThreshold}</td>
-                        <td><span className={`inventory-badge is-${getInventoryState(item)}`}>{getInventoryStateLabel(getInventoryState(item))}</span></td>
-                        <td>{item.barcode || "—"}</td>
-                        {canEditInventory && <td><button className="ghost-button" type="button" onClick={() => beginEditInventoryItem(item)}>Edit</button></td>}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-              </div>
-            </div>
-
-            <div className="panel">
-              <div className="panel-header">
-                <div>
-                  <h2>Stock Movements</h2>
-                  <p>{canEditInventory ? "Restock or manually deduct stock with required reasons." : "Review the latest stock deductions, sales, and adjustments."}</p>
-                </div>
-              </div>
-              {canEditInventory && (
-              <div className="section-block">
-                <div className="section-block-header">
-                  <h3>Record Movement</h3>
-                  <p>Capture restock and adjustment entries with a clear reason.</p>
-                </div>
-              <div className="form-grid">
-                <label><span>Item</span><select value={inventoryAction.itemId} onChange={(event) => setInventoryAction((p) => ({ ...p, itemId: event.target.value }))}><option value="">Select item</option>{appData.inventoryItems.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
-                <label><span>Quantity</span><NumericInput min={1} defaultValue={1} value={inventoryAction.quantity} onValueChange={(value) => setInventoryAction((p) => ({ ...p, quantity: value }))} /></label>
-                <label className="field-span-full"><span>Reason</span><input value={inventoryAction.reason} onChange={(event) => setInventoryAction((p) => ({ ...p, reason: event.target.value }))} placeholder="damage, expiry, correction, opening stock..." /></label>
-                <div className="button-row field-span-full">
-                  <button className="primary-button" type="button" onClick={() => recordStockMovement("restock")}>Restock</button>
-                  <button className="secondary-button" type="button" onClick={() => recordStockMovement("adjustment")}>Deduct / Adjust</button>
-                </div>
-              </div>
-              </div>
-              )}
-              <div className="section-block section-block-muted">
-                <div className="section-block-header">
-                  <h3>Recent Movements</h3>
-                  <p>Latest stock deductions, sales, and manual corrections.</p>
-                </div>
-              <div className="activity-list">
-                {appData.stockMovements.slice(0, 10).map((movement) => (
-                  <div key={movement.id} className="activity-row">
-                    <strong>{appData.inventoryItems.find((item) => item.id === movement.itemId)?.name || "Item"}</strong>
-                    <span className="muted">{movement.type} · {movement.quantity} · {movement.reason}</span>
-                  </div>
-                ))}
-              </div>
-              </div>
-            </div>
-          </section>
+        {activeTab === "inventory" && canAccessTab("inventory") && (
+          <InventoryPanel
+            inventoryItems={appData.inventoryItems}
+            stockMovements={appData.stockMovements}
+            itemForm={itemForm}
+            editItemForm={editItemForm}
+            useCustomItemCategory={useCustomItemCategory}
+            customItemCategory={customItemCategory}
+            useCustomEditItemCategory={useCustomEditItemCategory}
+            customEditItemCategory={customEditItemCategory}
+            inventoryAction={inventoryAction}
+            inventoryItemSearch={inventoryItemSearch}
+            filteredInventoryItems={filteredInventoryItems}
+            inventoryCategoryOptions={inventoryCategoryOptions}
+            canEditInventory={canEditInventory}
+            isManagerReadOnly={isManagerReadOnly}
+            getInventoryState={getInventoryState}
+            getInventoryStateLabel={getInventoryStateLabel}
+            onItemFormChange={setItemForm}
+            onEditItemFormChange={setEditItemForm}
+            onUseCustomItemCategoryChange={setUseCustomItemCategory}
+            onCustomItemCategoryChange={setCustomItemCategory}
+            onUseCustomEditItemCategoryChange={setUseCustomEditItemCategory}
+            onCustomEditItemCategoryChange={setCustomEditItemCategory}
+            onInventoryActionChange={setInventoryAction}
+            onInventoryItemSearchChange={setInventoryItemSearch}
+            onUpsertInventoryItem={upsertInventoryItem}
+            onSaveEditedInventoryItem={saveEditedInventoryItem}
+            onCloseEditInventoryModal={closeEditInventoryModal}
+            onBeginEditInventoryItem={beginEditInventoryItem}
+            onRecordStockMovement={recordStockMovement}
+          />
         )}
 
-        {activeTab === "reports" && (activeUser.role === "manager" || activeUser.role === "admin") && (
-          <>
-            <div className="reports-toolbar">
-              <div className="reports-toolbar-copy">
-                <h2>Operational Reports</h2>
-                <p>Range-based revenue, expense, and profit insights for owners.</p>
-                {isManagerReadOnly && <div className="read-only-banner compact">Manager view: read-only access on this page.</div>}
-              </div>
-              <div className="report-filter-inline">
-                <label>
-                  <span>Range</span>
-                  <select value={reportFilter.preset} onChange={(event) => setReportFilter((previous) => ({ ...previous, preset: event.target.value as ReportPreset }))}>
-                    <option value="today">Today</option>
-                    <option value="yesterday">Yesterday</option>
-                    <option value="last_7_days">Last 7 Days</option>
-                    <option value="this_month">This Month</option>
-                    <option value="last_month">Last Month</option>
-                    <option value="this_year">This Year</option>
-                    <option value="custom">Custom Range</option>
-                  </select>
-                </label>
-                {reportFilter.preset === "custom" && (
-                  <>
-                    <label>
-                      <span>From</span>
-                      <input type="date" value={reportFilter.fromDate ?? reportFromDate} onChange={(event) => setReportFilter((previous) => ({ ...previous, fromDate: event.target.value }))} />
-                    </label>
-                    <label>
-                      <span>To</span>
-                      <input type="date" value={reportFilter.toDate ?? reportToDate} onChange={(event) => setReportFilter((previous) => ({ ...previous, toDate: event.target.value }))} />
-                    </label>
-                  </>
-                )}
-                <div className="report-range-chip">
-                  <div className="report-range-chip-head">
-                    <span className="muted">Selected Period</span>
-                    <strong>{resolvedReportRange.label}</strong>
-                  </div>
-                  <div className="muted">{reportFromDate} to {reportToDate}</div>
-                </div>
-              </div>
-            </div>
-          <section className="section-grid reports-layout">
-            <div className="panel">
-              <div className="section-block reports-summary-block">
-              <div className="section-block-header">
-                <h3>Performance Snapshot</h3>
-                <p>Primary range KPIs first, followed by supporting revenue and profit signals.</p>
-              </div>
-              <div className="reports-kpi-grid">
-                <div className="report-kpi-card is-primary">
-                  <span className="muted">Gross Revenue</span>
-                  <strong>{currency(grossRevenue)}</strong>
-                </div>
-                <div className="report-kpi-card is-primary">
-                  <span className="muted">Net Cash Earnings</span>
-                  <strong>{currency(netCashEarnings)}</strong>
-                </div>
-                <div className="report-kpi-card is-primary">
-                  <span className="muted">Net Profit (Normalized)</span>
-                  <strong>{currency(normalizedNetProfit)}</strong>
-                </div>
-              </div>
-              <div className="reports-support-grid">
-                <div className="report-kpi-card is-secondary">
-                  <span className="muted">Bills</span>
-                  <strong>{`${issuedBills.length}`}</strong>
-                </div>
-                <div className="report-kpi-card is-secondary">
-                  <span className="muted">Cash Expenses</span>
-                  <strong>{currency(cashExpenses)}</strong>
-                </div>
-                <div className="report-kpi-card is-secondary">
-                  <span className="muted">Normalized Monthly Expenses</span>
-                  <strong>{currency(normalizedExpenses)}</strong>
-                </div>
-                <div className="report-kpi-card is-secondary">
-                  <span className="muted">Session Revenue</span>
-                  <strong>{currency(sessionRevenue)}</strong>
-                </div>
-                <div className="report-kpi-card is-secondary">
-                  <span className="muted">Consumable Revenue</span>
-                  <strong>{currency(itemRevenue)}</strong>
-                </div>
-                <div className="report-kpi-card is-secondary">
-                  <span className="muted">Discounts</span>
-                  <strong>{currency(totalDiscounts)}</strong>
-                </div>
-              </div>
-              <div className="insight-grid">
-                <div className="insight-card">
-                  <span className="muted">Revenue Growth vs {previousRange.label}</span>
-                  <strong>
-                    {revenueGrowthPct === null
-                      ? "No comparable prior data"
-                      : `${revenueGrowthPct >= 0 ? "+" : ""}${revenueGrowthPct.toFixed(1)}%`}
-                  </strong>
-                  <div className="muted">
-                    Previous range revenue: {currency(previousRangeRevenue)}
-                  </div>
-                </div>
-                <div className="insight-card">
-                  <span className="muted">Average Bill Value</span>
-                  <strong>{currency(averageBillValue)}</strong>
-                  <div className="muted">
-                    Discount given: {currency(totalDiscounts)}
-                  </div>
-                </div>
-                <div className="insight-card">
-                  <span className="muted">Top Earning Channel</span>
-                  <strong>{topStation?.[0] ?? "No sales yet"}</strong>
-                  <div className="muted">
-                    {topStation ? currency(topStation[1]) : "No revenue in selected period"}
-                  </div>
-                </div>
-              </div>
-              </div>
-              <div className="section-block section-block-muted">
-              <div className="panel-header">
-                <div>
-                  <h2>Selected Period Analysis</h2>
-                  <p>Compare actual spend and normalized operating cost for the chosen range.</p>
-                </div>
-              </div>
-              <div className="analysis-list">
-                <div className="activity-row">
-                  <strong>Gross Revenue</strong>
-                  <span className="muted">{currency(grossRevenue)}</span>
-                </div>
-                <div className="activity-row">
-                  <strong>Cash Expenses</strong>
-                  <span className="muted">{currency(cashExpenses)}</span>
-                </div>
-                <div className="activity-row">
-                  <strong>Normalized Monthly Expenses</strong>
-                  <span className="muted">{currency(normalizedExpenses)}</span>
-                </div>
-                <div className="activity-row">
-                  <strong>Net Cash Earnings</strong>
-                  <span className="muted">{currency(netCashEarnings)}</span>
-                </div>
-                <div className="activity-row">
-                  <strong>Net Profit (Normalized)</strong>
-                  <span className="muted">{currency(normalizedNetProfit)}</span>
-                </div>
-                <div className="activity-row">
-                  <strong>Payment Mix</strong>
-                  <span className="muted">
-                    Cash {currency(paymentModeTotals.cash)} · UPI {currency(paymentModeTotals.upi)}
-                  </span>
-                </div>
-              </div>
-              </div>
-              <div className="reports-workspace">
-                <div
-                  className="section-block bill-register-block"
-                  style={receiptPreviewBlockHeight ? { height: `${receiptPreviewBlockHeight}px` } : undefined}
-                >
-                  <div className="section-block-header">
-                    <h3>Bill Register</h3>
-                    <p>Export and review bills for the selected period without stretching the full page.</p>
-                  </div>
-                  <div className="button-row">
-                    <button className="secondary-button" type="button" onClick={() => exportRowsToCsv(reportRows, `report-${reportFromDate}-${reportToDate}.csv`)}>Export CSV</button>
-                    <button className="secondary-button" type="button" onClick={() => exportRowsToXlsx(reportRows, `report-${reportFromDate}-${reportToDate}.xlsx`)}>Export Excel</button>
-                    <button className="secondary-button" type="button" onClick={() => exportRowsToPdf(reportRows, `report-${reportFromDate}-${reportToDate}.pdf`, appData.businessProfile.name)}>Export PDF</button>
-                  </div>
-                  <div className="table-wrap bill-register-wrap">
-                    <table>
-                      <thead><tr><th>Bill</th><th>Date</th><th>Station</th><th>Customer</th><th>Payment</th><th>Total</th><th>Status</th><th /></tr></thead>
-                      <tbody>
-                        {filteredBills.length === 0 && (
-                          <tr>
-                            <td colSpan={8}><div className="empty-state">No bills found for the selected period.</div></td>
-                          </tr>
-                        )}
-                        {filteredBills.map((bill) => (
-                          <tr key={bill.id}>
-                            <td>{bill.billNumber}</td>
-                            <td>{formatDateTime(bill.issuedAt)}</td>
-                            <td>{bill.stationId ? appData.stations.find((station) => station.id === bill.stationId)?.name || "Station" : "Customer tab"}</td>
-                            <td>{bill.customerName || "Walk-in"}</td>
-                            <td>{bill.paymentMode.toUpperCase()}</td>
-                            <td>{currency(bill.total)}</td>
-                            <td>{bill.status}</td>
-                            <td>
-                              <div className="button-row dense">
-                                <button className="ghost-button" type="button" onClick={() => setSelectedReceiptBillId(bill.id)}>View</button>
-                                {canReplaceIssuedBills && bill.status === "issued" && (
-                                  <button className="ghost-button" type="button" onClick={() => openBillReplacement(bill.id)}>Replace Bill</button>
-                                )}
-                                {canVoidRefundBills && bill.status === "issued" && (
-                                  <button className="ghost-button danger" type="button" onClick={() => voidOrRefundBill(bill.id)}>Void/Refund</button>
-                                )}
-                              </div>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-                <div className="section-block receipt-preview-block" ref={receiptPreviewBlockRef}>
-                  <div className="section-block-header">
-                    <h3>Receipt Preview</h3>
-                    <p>Select a bill from the register to preview it here.</p>
-                  </div>
-                  {selectedReceiptBill && receiptPreviewModel ? (
-                    <div className="receipt-preview thermal-receipt-preview">
-                      <div className="thermal-receipt-brand">
-                        <div className="thermal-receipt-logo-shell">
-                          <img className="thermal-receipt-logo" src={brandLogo} alt={`${appData.businessProfile.name} logo`} />
-                        </div>
-                        <div className="thermal-receipt-title">{receiptPreviewModel.brandTitle}</div>
-                        <div className="thermal-receipt-subtitle">{receiptPreviewModel.brandSubtitle}</div>
-                      </div>
-                      <div className="thermal-receipt-info">
-                        {receiptPreviewModel.infoLines.map((line) => (
-                          <div key={line}>{line}</div>
-                        ))}
-                      </div>
-                      <div className="thermal-receipt-divider" />
-                      <div className="thermal-receipt-meta">
-                        {receiptPreviewModel.metaRows.map((row) => (
-                          <div key={row.label} className="thermal-receipt-meta-row">
-                            <span>{row.label}</span>
-                            <strong>{row.value}</strong>
-                          </div>
-                        ))}
-                      </div>
-                      <div className="thermal-receipt-divider" />
-                      <div className="thermal-receipt-entries">
-                        {receiptPreviewModel.entries.map((entry) => (
-                          <div key={entry.id} className={`thermal-receipt-entry ${entry.isDiscount ? "is-discount" : ""}`}>
-                            <div className="thermal-receipt-entry-head">
-                              <strong>{entry.title}</strong>
-                              <strong>{entry.amount}</strong>
-                            </div>
-                            <div className="thermal-receipt-entry-detail">{entry.detail}</div>
-                          </div>
-                        ))}
-                      </div>
-                      <div className="thermal-receipt-divider" />
-                      <div className="thermal-receipt-totals">
-                        <div><span>Subtotal</span><strong>{receiptPreviewModel.subtotal}</strong></div>
-                        <div><span>Discount</span><strong>{receiptPreviewModel.discount}</strong></div>
-                        {receiptPreviewModel.roundOff && <div><span>Round Off</span><strong>{receiptPreviewModel.roundOff}</strong></div>}
-                        <div className="is-grand-total"><span>Total</span><strong>{receiptPreviewModel.total}</strong></div>
-                      </div>
-                      <div className="thermal-receipt-divider" />
-                      <div className="thermal-receipt-footer">{receiptPreviewModel.footer}</div>
-                      <button className="secondary-button" type="button" onClick={() => openReceiptWindow(appData.businessProfile, selectedReceiptBill, appData.bills)}>Open Receipt Window</button>
-                    </div>
-                  ) : <div className="empty-state">Select a bill to view its receipt.</div>}
-                </div>
-              </div>
-            </div>
-
-            <div className="panel">
-              <div className="section-block section-block-muted">
-              <div className="panel-header">
-                <div><h2>Expense Breakdown</h2><p>Separate actual paid expenses from normalized monthly operating cost.</p></div>
-              </div>
-              <div className="expense-breakdown-grid">
-                <div className="expense-breakdown-card">
-                  <strong>Cash Expenses</strong>
-                  {expenseByCategory.length > 0 ? (
-                    <div className="activity-list compact-list">
-                      {expenseByCategory.map(([category, amount]) => (
-                        <div key={category} className="activity-row">
-                          <strong>{category}</strong>
-                          <span className="muted">{currency(amount)}</span>
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="empty-state">No one-time expenses in this period.</div>
-                  )}
-                </div>
-                <div className="expense-breakdown-card">
-                  <strong>Normalized Monthly Expenses</strong>
-                  {normalizedExpenseByCategory.length > 0 ? (
-                    <div className="activity-list compact-list">
-                      {normalizedExpenseByCategory.map(([category, amount]) => (
-                        <div key={category} className="activity-row">
-                          <strong>{category}</strong>
-                          <span className="muted">{currency(amount)}</span>
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="empty-state">No active monthly templates affecting this period.</div>
-                  )}
-                </div>
-              </div>
-              </div>
-              {canEditReports && (
-                <>
-                  <div className="section-block">
-                  <div className="panel-header">
-                    <div><h2>One-Time Expense</h2><p>Log actual paid expenses for a specific date inside the selected range.</p></div>
-                  </div>
-                  <form className="form-grid" onSubmit={createExpense}>
-                    <label><span>Title</span><input required value={expenseForm.title} onChange={(event) => setExpenseForm((p) => ({ ...p, title: event.target.value }))} placeholder="Milk restock, electricity, rent..." /></label>
-                    <label><span>Category</span><select value={expenseForm.category} onChange={(event) => setExpenseForm((p) => ({ ...p, category: event.target.value }))}>{expenseCategoryOptions.map((category) => <option key={category} value={category}>{category}</option>)}</select></label>
-                    <label><span>Amount</span><NumericInput required mode="decimal" min={0} value={expenseForm.amount} onValueChange={(value) => setExpenseForm((p) => ({ ...p, amount: value }))} /></label>
-                    <label><span>Date</span><input type="date" value={expenseForm.spentAt} onChange={(event) => setExpenseForm((p) => ({ ...p, spentAt: event.target.value }))} /></label>
-                    <label className="field-span-full"><span>Notes</span><input value={expenseForm.notes} onChange={(event) => setExpenseForm((p) => ({ ...p, notes: event.target.value }))} placeholder="Optional details" /></label>
-                    <button className="primary-button field-span-full" type="submit">Add One-Time Expense</button>
-                  </form>
-                  <div className="activity-list">
-                    {filteredExpenses.length > 0 ? filteredExpenses.slice(0, 8).map((expense) => (
-                      <div key={expense.id} className="line-item-row">
-                        <div>
-                          <strong>{expense.title}</strong>
-                          <div className="muted">{expense.category} · {formatDateTime(expense.spentAt)}</div>
-                        </div>
-                        <div className="button-row dense">
-                          <span>{currency(expense.amount)}</span>
-                          <button className="ghost-button danger" type="button" onClick={() => deleteExpense(expense.id)}>Delete</button>
-                        </div>
-                      </div>
-                    )) : <div className="empty-state">No one-time expenses logged for this period.</div>}
-                  </div>
-                  </div>
-                  <div className="section-block section-block-muted">
-                  <div className="panel-header">
-                    <div><h2>Monthly Expense Templates</h2><p>Track repeating monthly costs like rent and internet without creating fake daily entries.</p></div>
-                  </div>
-                  <form className="form-grid" onSubmit={saveExpenseTemplate}>
-                    <label><span>Title</span><input required value={expenseTemplateForm.title} onChange={(event) => setExpenseTemplateForm((p) => ({ ...p, title: event.target.value }))} placeholder="Rent, internet, salaries..." /></label>
-                    <label><span>Category</span><select value={expenseTemplateForm.category} onChange={(event) => setExpenseTemplateForm((p) => ({ ...p, category: event.target.value }))}>{expenseCategoryOptions.map((category) => <option key={category} value={category}>{category}</option>)}</select></label>
-                    <label><span>Monthly Amount</span><NumericInput required mode="decimal" min={0} value={expenseTemplateForm.amount} onValueChange={(value) => setExpenseTemplateForm((p) => ({ ...p, amount: value }))} /></label>
-                    <label><span>Start Month</span><input type="month" value={expenseTemplateForm.startMonth} onChange={(event) => setExpenseTemplateForm((p) => ({ ...p, startMonth: event.target.value }))} /></label>
-                    <label className="field-span-full"><span>Notes</span><input value={expenseTemplateForm.notes ?? ""} onChange={(event) => setExpenseTemplateForm((p) => ({ ...p, notes: event.target.value }))} placeholder="Optional details" /></label>
-                    <label className="checkbox-field"><input type="checkbox" checked={expenseTemplateForm.active} onChange={(event) => setExpenseTemplateForm((p) => ({ ...p, active: event.target.checked }))} /><span>Template active</span></label>
-                    <div className="button-row field-span-full">
-                      <button className="primary-button" type="submit">{expenseTemplateForm.id ? "Update Monthly Template" : "Create Monthly Template"}</button>
-                      {expenseTemplateForm.id && <button className="secondary-button" type="button" onClick={() => setExpenseTemplateForm({ id: "", title: "", category: "Rent", amount: 0, frequency: "monthly", startMonth: reportToDate.slice(0, 7), active: true, notes: "", createdByUserId: "" })}>Clear</button>}
-                    </div>
-                  </form>
-                  <div className="activity-list">
-                    {appData.expenseTemplates.length > 0 ? appData.expenseTemplates.map((template) => (
-                      <div key={template.id} className="line-item-row">
-                        <div>
-                          <strong>{template.title}</strong>
-                          <div className="muted">{template.category} · {currency(template.amount)} / month · from {formatMonthLabel(template.startMonth)}</div>
-                        </div>
-                        <div className="button-row dense">
-                          <span className="muted">{template.active ? "Active" : "Inactive"}</span>
-                          <button className="ghost-button" type="button" onClick={() => beginEditExpenseTemplate(template)}>Edit</button>
-                          <button className="ghost-button" type="button" onClick={() => toggleExpenseTemplateActive(template.id)}>{template.active ? "Deactivate" : "Activate"}</button>
-                          <button className="ghost-button danger" type="button" onClick={() => deleteExpenseTemplate(template.id)}>Delete</button>
-                        </div>
-                      </div>
-                    )) : <div className="empty-state">No monthly templates yet.</div>}
-                  </div>
-                  </div>
-                </>
-              )}
-            </div>
-          </section>
-          </>
+        {activeTab === "bills" && canAccessTab("bills") && (
+          <BillRegisterPanel
+            bills={appData.bills}
+            stations={appData.stations}
+            businessProfile={appData.businessProfile}
+            selectedReceiptBillId={selectedReceiptBillId}
+            selectedReceiptBill={selectedReceiptBill}
+            receiptPreviewModel={receiptPreviewModel}
+            allBills={appData.bills}
+            canReplaceIssuedBills={canReplaceIssuedBills}
+            canVoidRefundBills={canVoidRefundBills}
+            canSettlePendingBills={canSettlePendingBills}
+            onSelectReceiptBill={setSelectedReceiptBillId}
+            onSettlePendingBill={(billId) => setSettlementDraft({ billId, paymentMode: "cash", cashAmount: 0, upiAmount: 0 })}
+            onVoidPendingBill={(billId) => setVoidPendingDraft({ billId, reason: "" })}
+            onOpenBillReplacement={openBillReplacement}
+            onVoidOrRefundBill={voidOrRefundBill}
+          />
         )}
 
-        {activeTab === "customers" && activeUser.role === "admin" && (
-          <section className="section-grid sales-layout customer-profiles-layout">
-            <div className="panel">
-              <div className="panel-header">
-                <div>
-                  <h2>Customer Analytics</h2>
-                  <p>Track repeat visits, top spenders, business timing, and offline follow-up opportunities.</p>
-                </div>
-              </div>
-              <div className="reports-kpi-grid">
-                <div className="report-kpi-card is-primary">
-                  <span className="muted">Total Profiles</span>
-                  <strong>{customerAnalytics.totalProfiles}</strong>
-                </div>
-                <div className="report-kpi-card is-primary">
-                  <span className="muted">Repeat Customers</span>
-                  <strong>{customerAnalytics.repeatCustomersCount}</strong>
-                  <span className="muted">{customerAnalytics.repeatRate.toFixed(1)}% repeat rate</span>
-                </div>
-                <div className="report-kpi-card is-primary">
-                  <span className="muted">Average Spend / Customer</span>
-                  <strong>{currency(customerAnalytics.averageSpendPerCustomer)}</strong>
-                </div>
-              </div>
-              <div className="insight-grid">
-                <div className="insight-card">
-                  <span className="muted">Top Customer by Spend</span>
-                  <strong>{customerAnalytics.topSpend?.customer.name ?? "No data"}</strong>
-                  <span className="muted">{customerAnalytics.topSpend ? currency(customerAnalytics.topSpend.totalSpend) : "No issued bills yet"}</span>
-                </div>
-                <div className="insight-card">
-                  <span className="muted">Top Customer by Visits</span>
-                  <strong>{customerAnalytics.topVisits?.customer.name ?? "No data"}</strong>
-                  <span className="muted">{customerAnalytics.topVisits ? `${customerAnalytics.topVisits.visitCount} visits` : "No issued bills yet"}</span>
-                </div>
-                <div className="insight-card">
-                  <span className="muted">Customer Mix</span>
-                  <strong>{customerAnalytics.activeCustomersCount} active</strong>
-                  <span className="muted">{customerAnalytics.oneTimeCustomersCount} one-time customers</span>
-                </div>
-              </div>
-              <div className="section-block section-block-muted">
-                <div className="section-block-header">
-                  <h3>Owner Insights</h3>
-                  <p>Operational and marketing signals from issued customer bills.</p>
-                </div>
-                <div className="insight-grid">
-                  <div className="insight-card">
-                    <span className="muted">Most-Played Station</span>
-                    <strong>{customerAnalytics.mostPlayedStation ?? "No data"}</strong>
-                  </div>
-                  <div className="insight-card">
-                    <span className="muted">Peak Visit Hour</span>
-                    <strong>{customerAnalytics.peakHourLabel}</strong>
-                  </div>
-                  <div className="insight-card">
-                    <span className="muted">Peak Weekday</span>
-                    <strong>{customerAnalytics.peakWeekdayLabel}</strong>
-                  </div>
-                </div>
-                <div className="section-grid customer-insight-lists">
-                  <div className="section-block">
-                    <div className="section-block-header">
-                      <h3>Top Customers by Spend</h3>
-                    </div>
-                    <div className="activity-list compact-list">
-                      {customerAnalytics.stats.filter((entry) => entry.totalSpend > 0).slice().sort((left, right) => right.totalSpend - left.totalSpend).slice(0, 5).map((entry) => (
-                        <div key={entry.customer.id} className="activity-row">
-                          <strong>{entry.customer.name}</strong>
-                          <span className="muted">{currency(entry.totalSpend)}</span>
-                        </div>
-                      ))}
-                      {customerAnalytics.stats.every((entry) => entry.totalSpend <= 0) && <div className="empty-state">No issued customer spend yet.</div>}
-                    </div>
-                  </div>
-                  <div className="section-block">
-                    <div className="section-block-header">
-                      <h3>Top Customers by Visits</h3>
-                    </div>
-                    <div className="activity-list compact-list">
-                      {customerAnalytics.stats.filter((entry) => entry.visitCount > 0).slice().sort((left, right) => right.visitCount - left.visitCount).slice(0, 5).map((entry) => (
-                        <div key={entry.customer.id} className="activity-row">
-                          <strong>{entry.customer.name}</strong>
-                          <span className="muted">{entry.visitCount} visits</span>
-                        </div>
-                      ))}
-                      {customerAnalytics.stats.every((entry) => entry.visitCount <= 0) && <div className="empty-state">No visit history yet.</div>}
-                    </div>
-                  </div>
-                  <div className="section-block">
-                    <div className="section-block-header">
-                      <h3>Recent High-Value Customers</h3>
-                    </div>
-                    <div className="activity-list compact-list">
-                      {customerAnalytics.recentHighValueCustomers.length > 0 ? customerAnalytics.recentHighValueCustomers.map((entry) => (
-                        <div key={entry.customer.id} className="activity-row">
-                          <strong>{entry.customer.name}</strong>
-                          <span className="muted">{currency(entry.totalSpend)} · {formatDateTime(entry.lastVisitAt)}</span>
-                        </div>
-                      )) : <div className="empty-state">No high-value history yet.</div>}
-                    </div>
-                  </div>
-                  <div className="section-block">
-                    <div className="section-block-header">
-                      <h3>At-Risk Customers</h3>
-                    </div>
-                    <div className="activity-list compact-list">
-                      {customerAnalytics.atRiskCustomers.length > 0 ? customerAnalytics.atRiskCustomers.slice(0, 5).map((entry) => (
-                        <div key={entry.customer.id} className="activity-row">
-                          <strong>{entry.customer.name}</strong>
-                          <span className="muted">Last visit {formatDateTime(entry.lastVisitAt)}</span>
-                        </div>
-                      )) : <div className="empty-state">No at-risk customers right now.</div>}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div className="panel">
-              <div className="panel-header">
-                <div>
-                  <h2>Customer Directory</h2>
-                  <p>Search by customer name or phone, then review or edit the selected profile.</p>
-                </div>
-              </div>
-              <div className="form-grid">
-                <label>
-                  <span>Search</span>
-                  <input
-                    value={customerProfileSearch}
-                    onChange={(event) => setCustomerProfileSearch(event.target.value)}
-                    placeholder="Search by name or phone"
-                  />
-                </label>
-                <label>
-                  <span>Sort By</span>
-                  <select
-                    value={customerProfileSort}
-                    onChange={(event) =>
-                      setCustomerProfileSort(event.target.value as "last_visit" | "total_spend" | "visit_count")
-                    }
-                  >
-                    <option value="last_visit">Last Visit</option>
-                    <option value="total_spend">Total Spend</option>
-                    <option value="visit_count">Visit Count</option>
-                  </select>
-                </label>
-              </div>
-              <div className="section-block customer-profile-directory">
-                <div className="activity-list compact-list">
-                  {filteredCustomerProfiles.length > 0 ? filteredCustomerProfiles.map((entry) => (
-                    <button
-                      key={entry.customer.id}
-                      type="button"
-                      className={`tab-chip ${selectedCustomerProfile?.id === entry.customer.id ? "is-active" : ""}`}
-                      onClick={() => setSelectedCustomerProfileId(entry.customer.id)}
-                    >
-                      <strong>{entry.customer.name}</strong>
-                      <span>{entry.customer.phone || "No phone"}</span>
-                      <span className="muted">{entry.visitCount} visits · {currency(entry.totalSpend)}</span>
-                    </button>
-                  )) : <div className="empty-state">No customer profiles match this search.</div>}
-                </div>
-              </div>
-              <div className="section-block section-block-muted">
-                <div className="panel-header">
-                  <div>
-                    <h2>Selected Customer</h2>
-                    <p>Profile details and billed visit history for the chosen customer.</p>
-                  </div>
-                  {selectedCustomerProfile && (
-                    <button className="secondary-button" type="button" onClick={() => beginEditCustomerProfile(selectedCustomerProfile)}>
-                      Edit Profile
-                    </button>
-                  )}
-                </div>
-                {selectedCustomerProfile && selectedCustomerProfileStats ? (
-                  <>
-                    <div className="reports-support-grid">
-                      <div className="report-kpi-card is-secondary">
-                        <span className="muted">Customer</span>
-                        <strong>{selectedCustomerProfile.name}</strong>
-                        <span className="muted">{selectedCustomerProfile.phone || "No phone recorded"}</span>
-                      </div>
-                      <div className="report-kpi-card is-secondary">
-                        <span className="muted">Visits</span>
-                        <strong>{selectedCustomerProfileStats.visitCount}</strong>
-                        <span className="muted">Average bill {currency(selectedCustomerProfileStats.visitCount ? selectedCustomerProfileStats.totalSpend / selectedCustomerProfileStats.visitCount : 0)}</span>
-                      </div>
-                      <div className="report-kpi-card is-secondary">
-                        <span className="muted">Favorite Station</span>
-                        <strong>{selectedCustomerProfileStats.favoriteStationName ?? "Consumables Tab"}</strong>
-                        <span className="muted">Last visit {formatDateTime(selectedCustomerProfileStats.lastVisitAt)}</span>
-                      </div>
-                    </div>
-                    <div className="analysis-list">
-                      <div className="line-item-row">
-                        <strong>Total Spend</strong>
-                        <span className="muted">{currency(selectedCustomerProfileStats.totalSpend)}</span>
-                      </div>
-                      <div className="line-item-row">
-                        <strong>Created</strong>
-                        <span className="muted">{formatDateTime(selectedCustomerProfile.createdAt)}</span>
-                      </div>
-                      <div className="line-item-row">
-                        <strong>Last Visit</strong>
-                        <span className="muted">{formatDateTime(selectedCustomerProfileStats.lastVisitAt)}</span>
-                      </div>
-                    </div>
-                    <div className="section-block">
-                      <div className="section-block-header">
-                        <h3>Recent Billed Visits</h3>
-                      </div>
-                      <div className="activity-list compact-list">
-                        {selectedCustomerProfileStats.bills.length > 0 ? selectedCustomerProfileStats.bills
-                          .slice()
-                          .sort((left, right) => new Date(right.issuedAt).getTime() - new Date(left.issuedAt).getTime())
-                          .slice(0, 8)
-                          .map((bill) => (
-                            <div key={bill.id} className="activity-row">
-                              <div>
-                                <strong>{bill.billNumber}</strong>
-                                <div className="muted">
-                                  {(bill.stationId && appData.stations.find((station) => station.id === bill.stationId)?.name) || "Consumables Tab"} · {formatDateTime(bill.issuedAt)}
-                                </div>
-                              </div>
-                              <span className="muted">{currency(bill.total)}</span>
-                            </div>
-                          )) : <div className="empty-state">No billed visits for this customer yet.</div>}
-                      </div>
-                    </div>
-                  </>
-                ) : (
-                  <div className="empty-state">Select a customer profile to review its details.</div>
-                )}
-              </div>
-            </div>
-          </section>
+        {activeTab === "reports" && canAccessTab("reports") && (
+          <ReportsPanel
+            stations={appData.stations}
+            businessProfile={appData.businessProfile}
+            reportFilter={reportFilter}
+            reportFromDate={reportFromDate}
+            reportToDate={reportToDate}
+            resolvedReportRangeLabel={resolvedReportRange.label}
+            filteredBills={filteredBills}
+            filteredExpenses={filteredExpenses}
+            expenseTemplates={appData.expenseTemplates}
+            reportRows={reportRows}
+            summary={{
+              grossRevenue,
+              netCashEarnings,
+              normalizedNetProfit,
+              issuedBillsCount: issuedBills.length,
+              cashExpenses,
+              normalizedExpenses,
+              sessionRevenue,
+              itemRevenue,
+              totalDiscounts,
+              previousRangeLabel: previousRange.label,
+              previousRangeRevenue,
+              revenueGrowthPct,
+              averageBillValue,
+              topStation,
+              paymentModeTotals,
+              expenseByCategory,
+              normalizedExpenseByCategory
+            }}
+            expenseForm={expenseForm}
+            expenseTemplateForm={expenseTemplateForm}
+            expenseCategoryOptions={expenseCategoryOptions}
+            canEditReports={canEditReports}
+            isManagerReadOnly={isManagerReadOnly}
+            onReportFilterChange={setReportFilter}
+            onExpenseFormChange={setExpenseForm}
+            onExpenseTemplateFormChange={setExpenseTemplateForm}
+            onCreateExpense={createExpense}
+            onDeleteExpense={deleteExpense}
+            onSaveExpenseTemplate={saveExpenseTemplate}
+            onBeginEditExpenseTemplate={beginEditExpenseTemplate}
+            onToggleExpenseTemplateActive={toggleExpenseTemplateActive}
+            onDeleteExpenseTemplate={deleteExpenseTemplate}
+          />
         )}
 
-        {activeTab === "settings" && (activeUser.role === "manager" || activeUser.role === "admin") && (
-          <section className="section-grid settings-layout">
-            {isManagerReadOnly && <div className="read-only-banner field-span-full">Manager view: read-only access on this page.</div>}
-            <div className="panel field-span-full">
-              <div className="panel-header">
-                <div><h2>Business Profile</h2><p>Receipt identity and customer-facing contact details.</p></div>
-              </div>
-              {canEditSettings ? (
-                <form className="form-grid" onSubmit={saveBusinessProfile}>
-                  <label><span>Business Name</span><input value={businessDraft.name} onChange={(event) => setBusinessDraft((p) => ({ ...p, name: event.target.value }))} /></label>
-                  <label><span>Logo Text</span><input value={businessDraft.logoText} onChange={(event) => setBusinessDraft((p) => ({ ...p, logoText: event.target.value }))} /></label>
-                  <label className="field-span-full"><span>Address</span><input value={businessDraft.address} onChange={(event) => setBusinessDraft((p) => ({ ...p, address: event.target.value }))} /></label>
-                  <label><span>Primary Phone</span><input value={businessDraft.primaryPhone} onChange={(event) => setBusinessDraft((p) => ({ ...p, primaryPhone: event.target.value }))} /></label>
-                  <label><span>Secondary Phone</span><input value={businessDraft.secondaryPhone ?? ""} onChange={(event) => setBusinessDraft((p) => ({ ...p, secondaryPhone: event.target.value }))} /></label>
-                  <label className="field-span-full"><span>Receipt Footer</span><input value={businessDraft.receiptFooter} onChange={(event) => setBusinessDraft((p) => ({ ...p, receiptFooter: event.target.value }))} /></label>
-                  <button className="primary-button" type="submit">Save Business Details</button>
-                </form>
-              ) : (
-                <div className="activity-list">
-                  <div className="activity-row"><strong>Business Name</strong><span className="muted">{appData.businessProfile.name}</span></div>
-                  <div className="activity-row"><strong>Logo Text</strong><span className="muted">{appData.businessProfile.logoText}</span></div>
-                  <div className="activity-row"><strong>Primary Phone</strong><span className="muted">{appData.businessProfile.primaryPhone}</span></div>
-                  <div className="activity-row"><strong>Secondary Phone</strong><span className="muted">{appData.businessProfile.secondaryPhone || "—"}</span></div>
-                  <div className="activity-row"><strong>Address</strong><span className="muted">{appData.businessProfile.address}</span></div>
-                  <div className="activity-row"><strong>Receipt Footer</strong><span className="muted">{appData.businessProfile.receiptFooter}</span></div>
-                </div>
-              )}
-            </div>
-
-            <div className="panel">
-              <div className="panel-header">
-                <div><h2>Stations</h2><p>{canEditSettings ? "Add or remove tables, consoles, and other timed resources." : "Review configured stations and their current status."}</p></div>
-              </div>
-              {canEditSettings && (
-              <form className="form-grid" onSubmit={upsertStation}>
-                <label><span>Station Name</span><input required value={stationForm.name} onChange={(event) => setStationForm((p) => ({ ...p, name: event.target.value }))} /></label>
-                <label><span>Mode</span><select value={stationForm.mode} onChange={(event) => setStationForm((p) => ({ ...p, mode: event.target.value as Station["mode"] }))}><option value="timed">Timed</option><option value="unit_sale">Unit sale</option></select></label>
-                <label className="checkbox-field"><input type="checkbox" checked={stationForm.active} onChange={(event) => setStationForm((p) => ({ ...p, active: event.target.checked }))} /><span>Active station</span></label>
-                <label className="checkbox-field"><input type="checkbox" checked={stationForm.ltpEnabled} onChange={(event) => setStationForm((p) => ({ ...p, ltpEnabled: event.target.checked }))} /><span>LTP enabled</span></label>
-                <button className="primary-button" type="submit">Create Station</button>
-              </form>
-              )}
-              <div className="table-wrap">
-                <table>
-                  <thead><tr><th>Station</th><th>Mode</th><th>LTP</th><th>Status</th>{canEditSettings && <th />}</tr></thead>
-                  <tbody>
-                    {appData.stations.map((station) => (
-                      <tr key={station.id}>
-                        <td>{station.name}</td>
-                        <td>{station.mode}</td>
-                        <td>{station.ltpEnabled ? "Enabled" : "Off"}</td>
-                        <td>{station.active ? "Active" : "Inactive"}</td>
-                        {canEditSettings && <td><div className="button-row dense"><button className="ghost-button" type="button" onClick={() => beginEditStation(station)}>Edit</button><button className="ghost-button danger" type="button" onClick={() => deleteStation(station.id)}>Delete</button></div></td>}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-
-            <div className="panel">
-              <div className="panel-header">
-                <div><h2>Pricing Bands</h2><p>{canEditSettings ? "Hourly rates are prorated and split across time ranges automatically." : "Review configured rate bands for each station."}</p></div>
-              </div>
-              {canEditSettings && (
-              <form className="form-grid" onSubmit={addPricingRule}>
-                <label><span>Station</span><select value={pricingDraft.stationId} onChange={(event) => setPricingDraft((p) => ({ ...p, stationId: event.target.value }))}><option value="">Select station</option>{appData.stations.map((station) => <option key={station.id} value={station.id}>{station.name}</option>)}</select></label>
-                <label><span>Label</span><input required value={pricingDraft.label} onChange={(event) => setPricingDraft((p) => ({ ...p, label: event.target.value }))} placeholder="Day, Night..." /></label>
-                <label><span>Start</span><input type="time" value={pricingDraft.startTime} onChange={(event) => setPricingDraft((p) => ({ ...p, startTime: event.target.value }))} /></label>
-                <label><span>End</span><input type="time" value={pricingDraft.endTime} onChange={(event) => setPricingDraft((p) => ({ ...p, endTime: event.target.value }))} /></label>
-                <label><span>Hourly Rate</span><NumericInput required mode="decimal" min={0} value={pricingDraft.hourlyRate} onValueChange={(value) => setPricingDraft((p) => ({ ...p, hourlyRate: value }))} /></label>
-                <button className="primary-button" type="submit">Add Pricing Rule</button>
-              </form>
-              )}
-              <div className="table-wrap">
-                <table>
-                  <thead><tr><th>Station</th><th>Label</th><th>Time Band</th><th>Rate</th>{canEditSettings && <th />}</tr></thead>
-                  <tbody>
-                    {appData.pricingRules.map((rule: PricingRule) => (
-                      <tr key={rule.id}>
-                        <td>{appData.stations.find((station) => station.id === rule.stationId)?.name || "Station"}</td>
-                        <td>{rule.label}</td>
-                        <td>{minuteToTimeLabel(rule.startMinute)} - {minuteToTimeLabel(rule.endMinute)}</td>
-                        <td>{currency(rule.hourlyRate)}/hr</td>
-                        {canEditSettings && <td><button className="ghost-button danger" type="button" onClick={() => deletePricingRule(rule.id)}>Delete</button></td>}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </section>
+        {activeTab === "customers" && canAccessTab("customers") && (
+          <CustomersPanel
+            stations={appData.stations}
+            customerAnalytics={customerAnalytics}
+            filteredCustomerProfiles={filteredCustomerProfiles}
+            selectedCustomerProfile={selectedCustomerProfile}
+            selectedCustomerProfileStats={selectedCustomerProfileStats}
+            customerProfileSearch={customerProfileSearch}
+            customerProfileSort={customerProfileSort}
+            editCustomerProfileDraft={editCustomerProfileDraft}
+            onCustomerProfileSearchChange={setCustomerProfileSearch}
+            onCustomerProfileSortChange={setCustomerProfileSort}
+            onSelectCustomerProfile={setSelectedCustomerProfileId}
+            onEditCustomerProfileDraftChange={setEditCustomerProfileDraft}
+            onBeginEditCustomerProfile={beginEditCustomerProfile}
+            onSaveCustomerProfile={saveCustomerProfile}
+          />
         )}
 
-        {activeTab === "users" && activeUser.role === "admin" && (
-          <section className="section-grid">
-            <div className="panel">
-              <div className="panel-header">
-                <div><h2>Create User</h2><p>Create accounts for admin, manager, and reception users.</p></div>
-              </div>
-              <form className="form-grid" onSubmit={createUser}>
-                <label><span>Name</span><input required value={userForm.name} onChange={(event) => setUserForm((p) => ({ ...p, name: event.target.value }))} /></label>
-                <label><span>Username</span><input required value={userForm.username} onChange={(event) => setUserForm((p) => ({ ...p, username: event.target.value }))} /></label>
-                <label><span>Password</span><input required value={userForm.password} onChange={(event) => setUserForm((p) => ({ ...p, password: event.target.value }))} /></label>
-                <label><span>Role</span><select value={userForm.role} onChange={(event) => setUserForm((p) => ({ ...p, role: event.target.value as Role }))}><option value="admin">Admin</option><option value="manager">Manager</option><option value="receptionist">Receptionist</option></select></label>
-                <button className="primary-button" type="submit">Create User</button>
-              </form>
-            </div>
-            <div className="panel">
-              <div className="panel-header"><div><h2>Edit Users</h2><p>Only admins can edit user details, change passwords, or revoke access.</p></div></div>
-              <div className="table-wrap">
-                <table>
-                  <thead><tr><th>Name</th><th>Username</th><th>Role</th><th>Status</th><th /></tr></thead>
-                  <tbody>
-                    {appData.users.map((user) => (
-                      <tr key={user.id}>
-                        <td>{user.name}</td>
-                        <td>{user.username}</td>
-                        <td>{user.role}</td>
-                        <td>{user.active ? "Active" : "Inactive"}</td>
-                        <td>
-                          <div className="button-row dense">
-                            <button className="ghost-button" type="button" onClick={() => beginEditUser(user)}>Edit</button>
-                            <button className="ghost-button" type="button" onClick={() => openChangePassword(user)}>Change Password</button>
-                            <button className="ghost-button" type="button" onClick={() => toggleUserActive(user.id)}>{user.active ? "Disable" : "Enable"}</button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </section>
+        {activeTab === "settings" && canAccessTab("settings") && (
+          <SettingsPanel
+            stations={appData.stations}
+            pricingRules={appData.pricingRules}
+            businessProfile={appData.businessProfile}
+            stationForm={stationForm}
+            editStationDraft={editStationDraft}
+            pricingDraft={pricingDraft}
+            businessDraft={businessDraft}
+            canEditSettings={canEditSettings}
+            isManagerReadOnly={isManagerReadOnly}
+            onStationFormChange={setStationForm}
+            onEditStationDraftChange={setEditStationDraft}
+            onPricingDraftChange={setPricingDraft}
+            onBusinessDraftChange={setBusinessDraft}
+            onUpsertStation={upsertStation}
+            onBeginEditStation={beginEditStation}
+            onSaveEditedStation={saveEditedStation}
+            onDeleteStation={deleteStation}
+            onAddPricingRule={addPricingRule}
+            onDeletePricingRule={deletePricingRule}
+            onSaveBusinessProfile={saveBusinessProfile}
+          />
+        )}
+
+        {activeTab === "users" && canAccessTab("users") && (
+          <UsersPanel
+            users={appData.users}
+            userForm={userForm}
+            editUserDraft={editUserDraft}
+            passwordDraft={passwordDraft}
+            passwordError={passwordError}
+            onUserFormChange={setUserForm}
+            onEditUserDraftChange={setEditUserDraft}
+            onPasswordDraftChange={(next) => { setPasswordDraft(next); setPasswordError(""); }}
+            onCreateUser={createUser}
+            onBeginEditUser={beginEditUser}
+            onSaveUserEdits={saveUserEdits}
+            onOpenChangePassword={openChangePassword}
+            onSaveUserPassword={saveUserPassword}
+            onToggleUserActive={toggleUserActive}
+          />
         )}
       </main>
-
-      {editUserDraft && (
-        <Modal title="Edit User" onClose={() => setEditUserDraft(null)}>
-          <form className="form-grid" onSubmit={saveUserEdits}>
-            <label>
-              <span>Name</span>
-              <input
-                required
-                value={editUserDraft.name}
-                onChange={(event) => setEditUserDraft((previous) => (previous ? { ...previous, name: event.target.value } : previous))}
-              />
-            </label>
-            <label>
-              <span>Username</span>
-              <input
-                required
-                value={editUserDraft.username}
-                onChange={(event) => setEditUserDraft((previous) => (previous ? { ...previous, username: event.target.value } : previous))}
-              />
-            </label>
-            <label className="field-span-full">
-              <span>Role</span>
-              <select
-                value={editUserDraft.role}
-                onChange={(event) =>
-                  setEditUserDraft((previous) =>
-                    previous ? { ...previous, role: event.target.value as Role } : previous
-                  )
-                }
-              >
-                <option value="admin">Admin</option>
-                <option value="manager">Manager</option>
-                <option value="receptionist">Receptionist</option>
-              </select>
-            </label>
-            <div className="button-row field-span-full">
-              <button className="secondary-button" type="button" onClick={() => setEditUserDraft(null)}>
-                Cancel
-              </button>
-              <button className="primary-button" type="submit">
-                Save User
-              </button>
-            </div>
-          </form>
-        </Modal>
-      )}
-
-      {passwordDraft && (
-        <Modal
-          title={`Change Password${appData.users.find((user) => user.id === passwordDraft.userId) ? ` · ${appData.users.find((user) => user.id === passwordDraft.userId)?.username}` : ""}`}
-          onClose={() => setPasswordDraft(null)}
-        >
-          <form className="form-grid" onSubmit={saveUserPassword}>
-            <label className="field-span-full">
-              <span>New Password</span>
-              <input
-                type="password"
-                required
-                value={passwordDraft.password}
-                onChange={(event) =>
-                  setPasswordDraft((previous) => (previous ? { ...previous, password: event.target.value } : previous))
-                }
-              />
-            </label>
-            <label className="field-span-full">
-              <span>Confirm Password</span>
-              <input
-                type="password"
-                required
-                value={passwordDraft.confirmPassword}
-                onChange={(event) =>
-                  setPasswordDraft((previous) => (previous ? { ...previous, confirmPassword: event.target.value } : previous))
-                }
-              />
-            </label>
-            <div className="button-row field-span-full">
-              <button className="secondary-button" type="button" onClick={() => setPasswordDraft(null)}>
-                Cancel
-              </button>
-              <button className="primary-button" type="submit">
-                Update Password
-              </button>
-            </div>
-          </form>
-        </Modal>
-      )}
-
-      {editCustomerTabDraft && (
-        <Modal title="Edit Tab Details" onClose={() => setEditCustomerTabDraft(null)}>
-          <form className="form-grid" onSubmit={saveCustomerTabDetails}>
-            <CustomerAutocompleteFields
-              customers={appData.customers}
-              customerId={editCustomerTabDraft.customerId}
-              customerName={editCustomerTabDraft.customerName}
-              customerPhone={editCustomerTabDraft.customerPhone}
-              required
-              phonePlaceholder="Optional"
-              onChange={(next) =>
-                setEditCustomerTabDraft((previous) => (previous ? { ...previous, ...next } : previous))
-              }
-            />
-            <div className="button-row field-span-full">
-              <button className="secondary-button" type="button" onClick={() => setEditCustomerTabDraft(null)}>
-                Cancel
-              </button>
-              <button className="primary-button" type="submit">
-                Save Tab Details
-              </button>
-            </div>
-          </form>
-        </Modal>
-      )}
-
-      {editCustomerProfileDraft && (
-        <Modal title="Edit Customer Profile" onClose={() => setEditCustomerProfileDraft(null)}>
-          <form className="form-grid" onSubmit={saveCustomerProfile}>
-            <label>
-              <span>Customer Name</span>
-              <input
-                required
-                value={editCustomerProfileDraft.name}
-                onChange={(event) =>
-                  setEditCustomerProfileDraft((previous) =>
-                    previous ? { ...previous, name: event.target.value } : previous
-                  )
-                }
-              />
-            </label>
-            <label>
-              <span>Customer Phone</span>
-              <input
-                value={editCustomerProfileDraft.phone}
-                placeholder="Optional"
-                onChange={(event) =>
-                  setEditCustomerProfileDraft((previous) =>
-                    previous ? { ...previous, phone: event.target.value } : previous
-                  )
-                }
-              />
-            </label>
-            <div className="button-row field-span-full">
-              <button className="secondary-button" type="button" onClick={() => setEditCustomerProfileDraft(null)}>
-                Cancel
-              </button>
-              <button className="primary-button" type="submit">
-                Save Profile
-              </button>
-            </div>
-          </form>
-        </Modal>
-      )}
-
-      {editStationDraft && (
-        <Modal title={`Edit Station${editStationDraft.name ? ` - ${editStationDraft.name}` : ""}`} onClose={() => setEditStationDraft(null)}>
-          <form className="form-grid" onSubmit={saveEditedStation}>
-            <label>
-              <span>Station Name</span>
-              <input
-                required
-                value={editStationDraft.name}
-                onChange={(event) =>
-                  setEditStationDraft((previous) =>
-                    previous ? { ...previous, name: event.target.value } : previous
-                  )
-                }
-              />
-            </label>
-            <label>
-              <span>Mode</span>
-              <select
-                value={editStationDraft.mode}
-                onChange={(event) =>
-                  setEditStationDraft((previous) =>
-                    previous ? { ...previous, mode: event.target.value as Station["mode"] } : previous
-                  )
-                }
-              >
-                <option value="timed">Timed</option>
-                <option value="unit_sale">Unit sale</option>
-              </select>
-            </label>
-            <label className="checkbox-field">
-              <input
-                type="checkbox"
-                checked={editStationDraft.active}
-                onChange={(event) =>
-                  setEditStationDraft((previous) =>
-                    previous ? { ...previous, active: event.target.checked } : previous
-                  )
-                }
-              />
-              <span>Active station</span>
-            </label>
-            <label className="checkbox-field">
-              <input
-                type="checkbox"
-                checked={editStationDraft.ltpEnabled}
-                onChange={(event) =>
-                  setEditStationDraft((previous) =>
-                    previous ? { ...previous, ltpEnabled: event.target.checked } : previous
-                  )
-                }
-              />
-              <span>LTP enabled</span>
-            </label>
-            <div className="button-row field-span-full">
-              <button className="secondary-button" type="button" onClick={() => setEditStationDraft(null)}>
-                Cancel
-              </button>
-              <button className="primary-button" type="submit">
-                Update Station
-              </button>
-            </div>
-          </form>
-        </Modal>
-      )}
-
-      {editItemForm && (
-        <Modal title={`Edit Inventory Item${editItemForm.name ? ` - ${editItemForm.name}` : ""}`} onClose={closeEditInventoryModal}>
-          <form className="form-grid" onSubmit={saveEditedInventoryItem}>
-            <label>
-              <span>Item Name</span>
-              <input
-                required
-                value={editItemForm.name}
-                onChange={(event) => setEditItemForm((previous) => (previous ? { ...previous, name: event.target.value } : previous))}
-              />
-            </label>
-            <label>
-              <span>Category</span>
-              <select
-                value={useCustomEditItemCategory ? "__other__" : editItemForm.category}
-                onChange={(event) => {
-                  const nextValue = event.target.value;
-                  if (nextValue === "__other__") {
-                    setUseCustomEditItemCategory(true);
-                    setCustomEditItemCategory(editItemForm.category);
-                    return;
-                  }
-                  setUseCustomEditItemCategory(false);
-                  setCustomEditItemCategory("");
-                  setEditItemForm((previous) => (previous ? { ...previous, category: nextValue } : previous));
-                }}
-              >
-                <option value="">Select category</option>
-                {inventoryCategoryOptions.map((category) => (
-                  <option key={category} value={category}>
-                    {category}
-                  </option>
-                ))}
-                <option value="__other__">Other</option>
-              </select>
-            </label>
-            {useCustomEditItemCategory && (
-              <label>
-                <span>New Category</span>
-                <input
-                  required
-                  value={customEditItemCategory}
-                  onChange={(event) => {
-                    setCustomEditItemCategory(event.target.value);
-                    setEditItemForm((previous) => (previous ? { ...previous, category: event.target.value } : previous));
-                  }}
-                  placeholder="Enter new category"
-                />
-              </label>
-            )}
-            <label>
-              <span>Price</span>
-              <NumericInput
-                required
-                mode="decimal"
-                min={0}
-                value={editItemForm.price}
-                onValueChange={(value) => setEditItemForm((previous) => (previous ? { ...previous, price: value } : previous))}
-              />
-            </label>
-            <label>
-              <span>Opening Stock</span>
-              <NumericInput
-                required
-                min={0}
-                value={editItemForm.stockQty}
-                onValueChange={(value) => setEditItemForm((previous) => (previous ? { ...previous, stockQty: value } : previous))}
-              />
-            </label>
-            <label>
-              <span>Low Stock Threshold</span>
-              <NumericInput
-                required
-                min={0}
-                value={editItemForm.lowStockThreshold}
-                onValueChange={(value) =>
-                  setEditItemForm((previous) => (previous ? { ...previous, lowStockThreshold: value } : previous))
-                }
-              />
-            </label>
-            <label>
-              <span>Barcode</span>
-              <input
-                value={editItemForm.barcode}
-                onChange={(event) => setEditItemForm((previous) => (previous ? { ...previous, barcode: event.target.value } : previous))}
-              />
-            </label>
-            <label className="checkbox-field">
-              <input
-                type="checkbox"
-                checked={editItemForm.isReusable}
-                onChange={(event) =>
-                  setEditItemForm((previous) => (previous ? { ...previous, isReusable: event.target.checked } : previous))
-                }
-              />
-              <span>Reusable item</span>
-            </label>
-            <label className="checkbox-field">
-              <input
-                type="checkbox"
-                checked={editItemForm.active}
-                onChange={(event) => setEditItemForm((previous) => (previous ? { ...previous, active: event.target.checked } : previous))}
-              />
-              <span>Item active</span>
-            </label>
-            <div className="button-row field-span-full">
-              <button className="secondary-button" type="button" onClick={closeEditInventoryModal}>
-                Cancel
-              </button>
-              <button className="primary-button" type="submit">
-                Update Item
-              </button>
-            </div>
-          </form>
-        </Modal>
-      )}
 
       {showStartSessionModal && (
         <Modal
@@ -4900,9 +3648,33 @@ export default function App() {
               disabled={!canEditActiveSessionDetails && checkoutState.mode !== "bill_replacement"}
               onChange={(next) => setCheckoutState((p) => (p ? { ...p, ...next } : p))}
             />
-            <label><span>Payment Mode</span><select value={checkoutState.paymentMode} onChange={(event) => setCheckoutState((p) => p ? { ...p, paymentMode: event.target.value as PaymentMode } : p)}><option value="cash">Cash</option><option value="upi">UPI</option></select></label>
+            <label><span>Payment Mode</span><select value={checkoutState.paymentMode} onChange={(event) => setCheckoutState((p) => p ? { ...p, paymentMode: event.target.value as BillPaymentMode, splitCashAmount: 0, splitUpiAmount: 0, collectAmount: 0 } : p)}><option value="cash">Cash</option><option value="upi">UPI</option><option value="split">Split (Cash + UPI)</option>{checkoutState.mode !== "bill_replacement" && <option value="deferred">Pay Later</option>}</select></label>
           </div>
-          {checkoutSession && checkoutSession.mode === "timed" && canEditActiveSessionDetails && (
+          {checkoutState.paymentMode === "split" && (
+            <div className="form-grid">
+              <label>
+                <span>Cash Amount</span>
+                <NumericInput mode="decimal" min={0} value={checkoutState.splitCashAmount} onValueChange={(value) => setCheckoutState((p) => p ? { ...p, splitCashAmount: value, splitUpiAmount: Math.max(0, (checkoutPreview?.total ?? 0) - value) } : p)} />
+              </label>
+              <label>
+                <span>UPI Amount</span>
+                <NumericInput mode="decimal" min={0} value={checkoutState.splitUpiAmount} onValueChange={(value) => setCheckoutState((p) => p ? { ...p, splitUpiAmount: value, splitCashAmount: Math.max(0, (checkoutPreview?.total ?? 0) - value) } : p)} />
+              </label>
+            </div>
+          )}
+          {checkoutState.paymentMode === "deferred" && (
+            <div className="form-grid">
+              <label>
+                <span>Collect Upfront (optional)</span>
+                <NumericInput mode="decimal" min={0} value={checkoutState.collectAmount} onValueChange={(value) => setCheckoutState((p) => p ? { ...p, collectAmount: value } : p)} />
+              </label>
+              <label>
+                <span>Upfront Mode</span>
+                <select value={checkoutState.collectMode} onChange={(event) => setCheckoutState((p) => p ? { ...p, collectMode: event.target.value as PaymentMode } : p)} disabled={checkoutState.collectAmount === 0}><option value="cash">Cash</option><option value="upi">UPI</option></select>
+              </label>
+            </div>
+          )}
+          {checkoutState && checkoutSession && checkoutSession.mode === "timed" && canEditActiveSessionDetails && (
             <div className="form-grid">
               <label>
                 <span>Session Start Time</span>
@@ -5205,7 +3977,19 @@ export default function App() {
             <div><span className="muted">Line Discounts</span><strong>{currency(checkoutPreview.lineDiscountAmount)}</strong></div>
             <div><span className="muted">Bill Discount</span><strong>{currency(checkoutPreview.billDiscountAmount)}</strong></div>
             <div><span className="muted">Round Off</span><strong>{currency(checkoutPreview.roundOffAmount)}</strong></div>
-            <div><span className="muted">Total Due</span><strong>{currency(checkoutPreview.total)}</strong></div>
+            <div><span className="muted">Total</span><strong>{currency(checkoutPreview.total)}</strong></div>
+            {checkoutState.paymentMode === "split" && (
+              <>
+                <div><span className="muted">Cash</span><strong>{currency(checkoutState.splitCashAmount)}</strong></div>
+                <div><span className="muted">UPI</span><strong>{currency(checkoutState.splitUpiAmount)}</strong></div>
+              </>
+            )}
+            {checkoutState.paymentMode === "deferred" && (
+              <>
+                <div><span className="muted">Collecting Now</span><strong>{currency(checkoutState.collectAmount)}</strong></div>
+                <div><span className="muted pending-amount">Amount Due Later</span><strong className="pending-amount">{currency(Math.max(0, checkoutPreview.total - checkoutState.collectAmount))}</strong></div>
+              </>
+            )}
           </div>
           <div className="button-row">
             <button className="secondary-button" type="button" onClick={() => { setCheckoutState(null); setReplacementItemForm({ itemId: "", quantity: 1 }); }}>Cancel</button>
@@ -5225,292 +4009,123 @@ export default function App() {
           </div>
         </Modal>
       )}
+      {ownPasswordDraft && (
+        <Modal title="Change Your Password" onClose={() => { setOwnPasswordDraft(null); setOwnPasswordError(""); }}>
+          <form className="form-grid" onSubmit={handleChangeOwnPassword}>
+            <label className="field-span-full">
+              <span>New Password</span>
+              <input
+                type="password"
+                required
+                value={ownPasswordDraft.password}
+                onChange={(event) => setOwnPasswordDraft({ ...ownPasswordDraft, password: event.target.value })}
+              />
+            </label>
+            <label className="field-span-full">
+              <span>Confirm Password</span>
+              <input
+                type="password"
+                required
+                value={ownPasswordDraft.confirm}
+                onChange={(event) => setOwnPasswordDraft({ ...ownPasswordDraft, confirm: event.target.value })}
+              />
+            </label>
+            {ownPasswordError && <div className="error-text field-span-full">{ownPasswordError}</div>}
+            <div className="button-row field-span-full">
+              <button className="secondary-button" type="button" onClick={() => { setOwnPasswordDraft(null); setOwnPasswordError(""); }}>
+                Cancel
+              </button>
+              <button className="primary-button" type="submit">
+                Update Password
+              </button>
+            </div>
+          </form>
+        </Modal>
+      )}
+      {settlementDraft && (() => {
+        const pendingBill = appData.bills.find((b) => b.id === settlementDraft.billId);
+        if (!pendingBill) return null;
+        const settlementTotal = settlementDraft.paymentMode === "split"
+          ? settlementDraft.cashAmount + settlementDraft.upiAmount
+          : settlementDraft.paymentMode === "cash" ? settlementDraft.cashAmount : settlementDraft.upiAmount;
+        return (
+          <Modal title={`Settle Bill — ${pendingBill.billNumber}`} onClose={() => setSettlementDraft(null)}>
+            <div className="form-grid">
+              <div className="field-span-full checkout-summary">
+                <div><span className="muted">Bill Total</span><strong>{currency(pendingBill.total)}</strong></div>
+                <div><span className="muted">Already Paid</span><strong>{currency(pendingBill.amountPaid)}</strong></div>
+                <div><span className="muted pending-amount">Amount Due</span><strong className="pending-amount">{currency(pendingBill.amountDue)}</strong></div>
+              </div>
+              <label><span>Payment Mode</span><select value={settlementDraft.paymentMode} onChange={(event) => setSettlementDraft((p) => p ? { ...p, paymentMode: event.target.value as PaymentMode | "split", cashAmount: 0, upiAmount: 0 } : p)}><option value="cash">Cash</option><option value="upi">UPI</option><option value="split">Split</option></select></label>
+              {settlementDraft.paymentMode === "split" ? (
+                <>
+                  <label><span>Cash Amount</span><NumericInput mode="decimal" min={0} value={settlementDraft.cashAmount} onValueChange={(value) => setSettlementDraft((p) => p ? { ...p, cashAmount: value } : p)} /></label>
+                  <label><span>UPI Amount</span><NumericInput mode="decimal" min={0} value={settlementDraft.upiAmount} onValueChange={(value) => setSettlementDraft((p) => p ? { ...p, upiAmount: value } : p)} /></label>
+                </>
+              ) : settlementDraft.paymentMode === "cash" ? (
+                <label><span>Cash Amount</span><NumericInput mode="decimal" min={0} value={settlementDraft.cashAmount} onValueChange={(value) => setSettlementDraft((p) => p ? { ...p, cashAmount: value } : p)} /></label>
+              ) : (
+                <label><span>UPI Amount</span><NumericInput mode="decimal" min={0} value={settlementDraft.upiAmount} onValueChange={(value) => setSettlementDraft((p) => p ? { ...p, upiAmount: value } : p)} /></label>
+              )}
+              {settlementDraft.paymentMode !== "split" && (
+                <div className="field-span-full">
+                  <button
+                    className="ghost-button"
+                    type="button"
+                    onClick={() => setSettlementDraft((p) => p ? (p.paymentMode === "cash" ? { ...p, cashAmount: pendingBill.amountDue } : { ...p, upiAmount: pendingBill.amountDue }) : p)}
+                  >
+                    Pay Full Amount ({currency(pendingBill.amountDue)})
+                  </button>
+                </div>
+              )}
+            </div>
+            <div className="button-row">
+              <button className="secondary-button" type="button" onClick={() => setSettlementDraft(null)}>Cancel</button>
+              <button
+                className="primary-button"
+                type="button"
+                onClick={() => { if (settlePayment(settlementDraft)) setSettlementDraft(null); }}
+                disabled={settlementTotal <= 0}
+              >
+                Confirm Settlement
+              </button>
+            </div>
+          </Modal>
+        );
+      })()}
+      {voidPendingDraft && (() => {
+        const pendingBill = appData.bills.find((b) => b.id === voidPendingDraft.billId);
+        if (!pendingBill) return null;
+        return (
+          <Modal title={`Write Off Bad Debt — ${pendingBill.billNumber}`} onClose={() => setVoidPendingDraft(null)}>
+            <div className="form-grid">
+              <div className="field-span-full checkout-summary">
+                <div><span className="muted pending-amount">Amount to Write Off</span><strong className="pending-amount">{currency(pendingBill.amountDue)}</strong></div>
+              </div>
+              <label className="field-span-full">
+                <span>Reason</span>
+                <input
+                  value={voidPendingDraft.reason}
+                  placeholder="Reason for writing off this debt"
+                  onChange={(event) => setVoidPendingDraft((p) => p ? { ...p, reason: event.target.value } : p)}
+                />
+              </label>
+            </div>
+            <div className="button-row">
+              <button className="secondary-button" type="button" onClick={() => setVoidPendingDraft(null)}>Cancel</button>
+              <button
+                className="danger-button"
+                type="button"
+                onClick={() => { if (voidPendingBill(voidPendingDraft)) setVoidPendingDraft(null); }}
+                disabled={!voidPendingDraft.reason.trim()}
+              >
+                Write Off
+              </button>
+            </div>
+          </Modal>
+        );
+      })()}
       {blockingActionLabel && <LoadingOverlay label={blockingActionLabel} />}
     </div>
   );
 }
-
-function CustomerAutocompleteFields(props: {
-  customers: Customer[];
-  customerId?: string;
-  customerName: string;
-  customerPhone: string;
-  onChange: (next: { customerId?: string; customerName: string; customerPhone: string }) => void;
-  required?: boolean;
-  disabled?: boolean;
-  namePlaceholder?: string;
-  phonePlaceholder?: string;
-  nameFieldClassName?: string;
-  phoneFieldClassName?: string;
-}) {
-  const [suggestionsOpen, setSuggestionsOpen] = useState(false);
-  const suggestions = (() => {
-    const normalizedQuery = props.customerName.trim().replace(/\s+/g, " ").toLowerCase();
-    const normalizedPhoneQuery = (props.customerName.match(/[\d+]+/g)?.join("") ?? "").replace(/(?!^)\+/g, "");
-    if (!normalizedQuery && !normalizedPhoneQuery) {
-      return [] as Customer[];
-    }
-    return [...props.customers]
-      .filter((customer) => {
-        const customerName = customer.name.trim().replace(/\s+/g, " ").toLowerCase();
-        const customerPhone = (customer.phone?.match(/[\d+]+/g)?.join("") ?? "").replace(/(?!^)\+/g, "");
-        return (
-          customerName.includes(normalizedQuery) ||
-          (normalizedPhoneQuery ? customerPhone.includes(normalizedPhoneQuery) : false)
-        );
-      })
-      .sort((left, right) => {
-        const leftName = left.name.trim().replace(/\s+/g, " ").toLowerCase();
-        const rightName = right.name.trim().replace(/\s+/g, " ").toLowerCase();
-        const leftStarts = leftName.startsWith(normalizedQuery) ? 1 : 0;
-        const rightStarts = rightName.startsWith(normalizedQuery) ? 1 : 0;
-        if (leftStarts !== rightStarts) {
-          return rightStarts - leftStarts;
-        }
-        return new Date(right.lastVisitAt).getTime() - new Date(left.lastVisitAt).getTime();
-      })
-      .slice(0, 6);
-  })();
-
-  return (
-    <>
-      <label className={props.nameFieldClassName}>
-        <span>Customer Name</span>
-        <div className="customer-autocomplete">
-          <input
-            required={props.required}
-            disabled={props.disabled}
-            value={props.customerName}
-            placeholder={props.namePlaceholder}
-            onFocus={() => setSuggestionsOpen(true)}
-            onBlur={() => window.setTimeout(() => setSuggestionsOpen(false), 120)}
-            onChange={(event) =>
-              props.onChange({
-                customerId: undefined,
-                customerName: event.target.value,
-                customerPhone: props.customerPhone
-              })
-            }
-          />
-          {suggestionsOpen && suggestions.length > 0 && (
-            <div className="customer-suggestion-list">
-              {suggestions.map((customer) => (
-                <button
-                  key={customer.id}
-                  className="customer-suggestion"
-                  type="button"
-                  onMouseDown={(event) => event.preventDefault()}
-                  onClick={() => {
-                    props.onChange({
-                      customerId: customer.id,
-                      customerName: customer.name,
-                      customerPhone: customer.phone ?? ""
-                    });
-                    setSuggestionsOpen(false);
-                  }}
-                >
-                  <strong>{customer.name}</strong>
-                  <span>{customer.phone || "No phone"}</span>
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-      </label>
-      <label className={props.phoneFieldClassName}>
-        <span>Customer Phone</span>
-        <input
-          disabled={props.disabled}
-          value={props.customerPhone}
-          placeholder={props.phonePlaceholder}
-          onChange={(event) =>
-            props.onChange({
-              customerId: props.customerId,
-              customerName: props.customerName,
-              customerPhone: event.target.value
-            })
-          }
-        />
-      </label>
-    </>
-  );
-}
-
-function AppLoadingScreen() {
-  return (
-    <div className="app-loading-screen" role="status" aria-label="Loading application">
-      <div className="app-loading-spinner" />
-      <p className="app-loading-label">Loading…</p>
-    </div>
-  );
-}
-
-function LoginScreen(props: { loginUsername: string; loginPassword: string; loginError: string; onUsernameChange: (value: string) => void; onPasswordChange: (value: string) => void; onSubmit: (event: FormEvent<HTMLFormElement>) => void; }) {
-  return (
-    <div className="login-page">
-      <div className="login-card login-layout">
-        <section className="login-hero-panel">
-          <div className="login-logo-shell">
-            <div className="login-logo-frame">
-              <img src={brandLogo} alt="BreakPerfect logo" />
-            </div>
-          </div>
-          <div className="login-hero-copy">
-            <div className="eyebrow">BreakPerfect Gaming Lounge</div>
-            <h1>Game Parlour Management System</h1>
-            <p>Billing, live sessions, consumables, and owner visibility from one operational dashboard.</p>
-            <div className="login-feature-list">
-              <span>Live station control</span>
-              <span>Session billing</span>
-              <span>Inventory alerts</span>
-            </div>
-          </div>
-        </section>
-
-        <section className="login-form-panel">
-          <div className="login-form-copy">
-            <h2>Sign In</h2>
-            <p>Use your assigned role credentials to access the parlour dashboard.</p>
-          </div>
-          <form className="form-grid" onSubmit={props.onSubmit}>
-            <label>
-              <span>Username</span>
-              <input value={props.loginUsername} onChange={(event) => props.onUsernameChange(event.target.value)} />
-            </label>
-            <label>
-              <span>Password</span>
-              <input type="password" value={props.loginPassword} onChange={(event) => props.onPasswordChange(event.target.value)} />
-            </label>
-            {props.loginError && <div className="error-text field-span-full">{props.loginError}</div>}
-            <button className="primary-button field-span-full" type="submit">Sign In</button>
-          </form>
-        </section>
-      </div>
-    </div>
-  );
-}
-
-function MetricCard(props: { label: string; value: string }) {
-  return <div className="metric-card"><span className="muted">{props.label}</span><strong>{props.value}</strong></div>;
-}
-
-function TodayMetricCard(props: { value: string; timeLabel: string; dateLabel: string }) {
-  return (
-    <div className="metric-card today-metric-card">
-      <div className="today-metric-top">
-        <span className="muted">Today</span>
-        <span className="muted">{props.timeLabel}</span>
-        <span className="muted">{props.dateLabel}</span>
-      </div>
-      <strong>{props.value}</strong>
-    </div>
-  );
-}
-
-function NumericInput(props: {
-  value: number;
-  onValueChange: (value: number) => void;
-  min?: number;
-  mode?: NumericInputMode;
-  defaultValue?: number;
-  required?: boolean;
-  disabled?: boolean;
-  className?: string;
-  placeholder?: string;
-}) {
-  const mode = props.mode ?? "integer";
-  const fallbackValue = props.defaultValue ?? props.min ?? 0;
-  const [draftValue, setDraftValue] = useState(() => formatNumericDraft(props.value, mode));
-  const [isFocused, setIsFocused] = useState(false);
-
-  useEffect(() => {
-    if (!isFocused) {
-      setDraftValue(formatNumericDraft(props.value, mode));
-    }
-  }, [props.value, mode, isFocused]);
-
-  function commitValue(nextDraft: string) {
-    if (!nextDraft || nextDraft === ".") {
-      const normalizedFallback = normalizeNumericValue(fallbackValue, mode, props.min);
-      setDraftValue(formatNumericDraft(normalizedFallback, mode));
-      props.onValueChange(normalizedFallback);
-      return;
-    }
-    const normalizedValue = normalizeNumericValue(Number(nextDraft), mode, props.min);
-    setDraftValue(formatNumericDraft(normalizedValue, mode));
-    props.onValueChange(normalizedValue);
-  }
-
-  return (
-    <input
-      type="text"
-      inputMode={mode === "decimal" ? "decimal" : "numeric"}
-      value={draftValue}
-      required={props.required}
-      disabled={props.disabled}
-      className={props.className}
-      placeholder={props.placeholder}
-      onFocus={() => {
-        setIsFocused(true);
-        if (draftValue === formatNumericDraft(fallbackValue, mode)) {
-          setDraftValue("");
-        }
-      }}
-      onChange={(event) => {
-        const sanitizedValue = sanitizeNumericDraft(event.target.value, mode);
-        setDraftValue(sanitizedValue);
-        if (sanitizedValue && sanitizedValue !== ".") {
-          props.onValueChange(normalizeNumericValue(Number(sanitizedValue), mode, props.min));
-        }
-      }}
-      onBlur={() => {
-        setIsFocused(false);
-        commitValue(draftValue);
-      }}
-    />
-  );
-}
-
-function sanitizeNumericDraft(value: string, mode: NumericInputMode) {
-  if (mode === "integer") {
-    return value.replace(/[^\d]/g, "");
-  }
-  const stripped = value.replace(/,/g, ".").replace(/[^\d.]/g, "");
-  const parts = stripped.split(".");
-  if (parts.length <= 1) {
-    return stripped;
-  }
-  return `${parts[0]}.${parts.slice(1).join("")}`;
-}
-
-function normalizeNumericValue(value: number, mode: NumericInputMode, min?: number) {
-  if (!Number.isFinite(value)) {
-    return min ?? 0;
-  }
-  const clampedValue = Math.max(min ?? 0, value);
-  if (mode === "integer") {
-    return Math.trunc(clampedValue);
-  }
-  return Math.round(clampedValue * 100) / 100;
-}
-
-function formatNumericDraft(value: number, mode: NumericInputMode) {
-  return mode === "decimal" ? `${value}` : `${Math.trunc(value)}`;
-}
-
-function Modal(props: { title: string; onClose: () => void; children: ReactNode; wide?: boolean }) {
-  return <div className="modal-backdrop" role="presentation" onClick={props.onClose}><div className={`modal-card ${props.wide ? "is-wide" : ""}`} role="dialog" aria-modal="true" aria-label={props.title} onClick={(event) => event.stopPropagation()}><div className="modal-header"><h2>{props.title}</h2><button className="ghost-button" type="button" onClick={props.onClose}>Close</button></div>{props.children}</div></div>;
-}
-
-function LoadingOverlay(props: { label: string }) {
-  return (
-    <div className="loading-overlay" role="status" aria-live="polite" aria-label={props.label}>
-      <div className="loading-overlay-card">
-        <div className="loading-spinner" />
-        <strong>{props.label}</strong>
-        <span className="muted">Please wait while the request is being completed.</span>
-      </div>
-    </div>
-  );
-}
-

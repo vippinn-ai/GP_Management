@@ -400,4 +400,4 @@ function loadImage(src: string): Promise<HTMLImageElement> {
   });
 }
 
-export type { ReportRow };
+export type { ReportRow, ReceiptPreviewModel };

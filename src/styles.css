@@ -201,8 +201,16 @@ td {
   display: block;
 }
 
+.sidebar-user-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  width: 100%;
+}
+
 .sidebar-user-action {
   min-height: 2.625rem;
+  width: 100%;
 }
 
 .status-pill {
@@ -225,33 +233,92 @@ td {
   color: #ffd190;
 }
 
-.app-loading-screen {
+@keyframes shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+.skeleton-block {
+  border-radius: 0.4rem;
+  background: linear-gradient(90deg, #1a2b20 25%, #243326 50%, #1a2b20 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.4s ease-in-out infinite;
+}
+
+.skeleton-shell {
+  min-height: 100vh;
+  display: grid;
+  grid-template-columns: 21.25rem 1fr;
+  background: #0f1a14;
+}
+
+.skeleton-sidebar {
+  background: #050505;
+  padding: 1.5rem;
   display: flex;
   flex-direction: column;
-  align-items: center;
-  justify-content: center;
+  gap: 1.5rem;
   height: 100vh;
-  width: 100vw;
-  gap: 1rem;
-  background: var(--color-bg, #0f1a14);
 }
 
-.app-loading-spinner {
-  width: 2.5rem;
+.skeleton-logo {
+  height: 5rem;
+  width: 100%;
+}
+
+.skeleton-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  flex: 1;
+}
+
+.skeleton-nav-item {
   height: 2.5rem;
-  border: 3px solid rgba(255, 255, 255, 0.1);
-  border-top-color: #42c58a;
-  border-radius: 50%;
-  animation: spin 0.8s linear infinite;
+  width: 100%;
 }
 
-@keyframes spin {
-  to { transform: rotate(360deg); }
+.skeleton-user-card {
+  height: 3.5rem;
+  width: 100%;
 }
 
-.app-loading-label {
-  color: #667a70;
-  font-size: 0.9rem;
+.skeleton-content {
+  padding: 2rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.skeleton-header {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.skeleton-title {
+  height: 1.75rem;
+  width: 14rem;
+}
+
+.skeleton-subtitle {
+  height: 1rem;
+  width: 22rem;
+}
+
+.skeleton-cards {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1rem;
+}
+
+.skeleton-card {
+  height: 8rem;
+}
+
+.skeleton-card-tall {
+  height: 14rem;
+  grid-column: span 1;
 }
 
 .remote-error-banner {
@@ -299,6 +366,14 @@ td {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+
+.main-content.is-bills-tab {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 0;
 }
 
 .topbar {
@@ -787,6 +862,28 @@ td {
   color: #9c3d3d;
 }
 
+.danger-button {
+  background: linear-gradient(160deg, #8b2020, #b53030);
+  color: #fff;
+}
+
+.danger-button:hover {
+  background: linear-gradient(160deg, #a02626, #cc3838);
+}
+
+.danger-button:active {
+  background: linear-gradient(160deg, #6e1818, #962828);
+}
+
+.pending-amount {
+  color: #a04000;
+}
+
+.metric-sub {
+  font-size: 0.8em;
+  display: block;
+}
+
 .station-start-link {
   background: transparent;
   color: #0f7a4d;
@@ -983,6 +1080,168 @@ td {
 .bill-register-block .button-row {
   margin-bottom: 0.9rem;
 }
+
+/* ── Bill Register page ─────────────────────────────────────────── */
+
+.bill-register-page {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  height: 100%;
+  min-height: 0;
+  padding: 1.5rem;
+  gap: 0.75rem;
+  box-sizing: border-box;
+}
+
+.bill-register-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.bill-register-filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.bill-register-filter-bar input,
+.bill-register-filter-bar select {
+  min-width: 0;
+  flex: 1 1 10rem;
+  max-width: 14rem;
+}
+
+.bill-register-filter-bar input[type="date"] {
+  max-width: 11rem;
+}
+
+.quick-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.quick-filter-chip {
+  padding: 0.25rem 0.75rem;
+  border-radius: 99px;
+  border: 1.5px solid #c5d9c8;
+  background: #fff;
+  color: #2a5c3f;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+  white-space: nowrap;
+}
+
+.quick-filter-chip:hover {
+  background: #edf5ef;
+}
+
+.quick-filter-chip.active {
+  background: #1e6a4d;
+  border-color: #1e6a4d;
+  color: #fff;
+}
+
+.bill-register-workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(22rem, 0.7fr);
+  gap: 1rem;
+  min-height: 0;
+}
+
+.bill-register-list-pane {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: #fff;
+  border: 1px solid #d6ddd3;
+  border-radius: 0.75rem;
+  overflow: hidden;
+}
+
+.bill-register-list-scroll {
+  flex: 1;
+  overflow: auto;
+  min-height: 0;
+}
+
+.bill-register-list-scroll thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #f7fbf8;
+}
+
+.bill-register-preview-pane {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: #fff;
+  border: 1px solid #d6ddd3;
+  border-radius: 0.75rem;
+  overflow: hidden;
+}
+
+.bill-register-preview-header {
+  padding: 0.9rem 1.1rem 0.5rem;
+  border-bottom: 1px solid #e8eee6;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  flex-shrink: 0;
+}
+
+.bill-register-preview-header h3 {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.bill-register-preview-scroll {
+  flex: 1;
+  overflow: auto;
+  min-height: 0;
+  padding: 1rem;
+}
+
+.bill-register-preview-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  padding: 0.75rem 1rem;
+  border-top: 1px solid #e8eee6;
+  flex-shrink: 0;
+}
+
+.bill-status-badge {
+  display: inline-block;
+  padding: 0.15rem 0.55rem;
+  border-radius: 99px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.bill-status-badge.issued   { background: #e6f4ec; color: #1a6b3c; }
+.bill-status-badge.pending  { background: #fff3e0; color: #a04000; }
+.bill-status-badge.voided   { background: #fdecea; color: #8b2020; }
+.bill-status-badge.refunded { background: #e8eaf6; color: #3949ab; }
+.bill-status-badge.replaced { background: #f3f3f3; color: #666; }
+
+.bill-register-empty {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  padding: 2rem;
+}
+
+/* ─────────────────────────────────────────────────────────────────── */
 
 .customer-profile-directory {
   max-height: 24rem;
@@ -1418,7 +1677,8 @@ td {
 }
 
 @media (max-width: 1400px) {
-  .app-shell {
+  .app-shell,
+  .skeleton-shell {
     grid-template-columns: 18.75rem 1fr;
   }
 
@@ -1429,7 +1689,8 @@ td {
 }
 
 @media (min-width: 1440px) {
-  .app-shell {
+  .app-shell,
+  .skeleton-shell {
     grid-template-columns: 18.75rem 1fr;
   }
 
@@ -1539,8 +1800,13 @@ td {
     overflow: visible;
   }
 
-  .app-shell {
+  .app-shell,
+  .skeleton-shell {
     grid-template-columns: 1fr;
+  }
+
+  .skeleton-sidebar {
+    height: auto;
   }
 
   .sidebar {
@@ -1626,7 +1892,8 @@ td {
     padding: 1rem;
   }
 
-  .app-shell {
+  .app-shell,
+  .skeleton-shell {
     grid-template-columns: 1fr;
   }
 
