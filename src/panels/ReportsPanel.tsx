@@ -2,7 +2,7 @@ import { type FormEvent } from "react";
 import type { Bill, BusinessProfile, Expense, ExpenseTemplate, ReportFilterState, ReportPreset, Station } from "../types";
 import { currency, formatDateTime, formatMonthLabel } from "../utils";
 import { NumericInput } from "../components/NumericInput";
-import { exportRowsToCsv, exportRowsToPdf, exportRowsToXlsx, type ReportRow } from "../exporters";
+import { type ReportRow } from "../exporters";
 
 interface ExpenseForm {
   title: string;
@@ -61,7 +61,7 @@ export function ReportsPanel(props: {
 }) {
   const {
     reportFilter, reportFromDate, reportToDate, summary, expenseForm, expenseTemplateForm,
-    filteredBills, filteredExpenses, expenseCategoryOptions, expenseTemplates,
+    filteredExpenses, expenseCategoryOptions, expenseTemplates,
     canEditReports, isManagerReadOnly
   } = props;
 

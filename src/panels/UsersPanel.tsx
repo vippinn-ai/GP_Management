@@ -154,7 +154,7 @@ export function UsersPanel(props: {
               function toggleTab(tabId: TabId) {
                 const next = new Set(granted);
                 if (next.has(tabId)) next.delete(tabId); else next.add(tabId);
-                props.onEditUserDraftChange({ ...editUserDraft, tabPermissions: next.size > 0 ? [...next] : undefined });
+                props.onEditUserDraftChange({ ...editUserDraft!, tabPermissions: next.size > 0 ? [...next] : undefined });
               }
               return (
                 <div className="field-span-full">

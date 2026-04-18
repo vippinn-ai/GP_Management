@@ -1,5 +1,5 @@
 import { useState, useMemo } from "react";
-import type { Bill, BillStatus, BillPaymentMode, Station, SettlementDraft, VoidPendingDraft } from "../types";
+import type { Bill, BillStatus, BillPaymentMode, Station } from "../types";
 import type { ReceiptPreviewModel } from "../exporters";
 import { openReceiptWindow, downloadReceiptPdf } from "../exporters";
 import { currency, formatDateTime } from "../utils";

@@ -43,7 +43,6 @@ import type {
   AppliedDiscount,
   Bill,
   BillPaymentMode,
-  BillStatus,
   BusinessProfile,
   CheckoutState,
   Customer,
@@ -109,7 +108,6 @@ import {
   toMinuteOfDay
 } from "./utils";
 import {
-  PAYMENT_TOLERANCE,
   buildCheckoutPaymentResult,
   computeSettlement,
   getSettlementAmount,
@@ -185,7 +183,7 @@ export default function App() {
   const [sessionItemForm, setSessionItemForm] = useState<Record<string, { itemId: string; quantity: number }>>({});
   const [selectedReceiptBillId, setSelectedReceiptBillId] = useState<string | null>(null);
   const receiptPreviewBlockRef = useRef<HTMLDivElement | null>(null);
-  const [receiptPreviewBlockHeight, setReceiptPreviewBlockHeight] = useState<number | null>(null);
+  const [, setReceiptPreviewBlockHeight] = useState<number | null>(null);
   const skipRemotePersistRef = useRef(false);
   const remoteSaveTimerRef = useRef<number | null>(null);
   const todayDateKey = toLocalDateKey(new Date());
