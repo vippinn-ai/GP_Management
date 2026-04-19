@@ -104,6 +104,7 @@ import {
   parseDateTimeInputValue,
   resolveCustomerProfile,
   sumBy,
+  toBusinessDayKey,
   toLocalDateKey,
   toMinuteOfDay
 } from "./utils";
@@ -180,7 +181,7 @@ export default function App() {
     customerPhone: ""
   });
   const [replacementItemForm, setReplacementItemForm] = useState({ itemId: "", quantity: 1 });
-  const [sessionItemForm, setSessionItemForm] = useState<Record<string, { itemId: string; quantity: number }>>({});
+  const [sessionItemForm, setSessionItemForm] = useState<Record<string, { itemId: string; quantity: number; sellAsPackOf?: number }>>({});
   const [selectedReceiptBillId, setSelectedReceiptBillId] = useState<string | null>(null);
   const receiptPreviewBlockRef = useRef<HTMLDivElement | null>(null);
   const [, setReceiptPreviewBlockHeight] = useState<number | null>(null);
@@ -361,13 +362,28 @@ export default function App() {
       : undefined) ??
     openCustomerTabs[0] ??
     null;
+  // Revenue is attributed to the business day of the session/tab start time,
+  // not the bill issue time. Bills issued after midnight (before 7 AM) belong
+  // to the previous business day.
+  function getBillBusinessDate(bill: Bill): string {
+    const session = bill.sessionId ? appData.sessions.find((s) => s.id === bill.sessionId) : undefined;
+    if (session) return toBusinessDayKey(session.startedAt);
+    const tab = appData.customerTabs.find((t) => t.closedBillId === bill.id);
+    if (tab) return toBusinessDayKey(tab.createdAt);
+    return toBusinessDayKey(bill.issuedAt);
+  }
   const resolvedReportRange = getReportRange(reportFilter, now);
   const reportFromDate = resolvedReportRange.from <= resolvedReportRange.to ? resolvedReportRange.from : resolvedReportRange.to;
   const reportToDate = resolvedReportRange.from <= resolvedReportRange.to ? resolvedReportRange.to : resolvedReportRange.from;
   const filteredBills = appData.bills.filter((bill) => {
-    const billDate = toLocalDateKey(bill.issuedAt);
+    const billDate = getBillBusinessDate(bill);
     return billDate >= reportFromDate && billDate <= reportToDate;
   });
+  // Precomputed map used by BillRegisterPanel for its own date filters.
+  const billBusinessDates: Record<string, string> = {};
+  for (const bill of appData.bills) {
+    billBusinessDates[bill.id] = getBillBusinessDate(bill);
+  }
   const filteredExpenses = appData.expenses.filter((expense) => {
     const expenseDate = toLocalDateKey(expense.spentAt);
     return expenseDate >= reportFromDate && expenseDate <= reportToDate;
@@ -673,14 +689,20 @@ export default function App() {
   function getSessionReservedQuantity(itemId: string, ignoreSessionId?: string) {
     return sumBy(
       appData.sessions.filter((session) => session.status !== "closed" && session.id !== ignoreSessionId),
-      (session) => sumBy(session.items.filter((item) => item.inventoryItemId === itemId), (item) => item.quantity)
+      (session) => sumBy(
+        session.items.filter((item) => item.inventoryItemId === itemId),
+        (item) => item.soldAsPackOf ? item.quantity * item.soldAsPackOf : item.quantity
+      )
     );
   }
 
   function getCustomerTabReservedQuantity(itemId: string, ignoreCustomerTabId?: string) {
     return sumBy(
       appData.customerTabs.filter((tab) => tab.status === "open" && tab.id !== ignoreCustomerTabId),
-      (tab) => sumBy(tab.items.filter((item) => item.inventoryItemId === itemId), (item) => item.quantity)
+      (tab) => sumBy(
+        tab.items.filter((item) => item.inventoryItemId === itemId),
+        (item) => item.soldAsPackOf ? item.quantity * item.soldAsPackOf : item.quantity
+      )
     );
   }
 
@@ -812,6 +834,11 @@ export default function App() {
     if (item.isReusable) {
       const occupied = getOccupiedQuantity(item, { ignoreSessionId, ignoreCustomerTabId });
       return `${available} available · ${occupied} in use`;
+    }
+    if (item.cigarettePack) {
+      const packs = Math.floor(available / item.cigarettePack.size);
+      const loose = available % item.cigarettePack.size;
+      return `${available} left (~${packs} pack${packs !== 1 ? "s" : ""}${loose > 0 ? ` + ${loose}` : ""})`;
     }
     return `Available ${available}`;
   }
@@ -1013,28 +1040,33 @@ export default function App() {
       return;
     }
     const item = appData.inventoryItems.find((entry) => entry.id === form.itemId && entry.active);
-    if (!item || getAvailableStock(item, sessionId) < form.quantity) {
-      window.alert(item?.isReusable ? `${item.name} is currently occupied.` : "Not enough stock available for that item.");
+    const packOf = form.sellAsPackOf;
+    const stockNeeded = packOf ? form.quantity * packOf : form.quantity;
+    if (!item || getAvailableStock(item, sessionId) < stockNeeded) {
+      if (packOf && item && getAvailableStock(item, sessionId) < stockNeeded) {
+        window.alert(`Cannot sell as pack — only ${getAvailableStock(item, sessionId)} cigarettes in stock (need ${stockNeeded} for ${form.quantity} pack${form.quantity !== 1 ? "s" : ""}). Please restock first or sell as singles.`);
+      } else {
+        window.alert(item?.isReusable ? `${item.name} is currently occupied.` : "Not enough stock available for that item.");
+      }
       return;
     }
     mutateAppData((draft) => {
       const session = draft.sessions.find((entry) => entry.id === sessionId);
-      if (!session) {
-        return;
-      }
+      if (!session) return;
       session.items.push({
         id: createId("session-item"),
         inventoryItemId: item.id,
         name: item.name,
         quantity: clampNumber(form.quantity, 1),
-        unitPrice: item.price,
+        unitPrice: packOf ? item.cigarettePack!.packPrice : item.price,
+        soldAsPackOf: packOf,
         addedAt: new Date().toISOString()
       });
-      addAuditLog(draft, activeUser.id, "session_item_added", "session", sessionId, `Added ${item.name} to ${session.stationNameSnapshot}.`);
+      addAuditLog(draft, activeUser.id, "session_item_added", "session", sessionId, `Added ${item.name}${packOf ? " (pack)" : ""} to ${session.stationNameSnapshot}.`);
     });
     setSessionItemForm((previous) => ({
       ...previous,
-      [sessionId]: { itemId: form.itemId, quantity: 1 }
+      [sessionId]: { itemId: form.itemId, quantity: 1, sellAsPackOf: packOf }
     }));
   }
 
@@ -1367,21 +1399,24 @@ export default function App() {
     setEditCustomerProfileDraft(null);
   }
 
-  function addItemToCustomerTab(item: InventoryItem) {
+  function addItemToCustomerTab(item: InventoryItem, sellAsPackOf?: number) {
     if (!activeUser || !selectedCustomerTab) {
       window.alert("Open or select a customer tab first.");
       return;
     }
-    if (getAvailableStock(item) < 1) {
-      window.alert(item.isReusable ? `${item.name} is currently occupied.` : "That item is out of stock.");
+    const stockNeeded = sellAsPackOf ?? 1;
+    if (getAvailableStock(item) < stockNeeded) {
+      if (sellAsPackOf) {
+        window.alert(`Cannot sell as pack — only ${getAvailableStock(item)} cigarettes in stock (need ${sellAsPackOf} for 1 pack). Please restock first or sell as singles.`);
+      } else {
+        window.alert(item.isReusable ? `${item.name} is currently occupied.` : "That item is out of stock.");
+      }
       return;
     }
     mutateAppData((draft) => {
       const tab = draft.customerTabs.find((entry) => entry.id === selectedCustomerTab.id && entry.status === "open");
-      if (!tab) {
-        return;
-      }
-      const existing = tab.items.find((entry) => entry.inventoryItemId === item.id);
+      if (!tab) return;
+      const existing = tab.items.find((entry) => entry.inventoryItemId === item.id && entry.soldAsPackOf === sellAsPackOf);
       if (existing) {
         existing.quantity += 1;
       } else {
@@ -1390,11 +1425,12 @@ export default function App() {
           inventoryItemId: item.id,
           name: item.name,
           quantity: 1,
-          unitPrice: item.price,
+          unitPrice: sellAsPackOf ? item.cigarettePack!.packPrice : item.price,
+          soldAsPackOf: sellAsPackOf,
           addedAt: new Date().toISOString()
         });
       }
-      addAuditLog(draft, activeUser.id, "customer_tab_item_added", "customer_tab", tab.id, `Added ${item.name} to ${tab.customerName}'s tab.`);
+      addAuditLog(draft, activeUser.id, "customer_tab_item_added", "customer_tab", tab.id, `Added ${item.name}${sellAsPackOf ? " (pack)" : ""} to ${tab.customerName}'s tab.`);
     });
   }
 
@@ -1766,12 +1802,12 @@ export default function App() {
     ) {
       const sessionReserved = sumBy(
         data.sessions.filter((entry) => entry.status !== "closed" && entry.id !== ignoreSessionId),
-        (entry) => sumBy(entry.items.filter((line) => line.inventoryItemId === item.id), (line) => line.quantity)
+        (entry) => sumBy(entry.items.filter((line) => line.inventoryItemId === item.id), (line) => line.soldAsPackOf ? line.quantity * line.soldAsPackOf : line.quantity)
       );
       const tabReserved = item.isReusable
         ? sumBy(
             data.customerTabs.filter((entry) => entry.status === "open" && entry.id !== ignoreCustomerTabId),
-            (entry) => sumBy(entry.items.filter((line) => line.inventoryItemId === item.id), (line) => line.quantity)
+            (entry) => sumBy(entry.items.filter((line) => line.inventoryItemId === item.id), (line) => line.soldAsPackOf ? line.quantity * line.soldAsPackOf : line.quantity)
           )
         : 0;
       return Math.max(0, item.stockQty - sessionReserved - tabReserved);
@@ -2033,13 +2069,14 @@ export default function App() {
           if (!item || item.isReusable) {
             continue;
           }
-          item.stockQty -= line.quantity;
+          const stockDelta = line.soldAsPackOf ? line.quantity * line.soldAsPackOf : line.quantity;
+          item.stockQty -= stockDelta;
           draft.stockMovements.unshift({
             id: createId("stock"),
             itemId: item.id,
             type: "sale",
-            quantity: -line.quantity,
-            reason: `Sold in ${billNumber}`,
+            quantity: -stockDelta,
+            reason: `Sold in ${billNumber}${line.soldAsPackOf ? ` (${line.quantity} pack${line.quantity !== 1 ? "s" : ""} of ${line.soldAsPackOf})` : ""}`,
             createdAt: issuedAt,
             userId: activeUser.id,
             relatedBillId: billId
@@ -2242,7 +2279,8 @@ export default function App() {
           name: itemForm.name.trim(),
           category: resolvedCategory,
           unit: "piece",
-          barcode: itemForm.barcode?.trim() || undefined
+          barcode: itemForm.barcode?.trim() || undefined,
+          cigarettePack: resolvedCategory === "Cigarettes" ? itemForm.cigarettePack : undefined
         });
         addAuditLog(draft, activeUser.id, "inventory_updated", "inventory_item", existing.id, `Updated ${existing.name}.`);
       } else {
@@ -2253,7 +2291,8 @@ export default function App() {
           name: itemForm.name.trim(),
           category: resolvedCategory,
           unit: "piece",
-          barcode: itemForm.barcode?.trim() || undefined
+          barcode: itemForm.barcode?.trim() || undefined,
+          cigarettePack: resolvedCategory === "Cigarettes" ? itemForm.cigarettePack : undefined
         });
         addAuditLog(draft, activeUser.id, "inventory_created", "inventory_item", newId, `Created ${itemForm.name.trim()}.`);
       }
@@ -2284,7 +2323,8 @@ export default function App() {
         name: editItemForm.name.trim(),
         category: resolvedCategory,
         unit: "piece",
-        barcode: editItemForm.barcode?.trim() || undefined
+        barcode: editItemForm.barcode?.trim() || undefined,
+        cigarettePack: resolvedCategory === "Cigarettes" ? editItemForm.cigarettePack : undefined
       });
       if (!draft.inventoryCategories.includes(resolvedCategory)) {
         draft.inventoryCategories.push(resolvedCategory);
@@ -2294,8 +2334,9 @@ export default function App() {
     closeEditInventoryModal();
   }
 
-  function recordStockMovement(type: StockMovementType) {
-    if (!activeUser || !canEditInventory || !inventoryAction.itemId || inventoryAction.quantity <= 0 || !inventoryAction.reason.trim()) {
+  function recordStockMovement(type: StockMovementType, quantityOverride?: number) {
+    const effectiveQty = quantityOverride ?? inventoryAction.quantity;
+    if (!activeUser || !canEditInventory || !inventoryAction.itemId || effectiveQty <= 0 || !inventoryAction.reason.trim()) {
       return;
     }
     mutateAppData((draft) => {
@@ -2303,7 +2344,7 @@ export default function App() {
       if (!item) {
         return;
       }
-      const signedQuantity = type === "restock" ? inventoryAction.quantity : -inventoryAction.quantity;
+      const signedQuantity = type === "restock" ? effectiveQty : -effectiveQty;
       if (item.stockQty + signedQuantity < 0) {
         return;
       }
@@ -2648,7 +2689,7 @@ export default function App() {
       title: "",
       category: "Utilities",
       amount: 0,
-      spentAt: toLocalDateKey(new Date(now)),
+      spentAt: toBusinessDayKey(now),
       notes: ""
     });
   }
@@ -2830,12 +2871,13 @@ export default function App() {
         if (!item || item.isReusable) {
           continue;
         }
-        item.stockQty += line.quantity;
+        const reverseDelta = line.soldAsPackOf ? line.quantity * line.soldAsPackOf : line.quantity;
+        item.stockQty += reverseDelta;
         draft.stockMovements.unshift({
           id: createId("stock"),
           itemId: item.id,
           type: "void_refund_reversal",
-          quantity: line.quantity,
+          quantity: reverseDelta,
           reason,
           createdAt: new Date().toISOString(),
           userId: activeUser.id,
@@ -2989,7 +3031,7 @@ export default function App() {
   const previousRange = getPreviousRange(reportFromDate, reportToDate);
   const previousRangeRevenue = sumBy(
     appData.bills.filter((bill) => {
-      const billDate = toLocalDateKey(bill.issuedAt);
+      const billDate = getBillBusinessDate(bill);
       return bill.status === "issued" && billDate >= previousRange.from && billDate <= previousRange.to;
     }),
     (bill) => bill.total
@@ -3122,7 +3164,7 @@ export default function App() {
           </div>
           <div className="topbar-actions">
             <TodayMetricCard
-              value={currency(sumBy(appData.bills.filter((bill) => isToday(bill.issuedAt) && bill.status === "issued"), (bill) => bill.total))}
+              value={currency(sumBy(appData.bills.filter((bill) => bill.status === "issued" && getBillBusinessDate(bill) === toBusinessDayKey(now)), (bill) => bill.total))}
               timeLabel={formatTime(now)}
               dateLabel={currentDateLabel}
             />
@@ -3189,7 +3231,7 @@ export default function App() {
             onCustomerTabDraftChange={setCustomerTabDraft}
             onSelectCustomerTab={setSelectedCustomerTabId}
             onEditCustomerTabDraftChange={setEditCustomerTabDraft}
-            onAddItemToCustomerTab={addItemToCustomerTab}
+            onAddItemToCustomerTab={(item, sellAsPackOf) => addItemToCustomerTab(item, sellAsPackOf)}
             onCreateOrSelectCustomerTab={createOrSelectCustomerTab}
             onUpdateCustomerTabItemQuantity={updateCustomerTabItemQuantity}
             onRemoveItemFromCustomerTab={removeItemFromCustomerTab}
@@ -3237,6 +3279,7 @@ export default function App() {
         {activeTab === "bills" && canAccessTab("bills") && (
           <BillRegisterPanel
             bills={appData.bills}
+            billBusinessDates={billBusinessDates}
             stations={appData.stations}
             businessProfile={appData.businessProfile}
             selectedReceiptBillId={selectedReceiptBillId}
@@ -3567,11 +3610,23 @@ export default function App() {
             </div>
           </div>
           <div className="session-item-adder">
-            <select value={sessionItemForm[managedSession.id]?.itemId ?? ""} onChange={(event) => setSessionItemForm((p) => ({ ...p, [managedSession.id]: { itemId: event.target.value, quantity: p[managedSession.id]?.quantity ?? 1 } }))}>
+            <select value={sessionItemForm[managedSession.id]?.itemId ?? ""} onChange={(event) => setSessionItemForm((p) => ({ ...p, [managedSession.id]: { itemId: event.target.value, quantity: p[managedSession.id]?.quantity ?? 1, sellAsPackOf: undefined } }))}>
               <option value="">Select item</option>
               {appData.inventoryItems.filter((item) => item.active).map((item) => <option key={item.id} value={item.id}>{item.name} · {currency(item.price)} · {getInventoryPickerDetail(item, managedSession.id)}</option>)}
             </select>
-            <NumericInput min={1} defaultValue={1} value={sessionItemForm[managedSession.id]?.quantity ?? 1} onValueChange={(value) => setSessionItemForm((p) => ({ ...p, [managedSession.id]: { itemId: p[managedSession.id]?.itemId ?? "", quantity: value } }))} />
+            {(() => {
+              const selectedItem = appData.inventoryItems.find((i) => i.id === sessionItemForm[managedSession.id]?.itemId);
+              if (!selectedItem?.cigarettePack) return null;
+              const packOf = selectedItem.cigarettePack;
+              const selling = sessionItemForm[managedSession.id]?.sellAsPackOf;
+              return (
+                <select value={selling ? "pack" : "single"} onChange={(e) => setSessionItemForm((p) => ({ ...p, [managedSession.id]: { ...p[managedSession.id], itemId: p[managedSession.id]?.itemId ?? "", quantity: p[managedSession.id]?.quantity ?? 1, sellAsPackOf: e.target.value === "pack" ? packOf.size : undefined } }))}>
+                  <option value="single">Single — {currency(selectedItem.price)}</option>
+                  <option value="pack">Pack of {packOf.size} — {currency(packOf.packPrice)}</option>
+                </select>
+              );
+            })()}
+            <NumericInput min={1} defaultValue={1} value={sessionItemForm[managedSession.id]?.quantity ?? 1} onValueChange={(value) => setSessionItemForm((p) => ({ ...p, [managedSession.id]: { ...p[managedSession.id], itemId: p[managedSession.id]?.itemId ?? "", quantity: value } }))} />
             <button className="secondary-button" type="button" onClick={() => addItemToSession(managedSession.id)}>Add Item</button>
           </div>
           <div className="line-items">
@@ -3579,7 +3634,7 @@ export default function App() {
             {managedSession.items.map((item: SessionItem) => (
               <div key={item.id} className="session-item-row">
                 <div>
-                  <strong>{item.name}</strong>
+                  <strong>{item.name}{item.soldAsPackOf ? ` (Pack of ${item.soldAsPackOf})` : ""}</strong>
                   <div className="muted">{formatTime(item.addedAt)}</div>
                 </div>
                 <div className="session-item-actions">
@@ -3803,8 +3858,10 @@ export default function App() {
                     setSessionItemForm((p) => ({
                       ...p,
                       [checkoutSession.id]: {
+                        ...p[checkoutSession.id],
                         itemId: event.target.value,
-                        quantity: p[checkoutSession.id]?.quantity ?? 1
+                        quantity: p[checkoutSession.id]?.quantity ?? 1,
+                        sellAsPackOf: undefined
                       }
                     }))
                   }
@@ -3818,6 +3875,31 @@ export default function App() {
                       </option>
                     ))}
                 </select>
+                {(() => {
+                  const selectedItem = appData.inventoryItems.find((i) => i.id === sessionItemForm[checkoutSession.id]?.itemId);
+                  if (!selectedItem?.cigarettePack) return null;
+                  const packOf = selectedItem.cigarettePack;
+                  const selling = sessionItemForm[checkoutSession.id]?.sellAsPackOf;
+                  return (
+                    <select
+                      value={selling ? "pack" : "single"}
+                      onChange={(e) =>
+                        setSessionItemForm((p) => ({
+                          ...p,
+                          [checkoutSession.id]: {
+                            ...p[checkoutSession.id],
+                            itemId: p[checkoutSession.id]?.itemId ?? "",
+                            quantity: p[checkoutSession.id]?.quantity ?? 1,
+                            sellAsPackOf: e.target.value === "pack" ? packOf.size : undefined
+                          }
+                        }))
+                      }
+                    >
+                      <option value="single">Single — {currency(selectedItem.price)}</option>
+                      <option value="pack">Pack of {packOf.size} — {currency(packOf.packPrice)}</option>
+                    </select>
+                  );
+                })()}
                 <NumericInput
                   value={sessionItemForm[checkoutSession.id]?.quantity ?? 1}
                   min={1}
@@ -3826,6 +3908,7 @@ export default function App() {
                     setSessionItemForm((p) => ({
                       ...p,
                       [checkoutSession.id]: {
+                        ...p[checkoutSession.id],
                         itemId: p[checkoutSession.id]?.itemId ?? "",
                         quantity: value
                       }

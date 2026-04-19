@@ -2,24 +2,18 @@ import { useState, useMemo } from "react";
 import type { Bill, BillStatus, BillPaymentMode, Station } from "../types";
 import type { ReceiptPreviewModel } from "../exporters";
 import { openReceiptWindow, downloadReceiptPdf } from "../exporters";
-import { currency, formatDateTime } from "../utils";
+import { currency, formatDateTime, toBusinessDayKey, toLocalDateKey, addDays } from "../utils";
 import brandLogo from "../../Branding/Logo.png";
 
 type QuickFilter = "all" | "pending" | "today" | "this_week" | "issued" | "voided";
 
-function toDateKey(iso: string): string {
-  const d = new Date(iso);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+function currentBusinessDayKey(): string {
+  return toBusinessDayKey(new Date());
 }
 
-function todayKey(): string {
-  return toDateKey(new Date().toISOString());
-}
-
-function weekAgoKey(): string {
-  const d = new Date();
-  d.setDate(d.getDate() - 6);
-  return toDateKey(d.toISOString());
+function businessWeekAgoKey(): string {
+  const businessToday = new Date(`${currentBusinessDayKey()}T12:00:00`);
+  return toLocalDateKey(addDays(businessToday, -6));
 }
 
 function statusLabel(status: BillStatus): string {
@@ -41,6 +35,7 @@ function paymentModeLabel(mode: BillPaymentMode): string {
 
 export function BillRegisterPanel(props: {
   bills: Bill[];
+  billBusinessDates: Record<string, string>;
   stations: Station[];
   businessProfile: { name: string; logoText: string; address: string; primaryPhone: string; secondaryPhone?: string; receiptFooter: string };
   selectedReceiptBillId: string | null;
@@ -64,11 +59,12 @@ export function BillRegisterPanel(props: {
   const [filterFrom, setFilterFrom] = useState("");
   const [filterTo, setFilterTo] = useState("");
 
-  const today = todayKey();
-  const weekAgo = weekAgoKey();
+  const today = currentBusinessDayKey();
+  const weekAgo = businessWeekAgoKey();
 
   const filteredBills = useMemo(() => {
     let list = props.bills;
+    const bdate = (b: Bill) => props.billBusinessDates[b.id] ?? toBusinessDayKey(b.issuedAt);
 
     // Quick filter overrides date/status fields
     if (quickFilter === "pending") {
@@ -78,16 +74,16 @@ export function BillRegisterPanel(props: {
     } else if (quickFilter === "voided") {
       list = list.filter((b) => b.status === "voided");
     } else if (quickFilter === "today") {
-      list = list.filter((b) => toDateKey(b.issuedAt) === today);
+      list = list.filter((b) => bdate(b) === today);
     } else if (quickFilter === "this_week") {
-      list = list.filter((b) => toDateKey(b.issuedAt) >= weekAgo && toDateKey(b.issuedAt) <= today);
+      list = list.filter((b) => bdate(b) >= weekAgo && bdate(b) <= today);
     }
 
     // Full filters (only apply when quickFilter === "all")
     if (quickFilter === "all") {
       if (filterStatus) list = list.filter((b) => b.status === filterStatus);
-      if (filterFrom)   list = list.filter((b) => toDateKey(b.issuedAt) >= filterFrom);
-      if (filterTo)     list = list.filter((b) => toDateKey(b.issuedAt) <= filterTo);
+      if (filterFrom)   list = list.filter((b) => bdate(b) >= filterFrom);
+      if (filterTo)     list = list.filter((b) => bdate(b) <= filterTo);
     }
 
     if (filterMode)    list = list.filter((b) => b.paymentMode === filterMode);
@@ -103,7 +99,7 @@ export function BillRegisterPanel(props: {
     }
 
     return list;
-  }, [props.bills, quickFilter, search, filterStatus, filterMode, filterStation, filterFrom, filterTo, today, weekAgo]);
+  }, [props.bills, props.billBusinessDates, quickFilter, search, filterStatus, filterMode, filterStation, filterFrom, filterTo, today, weekAgo]);
 
   const selected = props.selectedReceiptBill;
   const model = props.receiptPreviewModel;

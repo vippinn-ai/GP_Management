@@ -90,14 +90,24 @@ export function sumBy<T>(values: T[], getter: (value: T) => number): number {
   return values.reduce((total, value) => total + getter(value), 0);
 }
 
+/** Hour at which a new business day starts (7 = 7:00 AM). */
+export const BUSINESS_DAY_START_HOUR = 7;
+
+/**
+ * Returns the business-day date key (YYYY-MM-DD) for a timestamp.
+ * Events before 7:00 AM belong to the previous calendar day's business day.
+ * e.g. 3:00 AM Apr 20 → "2025-04-19"
+ */
+export function toBusinessDayKey(value: string | Date): string {
+  const date = typeof value === "string" ? new Date(value) : value;
+  const adjusted = date.getHours() < BUSINESS_DAY_START_HOUR
+    ? addDays(date, -1)
+    : date;
+  return toLocalDateKey(adjusted);
+}
+
 export function isToday(value: string): boolean {
-  const date = new Date(value);
-  const today = new Date();
-  return (
-    date.getFullYear() === today.getFullYear() &&
-    date.getMonth() === today.getMonth() &&
-    date.getDate() === today.getDate()
-  );
+  return toBusinessDayKey(value) === toBusinessDayKey(new Date());
 }
 
 export function downloadBlob(blob: Blob, filename: string): void {
@@ -144,10 +154,11 @@ export function getSessionCheckoutLines(session: Session, chargeSummary: Session
     lines.push({
       id: `line-item-${item.id}`,
       type: "inventory_item",
-      description: item.name,
+      description: item.soldAsPackOf ? `${item.name} (Pack of ${item.soldAsPackOf})` : item.name,
       quantity: item.quantity,
       unitPrice: item.unitPrice,
-      inventoryItemId: item.inventoryItemId
+      inventoryItemId: item.inventoryItemId,
+      soldAsPackOf: item.soldAsPackOf
     });
   }
   return lines;
@@ -157,10 +168,11 @@ export function getCustomerTabCheckoutLines(items: CustomerTabItem[]): DraftBill
   return items.map((item) => ({
     id: item.id,
     type: "inventory_item",
-    description: item.name,
+    description: item.soldAsPackOf ? `${item.name} (Pack of ${item.soldAsPackOf})` : item.name,
     quantity: item.quantity,
     unitPrice: item.unitPrice,
-    inventoryItemId: item.inventoryItemId
+    inventoryItemId: item.inventoryItemId,
+    soldAsPackOf: item.soldAsPackOf
   }));
 }
 
@@ -172,7 +184,8 @@ export function cloneBillLinesForReplacement(bill: AppData["bills"][number]): Dr
     quantity: line.quantity,
     unitPrice: line.unitPrice,
     linkedSessionId: line.linkedSessionId,
-    inventoryItemId: line.inventoryItemId
+    inventoryItemId: line.inventoryItemId,
+    soldAsPackOf: line.soldAsPackOf
   }));
 }
 
@@ -205,7 +218,8 @@ export function buildBillPreview(
       discountAmount,
       total: subtotal - discountAmount,
       linkedSessionId: line.linkedSessionId,
-      inventoryItemId: line.inventoryItemId
+      inventoryItemId: line.inventoryItemId,
+      soldAsPackOf: line.soldAsPackOf
     } satisfies BillLine;
   });
   const subtotal = sumBy(processedLines, (line) => line.subtotal);
@@ -277,23 +291,26 @@ export function endOfMonth(date: Date) {
 }
 
 export function getReportRange(filter: ReportFilterState, nowValue: string) {
-  const today = new Date(nowValue);
-  const todayKey = toLocalDateKey(today);
-  const thisMonthStart = toLocalDateKey(startOfMonth(today));
-  const thisMonthEnd = toLocalDateKey(endOfMonth(today));
+  const now = new Date(nowValue);
+  // Anchor all presets on the current business day, not the calendar day.
+  // At 3 AM the business day is still "yesterday" (before the 7 AM cutoff).
+  const todayKey = toBusinessDayKey(now);
+  const todayDate = new Date(`${todayKey}T12:00:00`);
+  const thisMonthStart = toLocalDateKey(startOfMonth(todayDate));
+  const thisMonthEnd = toLocalDateKey(endOfMonth(todayDate));
   switch (filter.preset) {
     case "today":
       return { from: todayKey, to: todayKey, label: "Today" };
     case "yesterday": {
-      const yesterday = toLocalDateKey(addDays(today, -1));
+      const yesterday = toLocalDateKey(addDays(todayDate, -1));
       return { from: yesterday, to: yesterday, label: "Yesterday" };
     }
     case "last_7_days":
-      return { from: toLocalDateKey(addDays(today, -6)), to: todayKey, label: "Last 7 Days" };
+      return { from: toLocalDateKey(addDays(todayDate, -6)), to: todayKey, label: "Last 7 Days" };
     case "this_month":
       return { from: thisMonthStart, to: thisMonthEnd, label: "This Month" };
     case "last_month": {
-      const lastMonthAnchor = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+      const lastMonthAnchor = new Date(todayDate.getFullYear(), todayDate.getMonth() - 1, 1);
       return {
         from: toLocalDateKey(startOfMonth(lastMonthAnchor)),
         to: toLocalDateKey(endOfMonth(lastMonthAnchor)),
@@ -301,7 +318,7 @@ export function getReportRange(filter: ReportFilterState, nowValue: string) {
       };
     }
     case "this_year":
-      return { from: `${today.getFullYear()}-01-01`, to: `${today.getFullYear()}-12-31`, label: "This Year" };
+      return { from: `${todayDate.getFullYear()}-01-01`, to: `${todayDate.getFullYear()}-12-31`, label: "This Year" };
     case "custom":
     default:
       return {
@@ -348,8 +365,8 @@ export function formatMonthLabel(monthKey: string) {
 }
 
 export function formatBillNumber(appData: AppData, issuedAt: string): string {
-  const date = new Date(issuedAt);
-  const dayKey = `${date.getFullYear()}${`${date.getMonth() + 1}`.padStart(2, "0")}${`${date.getDate()}`.padStart(2, "0")}`;
+  const businessDate = toBusinessDayKey(issuedAt);
+  const dayKey = businessDate.replace(/-/g, "");
   const sequence = appData.bills.filter((bill) => bill.billNumber.startsWith(`BILL-${dayKey}`)).length + 1;
   return `BILL-${dayKey}-${`${sequence}`.padStart(3, "0")}`;
 }
