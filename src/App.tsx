@@ -97,7 +97,6 @@ import {
   getPreviousRange,
   getReportRange,
   getSessionCheckoutLines,
-  isToday,
   normalizeAppDataCustomers,
   normalizeCustomerName,
   normalizeCustomerPhone,
@@ -362,28 +361,35 @@ export default function App() {
       : undefined) ??
     openCustomerTabs[0] ??
     null;
+  // Build O(1) index maps so getBillBusinessDate is O(n) total, not O(n²).
+  const sessionById = new Map(appData.sessions.map((s) => [s.id, s]));
+  const tabByBillId = new Map(
+    appData.customerTabs.filter((t) => t.closedBillId).map((t) => [t.closedBillId!, t])
+  );
   // Revenue is attributed to the business day of the session/tab start time,
   // not the bill issue time. Bills issued after midnight (before 7 AM) belong
   // to the previous business day.
   function getBillBusinessDate(bill: Bill): string {
-    const session = bill.sessionId ? appData.sessions.find((s) => s.id === bill.sessionId) : undefined;
+    const session = bill.sessionId ? sessionById.get(bill.sessionId) : undefined;
     if (session) return toBusinessDayKey(session.startedAt);
-    const tab = appData.customerTabs.find((t) => t.closedBillId === bill.id);
+    const tab = tabByBillId.get(bill.id);
     if (tab) return toBusinessDayKey(tab.createdAt);
     return toBusinessDayKey(bill.issuedAt);
   }
-  const resolvedReportRange = getReportRange(reportFilter, now);
-  const reportFromDate = resolvedReportRange.from <= resolvedReportRange.to ? resolvedReportRange.from : resolvedReportRange.to;
-  const reportToDate = resolvedReportRange.from <= resolvedReportRange.to ? resolvedReportRange.to : resolvedReportRange.from;
-  const filteredBills = appData.bills.filter((bill) => {
-    const billDate = getBillBusinessDate(bill);
-    return billDate >= reportFromDate && billDate <= reportToDate;
-  });
-  // Precomputed map used by BillRegisterPanel for its own date filters.
+  // Precomputed map: billId → business date key. Built once per render so
+  // downstream consumers (BillRegisterPanel, topbar metric) don't re-derive it.
   const billBusinessDates: Record<string, string> = {};
   for (const bill of appData.bills) {
     billBusinessDates[bill.id] = getBillBusinessDate(bill);
   }
+  const currentBusinessDay = toBusinessDayKey(now);
+  const resolvedReportRange = getReportRange(reportFilter, now);
+  const reportFromDate = resolvedReportRange.from <= resolvedReportRange.to ? resolvedReportRange.from : resolvedReportRange.to;
+  const reportToDate = resolvedReportRange.from <= resolvedReportRange.to ? resolvedReportRange.to : resolvedReportRange.from;
+  const filteredBills = appData.bills.filter((bill) => {
+    const billDate = billBusinessDates[bill.id];
+    return billDate >= reportFromDate && billDate <= reportToDate;
+  });
   const filteredExpenses = appData.expenses.filter((expense) => {
     const expenseDate = toLocalDateKey(expense.spentAt);
     return expenseDate >= reportFromDate && expenseDate <= reportToDate;
@@ -3031,7 +3037,7 @@ export default function App() {
   const previousRange = getPreviousRange(reportFromDate, reportToDate);
   const previousRangeRevenue = sumBy(
     appData.bills.filter((bill) => {
-      const billDate = getBillBusinessDate(bill);
+      const billDate = billBusinessDates[bill.id];
       return bill.status === "issued" && billDate >= previousRange.from && billDate <= previousRange.to;
     }),
     (bill) => bill.total
@@ -3164,7 +3170,7 @@ export default function App() {
           </div>
           <div className="topbar-actions">
             <TodayMetricCard
-              value={currency(sumBy(appData.bills.filter((bill) => bill.status === "issued" && getBillBusinessDate(bill) === toBusinessDayKey(now)), (bill) => bill.total))}
+              value={currency(sumBy(appData.bills.filter((bill) => bill.status === "issued" && billBusinessDates[bill.id] === currentBusinessDay), (bill) => bill.total))}
               timeLabel={formatTime(now)}
               dateLabel={currentDateLabel}
             />
