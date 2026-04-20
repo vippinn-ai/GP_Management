@@ -4,9 +4,10 @@ import {
   getDiscountAmount,
   buildBillPreview,
   formatBillNumber,
-  getReportRange
+  getReportRange,
+  resolveEffectiveAmount
 } from "./utils";
-import type { AppData, DraftBillLine } from "./types";
+import type { AppData, DraftBillLine, ExpenseTemplate, ExpenseTemplateOverride } from "./types";
 
 // ─── toLocalDateKey ─────────────────────────────────────────────────────────
 
@@ -217,5 +218,57 @@ describe("getReportRange", () => {
   it("falls back to today when custom has no dates", () => {
     const range = getReportRange({ preset: "custom" }, now);
     expect(range.from).toBe("2025-06-15");
+  });
+});
+
+// ─── resolveEffectiveAmount ──────────────────────────────────────────────────
+
+const baseTemplate: ExpenseTemplate = {
+  id: "tmpl-1",
+  title: "Rent",
+  category: "Rent",
+  amount: 10000,
+  frequency: "monthly",
+  startMonth: "2026-01",
+  active: true,
+  createdByUserId: "user-1"
+};
+
+describe("resolveEffectiveAmount", () => {
+  it("returns template base amount when no overrides exist", () => {
+    expect(resolveEffectiveAmount(baseTemplate, "2026-04", [])).toBe(10000);
+  });
+
+  it("returns override amount when an amount override exists", () => {
+    const overrides: ExpenseTemplateOverride[] = [{
+      id: "ovr-1", templateId: "tmpl-1", monthKey: "2026-04",
+      amount: 12000, createdByUserId: "user-1", updatedAt: ""
+    }];
+    expect(resolveEffectiveAmount(baseTemplate, "2026-04", overrides)).toBe(12000);
+  });
+
+  it("returns null for a skipped month (amount === null)", () => {
+    const overrides: ExpenseTemplateOverride[] = [{
+      id: "ovr-2", templateId: "tmpl-1", monthKey: "2026-06",
+      amount: null, skipReason: "waived", createdByUserId: "user-1", updatedAt: ""
+    }];
+    expect(resolveEffectiveAmount(baseTemplate, "2026-06", overrides)).toBeNull();
+  });
+
+  it("returns null for a month before startMonth", () => {
+    expect(resolveEffectiveAmount(baseTemplate, "2025-12", [])).toBeNull();
+  });
+
+  it("returns null when template is inactive", () => {
+    const inactiveTemplate = { ...baseTemplate, active: false };
+    expect(resolveEffectiveAmount(inactiveTemplate, "2026-04", [])).toBeNull();
+  });
+
+  it("ignores overrides for other templates", () => {
+    const overrides: ExpenseTemplateOverride[] = [{
+      id: "ovr-3", templateId: "tmpl-99", monthKey: "2026-04",
+      amount: 99999, createdByUserId: "user-1", updatedAt: ""
+    }];
+    expect(resolveEffectiveAmount(baseTemplate, "2026-04", overrides)).toBe(10000);
   });
 });

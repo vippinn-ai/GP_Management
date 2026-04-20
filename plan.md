@@ -33,9 +33,9 @@ Login form fields are now empty strings by default.
 
 ---
 
-## 🔧 Phase 2 — Security Hardening *(Code COMPLETE — edge functions need re-deploy)*
+## ✅ Phase 2 — Security Hardening *(COMPLETE)*
 
-All code is written and merged. Edge functions must be re-deployed to staging and production to take effect.
+All code deployed to staging and production. Edge functions re-deployed to both environments.
 
 **Re-deploy command (run for both staging and production):**
 ```bash
@@ -111,7 +111,7 @@ File exists. Headers set: `X-Frame-Options`, `X-Content-Type-Options`, `Referrer
 
 ---
 
-## Phase 5 — Code Architecture: Extract Utilities, Hooks, Types *(~3–4 hours)*
+## ✅ Phase 5 — Code Architecture: Extract Utilities, Hooks, Types *(COMPLETE)*
 
 **Goal:** Decompose the monolith without touching UI. Pure functions and types leave `App.tsx`. Zero visible changes to users. Prerequisite for Phase 6.
 
@@ -172,7 +172,7 @@ export function useAppSync(params: {
 
 ---
 
-## Phase 6 — Code Architecture: Decompose App.tsx into Feature Panels *(~1–2 days)*
+## ✅ Phase 6 — Code Architecture: Decompose App.tsx into Feature Panels *(COMPLETE)*
 
 **Goal:** Split the monolithic JSX into feature panel components. `App.tsx` shrinks to ~800 lines. Each panel is independently re-renderable and testable.
 
@@ -265,7 +265,7 @@ Wire up a "Change Password" option in the sidebar user card area (~line 3380 in 
 
 ---
 
-## Phase 8 — Code Quality: Tests + Linting *(~3–4 hours)*
+## ✅ Phase 8 — Code Quality: Tests + Linting *(COMPLETE)*
 
 **Goal:** Establish testing foundation. Catch regressions. Enforce code style.
 
@@ -319,15 +319,13 @@ Run `npm run lint` and fix all errors before shipping.
 | Phase | What | Scope | Status |
 |---|---|---|---|
 | **1** | Fix session/refresh bug | Small | ✅ Done |
-| **2** | CORS + rate limiting + input guards | Small | 🔧 Code done, re-deploy edge functions |
+| **2** | CORS + rate limiting + input guards | Small | ✅ Done |
 | **3** | Error boundaries + re-render fix | Medium | ✅ Done |
 | **4** | Cloudflare security headers | Tiny | ✅ Done |
-| **5** | Extract types, utils, hooks | Medium | ⬜ Next up |
-| **6** | Decompose App.tsx into panels | Large | ⬜ After Phase 5 |
+| **5** | Extract types, utils, hooks | Medium | ✅ Done |
+| **6** | Decompose App.tsx into panels | Large | ✅ Done |
 | **7** | Loading skeleton + UX polish | Medium | ⬜ Can parallel with 6 |
-| **8** | Tests + linting | Medium | ⬜ After Phase 6 |
-
-**Before anything else:** Re-deploy edge functions (Phase 2) to staging and production — the new CORS, rate limiting, and validation code is not live until that's done.
+| **8** | Tests + linting | Medium | ✅ Done |
 
 **Phases 5–6 must be sequential** (Phase 6 depends on extracted utilities from Phase 5).
 

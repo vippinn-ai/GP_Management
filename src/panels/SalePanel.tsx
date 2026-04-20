@@ -1,4 +1,4 @@
-import { type FormEvent } from "react";
+import { type FormEvent, useState } from "react";
 import type { Customer, CustomerTab, CustomerTabDraft, CustomerTabEditDraft, CustomerTabItem, InventoryItem } from "../types";
 import { currency } from "../utils";
 import { Modal } from "../components/Modal";
@@ -13,14 +13,14 @@ export function SalePanel(props: {
   openCustomerTabs: CustomerTab[];
   selectedCustomerTab: CustomerTab | null;
   editCustomerTabDraft: CustomerTabEditDraft | null;
-  canEditActiveSessionDetails: boolean;
+  canEditCustomerTabDetails: boolean;
   getInventoryPickerDetail: (item: InventoryItem, ignoreSessionId?: string, ignoreCustomerTabId?: string) => string;
   getCustomerTabTotal: (tab: CustomerTab) => number;
   onCustomerTabSearchChange: (value: string) => void;
   onCustomerTabDraftChange: (next: CustomerTabDraft) => void;
   onSelectCustomerTab: (tabId: string) => void;
   onEditCustomerTabDraftChange: (next: CustomerTabEditDraft | null) => void;
-  onAddItemToCustomerTab: (item: InventoryItem) => void;
+  onAddItemToCustomerTab: (item: InventoryItem, sellAsPackOf?: number) => void;
   onCreateOrSelectCustomerTab: (event: FormEvent<HTMLFormElement>) => void;
   onUpdateCustomerTabItemQuantity: (lineId: string, quantity: number) => void;
   onRemoveItemFromCustomerTab: (lineId: string) => void;
@@ -29,7 +29,8 @@ export function SalePanel(props: {
   onBeginCustomerTabCheckout: () => void;
   onSaveCustomerTabDetails: (event: FormEvent<HTMLFormElement>) => void;
 }) {
-  const { customerTabDraft, openCustomerTabs, selectedCustomerTab, editCustomerTabDraft, canEditActiveSessionDetails } = props;
+  const { customerTabDraft, openCustomerTabs, selectedCustomerTab, editCustomerTabDraft, canEditCustomerTabDetails } = props;
+  const [cigPackModal, setCigPackModal] = useState<{ item: InventoryItem } | null>(null);
 
   return (
     <>
@@ -54,7 +55,18 @@ export function SalePanel(props: {
                 `${item.name} ${item.category} ${item.barcode ?? ""}`.toLowerCase().includes(props.customerTabSearch.toLowerCase())
               )
               .map((item) => (
-                <button key={item.id} type="button" className="catalog-card" onClick={() => props.onAddItemToCustomerTab(item)}>
+                <button
+                  key={item.id}
+                  type="button"
+                  className="catalog-card"
+                  onClick={() => {
+                    if (item.cigarettePack) {
+                      setCigPackModal({ item });
+                    } else {
+                      props.onAddItemToCustomerTab(item);
+                    }
+                  }}
+                >
                   <strong>{item.name}</strong>
                   <span>{item.category}</span>
                   <span>{currency(item.price)}</span>
@@ -126,7 +138,7 @@ export function SalePanel(props: {
               {selectedCustomerTab?.items.map((item: CustomerTabItem) => (
                 <div key={item.id} className="line-item-row">
                   <div>
-                    <strong>{item.name}</strong>
+                    <strong>{item.name}{item.soldAsPackOf ? ` (Pack of ${item.soldAsPackOf})` : ""}</strong>
                     <div className="muted">{currency(item.unitPrice)} each</div>
                   </div>
                   <label className="inline-field small">
@@ -153,7 +165,7 @@ export function SalePanel(props: {
                 <strong>{currency(selectedCustomerTab ? props.getCustomerTabTotal(selectedCustomerTab) : 0)}</strong>
               </div>
               <div className="button-row">
-                {selectedCustomerTab && canEditActiveSessionDetails && (
+                {selectedCustomerTab && canEditCustomerTabDetails && (
                   <button className="secondary-button" type="button" onClick={() => props.onBeginEditCustomerTabDetails(selectedCustomerTab)}>
                     Edit Tab Details
                   </button>
@@ -171,6 +183,36 @@ export function SalePanel(props: {
           </div>
         </div>
       </section>
+
+      {cigPackModal && (
+        <Modal title={`Add ${cigPackModal.item.name}`} onClose={() => setCigPackModal(null)}>
+          <div className="form-grid">
+            <p>Choose how to sell this cigarette item:</p>
+            <div className="button-row field-span-full">
+              <button
+                className="secondary-button"
+                type="button"
+                onClick={() => {
+                  props.onAddItemToCustomerTab(cigPackModal.item, undefined);
+                  setCigPackModal(null);
+                }}
+              >
+                Single — {currency(cigPackModal.item.price)}
+              </button>
+              <button
+                className="primary-button"
+                type="button"
+                onClick={() => {
+                  props.onAddItemToCustomerTab(cigPackModal.item, cigPackModal.item.cigarettePack!.size);
+                  setCigPackModal(null);
+                }}
+              >
+                Pack of {cigPackModal.item.cigarettePack!.size} — {currency(cigPackModal.item.cigarettePack!.packPrice)}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
 
       {editCustomerTabDraft && (
         <Modal title="Edit Tab Details" onClose={() => props.onEditCustomerTabDraftChange(null)}>

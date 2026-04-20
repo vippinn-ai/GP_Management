@@ -194,23 +194,27 @@ describe("calculateSessionCharge — pauses", () => {
 // ─── Pricing rule boundaries ─────────────────────────────────────────────────
 
 describe("calculateSessionCharge — pricing rule boundaries", () => {
-  it("splits billing across rate transitions", () => {
-    // Local-time ISO strings ensure getHours()/getMinutes() in the pricing algorithm
-    // matches rule boundaries (peakRate: minute 720=12:00, endMinute 1200=20:00).
-    // pricingSnapshot order matters: rules.find() picks the first matching rule.
-    // peakRate listed first so it wins when active; flatRate (start===end===0,
-    // always active) acts as the catch-all fallback when peakRate is not active.
-    const start = new Date(2025, 5, 15, 11, 30, 0).toISOString(); // 11:30 local
-    const end = new Date(2025, 5, 15, 12, 30, 0).toISOString();   // 12:30 local
+  it("bills entire session at the rate active at session start, ignoring later band transitions", () => {
+    // peakRate: minute 720 (12:00) to 1200 (20:00). flatRate: always active (start===end===0).
+    const start = new Date(2025, 5, 15, 11, 30, 0).toISOString(); // 11:30 local → flatRate active
+    const end = new Date(2025, 5, 15, 12, 30, 0).toISOString();   // 12:30 local → peakRate would normally start at 12:00
     const session = makeSession({ startedAt: start, pricingSnapshot: [peakRate, flatRate] });
-    // 11:30 → 12:00 = 30 min — peakRate not active → flatRate  (120/hr = 60)
-    // 12:00 → 12:30 = 30 min — peakRate active                 (180/hr = 90)
-    // Total = 150
+    // Session starts in flatRate band (11:30) → all 60 min billed at 120/hr = 120
     const result = calculateSessionCharge(session, [], end);
-    expect(result.subtotal).toBeCloseTo(150);
+    expect(result.subtotal).toBeCloseTo(120);
     expect(result.billedMinutes).toBeCloseTo(60);
-    const labels = result.segments.map((s) => s.label);
-    expect(labels).toContain("Standard Rate");
-    expect(labels).toContain("Peak Rate");
+    expect(result.segments.every((s) => s.label === "Standard Rate")).toBe(true);
+  });
+
+  it("bills entire session at peak rate when started during peak hours, even after peak ends", () => {
+    // Session starts at 14:00 (peakRate active), ends at 21:00 (after peakRate ends at 20:00)
+    const start = new Date(2025, 5, 15, 14, 0, 0).toISOString();
+    const end   = new Date(2025, 5, 15, 21, 0, 0).toISOString();
+    const session = makeSession({ startedAt: start, pricingSnapshot: [peakRate, flatRate] });
+    // 420 min at 180/hr = 1260
+    const result = calculateSessionCharge(session, [], end);
+    expect(result.subtotal).toBeCloseTo(1260);
+    expect(result.billedMinutes).toBeCloseTo(420);
+    expect(result.segments.every((s) => s.label === "Peak Rate")).toBe(true);
   });
 });

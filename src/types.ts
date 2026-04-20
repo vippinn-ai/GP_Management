@@ -65,6 +65,7 @@ export interface SessionItem {
   quantity: number;
   unitPrice: number;
   addedAt: string;
+  soldAsPackOf?: number;
 }
 
 export interface Session {
@@ -97,6 +98,7 @@ export interface CustomerTabItem {
   quantity: number;
   unitPrice: number;
   addedAt: string;
+  soldAsPackOf?: number;
 }
 
 export interface CustomerTab {
@@ -122,6 +124,11 @@ export interface Customer {
   notes?: string;
 }
 
+export interface CigarettePack {
+  size: number;
+  packPrice: number;
+}
+
 export interface InventoryItem {
   id: string;
   name: string;
@@ -133,6 +140,7 @@ export interface InventoryItem {
   isReusable: boolean;
   barcode?: string;
   active: boolean;
+  cigarettePack?: CigarettePack;
 }
 
 export interface StockMovement {
@@ -169,6 +177,7 @@ export interface BillLine {
   total: number;
   linkedSessionId?: string;
   inventoryItemId?: string;
+  soldAsPackOf?: number;
 }
 
 export interface Bill {
@@ -249,6 +258,17 @@ export interface ExpenseTemplate {
   createdByUserId: string;
 }
 
+export interface ExpenseTemplateOverride {
+  id: string;
+  templateId: string;
+  monthKey: string;
+  amount: number | null;
+  skipReason?: string;
+  notes?: string;
+  createdByUserId: string;
+  updatedAt: string;
+}
+
 export interface AppData {
   users: User[];
   businessProfile: BusinessProfile;
@@ -266,6 +286,7 @@ export interface AppData {
   auditLogs: AuditLog[];
   expenses: Expense[];
   expenseTemplates: ExpenseTemplate[];
+  expenseTemplateOverrides: ExpenseTemplateOverride[];
 }
 
 export interface SessionChargeSummary {
@@ -296,6 +317,7 @@ export interface DraftBillLine {
   linkedSessionId?: string;
   inventoryItemId?: string;
   discount?: DraftDiscountInput;
+  soldAsPackOf?: number;
 }
 
 export type TabId = "dashboard" | "sale" | "inventory" | "bills" | "reports" | "customers" | "settings" | "users";
@@ -406,4 +428,10 @@ export interface SettlementDraft {
 export interface VoidPendingDraft {
   billId: string;
   reason: string;
+}
+
+export interface PendingReceivable {
+  bill: Bill;
+  businessDate: string;
+  daysOverdue: number;
 }

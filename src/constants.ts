@@ -1,6 +1,6 @@
 import type { Role, TabId } from "./types";
 
-export const DEFAULT_INVENTORY_CATEGORIES = ["Beverages", "Food", "Refill Sheesha", "Arcade"];
+export const DEFAULT_INVENTORY_CATEGORIES = ["Beverages", "Food", "Refill Sheesha", "Arcade", "Cigarettes"];
 export const DEFAULT_EXPENSE_CATEGORIES = ["Utilities", "Rent", "Internet", "Salary", "Supplies", "Maintenance"];
 
 export const tabsByRole: Record<Role, Array<{ id: TabId; label: string }>> = {

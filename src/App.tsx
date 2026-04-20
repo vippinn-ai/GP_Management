@@ -55,6 +55,7 @@ import type {
   InventoryItem,
   InventoryState,
   ExpenseTemplate,
+  ExpenseTemplateOverride,
   LtpOutcome,
   PaymentMode,
   PlayMode,
@@ -95,6 +96,7 @@ import {
   getInventoryQuantityMap,
   getMonthKeysInRange,
   getPreviousRange,
+  prorateFactor,
   getReportRange,
   getSessionCheckoutLines,
   normalizeAppDataCustomers,
@@ -105,7 +107,8 @@ import {
   sumBy,
   toBusinessDayKey,
   toLocalDateKey,
-  toMinuteOfDay
+  toMinuteOfDay,
+  resolveEffectiveAmount
 } from "./utils";
 import {
   buildCheckoutPaymentResult,
@@ -243,6 +246,13 @@ export default function App() {
   const [ownPasswordError, setOwnPasswordError] = useState("");
   const [settlementDraft, setSettlementDraft] = useState<SettlementDraft | null>(null);
   const [voidPendingDraft, setVoidPendingDraft] = useState<VoidPendingDraft | null>(null);
+  const [pendingWarningDraft, setPendingWarningDraft] = useState<{
+    pendingBills: Bill[];
+    customerLabel: string;
+    intent:
+      | { type: "session" }
+      | { type: "tab"; draftValue: CustomerTabDraft; options?: { updateSaleDraft?: boolean; clearDraft?: boolean; switchToSale?: boolean } };
+  } | null>(null);
   const [expenseForm, setExpenseForm] = useState({
     title: "",
     category: "Utilities",
@@ -261,6 +271,7 @@ export default function App() {
     notes: "",
     createdByUserId: ""
   });
+  const [pendingBackfillTemplate, setPendingBackfillTemplate] = useState<ExpenseTemplateOverride["templateId"] | null>(null);
   const filteredInventoryItems = appData.inventoryItems.filter((item) =>
     `${item.name} ${item.category}`.toLowerCase().includes(inventoryItemSearch.trim().toLowerCase())
   );
@@ -346,7 +357,8 @@ export default function App() {
   const canVoidRefundBills = activeUser?.role === "admin";
   const canReplaceIssuedBills = activeUser?.role === "admin";
   const canSettlePendingBills = activeUser?.role === "admin" || activeUser?.role === "manager" || activeUser?.role === "receptionist";
-  const canEditActiveSessionDetails = activeUser?.role === "admin";
+  const canEditSessionTiming = activeUser?.role === "admin";
+  const canEditSessionCustomerDetails = activeUser?.role === "admin" || activeUser?.role === "manager" || activeUser?.role === "receptionist";
   const isManagerReadOnly = activeUser?.role === "manager";
   const pageTitle =
     activeTab === "sale"
@@ -934,8 +946,19 @@ export default function App() {
     setActiveUserId(null);
   }
 
-  function startSession(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  function getPendingBillsForCustomer(name: string, phone: string): Bill[] {
+    const nameLower = name.trim().toLowerCase();
+    const phoneNorm = phone.trim();
+    if (!nameLower && !phoneNorm) return [];
+    return appData.bills.filter((bill) => {
+      if (bill.status !== "pending") return false;
+      if (phoneNorm && bill.customerPhone?.trim() === phoneNorm) return true;
+      if (nameLower && (bill.customerName ?? "").trim().toLowerCase() === nameLower) return true;
+      return false;
+    });
+  }
+
+  function doStartSessionDirect() {
     if (!activeUser || !startSessionDraft.stationId) {
       return;
     }
@@ -968,12 +991,10 @@ export default function App() {
         addedAt: new Date().toISOString()
       });
     }
+    const customerName = startSessionDraft.customerName;
+    const customerPhone = startSessionDraft.customerPhone;
     mutateAppData((draft) => {
-      const customerId = resolveCustomerProfile(
-        draft,
-        startSessionDraft.customerName,
-        startSessionDraft.customerPhone
-      );
+      const customerId = resolveCustomerProfile(draft, customerName, customerPhone);
       draft.sessions.unshift({
         id: createId("session"),
         stationId: station.id,
@@ -982,8 +1003,8 @@ export default function App() {
         startedAt: new Date().toISOString(),
         status: "active",
         customerId,
-        customerName: startSessionDraft.customerName.trim() || undefined,
-        customerPhone: startSessionDraft.customerPhone.trim() || undefined,
+        customerName: customerName.trim() || undefined,
+        customerPhone: customerPhone.trim() || undefined,
         playMode: sessionPlayMode,
         ltpEligible: station.ltpEnabled,
         pricingSnapshot,
@@ -1001,6 +1022,26 @@ export default function App() {
     });
     setStartSessionDraft(createStartSessionDraft());
     setShowStartSessionModal(false);
+  }
+
+  function startSession(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!activeUser || !startSessionDraft.stationId) {
+      return;
+    }
+    const station = appData.stations.find((entry) => entry.id === startSessionDraft.stationId);
+    if (!station || getActiveSessionForStation(station.id)) {
+      return;
+    }
+    const customerName = startSessionDraft.customerName;
+    const customerPhone = startSessionDraft.customerPhone;
+    const pendingForCustomer = getPendingBillsForCustomer(customerName, customerPhone);
+    if (pendingForCustomer.length > 0) {
+      const label = customerPhone.trim() || customerName.trim();
+      setPendingWarningDraft({ pendingBills: pendingForCustomer, customerLabel: label, intent: { type: "session" } });
+      return;
+    }
+    doStartSessionDirect();
   }
 
   function toggleSessionPause(sessionId: string, shouldPause: boolean) {
@@ -1101,7 +1142,7 @@ export default function App() {
   }
 
   function beginEditSessionDetails(session: Session) {
-    if (!canEditActiveSessionDetails) {
+    if (!canEditSessionCustomerDetails) {
       return;
     }
     setEditSessionDraft({
@@ -1115,21 +1156,23 @@ export default function App() {
 
   function saveSessionDetails(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!activeUser || !canEditActiveSessionDetails || !editSessionDraft) {
+    if (!activeUser || !canEditSessionCustomerDetails || !editSessionDraft) {
       return;
     }
     const sourceSession = getSessionById(editSessionDraft.sessionId);
     if (!sourceSession || sourceSession.status === "closed") {
       return;
     }
-    const nextStartedAt = parseDateTimeInputValue(editSessionDraft.startedAt);
-    if (sourceSession.mode === "timed" && !nextStartedAt) {
-      window.alert("Start time is required.");
-      return;
-    }
-    if (sourceSession.mode === "timed" && new Date(nextStartedAt).getTime() > new Date(now).getTime()) {
-      window.alert("Start time cannot be in the future.");
-      return;
+    if (canEditSessionTiming) {
+      const nextStartedAt = parseDateTimeInputValue(editSessionDraft.startedAt);
+      if (sourceSession.mode === "timed" && !nextStartedAt) {
+        window.alert("Start time is required.");
+        return;
+      }
+      if (sourceSession.mode === "timed" && new Date(nextStartedAt).getTime() > new Date(now).getTime()) {
+        window.alert("Start time cannot be in the future.");
+        return;
+      }
     }
     mutateAppData((draft) => {
       const session = draft.sessions.find((entry) => entry.id === editSessionDraft.sessionId && entry.status !== "closed");
@@ -1149,9 +1192,14 @@ export default function App() {
       session.customerId = customerId;
       session.customerName = nextCustomerName;
       session.customerPhone = nextCustomerPhone;
-      if (session.mode === "timed" && nextStartedAt && session.startedAt !== nextStartedAt) {
-        changes.push(`start time: ${formatDateTime(session.startedAt)} -> ${formatDateTime(nextStartedAt)}`);
-        session.startedAt = nextStartedAt;
+      if (canEditSessionTiming) {
+        const nextStartedAt = parseDateTimeInputValue(editSessionDraft.startedAt);
+        const nextStartedAtNorm = new Date(nextStartedAt).toISOString().substring(0, 19);
+        const sessionStartNorm = new Date(session.startedAt).toISOString().substring(0, 19);
+        if (session.mode === "timed" && nextStartedAt && nextStartedAtNorm !== sessionStartNorm) {
+          changes.push(`start time: ${formatDateTime(session.startedAt)} -> ${formatDateTime(nextStartedAt)}`);
+          session.startedAt = nextStartedAt;
+        }
       }
       if (changes.length > 0) {
         addAuditLog(draft, activeUser.id, "session_details_updated", "session", session.id, `Updated ${session.stationNameSnapshot}: ${changes.join("; ")}`);
@@ -1239,8 +1287,26 @@ export default function App() {
       return;
     }
 
+    const pendingForCustomer = getPendingBillsForCustomer(customerName, customerPhone);
+    if (pendingForCustomer.length > 0) {
+      const label = customerPhone || customerName;
+      setPendingWarningDraft({ pendingBills: pendingForCustomer, customerLabel: label, intent: { type: "tab", draftValue, options } });
+      return;
+    }
+    doCommitTabDirect(draftValue, options);
+  }
+
+  function doCommitTabDirect(
+    draftValue: CustomerTabDraft,
+    options?: { updateSaleDraft?: boolean; clearDraft?: boolean; switchToSale?: boolean }
+  ) {
+    if (!activeUser) {
+      return;
+    }
+    const customerName = draftValue.customerName.trim();
+    const customerPhone = draftValue.customerPhone.trim();
     const tabId = createId("customer-tab");
-    let resolvedCustomerId = matchingCustomer?.id;
+    let resolvedCustomerId = draftValue.customerId;
     mutateAppData((draft) => {
       const customerId = resolveCustomerProfile(draft, customerName, customerPhone);
       resolvedCustomerId = customerId;
@@ -1277,7 +1343,7 @@ export default function App() {
   }
 
   function beginEditCustomerTabDetails(tab: CustomerTab) {
-    if (!canEditActiveSessionDetails || tab.status !== "open") {
+    if (!canEditSessionCustomerDetails || tab.status !== "open") {
       return;
     }
     setEditCustomerTabDraft({
@@ -1290,7 +1356,7 @@ export default function App() {
 
   function saveCustomerTabDetails(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!activeUser || !canEditActiveSessionDetails || !editCustomerTabDraft) {
+    if (!activeUser || !canEditSessionCustomerDetails || !editCustomerTabDraft) {
       return;
     }
     const nextCustomerName = editCustomerTabDraft.customerName.trim();
@@ -2705,6 +2771,7 @@ export default function App() {
     if (!activeUser || !canEditReports || expenseTemplateForm.amount <= 0 || !expenseTemplateForm.title.trim()) {
       return;
     }
+    let newTemplateId: string | null = null;
     mutateAppData((draft) => {
       if (expenseTemplateForm.id) {
         const existing = draft.expenseTemplates.find((entry) => entry.id === expenseTemplateForm.id);
@@ -2720,6 +2787,7 @@ export default function App() {
         addAuditLog(draft, activeUser.id, "expense_template_updated", "expense_template", existing.id, `Updated monthly template ${existing.title}.`);
       } else {
         const templateId = createId("expense-template");
+        newTemplateId = templateId;
         draft.expenseTemplates.unshift({
           ...expenseTemplateForm,
           id: templateId,
@@ -2742,6 +2810,27 @@ export default function App() {
       notes: "",
       createdByUserId: ""
     });
+    // Show backfill prompt when a new template is created mid-year
+    if (newTemplateId) {
+      const currentMonth = todayDateKey.slice(5, 7);
+      if (currentMonth !== "01") {
+        setPendingBackfillTemplate(newTemplateId);
+      }
+    }
+  }
+
+  function resolveBackfillPrompt(templateId: string, backfill: boolean) {
+    if (!activeUser || !canEditReports) return;
+    if (backfill) {
+      const year = todayDateKey.slice(0, 4);
+      mutateAppData((draft) => {
+        const template = draft.expenseTemplates.find((t) => t.id === templateId);
+        if (template) {
+          template.startMonth = `${year}-01`;
+        }
+      });
+    }
+    setPendingBackfillTemplate(null);
   }
 
   function deleteExpense(expenseId: string) {
@@ -2795,6 +2884,7 @@ export default function App() {
     mutateAppData((draft) => {
       const template = draft.expenseTemplates.find((entry) => entry.id === templateId);
       draft.expenseTemplates = draft.expenseTemplates.filter((entry) => entry.id !== templateId);
+      draft.expenseTemplateOverrides = draft.expenseTemplateOverrides.filter((o) => o.templateId !== templateId);
       if (template) {
         addAuditLog(draft, activeUser.id, "expense_template_deleted", "expense_template", templateId, `Deleted monthly template ${template.title}.`);
       }
@@ -2812,6 +2902,94 @@ export default function App() {
         createdByUserId: ""
       });
     }
+  }
+
+  function createOrUpdateOverride(
+    templateId: string,
+    monthKey: string,
+    amount: number | null,
+    skipReason?: string,
+    notes?: string
+  ) {
+    if (!activeUser || !canEditReports) return;
+    mutateAppData((draft) => {
+      const existing = draft.expenseTemplateOverrides.find(
+        (o) => o.templateId === templateId && o.monthKey === monthKey
+      );
+      const now = new Date().toISOString();
+      if (existing) {
+        existing.amount = amount;
+        existing.skipReason = skipReason;
+        existing.notes = notes;
+        existing.updatedAt = now;
+      } else {
+        draft.expenseTemplateOverrides.push({
+          id: createId("expense-override"),
+          templateId,
+          monthKey,
+          amount,
+          skipReason,
+          notes,
+          createdByUserId: activeUser.id,
+          updatedAt: now
+        });
+      }
+      const label = amount === null ? "Skipped" : `Set to ${currency(amount)}`;
+      addAuditLog(draft, activeUser.id, "expense_override_set", "expense_template", templateId, `${label} for ${monthKey}.`);
+    });
+  }
+
+  function createOrUpdateOverrideForFutureMonths(
+    templateId: string,
+    fromMonthKey: string,
+    amount: number | null,
+    skipReason?: string,
+    notes?: string
+  ) {
+    if (!activeUser || !canEditReports) return;
+    const [year] = fromMonthKey.split("-").map(Number);
+    const endMonthKey = `${year}-12`;
+    mutateAppData((draft) => {
+      const now = new Date().toISOString();
+      let cursor = fromMonthKey;
+      while (cursor <= endMonthKey) {
+        const existing = draft.expenseTemplateOverrides.find(
+          (o) => o.templateId === templateId && o.monthKey === cursor
+        );
+        if (existing) {
+          existing.amount = amount;
+          existing.skipReason = skipReason;
+          existing.notes = notes;
+          existing.updatedAt = now;
+        } else {
+          draft.expenseTemplateOverrides.push({
+            id: createId("expense-override"),
+            templateId,
+            monthKey: cursor,
+            amount,
+            skipReason,
+            notes,
+            createdByUserId: activeUser.id,
+            updatedAt: now
+          });
+        }
+        const [y, m] = cursor.split("-").map(Number);
+        const next = new Date(y, m, 1);
+        cursor = `${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, "0")}`;
+      }
+      const label = amount === null ? "Skipped" : `Set to ${currency(amount)}`;
+      addAuditLog(draft, activeUser.id, "expense_override_set", "expense_template", templateId, `${label} for ${fromMonthKey} through ${endMonthKey}.`);
+    });
+  }
+
+  function deleteOverride(templateId: string, monthKey: string) {
+    if (!activeUser || !canEditReports) return;
+    mutateAppData((draft) => {
+      draft.expenseTemplateOverrides = draft.expenseTemplateOverrides.filter(
+        (o) => !(o.templateId === templateId && o.monthKey === monthKey)
+      );
+      addAuditLog(draft, activeUser.id, "expense_override_removed", "expense_template", templateId, `Restored default amount for ${monthKey}.`);
+    });
   }
 
   function toggleUserActive(userId: string) {
@@ -3021,17 +3199,24 @@ export default function App() {
     .filter((template) => template.active)
     .flatMap((template) =>
       reportMonthKeys
-        .filter((monthKey) => monthKey >= template.startMonth)
-        .map((monthKey) => ({
-          templateId: template.id,
-          title: template.title,
-          category: template.category,
-          amount: template.amount,
-          monthKey,
-          notes: template.notes
-        }))
+        .flatMap((monthKey) => {
+          const effectiveAmount = resolveEffectiveAmount(template, monthKey, appData.expenseTemplateOverrides);
+          if (effectiveAmount === null) return [];
+          const { factor, daysInRange, daysInMonth } = prorateFactor(monthKey, reportFromDate, reportToDate);
+          return [{
+            templateId: template.id,
+            title: template.title,
+            category: template.category,
+            fullAmount: effectiveAmount,
+            proratedAmount: effectiveAmount * factor,
+            daysInRange,
+            daysInMonth,
+            monthKey,
+            notes: template.notes
+          }];
+        })
     );
-  const normalizedExpenses = sumBy(normalizedExpenseEntries, (entry) => entry.amount);
+  const normalizedExpenses = sumBy(normalizedExpenseEntries, (entry) => entry.proratedAmount);
   const netCashEarnings = grossRevenue - cashExpenses;
   const normalizedNetProfit = grossRevenue - normalizedExpenses;
   const previousRange = getPreviousRange(reportFromDate, reportToDate);
@@ -3069,7 +3254,7 @@ export default function App() {
   ).sort((left, right) => right[1] - left[1]);
   const normalizedExpenseByCategory = Object.entries(
     normalizedExpenseEntries.reduce<Record<string, number>>((totals, expense) => {
-      totals[expense.category] = (totals[expense.category] ?? 0) + expense.amount;
+      totals[expense.category] = (totals[expense.category] ?? 0) + expense.proratedAmount;
       return totals;
     }, {})
   ).sort((left, right) => right[1] - left[1]);
@@ -3079,6 +3264,18 @@ export default function App() {
   const occupiedItems = appData.inventoryItems.filter((item) => item.active && getInventoryState(item) === "occupied");
   const pendingBills = appData.bills.filter((b) => b.status === "pending");
   const totalAmountDue = pendingBills.reduce((sum, b) => sum + b.amountDue, 0);
+  const pendingRevenue = sumBy(
+    filteredBills.filter((b) => b.status === "pending"),
+    (b) => b.amountDue
+  );
+  const todayMs = new Date(`${currentBusinessDay}T12:00:00`).getTime();
+  const allPendingReceivables = pendingBills
+    .map((b) => {
+      const businessDate = billBusinessDates[b.id];
+      const daysOverdue = Math.floor((todayMs - new Date(`${businessDate}T12:00:00`).getTime()) / 86400000);
+      return { bill: b, businessDate, daysOverdue };
+    })
+    .sort((a, b) => b.daysOverdue - a.daysOverdue);
 
   if (backendConfigured && remoteLoading) {
     return <AppLoadingScreen />;
@@ -3230,7 +3427,7 @@ export default function App() {
             openCustomerTabs={openCustomerTabs}
             selectedCustomerTab={selectedCustomerTab}
             editCustomerTabDraft={editCustomerTabDraft}
-            canEditActiveSessionDetails={canEditActiveSessionDetails}
+            canEditCustomerTabDetails={canEditSessionCustomerDetails}
             getInventoryPickerDetail={getInventoryPickerDetail}
             getCustomerTabTotal={getCustomerTabTotal}
             onCustomerTabSearchChange={setCustomerTabSearch}
@@ -3314,6 +3511,8 @@ export default function App() {
             filteredBills={filteredBills}
             filteredExpenses={filteredExpenses}
             expenseTemplates={appData.expenseTemplates}
+            expenseTemplateOverrides={appData.expenseTemplateOverrides}
+            pendingBackfillTemplateId={pendingBackfillTemplate}
             reportRows={reportRows}
             summary={{
               grossRevenue,
@@ -3325,6 +3524,7 @@ export default function App() {
               sessionRevenue,
               itemRevenue,
               totalDiscounts,
+              pendingRevenue,
               previousRangeLabel: previousRange.label,
               previousRangeRevenue,
               revenueGrowthPct,
@@ -3332,8 +3532,10 @@ export default function App() {
               topStation,
               paymentModeTotals,
               expenseByCategory,
-              normalizedExpenseByCategory
+              normalizedExpenseByCategory,
+              normalizedExpenseDetails: normalizedExpenseEntries
             }}
+            allPendingReceivables={allPendingReceivables}
             expenseForm={expenseForm}
             expenseTemplateForm={expenseTemplateForm}
             expenseCategoryOptions={expenseCategoryOptions}
@@ -3348,6 +3550,11 @@ export default function App() {
             onBeginEditExpenseTemplate={beginEditExpenseTemplate}
             onToggleExpenseTemplateActive={toggleExpenseTemplateActive}
             onDeleteExpenseTemplate={deleteExpenseTemplate}
+            onCreateOrUpdateOverride={createOrUpdateOverride}
+            onCreateOrUpdateOverrideForFutureMonths={createOrUpdateOverrideForFutureMonths}
+            onDeleteOverride={deleteOverride}
+            onResolveBackfillPrompt={resolveBackfillPrompt}
+            onSettlePendingBill={(billId) => setSettlementDraft({ billId, paymentMode: "cash", cashAmount: 0, upiAmount: 0 })}
           />
         )}
 
@@ -3570,7 +3777,7 @@ export default function App() {
             <div className="section-block section-block-muted">
               <div className="section-block-header">
                 <h3>Edit Session Details</h3>
-                <p>Admin-only corrections for customer details and timed session start time.</p>
+                <p>Update customer details for this session.{canEditSessionTiming ? " Admins can also correct the session start time." : ""}</p>
               </div>
               <form className="form-grid" onSubmit={saveSessionDetails}>
                 <CustomerAutocompleteFields
@@ -3584,7 +3791,7 @@ export default function App() {
                     setEditSessionDraft((previous) => (previous ? { ...previous, ...next } : previous))
                   }
                 />
-                {managedSession.mode === "timed" && (
+                {managedSession.mode === "timed" && canEditSessionTiming && (
                   <label className="field-span-full">
                     <span>Session Start Time</span>
                     <input
@@ -3665,7 +3872,7 @@ export default function App() {
             </>
           )}
           <div className="button-row">
-            {canEditActiveSessionDetails && (
+            {canEditSessionCustomerDetails && (
               <button
                 className="secondary-button"
                 type="button"
@@ -3673,7 +3880,7 @@ export default function App() {
                   editSessionDraft?.sessionId === managedSession.id ? setEditSessionDraft(null) : beginEditSessionDetails(managedSession)
                 }
               >
-                {editSessionDraft?.sessionId === managedSession.id ? "Hide Session Details" : "Edit Session Details"}
+                {editSessionDraft?.sessionId === managedSession.id ? "Hide Details" : "Edit Customer Details"}
               </button>
             )}
             {managedSession.mode === "timed" && (managedSession.status === "active" ? <button className="secondary-button session-action-button is-pause" type="button" onClick={() => toggleSessionPause(managedSession.id, true)}>|| Pause Session</button> : <button className="secondary-button session-action-button is-resume" type="button" onClick={() => toggleSessionPause(managedSession.id, false)}>&gt; Resume Session</button>)}
@@ -3704,7 +3911,7 @@ export default function App() {
               customerId={checkoutState.customerId}
               customerName={checkoutState.customerName}
               customerPhone={checkoutState.customerPhone}
-              disabled={!canEditActiveSessionDetails && checkoutState.mode !== "bill_replacement"}
+              disabled={!canEditSessionCustomerDetails && checkoutState.mode !== "bill_replacement"}
               onChange={(next) => setCheckoutState((p) => (p ? { ...p, ...next } : p))}
             />
             <label><span>Payment Mode</span><select value={checkoutState.paymentMode} onChange={(event) => setCheckoutState((p) => p ? { ...p, paymentMode: event.target.value as BillPaymentMode, splitCashAmount: 0, splitUpiAmount: 0, collectAmount: 0 } : p)}><option value="cash">Cash</option><option value="upi">UPI</option><option value="split">Split (Cash + UPI)</option>{checkoutState.mode !== "bill_replacement" && <option value="deferred">Pay Later</option>}</select></label>
@@ -3733,7 +3940,7 @@ export default function App() {
               </label>
             </div>
           )}
-          {checkoutState && checkoutSession && checkoutSession.mode === "timed" && canEditActiveSessionDetails && (
+          {checkoutState && checkoutSession && checkoutSession.mode === "timed" && canEditSessionTiming && (
             <div className="form-grid">
               <label>
                 <span>Session Start Time</span>
@@ -4212,6 +4419,48 @@ export default function App() {
           </Modal>
         );
       })()}
+      {pendingWarningDraft && (
+        <Modal title="Outstanding Pending Bills" onClose={() => setPendingWarningDraft(null)}>
+          <p>
+            <strong>{pendingWarningDraft.customerLabel}</strong> has {pendingWarningDraft.pendingBills.length} pending bill{pendingWarningDraft.pendingBills.length !== 1 ? "s" : ""} with an outstanding balance:
+          </p>
+          <div className="activity-list" style={{ marginBottom: "1rem" }}>
+            {pendingWarningDraft.pendingBills.map((b) => (
+              <div key={b.id} className="activity-row">
+                <strong>{b.billNumber}</strong>
+                <span className="pending-amount">{currency(b.amountDue)} due</span>
+              </div>
+            ))}
+          </div>
+          <div className="button-row">
+            <button
+              className="secondary-button"
+              type="button"
+              onClick={() => {
+                setPendingWarningDraft(null);
+                setActiveTab("bills");
+              }}
+            >
+              View Bills
+            </button>
+            <button
+              className="primary-button"
+              type="button"
+              onClick={() => {
+                const { intent } = pendingWarningDraft;
+                setPendingWarningDraft(null);
+                if (intent.type === "session") {
+                  doStartSessionDirect();
+                } else {
+                  doCommitTabDirect(intent.draftValue, intent.options);
+                }
+              }}
+            >
+              Continue Anyway
+            </button>
+          </div>
+        </Modal>
+      )}
       {blockingActionLabel && <LoadingOverlay label={blockingActionLabel} />}
     </div>
   );

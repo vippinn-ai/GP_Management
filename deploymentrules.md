@@ -61,31 +61,48 @@ Production is deployed only by running `npm run deploy:production` manually on a
 
 ## Development Workflow
 
-### 1. Local Development
+```
+Local Dev → Local Test → GitHub Push → Deploy to Staging → Client Test → Deploy to Production
+     ↑                                        |                  |
+     └────────────────────────────────────────┘                  |
+              (if test fails, return to step 1)                   |
+     ↑                                                            |
+     └────────────────────────────────────────────────────────────┘
+              (if client rejects, return to step 1)
+```
+
+### Gate 1 — Local Dev + Local Test *(before any push)*
 ```bash
 npm run dev
 ```
 - Runs at `http://localhost:5173`
 - Uses `.env.local` → connects to **staging** Supabase
-- Safe to experiment freely — staging data only
+- Test the full golden path before pushing: login → start session → add inventory → close bill → view reports → log out
+- **Only push to GitHub once local testing passes**
+- If something fails, fix it here — do not push broken code
 
-### 2. Push to GitHub (deploys to Staging)
+### Gate 2 — Push to GitHub + Deploy to Staging
 ```bash
 git add .
 git commit -m "your message"
 git push origin main
-```
-- Cloudflare automatically builds and deploys to the **staging** worker
-- Test your changes at the staging URL
-- Staging uses its own Supabase project — no production data is affected
 
-### 3. Deploy to Production (manual, intentional)
+# Then deploy to staging manually:
+npm run deploy:staging
+```
+- Push to GitHub first (version control), then deploy staging as an explicit command
+- **GitHub push does NOT auto-deploy staging** — `npm run deploy:staging` is always required
+- Test at the staging URL, then share with client for approval
+- **If staging test fails → return to Gate 1**
+- **If client rejects → return to Gate 1**
+
+### Gate 3 — Deploy to Production *(only after client approval)*
 ```bash
 npm run deploy:production
 ```
 - Builds using `.env.production` (production Supabase credentials baked in)
 - Deploys to the `management` Cloudflare Worker
-- **Only run this after testing on staging**
+- **Only run after explicit client sign-off on staging**
 - Requires `.env.production` to exist on your machine
 
 ---

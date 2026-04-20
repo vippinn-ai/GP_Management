@@ -19,7 +19,8 @@ const emptyAppData: AppData = {
   payments: [],
   auditLogs: [],
   expenses: [],
-  expenseTemplates: []
+  expenseTemplates: [],
+  expenseTemplateOverrides: []
 };
 
 export function loadAppData(): AppData {
@@ -96,6 +97,7 @@ export function hydrateAppData(parsed: Partial<AppData>): AppData {
       isReusable: item.isReusable ?? false
     })),
     expenses: parsed.expenses ?? cloneValue(emptyAppData.expenses),
-    expenseTemplates: parsed.expenseTemplates ?? cloneValue(emptyAppData.expenseTemplates)
+    expenseTemplates: parsed.expenseTemplates ?? cloneValue(emptyAppData.expenseTemplates),
+    expenseTemplateOverrides: parsed.expenseTemplateOverrides ?? cloneValue(emptyAppData.expenseTemplateOverrides)
   };
 }

@@ -39,7 +39,7 @@ export function InventoryPanel(props: {
   onSaveEditedInventoryItem: (event: FormEvent<HTMLFormElement>) => void;
   onCloseEditInventoryModal: () => void;
   onBeginEditInventoryItem: (item: InventoryItem) => void;
-  onRecordStockMovement: (type: StockMovementType) => void;
+  onRecordStockMovement: (type: StockMovementType, quantityOverride?: number) => void;
 }) {
   const {
     itemForm, editItemForm, useCustomItemCategory, customItemCategory,
@@ -108,11 +108,34 @@ export function InventoryPanel(props: {
                   </label>
                 )}
                 <label>
-                  <span>Price</span>
+                  <span>Price (per single)</span>
                   <NumericInput required mode="decimal" min={0} value={itemForm.price} onValueChange={(value) => props.onItemFormChange({ ...itemForm, price: value })} />
                 </label>
+                {itemForm.category === "Cigarettes" && (
+                  <>
+                    <label>
+                      <span>Pack Size (cigarettes per pack)</span>
+                      <NumericInput
+                        required
+                        min={1}
+                        value={itemForm.cigarettePack?.size ?? 10}
+                        onValueChange={(value) => props.onItemFormChange({ ...itemForm, cigarettePack: { size: value, packPrice: itemForm.cigarettePack?.packPrice ?? 0 } })}
+                      />
+                    </label>
+                    <label>
+                      <span>Pack Price</span>
+                      <NumericInput
+                        required
+                        mode="decimal"
+                        min={0}
+                        value={itemForm.cigarettePack?.packPrice ?? 0}
+                        onValueChange={(value) => props.onItemFormChange({ ...itemForm, cigarettePack: { size: itemForm.cigarettePack?.size ?? 10, packPrice: value } })}
+                      />
+                    </label>
+                  </>
+                )}
                 <label>
-                  <span>Opening Stock</span>
+                  <span>Opening Stock (individual cigarettes)</span>
                   <NumericInput required min={0} value={itemForm.stockQty} onValueChange={(value) => props.onItemFormChange({ ...itemForm, stockQty: value })} />
                 </label>
                 <label>
@@ -169,7 +192,14 @@ export function InventoryPanel(props: {
                         <td>{item.category}</td>
                         <td>{item.isReusable ? "Reusable" : "Consumable"}</td>
                         <td>{currency(item.price)}</td>
-                        <td>{item.stockQty}</td>
+                        <td>
+                          {item.stockQty}
+                          {item.cigarettePack && (
+                            <span className="muted" style={{ fontSize: "0.8em", marginLeft: "0.4em" }}>
+                              (~{Math.floor(item.stockQty / item.cigarettePack.size)} packs + {item.stockQty % item.cigarettePack.size} loose)
+                            </span>
+                          )}
+                        </td>
                         <td>{item.lowStockThreshold}</td>
                         <td><span className={`inventory-badge is-${state}`}>{props.getInventoryStateLabel(state)}</span></td>
                         <td>{item.barcode || "—"}</td>
@@ -198,27 +228,39 @@ export function InventoryPanel(props: {
                 <h3>Record Movement</h3>
                 <p>Capture restock and adjustment entries with a clear reason.</p>
               </div>
-              <div className="form-grid">
-                <label>
-                  <span>Item</span>
-                  <select value={inventoryAction.itemId} onChange={(event) => props.onInventoryActionChange({ ...inventoryAction, itemId: event.target.value })}>
-                    <option value="">Select item</option>
-                    {props.inventoryItems.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
-                  </select>
-                </label>
-                <label>
-                  <span>Quantity</span>
-                  <NumericInput min={1} defaultValue={1} value={inventoryAction.quantity} onValueChange={(value) => props.onInventoryActionChange({ ...inventoryAction, quantity: value })} />
-                </label>
-                <label className="field-span-full">
-                  <span>Reason</span>
-                  <input value={inventoryAction.reason} onChange={(event) => props.onInventoryActionChange({ ...inventoryAction, reason: event.target.value })} placeholder="damage, expiry, correction, opening stock..." />
-                </label>
-                <div className="button-row field-span-full">
-                  <button className="primary-button" type="button" onClick={() => props.onRecordStockMovement("restock")}>Restock</button>
-                  <button className="secondary-button" type="button" onClick={() => props.onRecordStockMovement("adjustment")}>Deduct / Adjust</button>
-                </div>
-              </div>
+              {(() => {
+                const selectedMovementItem = props.inventoryItems.find((i) => i.id === inventoryAction.itemId);
+                const isCigarette = !!selectedMovementItem?.cigarettePack;
+                const packSize = selectedMovementItem?.cigarettePack?.size ?? 1;
+                return (
+                  <div className="form-grid">
+                    <label>
+                      <span>Item</span>
+                      <select value={inventoryAction.itemId} onChange={(event) => props.onInventoryActionChange({ ...inventoryAction, itemId: event.target.value })}>
+                        <option value="">Select item</option>
+                        {props.inventoryItems.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+                      </select>
+                    </label>
+                    <label>
+                      <span>{isCigarette ? "Number of packs to restock" : "Quantity"}</span>
+                      <NumericInput min={1} defaultValue={1} value={inventoryAction.quantity} onValueChange={(value) => props.onInventoryActionChange({ ...inventoryAction, quantity: value })} />
+                    </label>
+                    {isCigarette && (
+                      <div className="muted field-span-full" style={{ fontSize: "0.85em" }}>
+                        = {inventoryAction.quantity * packSize} individual cigarettes will be added to stock
+                      </div>
+                    )}
+                    <label className="field-span-full">
+                      <span>Reason</span>
+                      <input value={inventoryAction.reason} onChange={(event) => props.onInventoryActionChange({ ...inventoryAction, reason: event.target.value })} placeholder="damage, expiry, correction, opening stock..." />
+                    </label>
+                    <div className="button-row field-span-full">
+                      <button className="primary-button" type="button" onClick={() => props.onRecordStockMovement("restock", isCigarette ? inventoryAction.quantity * packSize : undefined)}>Restock</button>
+                      <button className="secondary-button" type="button" onClick={() => props.onRecordStockMovement("adjustment")}>Deduct / Adjust</button>
+                    </div>
+                  </div>
+                );
+              })()}
             </div>
           )}
           <div className="section-block section-block-muted">
@@ -287,7 +329,7 @@ export function InventoryPanel(props: {
               </label>
             )}
             <label>
-              <span>Price</span>
+              <span>Price (per single)</span>
               <NumericInput
                 required
                 mode="decimal"
@@ -296,6 +338,29 @@ export function InventoryPanel(props: {
                 onValueChange={(value) => props.onEditItemFormChange({ ...editItemForm, price: value })}
               />
             </label>
+            {editItemForm.category === "Cigarettes" && (
+              <>
+                <label>
+                  <span>Pack Size (cigarettes per pack)</span>
+                  <NumericInput
+                    required
+                    min={1}
+                    value={editItemForm.cigarettePack?.size ?? 10}
+                    onValueChange={(value) => props.onEditItemFormChange({ ...editItemForm, cigarettePack: { size: value, packPrice: editItemForm.cigarettePack?.packPrice ?? 0 } })}
+                  />
+                </label>
+                <label>
+                  <span>Pack Price</span>
+                  <NumericInput
+                    required
+                    mode="decimal"
+                    min={0}
+                    value={editItemForm.cigarettePack?.packPrice ?? 0}
+                    onValueChange={(value) => props.onEditItemFormChange({ ...editItemForm, cigarettePack: { size: editItemForm.cigarettePack?.size ?? 10, packPrice: value } })}
+                  />
+                </label>
+              </>
+            )}
             <label>
               <span>Opening Stock</span>
               <NumericInput

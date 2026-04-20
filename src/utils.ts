@@ -6,6 +6,8 @@ import type {
   DraftBillLine,
   DraftDiscountInput,
   DraftLineDiscountMap,
+  ExpenseTemplate,
+  ExpenseTemplateOverride,
   ReportFilterState,
   Session,
   SessionChargeSummary
@@ -358,10 +360,45 @@ export function getMonthKeysInRange(from: string, to: string) {
   return months;
 }
 
+export function getDaysInMonth(monthKey: string): number {
+  const [year, month] = monthKey.split("-").map(Number);
+  return new Date(year, month, 0).getDate();
+}
+
+export function prorateFactor(monthKey: string, from: string, to: string): { factor: number; daysInRange: number; daysInMonth: number } {
+  const total = getDaysInMonth(monthKey);
+  const [year, month] = monthKey.split("-").map(Number);
+  const monthStart = `${monthKey}-01`;
+  const monthEndDate = new Date(year, month, 0);
+  const monthEnd = `${monthKey}-${String(monthEndDate.getDate()).padStart(2, "0")}`;
+  const overlapFrom = from > monthStart ? from : monthStart;
+  const overlapTo = to < monthEnd ? to : monthEnd;
+  const overlapDays =
+    Math.round((new Date(`${overlapTo}T12:00:00`).getTime() - new Date(`${overlapFrom}T12:00:00`).getTime()) / 86400000) + 1;
+  const clampedDays = Math.max(0, Math.min(overlapDays, total));
+  return { factor: clampedDays / total, daysInRange: clampedDays, daysInMonth: total };
+}
+
 export function formatMonthLabel(monthKey: string) {
   return new Intl.DateTimeFormat("en-IN", { month: "short", year: "numeric" }).format(
     new Date(`${monthKey}-01T12:00:00`)
   );
+}
+
+export function resolveEffectiveAmount(
+  template: ExpenseTemplate,
+  monthKey: string,
+  overrides: ExpenseTemplateOverride[]
+): number | null {
+  if (!template.active) return null;
+  if (monthKey < template.startMonth) return null;
+  const override = overrides.find((o) => o.templateId === template.id && o.monthKey === monthKey);
+  if (override) return override.amount;
+  return template.amount;
+}
+
+export function getMonthKeysForYear(year: number): string[] {
+  return Array.from({ length: 12 }, (_, i) => `${year}-${String(i + 1).padStart(2, "0")}`);
 }
 
 export function formatBillNumber(appData: AppData, issuedAt: string): string {
