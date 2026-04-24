@@ -1,4 +1,4 @@
-import { type Dispatch, type FormEvent, type SetStateAction } from "react";
+import { type Dispatch, type FormEvent, type SetStateAction, useEffect, useState } from "react";
 import type {
   AuditLog,
   CheckoutState,
@@ -9,6 +9,7 @@ import type {
   InventoryState,
   PlayMode,
   Session,
+  SessionPauseLog,
   StartSessionDraft,
   Station
 } from "../types";
@@ -16,6 +17,31 @@ import { currency, formatDateTime, formatTime } from "../utils";
 import { MetricCard } from "../components/MetricCard";
 import { NumericInput } from "../components/NumericInput";
 import { CustomerAutocompleteFields } from "../components/CustomerAutocompleteFields";
+
+const PAUSE_OVERTIME_MS = 10 * 60 * 1000;
+
+function usePauseClock() {
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNowMs(Date.now()), 30_000);
+    return () => clearInterval(id);
+  }, []);
+  return nowMs;
+}
+
+function getPauseInfo(session: Session | undefined, sessionPauseLogs: SessionPauseLog[], nowMs: number) {
+  if (!session || session.status !== "paused") {
+    return { isOvertime: false, elapsedText: "" };
+  }
+  const openLog = sessionPauseLogs.find((log) => log.sessionId === session.id && !log.resumedAt);
+  if (!openLog) {
+    return { isOvertime: false, elapsedText: "" };
+  }
+  const elapsedMs = nowMs - new Date(openLog.pausedAt).getTime();
+  const minutes = Math.floor(elapsedMs / 60_000);
+  const elapsedText = minutes < 1 ? "Paused <1m" : `Paused ${minutes}m`;
+  return { isOvertime: elapsedMs >= PAUSE_OVERTIME_MS, elapsedText };
+}
 
 export function DashboardPanel(props: {
   stations: Station[];
@@ -34,6 +60,7 @@ export function DashboardPanel(props: {
   occupiedItems: InventoryItem[];
   pendingBillsCount: number;
   totalAmountDue: number;
+  sessionPauseLogs: SessionPauseLog[];
   getActiveSessionForStation: (stationId: string) => Session | undefined;
   getSessionLiveTotal: (session: Session, effectiveEndAt?: string) => number;
   getFrozenEndAtForSession: (sessionId: string) => string | undefined;
@@ -63,6 +90,8 @@ export function DashboardPanel(props: {
     lowStockItems, outOfStockItems, occupiedItems, checkoutState
   } = props;
 
+  const nowMs = usePauseClock();
+
   return (
     <section className="section-grid dashboard-grid">
       <div className="panel dashboard-column">
@@ -81,12 +110,15 @@ export function DashboardPanel(props: {
                   session &&
                   checkoutState?.mode === "session" &&
                   checkoutState.sessionId === session.id;
+                const { isOvertime, elapsedText } = getPauseInfo(session, props.sessionPauseLogs, nowMs);
+                const cardClass = `station-card ${session ? `is-${session.status}` : "is-available"}${isOvertime ? " is-paused-overtime" : ""}`;
                 return (
-                  <article key={station.id} className={`station-card ${session ? `is-${session.status}` : "is-available"}`}>
+                  <article key={station.id} className={cardClass}>
                     <div className="station-card-header">
                       <div>
                         <h3>{station.name}</h3>
                         <p>{session ? (isBillingFrozen ? "Billing" : session.status === "paused" ? "Paused" : "Running") : "Available"}</p>
+                        {elapsedText && <p className="pause-elapsed">{elapsedText}{isOvertime ? " — resume now!" : ""}</p>}
                       </div>
                       <button
                         className={session ? "ghost-button" : "station-start-link"}

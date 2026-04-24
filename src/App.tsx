@@ -64,6 +64,7 @@ import type {
   Session,
   SessionEditDraft,
   SessionItem,
+  SessionPauseLog,
   StartSessionDraft,
   Station,
   StationEditDraft,
@@ -272,6 +273,10 @@ export default function App() {
     createdByUserId: ""
   });
   const [pendingBackfillTemplate, setPendingBackfillTemplate] = useState<ExpenseTemplateOverride["templateId"] | null>(null);
+  const [editingPauseLogId, setEditingPauseLogId] = useState<string | null>(null);
+  const [pauseLogEditDraft, setPauseLogEditDraft] = useState<{ pausedAt: string; resumedAt: string }>({ pausedAt: "", resumedAt: "" });
+  const [pauseLogDeleteConfirmId, setPauseLogDeleteConfirmId] = useState<string | null>(null);
+  const [pendingRetryData, setPendingRetryData] = useState<AppData | null>(null);
   const filteredInventoryItems = appData.inventoryItems.filter((item) =>
     `${item.name} ${item.category}`.toLowerCase().includes(inventoryItemSearch.trim().toLowerCase())
   );
@@ -304,7 +309,7 @@ export default function App() {
     }
   }
 
-  async function saveRemoteSnapshot(nextAppData: AppData, expectedVersion = remoteVersion) {
+  async function saveRemoteSnapshot(nextAppData: AppData, expectedVersion = remoteVersion, isRetry = false) {
     if (!activeUserId) {
       return;
     }
@@ -313,13 +318,24 @@ export default function App() {
       const nextVersion = await saveRemoteAppData(nextAppData, activeUserId, expectedVersion);
       setRemoteVersion(nextVersion);
       setRemoteError("");
+      setPendingRetryData(null);
     } catch (error) {
       await refreshRemoteState({ keepUser: true });
-      const message =
-        error instanceof Error
-          ? error.message
-          : "Remote data changed in another browser. Please retry after the latest data loads.";
-      setRemoteError(message);
+      const isVersionConflict =
+        error instanceof Error && error.message.toLowerCase().includes("remote data changed");
+      if (isVersionConflict && !isRetry) {
+        setPendingRetryData(nextAppData);
+        setRemoteError("Another device updated this data. Your changes were not saved.");
+      } else {
+        const message =
+          isRetry
+            ? "Could not save — please check the latest data and try again."
+            : error instanceof Error
+              ? error.message
+              : "Remote data changed in another browser. Please retry after the latest data loads.";
+        setRemoteError(message);
+        setPendingRetryData(null);
+      }
       throw error;
     } finally {
       setRemoteSaving(false);
@@ -329,6 +345,45 @@ export default function App() {
   useEffect(() => {
     setBusinessDraft(appData.businessProfile);
   }, [appData.businessProfile]);
+
+  // One-time migration: create session_reservation audit movements for items that were already in
+  // open sessions before this feature shipped. Runs once per device via localStorage flag.
+  useEffect(() => {
+    if (!activeUserId) return;
+    const flagKey = "inv_reservation_migrated_v1";
+    if (localStorage.getItem(flagKey)) return;
+    const openSessions = appData.sessions.filter((s) => s.status !== "closed");
+    if (openSessions.length === 0) {
+      localStorage.setItem(flagKey, "1");
+      return;
+    }
+    mutateAppData((draft) => {
+      const now = new Date().toISOString();
+      for (const session of draft.sessions.filter((s) => s.status !== "closed")) {
+        for (const sessionItem of session.items) {
+          const inventoryEntry = draft.inventoryItems.find((e) => e.id === sessionItem.inventoryItemId);
+          if (!inventoryEntry || inventoryEntry.isReusable) continue;
+          const alreadyHasReservation = draft.stockMovements.some(
+            (m) => m.type === "session_reservation" && m.itemId === sessionItem.inventoryItemId
+              && m.reason?.includes(session.stationNameSnapshot)
+          );
+          if (alreadyHasReservation) continue;
+          const qty = sessionItem.soldAsPackOf ? sessionItem.quantity * sessionItem.soldAsPackOf : sessionItem.quantity;
+          draft.stockMovements.push({
+            id: createId("stock"),
+            itemId: sessionItem.inventoryItemId,
+            type: "session_reservation",
+            quantity: -qty,
+            reason: `Reserved for ${session.stationNameSnapshot} (migrated)`,
+            createdAt: now,
+            userId: activeUserId
+          });
+        }
+      }
+    });
+    localStorage.setItem(flagKey, "1");
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeUserId]);
 
   useEffect(() => {
     const handleOnlineChange = () => setOnline(navigator.onLine);
@@ -684,7 +739,7 @@ export default function App() {
       customerId: undefined,
       customerName: "",
       customerPhone: "",
-      playMode: station?.ltpEnabled ? "solo" : "group",
+      playMode: "group",
       arcadeItemId: station?.mode === "unit_sale" ? defaultArcadeInventoryItem?.id ?? "" : "",
       arcadeQuantity: 1
     };
@@ -1081,6 +1136,63 @@ export default function App() {
     });
   }
 
+  function editPauseLogEntry(logId: string, patch: Partial<Pick<SessionPauseLog, "pausedAt" | "resumedAt">>) {
+    if (!activeUser) return;
+    const log = appData.sessionPauseLogs.find((entry) => entry.id === logId);
+    if (!log) return;
+    const session = appData.sessions.find((entry) => entry.id === log.sessionId);
+    if (!session) return;
+    const newPausedAt = patch.pausedAt ?? log.pausedAt;
+    const newResumedAt = patch.resumedAt ?? log.resumedAt;
+    if (new Date(newPausedAt).getTime() < new Date(session.startedAt).getTime()) {
+      window.alert("Pause time cannot be before the session start time.");
+      return;
+    }
+    if (newResumedAt && new Date(newResumedAt).getTime() <= new Date(newPausedAt).getTime()) {
+      window.alert("Resume time must be after pause time.");
+      return;
+    }
+    const otherLogs = appData.sessionPauseLogs.filter((entry) => entry.sessionId === log.sessionId && entry.id !== logId);
+    const overlap = otherLogs.some((other) => {
+      const otherEnd = other.resumedAt ? new Date(other.resumedAt).getTime() : Infinity;
+      const newEnd = newResumedAt ? new Date(newResumedAt).getTime() : Infinity;
+      return new Date(newPausedAt).getTime() < otherEnd && new Date(other.pausedAt).getTime() < newEnd;
+    });
+    if (overlap) {
+      window.alert("Pause intervals cannot overlap.");
+      return;
+    }
+    mutateAppData((draft) => {
+      const entry = draft.sessionPauseLogs.find((e) => e.id === logId);
+      if (!entry) return;
+      if (patch.pausedAt) entry.pausedAt = new Date(patch.pausedAt).toISOString();
+      if (patch.resumedAt !== undefined) entry.resumedAt = patch.resumedAt ? new Date(patch.resumedAt).toISOString() : undefined;
+      addAuditLog(draft, activeUser.id, "pause_log_edited", "session", log.sessionId, `Edited pause log entry for ${session.stationNameSnapshot}.`);
+    });
+    setEditingPauseLogId(null);
+  }
+
+  function deletePauseLogEntry(logId: string) {
+    if (!activeUser) return;
+    const log = appData.sessionPauseLogs.find((entry) => entry.id === logId);
+    if (!log) return;
+    const session = appData.sessions.find((entry) => entry.id === log.sessionId);
+    if (!session) return;
+    const isOpenPause = !log.resumedAt;
+    mutateAppData((draft) => {
+      draft.sessionPauseLogs = draft.sessionPauseLogs.filter((entry) => entry.id !== logId);
+      const draftSession = draft.sessions.find((entry) => entry.id === log.sessionId);
+      if (draftSession) {
+        draftSession.pauseLogIds = draftSession.pauseLogIds.filter((id) => id !== logId);
+        if (isOpenPause && draftSession.status === "paused") {
+          draftSession.status = "active";
+        }
+      }
+      addAuditLog(draft, activeUser.id, "pause_log_deleted", "session", log.sessionId, `Deleted pause log entry for ${session.stationNameSnapshot}.`);
+    });
+    setPauseLogDeleteConfirmId(null);
+  }
+
   function addItemToSession(sessionId: string) {
     const form = sessionItemForm[sessionId];
     if (!activeUser || !form?.itemId) {
@@ -1109,6 +1221,18 @@ export default function App() {
         soldAsPackOf: packOf,
         addedAt: new Date().toISOString()
       });
+      const inventoryEntry = draft.inventoryItems.find((entry) => entry.id === item.id);
+      if (inventoryEntry && !inventoryEntry.isReusable) {
+        draft.stockMovements.unshift({
+          id: createId("stock"),
+          itemId: item.id,
+          type: "session_reservation",
+          quantity: -stockNeeded,
+          reason: `Reserved for ${session.stationNameSnapshot}`,
+          createdAt: new Date().toISOString(),
+          userId: activeUser.id
+        });
+      }
       addAuditLog(draft, activeUser.id, "session_item_added", "session", sessionId, `Added ${item.name}${packOf ? " (pack)" : ""} to ${session.stationNameSnapshot}.`);
     });
     setSessionItemForm((previous) => ({
@@ -1129,6 +1253,19 @@ export default function App() {
       const item = session.items.find((entry) => entry.id === sessionItemId);
       session.items = session.items.filter((entry) => entry.id !== sessionItemId);
       if (item) {
+        const inventoryEntry = draft.inventoryItems.find((entry) => entry.id === item.inventoryItemId);
+        if (inventoryEntry && !inventoryEntry.isReusable) {
+          const stockReleased = item.soldAsPackOf ? item.quantity * item.soldAsPackOf : item.quantity;
+          draft.stockMovements.unshift({
+            id: createId("stock"),
+            itemId: item.inventoryItemId,
+            type: "session_reservation_void",
+            quantity: stockReleased,
+            reason: `Released from ${session.stationNameSnapshot}`,
+            createdAt: new Date().toISOString(),
+            userId: activeUser.id
+          });
+        }
         addAuditLog(
           draft,
           activeUser.id,
@@ -1977,12 +2114,17 @@ export default function App() {
         };
       }
     }
+    // Audit query for zero-price bills: SELECT data->'bills' FROM app_data WHERE (data->'bills') @> '[{"total":0}]'::jsonb;
     const preview = buildBillPreview(
       sourceLines,
       effectiveLineDiscounts,
       checkoutState.billDiscount,
       checkoutState.roundOffEnabled
     );
+    if (preview.isZeroTotal) {
+      window.alert("Bill total is ₹0 — add items or remove any full discounts before issuing.");
+      return;
+    }
     const discountEntries = Object.values(checkoutState.lineDiscounts).filter(
       (discount) => discount && discount.value > 0
     );
@@ -3324,9 +3466,26 @@ export default function App() {
           {remoteError && (
             <div className="remote-error-banner" role="alert">
               <span>{remoteError}</span>
-              <button type="button" className="ghost-button" onClick={() => setRemoteError("")}>
-                Dismiss
-              </button>
+              <div className="button-row" style={{ gap: "0.4rem", marginTop: "0.4rem" }}>
+                {pendingRetryData && (
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    disabled={remoteSaving}
+                    onClick={() => {
+                      const dataToRetry = pendingRetryData;
+                      setPendingRetryData(null);
+                      setRemoteError("");
+                      void saveRemoteSnapshot(dataToRetry, remoteVersion, true);
+                    }}
+                  >
+                    Retry
+                  </button>
+                )}
+                <button type="button" className="ghost-button" onClick={() => { setRemoteError(""); setPendingRetryData(null); }}>
+                  Dismiss
+                </button>
+              </div>
             </div>
           )}
           <div className="helper-text">
@@ -3379,6 +3538,7 @@ export default function App() {
           <DashboardPanel
             stations={stations}
             openCustomerTabs={openCustomerTabs}
+            sessionPauseLogs={appData.sessionPauseLogs}
             auditLogs={appData.auditLogs}
             customers={appData.customers}
             inventoryItems={appData.inventoryItems}
@@ -3463,6 +3623,7 @@ export default function App() {
             isManagerReadOnly={isManagerReadOnly}
             getInventoryState={getInventoryState}
             getInventoryStateLabel={getInventoryStateLabel}
+            getAvailableStock={getAvailableStock}
             onItemFormChange={setItemForm}
             onEditItemFormChange={setEditItemForm}
             onUseCustomItemCategoryChange={setUseCustomItemCategory}
@@ -3842,6 +4003,11 @@ export default function App() {
             <NumericInput min={1} defaultValue={1} value={sessionItemForm[managedSession.id]?.quantity ?? 1} onValueChange={(value) => setSessionItemForm((p) => ({ ...p, [managedSession.id]: { ...p[managedSession.id], itemId: p[managedSession.id]?.itemId ?? "", quantity: value } }))} />
             <button className="secondary-button" type="button" onClick={() => addItemToSession(managedSession.id)}>Add Item</button>
           </div>
+          {(() => {
+            const selectedItem = appData.inventoryItems.find((i) => i.id === sessionItemForm[managedSession.id]?.itemId);
+            if (!selectedItem || selectedItem.price > 0) return null;
+            return <div className="warning-banner">⚠ This item has a ₹0 price — confirm or update it in Inventory before adding.</div>;
+          })()}
           <div className="line-items">
             {managedSession.items.length === 0 && <div className="empty-state">No consumables added yet.</div>}
             {managedSession.items.map((item: SessionItem) => (
@@ -3868,6 +4034,93 @@ export default function App() {
               </div>
               <div className="segments-list">
                 {managedSessionCharge.segments.map((segment, index) => <div key={`${segment.label}-${index}`} className="activity-row"><strong>Game Type · {currency(segment.hourlyRate)}/hr</strong><span className="muted">{formatMinutes(segment.minutes)} · {currency(segment.subtotal)}</span></div>)}
+              </div>
+            </>
+          )}
+          {managedSession.mode === "timed" && managedSession.pauseLogIds.length > 0 && canEditSessionTiming && (
+            <>
+              <div className="divider" />
+              <div className="panel-header compact-header">
+                <div>
+                  <h2>Pause History</h2>
+                  <p>Review and correct pause/resume timestamps for this session.</p>
+                </div>
+              </div>
+              <div className="line-items">
+                {managedSession.pauseLogIds.map((logId) => {
+                  const log = appData.sessionPauseLogs.find((entry) => entry.id === logId);
+                  if (!log) return null;
+                  const isEditing = editingPauseLogId === logId;
+                  const isDeleteConfirm = pauseLogDeleteConfirmId === logId;
+                  return (
+                    <div key={logId} className="session-item-row">
+                      {isEditing ? (
+                        <div className="form-grid" style={{ flex: 1 }}>
+                          <label>
+                            <span>Paused At</span>
+                            <input
+                              type="datetime-local"
+                              value={pauseLogEditDraft.pausedAt}
+                              onChange={(e) => setPauseLogEditDraft((p) => ({ ...p, pausedAt: e.target.value }))}
+                            />
+                          </label>
+                          <label>
+                            <span>Resumed At</span>
+                            <input
+                              type="datetime-local"
+                              value={pauseLogEditDraft.resumedAt}
+                              onChange={(e) => setPauseLogEditDraft((p) => ({ ...p, resumedAt: e.target.value }))}
+                            />
+                          </label>
+                          <div className="button-row field-span-full">
+                            <button className="secondary-button" type="button" onClick={() => setEditingPauseLogId(null)}>Cancel</button>
+                            <button
+                              className="primary-button"
+                              type="button"
+                              onClick={() => editPauseLogEntry(logId, {
+                                pausedAt: pauseLogEditDraft.pausedAt,
+                                resumedAt: pauseLogEditDraft.resumedAt || undefined
+                              })}
+                            >
+                              Save
+                            </button>
+                          </div>
+                        </div>
+                      ) : isDeleteConfirm ? (
+                        <div style={{ flex: 1 }}>
+                          <span className="muted">Delete this pause entry?</span>
+                          <div className="button-row" style={{ marginTop: "0.5rem" }}>
+                            <button className="secondary-button" type="button" onClick={() => setPauseLogDeleteConfirmId(null)}>Cancel</button>
+                            <button className="ghost-button danger" type="button" onClick={() => deletePauseLogEntry(logId)}>Delete</button>
+                          </div>
+                        </div>
+                      ) : (
+                        <>
+                          <div>
+                            <strong>{formatDateTime(log.pausedAt)}</strong>
+                            <div className="muted">→ {log.resumedAt ? formatDateTime(log.resumedAt) : "Active"}</div>
+                          </div>
+                          <div className="session-item-actions">
+                            <button
+                              className="ghost-button"
+                              type="button"
+                              onClick={() => {
+                                setEditingPauseLogId(logId);
+                                setPauseLogEditDraft({
+                                  pausedAt: formatDateTimeInputValue(log.pausedAt),
+                                  resumedAt: log.resumedAt ? formatDateTimeInputValue(log.resumedAt) : ""
+                                });
+                              }}
+                            >
+                              Edit
+                            </button>
+                            <button className="ghost-button danger" type="button" onClick={() => setPauseLogDeleteConfirmId(logId)}>Delete</button>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             </>
           )}
@@ -4296,7 +4549,8 @@ export default function App() {
                   finalizeCheckout
                 )
               }
-              disabled={remoteSaving || Boolean(blockingActionLabel)}
+              disabled={remoteSaving || Boolean(blockingActionLabel) || checkoutPreview.isZeroTotal}
+              title={checkoutPreview.isZeroTotal ? "Bill total is ₹0 — add items or remove discounts" : undefined}
             >
               {checkoutState.mode === "bill_replacement" ? "Issue Replacement Bill" : "Issue Bill"}
             </button>

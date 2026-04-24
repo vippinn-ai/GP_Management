@@ -27,6 +27,7 @@ export function InventoryPanel(props: {
   isManagerReadOnly: boolean;
   getInventoryState: (item: InventoryItem) => InventoryState;
   getInventoryStateLabel: (state: InventoryState) => string;
+  getAvailableStock: (item: InventoryItem) => number;
   onItemFormChange: (next: InventoryItem) => void;
   onEditItemFormChange: (next: InventoryItem | null) => void;
   onUseCustomItemCategoryChange: (value: boolean) => void;
@@ -193,10 +194,15 @@ export function InventoryPanel(props: {
                         <td>{item.isReusable ? "Reusable" : "Consumable"}</td>
                         <td>{currency(item.price)}</td>
                         <td>
-                          {item.stockQty}
+                          {props.getAvailableStock(item)}
+                          {item.stockQty !== props.getAvailableStock(item) && (
+                            <span className="muted" style={{ fontSize: "0.8em", marginLeft: "0.4em" }}>
+                              ({item.stockQty - props.getAvailableStock(item)} in sessions)
+                            </span>
+                          )}
                           {item.cigarettePack && (
                             <span className="muted" style={{ fontSize: "0.8em", marginLeft: "0.4em" }}>
-                              (~{Math.floor(item.stockQty / item.cigarettePack.size)} packs + {item.stockQty % item.cigarettePack.size} loose)
+                              (~{Math.floor(props.getAvailableStock(item) / item.cigarettePack.size)} packs + {props.getAvailableStock(item) % item.cigarettePack.size} loose)
                             </span>
                           )}
                         </td>

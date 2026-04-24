@@ -12,7 +12,9 @@ export type StockMovementType =
   | "restock"
   | "sale"
   | "adjustment"
-  | "void_refund_reversal";
+  | "void_refund_reversal"
+  | "session_reservation"
+  | "session_reservation_void";
 
 export interface User {
   id: string;

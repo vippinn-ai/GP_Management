@@ -717,8 +717,26 @@ td {
 }
 
 .station-card.is-paused {
-  border-color: #d58c59;
-  background: linear-gradient(180deg, rgba(255,245,236,0.98), rgba(251,238,228,0.98));
+  border-color: #ef4444;
+  background: linear-gradient(180deg, rgba(255,236,236,0.98), rgba(254,226,226,0.98));
+  box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.25);
+}
+
+@keyframes pauseOvertimePulse {
+  0%   { box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.4), 0 0 0 0 rgba(239, 68, 68, 0); }
+  50%  { box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.7), 0 0 14px 6px rgba(239, 68, 68, 0.25); }
+  100% { box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.4), 0 0 0 0 rgba(239, 68, 68, 0); }
+}
+
+.station-card.is-paused-overtime {
+  animation: pauseOvertimePulse 2s ease-in-out infinite;
+}
+
+.pause-elapsed {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #ef4444;
+  margin-top: 0.15rem;
 }
 
 .station-card:hover {
@@ -1433,6 +1451,16 @@ td {
   border: 1px solid #c7ddcc;
   color: #224a35;
   margin-top: 1rem;
+}
+
+.warning-banner {
+  padding: 0.6rem 1rem;
+  border-radius: 0.75rem;
+  background: #fefce8;
+  border: 1px solid #fde68a;
+  color: #92400e;
+  font-size: 0.85rem;
+  margin-top: 0.5rem;
 }
 
 .discount-grid,

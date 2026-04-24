@@ -235,7 +235,8 @@ export function buildBillPreview(
     lineDiscountAmount,
     billDiscountAmount,
     roundOffAmount: roundedTotal - netTotal,
-    total: roundedTotal
+    total: roundedTotal,
+    isZeroTotal: roundedTotal <= 0
   };
 }
 
