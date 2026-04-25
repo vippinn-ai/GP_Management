@@ -3537,7 +3537,10 @@ export default function App() {
           </div>
           <div className="topbar-actions">
             <TodayMetricCard
-              value={currency(sumBy(appData.bills.filter((bill) => bill.status === "issued" && billBusinessDates[bill.id] === currentBusinessDay), (bill) => bill.total))}
+              value={currency(
+                sumBy(appData.bills.filter((bill) => bill.status === "issued" && billBusinessDates[bill.id] === currentBusinessDay), (bill) => bill.total) +
+                sumBy(appData.bills.filter((bill) => bill.status === "pending" && bill.amountPaid > 0 && billBusinessDates[bill.id] === currentBusinessDay), (bill) => bill.amountPaid)
+              )}
               timeLabel={formatTime(now)}
               dateLabel={currentDateLabel}
             />

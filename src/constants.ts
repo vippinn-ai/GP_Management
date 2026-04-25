@@ -3,11 +3,12 @@ import type { Role, TabId } from "./types";
 export const DEFAULT_INVENTORY_CATEGORIES = ["Beverages", "Food", "Refill Sheesha", "Arcade", "Cigarettes"];
 
 const CATEGORY_ICONS: Record<string, string> = {
-  Beverages: "🥤",
-  Food: "🍔",
+  Beverages: "🍶",
+  Food: "🍽️",
   Cigarettes: "🚬",
-  "Refill Sheesha": "💨",
-  Arcade: "🕹️"
+  "Refill Sheesha": "🏺",
+  "Herbal Pot": "🏺",
+  Arcade: "🎮"
 };
 
 export function getCategoryIcon(category: string): string {

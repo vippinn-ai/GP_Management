@@ -2,6 +2,7 @@ import { type FormEvent } from "react";
 import type { InventoryItem, InventoryState, StockMovement, StockMovementType } from "../types";
 import { currency } from "../utils";
 import { getCategoryIcon } from "../constants";
+import { getCategoryImage } from "../categoryImages";
 import { Modal } from "../components/Modal";
 import { NumericInput } from "../components/NumericInput";
 
@@ -192,7 +193,11 @@ export function InventoryPanel(props: {
                       <tr key={item.id}>
                         <td>{item.name}</td>
                         <td>
-                          <span className={`category-icon${item.category === "Cigarettes" ? " category-icon--cigarettes" : ""}`}>{getCategoryIcon(item.category)}</span>
+                          {getCategoryImage(item.category) ? (
+                            <img src={getCategoryImage(item.category)} alt="" className="category-icon-img" />
+                          ) : (
+                            <span className={`category-icon${item.category === "Cigarettes" ? " category-icon--cigarettes" : ""}`}>{getCategoryIcon(item.category)}</span>
+                          )}
                           {item.category}
                         </td>
                         <td>{item.isReusable ? "Reusable" : "Consumable"}</td>

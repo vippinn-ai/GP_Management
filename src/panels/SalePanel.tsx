@@ -3,6 +3,9 @@ import type { Customer, CustomerTab, CustomerTabDraft, CustomerTabEditDraft, Cus
 import { currency } from "../utils";
 import { getCategoryIcon } from "../constants";
 import { Modal } from "../components/Modal";
+import { CATEGORY_IMAGES } from "../categoryImages";
+
+const LARGE_ICON_CATEGORIES = new Set(["Herbal Pot Flavour", "Herbal Pot Flavours", "Herbal Flavour", "Food"]);
 import { NumericInput } from "../components/NumericInput";
 import { CustomerAutocompleteFields } from "../components/CustomerAutocompleteFields";
 
@@ -68,13 +71,22 @@ export function SalePanel(props: {
                     }
                   }}
                 >
-                  <strong>{item.name}</strong>
-                  <span>
-                    <span className={`category-icon${item.category === "Cigarettes" ? " category-icon--cigarettes" : ""}`}>{getCategoryIcon(item.category)}</span>
-                    {item.category}
-                  </span>
-                  <span>{currency(item.price)}</span>
-                  <span className="muted">{props.getInventoryPickerDetail(item, undefined, selectedCustomerTab?.id)}</span>
+                  <div className="catalog-card-info">
+                    <strong>{item.name}</strong>
+                    <span className={item.category === "Cigarettes" ? "category-icon--cigarettes" : ""}>{item.category}</span>
+                    <span>{currency(item.price)}</span>
+                    <span className="muted">{props.getInventoryPickerDetail(item, undefined, selectedCustomerTab?.id)}</span>
+                  </div>
+                  {CATEGORY_IMAGES[item.category] ? (
+                    <img
+                      src={CATEGORY_IMAGES[item.category]}
+                      alt=""
+                      className={`catalog-card-icon-large${LARGE_ICON_CATEGORIES.has(item.category) ? " catalog-card-icon-large--xl" : ""}`}
+                      aria-hidden="true"
+                    />
+                  ) : (
+                    <span className="catalog-card-icon-large" aria-hidden="true">{getCategoryIcon(item.category)}</span>
+                  )}
                 </button>
               ))}
           </div>

@@ -931,11 +931,52 @@ td {
 
 .catalog-card {
   text-align: left;
-  display: grid;
-  gap: 0.3rem;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
   color: #10211a;
   background: #fefefe;
   border: 1px solid #d8e4dc;
+}
+
+.catalog-card-info {
+  display: grid;
+  gap: 0.3rem;
+  flex: 1;
+  min-width: 0;
+}
+
+.catalog-card-icon-large {
+  flex-shrink: 0;
+  user-select: none;
+}
+
+img.catalog-card-icon-large {
+  width: 3.2rem;
+  height: 3.2rem;
+  object-fit: contain;
+}
+
+img.catalog-card-icon-large--xl {
+  width: 4.5rem;
+  height: 4.5rem;
+}
+
+span.catalog-card-icon-large {
+  font-size: 2.6rem;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  opacity: 0.45;
+}
+
+.category-icon-img {
+  display: inline-block;
+  width: 1.1rem;
+  height: 1.1rem;
+  object-fit: contain;
+  margin-right: 0.3em;
+  vertical-align: middle;
 }
 
 .tab-chip-grid {
