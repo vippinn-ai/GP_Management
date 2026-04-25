@@ -151,10 +151,18 @@ export function SalePanel(props: {
               {selectedCustomerTab && selectedCustomerTab.items.length === 0 && (
                 <div className="empty-state">Add items from the left panel.</div>
               )}
-              {selectedCustomerTab?.items.map((item: CustomerTabItem) => (
+              {selectedCustomerTab?.items.map((item: CustomerTabItem) => {
+                const invCategory = props.inventoryItems.find((i) => i.id === item.inventoryItemId)?.category ?? "";
+                const catImage = CATEGORY_IMAGES[invCategory];
+                return (
                 <div key={item.id} className="line-item-row">
                   <div>
-                    <strong>{item.name}{item.soldAsPackOf ? ` (Pack of ${item.soldAsPackOf})` : ""}</strong>
+                    <strong>
+                      {catImage
+                        ? <img src={catImage} alt="" className="category-icon-img" />
+                        : invCategory ? <span className="category-icon">{getCategoryIcon(invCategory)}</span> : null}
+                      {item.name}{item.soldAsPackOf ? ` (Pack of ${item.soldAsPackOf})` : ""}
+                    </strong>
                     <div className="muted">{currency(item.unitPrice)} each</div>
                   </div>
                   <label className="inline-field small">
@@ -173,7 +181,8 @@ export function SalePanel(props: {
                     </button>
                   </div>
                 </div>
-              ))}
+                );
+              })}
             </div>
             <div className="checkout-footer">
               <div className="checkout-total-block">

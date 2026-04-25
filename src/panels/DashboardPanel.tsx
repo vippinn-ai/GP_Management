@@ -104,7 +104,36 @@ export function DashboardPanel(props: {
           </div>
           <div className="dashboard-tile-body panel-scroll">
             <div className="station-grid">
-              {stations.map((station) => {
+              {[
+                ...stations.filter((s) => props.getActiveSessionForStation(s.id)),
+                ...openCustomerTabs,
+                ...stations.filter((s) => !props.getActiveSessionForStation(s.id))
+              ].map((entry) => {
+                if ("customerName" in entry) {
+                  const tab = entry;
+                  return (
+                    <article key={tab.id} className="station-card is-active customer-tab-live-card">
+                      <div className="station-card-header">
+                        <div>
+                          <h3>{tab.customerName}</h3>
+                          <p>Consumables tab</p>
+                        </div>
+                        <button className="ghost-button" type="button" onClick={() => props.onOpenCustomerTabWorkspace(tab.id)}>Manage</button>
+                      </div>
+                      <div className="station-metrics">
+                        <div><span className="muted">Opened</span><strong>{formatTime(tab.createdAt)}</strong></div>
+                        <div><span className="muted">Live bill</span><strong>{currency(props.getCustomerTabTotal(tab))}</strong></div>
+                        <div><span className="muted">Items</span><strong>{`${tab.items.length}`}</strong></div>
+                      </div>
+                      <div className="button-row">
+                        <button className="secondary-button" type="button" onClick={() => props.onOpenCustomerTabWorkspace(tab.id)}>Manage Items</button>
+                        <button className="primary-button" type="button" onClick={() => props.onBeginCustomerTabCheckoutById(tab.id)}>Close Bill</button>
+                        <button className="ghost-button danger" type="button" onClick={() => props.onRejectCustomerTab(tab.id)}>Reject</button>
+                      </div>
+                    </article>
+                  );
+                }
+                const station = entry;
                 const session = props.getActiveSessionForStation(station.id);
                 const isBillingFrozen =
                   session &&
@@ -185,56 +214,6 @@ export function DashboardPanel(props: {
                   </article>
                 );
               })}
-              {openCustomerTabs.map((tab) => (
-                <article key={tab.id} className="station-card is-active customer-tab-live-card">
-                  <div className="station-card-header">
-                    <div>
-                      <h3>{tab.customerName}</h3>
-                      <p>Consumables tab</p>
-                    </div>
-                    <button
-                      className="ghost-button"
-                      type="button"
-                      onClick={() => props.onOpenCustomerTabWorkspace(tab.id)}
-                    >
-                      Manage
-                    </button>
-                  </div>
-                  <div className="station-metrics">
-                    <div>
-                      <span className="muted">Opened</span>
-                      <strong>{formatTime(tab.createdAt)}</strong>
-                    </div>
-                    <div>
-                      <span className="muted">Live bill</span>
-                      <strong>{currency(props.getCustomerTabTotal(tab))}</strong>
-                    </div>
-                    <div>
-                      <span className="muted">Items</span>
-                      <strong>{`${tab.items.length}`}</strong>
-                    </div>
-                  </div>
-                  <div className="button-row">
-                    <button
-                      className="secondary-button"
-                      type="button"
-                      onClick={() => props.onOpenCustomerTabWorkspace(tab.id)}
-                    >
-                      Manage Items
-                    </button>
-                    <button
-                      className="primary-button"
-                      type="button"
-                      onClick={() => props.onBeginCustomerTabCheckoutById(tab.id)}
-                    >
-                      Close Bill
-                    </button>
-                    <button className="ghost-button danger" type="button" onClick={() => props.onRejectCustomerTab(tab.id)}>
-                      Reject
-                    </button>
-                  </div>
-                </article>
-              ))}
               {stations.length === 0 && openCustomerTabs.length === 0 && (
                 <div className="empty-state">No live stations or open consumables tabs right now.</div>
               )}

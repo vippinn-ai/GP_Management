@@ -77,6 +77,7 @@ import type {
   VoidPendingDraft
 } from "./types";
 import { DEFAULT_INVENTORY_CATEGORIES, DEFAULT_EXPENSE_CATEGORIES, tabsByRole, ALL_TABS, getCategoryIcon } from "./constants";
+import { getCategoryImage } from "./categoryImages";
 import {
   addAuditLog,
   buildBillPreview,
@@ -4001,7 +4002,7 @@ export default function App() {
           <div className="session-item-adder">
             <select value={sessionItemForm[managedSession.id]?.itemId ?? ""} onChange={(event) => setSessionItemForm((p) => ({ ...p, [managedSession.id]: { itemId: event.target.value, quantity: p[managedSession.id]?.quantity ?? 1, sellAsPackOf: undefined } }))}>
               <option value="">Select item</option>
-              {appData.inventoryItems.filter((item) => item.active).map((item) => <option key={item.id} value={item.id}>{getCategoryIcon(item.category)} {item.name} · {currency(item.price)} · {getInventoryPickerDetail(item, managedSession.id)}</option>)}
+              {appData.inventoryItems.filter((item) => item.active).map((item) => <option key={item.id} value={item.id}>{item.name} · {currency(item.price)} · {getInventoryPickerDetail(item, managedSession.id)}</option>)}
             </select>
             {(() => {
               const selectedItem = appData.inventoryItems.find((i) => i.id === sessionItemForm[managedSession.id]?.itemId);
@@ -4025,10 +4026,18 @@ export default function App() {
           })()}
           <div className="line-items">
             {managedSession.items.length === 0 && <div className="empty-state">No consumables added yet.</div>}
-            {managedSession.items.map((item: SessionItem) => (
+            {managedSession.items.map((item: SessionItem) => {
+              const invCategory = appData.inventoryItems.find((i) => i.id === item.inventoryItemId)?.category ?? "";
+              const catImage = getCategoryImage(invCategory);
+              return (
               <div key={item.id} className="session-item-row">
                 <div>
-                  <strong>{item.name}{item.soldAsPackOf ? ` (Pack of ${item.soldAsPackOf})` : ""}</strong>
+                  <strong>
+                    {catImage
+                      ? <img src={catImage} alt="" className="category-icon-img" />
+                      : invCategory ? <span className="category-icon">{getCategoryIcon(invCategory)}</span> : null}
+                    {item.name}{item.soldAsPackOf ? ` (Pack of ${item.soldAsPackOf})` : ""}
+                  </strong>
                   <div className="muted">{formatTime(item.addedAt)}</div>
                 </div>
                 <div className="session-item-actions">
@@ -4036,7 +4045,8 @@ export default function App() {
                   <button className="ghost-button danger" type="button" onClick={() => removeItemFromSession(managedSession.id, item.id)}>Remove</button>
                 </div>
               </div>
-            ))}
+            );
+            })}
           </div>
           {managedSession.mode === "timed" && (
             <>
