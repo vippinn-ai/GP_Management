@@ -76,7 +76,7 @@ import type {
   SettlementDraft,
   VoidPendingDraft
 } from "./types";
-import { DEFAULT_INVENTORY_CATEGORIES, DEFAULT_EXPENSE_CATEGORIES, tabsByRole, ALL_TABS } from "./constants";
+import { DEFAULT_INVENTORY_CATEGORIES, DEFAULT_EXPENSE_CATEGORIES, tabsByRole, ALL_TABS, getCategoryIcon } from "./constants";
 import {
   addAuditLog,
   buildBillPreview,
@@ -413,13 +413,15 @@ export default function App() {
   const canReplaceIssuedBills = activeUser?.role === "admin";
   const canSettlePendingBills = activeUser?.role === "admin" || activeUser?.role === "manager" || activeUser?.role === "receptionist";
   const canEditSessionTiming = activeUser?.role === "admin";
-  const canEditSessionCustomerDetails = activeUser?.role === "admin" || activeUser?.role === "manager" || activeUser?.role === "receptionist";
+  const canEditSessionCustomerDetails = activeUser?.role === "admin" || activeUser?.role === "manager" || activeUser?.role === "receptionist"; // all roles: admin, manager, receptionist can edit customer details
   const isManagerReadOnly = activeUser?.role === "manager";
   const pageTitle =
     activeTab === "sale"
       ? "Consumables Tab"
       : visibleTabs.find((tab) => tab.id === activeTab)?.label ?? "Game Parlour";
-  const stations = appData.stations.filter((station) => station.active);
+  const stations = [...appData.stations.filter((station) => station.active)].sort((a, b) =>
+    (getActiveSessionForStation(b.id) ? 1 : 0) - (getActiveSessionForStation(a.id) ? 1 : 0)
+  );
   const activeSessions = appData.sessions.filter((session) => session.status !== "closed");
   const openCustomerTabs = appData.customerTabs.filter((tab) => tab.status === "open");
   const selectedCustomerTab =
@@ -3325,7 +3327,16 @@ export default function App() {
     : null;
 
   const issuedBills = filteredBills.filter((bill) => bill.status === "issued");
-  const grossRevenue = sumBy(issuedBills, (bill) => bill.total);
+  const issuedRevenue = sumBy(issuedBills, (bill) => bill.total);
+  const deferredCollected = sumBy(
+    filteredBills.filter((b) => b.status === "pending" && b.amountPaid > 0),
+    (b) => b.amountPaid
+  );
+  const grossRevenue = issuedRevenue + deferredCollected;
+  const deferredOutstanding = sumBy(
+    filteredBills.filter((b) => b.status === "pending" && b.amountDue > 0),
+    (b) => b.amountDue
+  );
   const sessionRevenue = sumBy(
     issuedBills.flatMap((bill) => bill.lines.filter((line) => line.type === "session_charge")),
     (line) => line.total
@@ -3686,6 +3697,7 @@ export default function App() {
               itemRevenue,
               totalDiscounts,
               pendingRevenue,
+              deferredOutstanding,
               previousRangeLabel: previousRange.label,
               previousRangeRevenue,
               revenueGrowthPct,
@@ -3938,7 +3950,7 @@ export default function App() {
             <div className="section-block section-block-muted">
               <div className="section-block-header">
                 <h3>Edit Session Details</h3>
-                <p>Update customer details for this session.{canEditSessionTiming ? " Admins can also correct the session start time." : ""}</p>
+                <p>All staff can update customer name and phone.{canEditSessionTiming ? " Admins can also correct the session start time." : ""}</p>
               </div>
               <form className="form-grid" onSubmit={saveSessionDetails}>
                 <CustomerAutocompleteFields
@@ -3986,7 +3998,7 @@ export default function App() {
           <div className="session-item-adder">
             <select value={sessionItemForm[managedSession.id]?.itemId ?? ""} onChange={(event) => setSessionItemForm((p) => ({ ...p, [managedSession.id]: { itemId: event.target.value, quantity: p[managedSession.id]?.quantity ?? 1, sellAsPackOf: undefined } }))}>
               <option value="">Select item</option>
-              {appData.inventoryItems.filter((item) => item.active).map((item) => <option key={item.id} value={item.id}>{item.name} · {currency(item.price)} · {getInventoryPickerDetail(item, managedSession.id)}</option>)}
+              {appData.inventoryItems.filter((item) => item.active).map((item) => <option key={item.id} value={item.id}>{getCategoryIcon(item.category)} {item.name} · {currency(item.price)} · {getInventoryPickerDetail(item, managedSession.id)}</option>)}
             </select>
             {(() => {
               const selectedItem = appData.inventoryItems.find((i) => i.id === sessionItemForm[managedSession.id]?.itemId);

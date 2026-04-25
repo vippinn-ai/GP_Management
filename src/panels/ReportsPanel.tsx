@@ -34,6 +34,7 @@ interface ReportSummary {
   itemRevenue: number;
   totalDiscounts: number;
   pendingRevenue: number;
+  deferredOutstanding: number;
   previousRangeLabel: string;
   previousRangeRevenue: number;
   revenueGrowthPct: number | null;
@@ -179,6 +180,12 @@ export function ReportsPanel(props: {
                 <span className="muted">Gross Revenue</span>
                 <strong>{currency(summary.grossRevenue)}</strong>
               </div>
+              {summary.deferredOutstanding > 0 && (
+                <div className="report-kpi-card is-deferred">
+                  <span className="muted">Deferred Outstanding</span>
+                  <strong>{currency(summary.deferredOutstanding)}</strong>
+                </div>
+              )}
               <div className="report-kpi-card is-primary">
                 <span className="muted">Net Cash Earnings</span>
                 <strong>{currency(summary.netCashEarnings)}</strong>

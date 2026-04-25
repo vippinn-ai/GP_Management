@@ -646,6 +646,15 @@ td {
   background: linear-gradient(180deg, rgba(244, 249, 246, 0.98), rgba(238, 245, 240, 0.98));
 }
 
+.report-kpi-card.is-deferred {
+  background: linear-gradient(180deg, rgba(255, 251, 235, 0.98), rgba(254, 243, 199, 0.6));
+  border-color: #fde68a;
+}
+
+.report-kpi-card.is-deferred strong {
+  color: #92400e;
+}
+
 .reports-summary-block .insight-grid {
   margin-bottom: 0;
 }
@@ -1461,6 +1470,18 @@ td {
   color: #92400e;
   font-size: 0.85rem;
   margin-top: 0.5rem;
+}
+
+.category-icon {
+  display: inline-block;
+  margin-right: 0.3em;
+  font-size: 1em;
+  line-height: 1;
+  vertical-align: middle;
+}
+
+.category-icon--cigarettes {
+  color: #d97706;
 }
 
 .discount-grid,

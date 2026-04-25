@@ -1,6 +1,18 @@
 import type { Role, TabId } from "./types";
 
 export const DEFAULT_INVENTORY_CATEGORIES = ["Beverages", "Food", "Refill Sheesha", "Arcade", "Cigarettes"];
+
+const CATEGORY_ICONS: Record<string, string> = {
+  Beverages: "🥤",
+  Food: "🍔",
+  Cigarettes: "🚬",
+  "Refill Sheesha": "💨",
+  Arcade: "🕹️"
+};
+
+export function getCategoryIcon(category: string): string {
+  return CATEGORY_ICONS[category] ?? "📦";
+}
 export const DEFAULT_EXPENSE_CATEGORIES = ["Utilities", "Rent", "Internet", "Salary", "Supplies", "Maintenance"];
 
 export const tabsByRole: Record<Role, Array<{ id: TabId; label: string }>> = {

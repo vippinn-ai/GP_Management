@@ -1,6 +1,7 @@
 import { type FormEvent, useState } from "react";
 import type { Customer, CustomerTab, CustomerTabDraft, CustomerTabEditDraft, CustomerTabItem, InventoryItem } from "../types";
 import { currency } from "../utils";
+import { getCategoryIcon } from "../constants";
 import { Modal } from "../components/Modal";
 import { NumericInput } from "../components/NumericInput";
 import { CustomerAutocompleteFields } from "../components/CustomerAutocompleteFields";
@@ -68,7 +69,10 @@ export function SalePanel(props: {
                   }}
                 >
                   <strong>{item.name}</strong>
-                  <span>{item.category}</span>
+                  <span>
+                    <span className={`category-icon${item.category === "Cigarettes" ? " category-icon--cigarettes" : ""}`}>{getCategoryIcon(item.category)}</span>
+                    {item.category}
+                  </span>
                   <span>{currency(item.price)}</span>
                   <span className="muted">{props.getInventoryPickerDetail(item, undefined, selectedCustomerTab?.id)}</span>
                 </button>
