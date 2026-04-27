@@ -102,6 +102,7 @@ import {
   getReportRange,
   getSessionCheckoutLines,
   normalizeAppDataCustomers,
+  computePaymentModeTotals,
   normalizeCustomerName,
   normalizeCustomerPhone,
   parseDateTimeInputValue,
@@ -1846,7 +1847,7 @@ export default function App() {
       customerId: bill.customerId,
       customerName: bill.customerName ?? "",
       customerPhone: bill.customerPhone ?? "",
-      paymentMode: bill.paymentMode,
+      paymentMode: bill.paymentMode === "deferred" ? "cash" : bill.paymentMode,
       splitCashAmount: 0,
       splitUpiAmount: 0,
       collectAmount: 0,
@@ -3394,12 +3395,7 @@ export default function App() {
         return totals;
       }, {})
     ).sort((left, right) => right[1] - left[1])[0] ?? null;
-  const issuedBillIds = new Set(issuedBills.map((bill) => bill.id));
-  const issuedBillPayments = appData.payments.filter((payment) => issuedBillIds.has(payment.billId));
-  const paymentModeTotals = {
-    cash: sumBy(issuedBillPayments.filter((payment) => payment.mode === "cash"), (payment) => payment.amount),
-    upi: sumBy(issuedBillPayments.filter((payment) => payment.mode === "upi"), (payment) => payment.amount)
-  };
+  const paymentModeTotals = computePaymentModeTotals(filteredBills, appData.payments);
   const cashExpenseByCategory = Object.entries(
     filteredExpenses.reduce<Record<string, number>>((totals, expense) => {
       totals[expense.category] = (totals[expense.category] ?? 0) + expense.amount;

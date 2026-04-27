@@ -1,5 +1,6 @@
 import type {
   AppData,
+  Bill,
   BillLine,
   Customer,
   CustomerTabItem,
@@ -8,6 +9,7 @@ import type {
   DraftLineDiscountMap,
   ExpenseTemplate,
   ExpenseTemplateOverride,
+  Payment,
   ReportFilterState,
   Session,
   SessionChargeSummary
@@ -236,7 +238,23 @@ export function buildBillPreview(
     billDiscountAmount,
     roundOffAmount: roundedTotal - netTotal,
     total: roundedTotal,
-    isZeroTotal: roundedTotal <= 0
+    isZeroTotal: subtotal <= 0
+  };
+}
+
+export function computePaymentModeTotals(
+  filteredBills: Bill[],
+  allPayments: Payment[]
+): { cash: number; upi: number } {
+  const revenueCountedBillIds = new Set(
+    filteredBills
+      .filter((b) => b.status === "issued" || (b.status === "pending" && b.amountPaid > 0))
+      .map((b) => b.id)
+  );
+  const revenueCountedPayments = allPayments.filter((p) => revenueCountedBillIds.has(p.billId));
+  return {
+    cash: sumBy(revenueCountedPayments.filter((p) => p.mode === "cash"), (p) => p.amount),
+    upi: sumBy(revenueCountedPayments.filter((p) => p.mode === "upi"), (p) => p.amount)
   };
 }
 

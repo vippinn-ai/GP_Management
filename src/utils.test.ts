@@ -3,11 +3,12 @@ import {
   toLocalDateKey,
   getDiscountAmount,
   buildBillPreview,
+  computePaymentModeTotals,
   formatBillNumber,
   getReportRange,
   resolveEffectiveAmount
 } from "./utils";
-import type { AppData, DraftBillLine, ExpenseTemplate, ExpenseTemplateOverride } from "./types";
+import type { AppData, Bill, DraftBillLine, ExpenseTemplate, ExpenseTemplateOverride, Payment } from "./types";
 
 // ─── toLocalDateKey ─────────────────────────────────────────────────────────
 
@@ -124,6 +125,56 @@ describe("buildBillPreview", () => {
     const result = buildBillPreview([], {});
     expect(result.subtotal).toBe(0);
     expect(result.total).toBe(0);
+  });
+
+  it("isZeroTotal is true for empty lines", () => {
+    const result = buildBillPreview([], {});
+    expect(result.isZeroTotal).toBe(true);
+  });
+
+  it("isZeroTotal is true for zero-price items (subtotal = 0)", () => {
+    const result = buildBillPreview([line("a", 0), line("b", 0)], {});
+    expect(result.subtotal).toBe(0);
+    expect(result.isZeroTotal).toBe(true);
+  });
+
+  it("isZeroTotal is false when full line discount drives total to 0 (subtotal > 0)", () => {
+    const result = buildBillPreview(
+      [line("a", 500)],
+      { a: { type: "amount", value: 500, reason: "full discount" } }
+    );
+    expect(result.subtotal).toBe(500);
+    expect(result.total).toBe(0);
+    expect(result.isZeroTotal).toBe(false);
+  });
+
+  it("isZeroTotal is false when full bill-level discount drives total to 0", () => {
+    const result = buildBillPreview(
+      [line("a", 300)],
+      {},
+      { type: "amount", value: 300, reason: "full bill discount" }
+    );
+    expect(result.subtotal).toBe(300);
+    expect(result.total).toBe(0);
+    expect(result.isZeroTotal).toBe(false);
+  });
+
+  it("isZeroTotal is false for LTP-win scenario — session charge line fully discounted", () => {
+    const sessionLine: DraftBillLine = {
+      id: "line-session-s1",
+      type: "session_charge",
+      description: "Arena session (60 min)",
+      quantity: 1,
+      unitPrice: 400,
+      linkedSessionId: "s1"
+    };
+    const result = buildBillPreview(
+      [sessionLine],
+      { "line-session-s1": { type: "amount", value: 400, reason: "LTP win - game charge waived" } }
+    );
+    expect(result.subtotal).toBe(400);
+    expect(result.total).toBe(0);
+    expect(result.isZeroTotal).toBe(false);
   });
 });
 
@@ -270,5 +321,143 @@ describe("resolveEffectiveAmount", () => {
       amount: 99999, createdByUserId: "user-1", updatedAt: ""
     }];
     expect(resolveEffectiveAmount(baseTemplate, "2026-04", overrides)).toBe(10000);
+  });
+});
+
+// ─── computePaymentModeTotals ────────────────────────────────────────────────
+
+function makeBill(id: string, status: Bill["status"], amountPaid: number): Bill {
+  return {
+    id,
+    billNumber: id,
+    status,
+    amountPaid,
+    amountDue: 0,
+    subtotal: amountPaid,
+    total: amountPaid,
+    totalDiscountAmount: 0,
+    billDiscountAmount: 0,
+    roundOffEnabled: false,
+    roundOffAmount: 0,
+    lineDiscounts: [],
+    lines: [],
+    paymentMode: "cash",
+    createdAt: "2025-01-01T00:00:00Z",
+    issuedAt: "2025-01-01T00:00:00Z",
+    issuedByUserId: "u1",
+    receiptType: "digital"
+  } as unknown as Bill;
+}
+
+function makePayment(billId: string, mode: Payment["mode"], amount: number): Payment {
+  return { id: `pay-${billId}-${mode}`, billId, mode, amount, createdAt: "2025-01-01T00:00:00Z", receivedByUserId: "u1" };
+}
+
+describe("computePaymentModeTotals", () => {
+  it("all-cash issued bills — correct cash total, upi = 0", () => {
+    const bills = [makeBill("b1", "issued", 500), makeBill("b2", "issued", 300)];
+    const payments = [makePayment("b1", "cash", 500), makePayment("b2", "cash", 300)];
+    const result = computePaymentModeTotals(bills, payments);
+    expect(result.cash).toBe(800);
+    expect(result.upi).toBe(0);
+  });
+
+  it("deferred bill with upfront cash payment — upfront included in cash total", () => {
+    const issuedBill = makeBill("b1", "issued", 500);
+    const pendingBill = makeBill("b2", "pending", 100); // ₹100 upfront collected
+    const payments = [
+      makePayment("b1", "cash", 500),
+      makePayment("b2", "cash", 100)  // upfront payment on pending bill
+    ];
+    const result = computePaymentModeTotals([issuedBill, pendingBill], payments);
+    expect(result.cash).toBe(600);
+    expect(result.upi).toBe(0);
+  });
+
+  it("deferred bill with upfront UPI payment — upfront included in upi total", () => {
+    const pendingBill = makeBill("b1", "pending", 150);
+    const payments = [makePayment("b1", "upi", 150)];
+    const result = computePaymentModeTotals([pendingBill], payments);
+    expect(result.upi).toBe(150);
+    expect(result.cash).toBe(0);
+  });
+
+  it("fully deferred bill (amountPaid = 0) — not included in payment mix", () => {
+    const fullyDeferred = makeBill("b1", "pending", 0);
+    const payments: Payment[] = [];
+    const result = computePaymentModeTotals([fullyDeferred], payments);
+    expect(result.cash).toBe(0);
+    expect(result.upi).toBe(0);
+  });
+
+  it("settled deferred bill (status issued) — counted once via issued path, no double-count", () => {
+    const settledBill = makeBill("b1", "issued", 400);
+    // Two payment records: upfront ₹100 + settlement ₹300
+    const payments = [makePayment("b1", "cash", 100), makePayment("b1", "cash", 300)];
+    const result = computePaymentModeTotals([settledBill], payments);
+    expect(result.cash).toBe(400);
+  });
+
+  it("payment mix cash + upi equals gross revenue when deferred bill has upfront", () => {
+    const issuedBill = makeBill("b1", "issued", 7462);
+    const pendingBill = makeBill("b2", "pending", 100);
+    const payments = [
+      makePayment("b1", "cash", 4185),
+      makePayment("b1", "upi", 3277),
+      makePayment("b2", "cash", 100)
+    ];
+    const result = computePaymentModeTotals([issuedBill, pendingBill], payments);
+    const grossRevenue = 7462 + 100; // issuedRevenue + deferredCollected
+    expect(result.cash + result.upi).toBe(grossRevenue);
+  });
+
+  // S2 — voided / replaced bills must not bleed into payment mix
+  it("voided bill payments are excluded from payment mix", () => {
+    const issuedBill = makeBill("b1", "issued", 300);
+    const voidedBill = makeBill("b2", "voided", 0);
+    const payments = [
+      makePayment("b1", "cash", 300),
+      makePayment("b2", "cash", 200)  // payment record still exists for voided bill
+    ];
+    const result = computePaymentModeTotals([issuedBill, voidedBill], payments);
+    expect(result.cash).toBe(300);  // voided bill's ₹200 must not be counted
+  });
+
+  it("replaced bill payments are excluded from payment mix", () => {
+    const replacementBill = makeBill("b1", "issued", 500);
+    const replacedBill = makeBill("b2", "replaced", 0);
+    const payments = [
+      makePayment("b1", "cash", 500),
+      makePayment("b2", "upi", 400)  // original payment record for now-replaced bill
+    ];
+    const result = computePaymentModeTotals([replacementBill, replacedBill], payments);
+    expect(result.cash).toBe(500);
+    expect(result.upi).toBe(0);  // replaced bill's ₹400 must not be counted
+  });
+
+  // S3 — split-payment bill: two payment records (cash + upi) both summed
+  it("split-payment issued bill — both cash and upi records are summed correctly", () => {
+    const splitBill = makeBill("b1", "issued", 700);
+    const payments = [
+      makePayment("b1", "cash", 400),
+      makePayment("b1", "upi", 300)
+    ];
+    const result = computePaymentModeTotals([splitBill], payments);
+    expect(result.cash).toBe(400);
+    expect(result.upi).toBe(300);
+  });
+
+  it("multiple split bills — all cash and upi records totalled across bills", () => {
+    const bill1 = makeBill("b1", "issued", 500);
+    const bill2 = makeBill("b2", "issued", 600);
+    const payments = [
+      makePayment("b1", "cash", 200),
+      makePayment("b1", "upi", 300),
+      makePayment("b2", "cash", 100),
+      makePayment("b2", "upi", 500)
+    ];
+    const result = computePaymentModeTotals([bill1, bill2], payments);
+    expect(result.cash).toBe(300);
+    expect(result.upi).toBe(800);
   });
 });

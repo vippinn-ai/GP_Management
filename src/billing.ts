@@ -73,7 +73,7 @@ export function buildCheckoutPaymentResult(
   } else if (paymentMode === "deferred") {
     if (amountPaid > 0) paymentRecords.push({ mode: collectMode, amount: amountPaid });
   } else {
-    paymentRecords.push({ mode: paymentMode as PaymentMode, amount: total });
+    if (total > 0) paymentRecords.push({ mode: paymentMode as PaymentMode, amount: total });
   }
 
   return { amountPaid, amountDue, status, paymentRecords };

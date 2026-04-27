@@ -167,6 +167,32 @@ describe("buildCheckoutPaymentResult — deferred", () => {
   });
 });
 
+// ─── buildCheckoutPaymentResult — zero total (discount-driven ₹0 bills) ──────
+
+describe("buildCheckoutPaymentResult — zero total", () => {
+  it("cash mode: produces no payment records when total = 0", () => {
+    const result = buildCheckoutPaymentResult("cash", 0, 0, 0, "cash", 0);
+    expect(result.paymentRecords).toHaveLength(0);
+  });
+
+  it("upi mode: produces no payment records when total = 0", () => {
+    const result = buildCheckoutPaymentResult("upi", 0, 0, 0, "cash", 0);
+    expect(result.paymentRecords).toHaveLength(0);
+  });
+
+  it("split mode: produces no payment records when total = 0 (both split amounts 0)", () => {
+    const result = buildCheckoutPaymentResult("split", 0, 0, 0, "cash", 0);
+    expect(result.paymentRecords).toHaveLength(0);
+  });
+
+  it("cash mode: status is issued, amountPaid = 0, amountDue = 0 when total = 0", () => {
+    const result = buildCheckoutPaymentResult("cash", 0, 0, 0, "cash", 0);
+    expect(result.status).toBe("issued");
+    expect(result.amountPaid).toBe(0);
+    expect(result.amountDue).toBe(0);
+  });
+});
+
 // ─── getSettlementAmount ─────────────────────────────────────────────────────
 
 function makeDraft(overrides: Partial<SettlementDraft> = {}): SettlementDraft {
