@@ -279,6 +279,44 @@ export function computePaymentModeTotals(
   };
 }
 
+export function isRevenueCountedBill(bill: Bill): boolean {
+  return bill.status === "issued" || bill.status === "pending";
+}
+
+export function getRevenueCountedPayments(bills: Bill[], payments: Payment[]): Payment[] {
+  const revenueCountedBillIds = new Set(bills.filter(isRevenueCountedBill).map((bill) => bill.id));
+  return payments.filter((payment) => revenueCountedBillIds.has(payment.billId));
+}
+
+export function filterPaymentsByBusinessDate(
+  payments: Payment[],
+  fromDate: string,
+  toDate: string
+): Payment[] {
+  return payments.filter((payment) => {
+    const paymentDate = toBusinessDayKey(payment.createdAt);
+    return paymentDate >= fromDate && paymentDate <= toDate;
+  });
+}
+
+export interface PaymentRevenueAllocation {
+  sessionRevenue: number;
+  itemRevenue: number;
+  totalDiscounts: number;
+}
+
+export function allocatePaymentRevenueToBill(bill: Bill, paymentAmount: number): PaymentRevenueAllocation {
+  if (bill.total <= 0 || paymentAmount <= 0) {
+    return { sessionRevenue: 0, itemRevenue: 0, totalDiscounts: 0 };
+  }
+  const ratio = paymentAmount / bill.total;
+  return {
+    sessionRevenue: sumBy(bill.lines.filter((line) => line.type === "session_charge"), (line) => line.total * ratio),
+    itemRevenue: sumBy(bill.lines.filter((line) => line.type === "inventory_item"), (line) => line.total * ratio),
+    totalDiscounts: bill.totalDiscountAmount * ratio
+  };
+}
+
 export function toLocalDateKey(value: string | Date): string {
   const date = typeof value === "string" ? new Date(value) : value;
   const year = date.getFullYear();

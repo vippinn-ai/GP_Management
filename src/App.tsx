@@ -102,7 +102,10 @@ import {
   getReportRange,
   getSessionCheckoutLines,
   normalizeAppDataCustomers,
+  allocatePaymentRevenueToBill,
   computePaymentModeTotals,
+  filterPaymentsByBusinessDate,
+  getRevenueCountedPayments,
   getUnbilledHoppedSessionsForCustomer,
   normalizeCustomerName,
   normalizeCustomerPhone,
@@ -456,6 +459,12 @@ export default function App() {
   for (const bill of appData.bills) {
     billBusinessDates[bill.id] = getBillBusinessDate(bill);
   }
+  const billPaymentBusinessDates: Record<string, string[]> = {};
+  for (const payment of appData.payments) {
+    const dates = billPaymentBusinessDates[payment.billId] ?? [];
+    dates.push(toBusinessDayKey(payment.createdAt));
+    billPaymentBusinessDates[payment.billId] = dates;
+  }
   const currentBusinessDay = toBusinessDayKey(now);
   const resolvedReportRange = getReportRange(reportFilter, now);
   const reportFromDate = resolvedReportRange.from <= resolvedReportRange.to ? resolvedReportRange.from : resolvedReportRange.to;
@@ -468,6 +477,8 @@ export default function App() {
     const expenseDate = toLocalDateKey(expense.spentAt);
     return expenseDate >= reportFromDate && expenseDate <= reportToDate;
   });
+  const revenueCountedPayments = getRevenueCountedPayments(appData.bills, appData.payments);
+  const filteredRevenuePayments = filterPaymentsByBusinessDate(revenueCountedPayments, reportFromDate, reportToDate);
   const expenseCategoryOptions = Array.from(
     new Set([
       ...DEFAULT_EXPENSE_CATEGORIES,
@@ -3515,26 +3526,21 @@ export default function App() {
       )
     : null;
 
-  const issuedBills = filteredBills.filter((bill) => bill.status === "issued");
-  const issuedRevenue = sumBy(issuedBills, (bill) => bill.total);
-  const deferredCollected = sumBy(
-    filteredBills.filter((b) => b.status === "pending" && b.amountPaid > 0),
-    (b) => b.amountPaid
-  );
-  const grossRevenue = issuedRevenue + deferredCollected;
+  const billById = new Map(appData.bills.map((bill) => [bill.id, bill]));
+  const paidBillIds = new Set(filteredRevenuePayments.map((payment) => payment.billId));
+  const paidBillsInRange = appData.bills.filter((bill) => paidBillIds.has(bill.id));
+  const grossRevenue = sumBy(filteredRevenuePayments, (payment) => payment.amount);
   const deferredOutstanding = sumBy(
     filteredBills.filter((b) => b.status === "pending" && b.amountDue > 0),
     (b) => b.amountDue
   );
-  const sessionRevenue = sumBy(
-    issuedBills.flatMap((bill) => bill.lines.filter((line) => line.type === "session_charge")),
-    (line) => line.total
-  );
-  const itemRevenue = sumBy(
-    issuedBills.flatMap((bill) => bill.lines.filter((line) => line.type === "inventory_item")),
-    (line) => line.total
-  );
-  const totalDiscounts = sumBy(issuedBills, (bill) => bill.totalDiscountAmount);
+  const paymentAllocations = filteredRevenuePayments.map((payment) => {
+    const bill = billById.get(payment.billId);
+    return bill ? allocatePaymentRevenueToBill(bill, payment.amount) : { sessionRevenue: 0, itemRevenue: 0, totalDiscounts: 0 };
+  });
+  const sessionRevenue = sumBy(paymentAllocations, (allocation) => allocation.sessionRevenue);
+  const itemRevenue = sumBy(paymentAllocations, (allocation) => allocation.itemRevenue);
+  const totalDiscounts = sumBy(paymentAllocations, (allocation) => allocation.totalDiscounts);
   const cashExpenses = sumBy(filteredExpenses, (expense) => expense.amount);
   const reportMonthKeys = getMonthKeysInRange(reportFromDate, reportToDate);
   const normalizedExpenseEntries = appData.expenseTemplates
@@ -3563,26 +3569,27 @@ export default function App() {
   const normalizedNetProfit = grossRevenue - normalizedExpenses;
   const previousRange = getPreviousRange(reportFromDate, reportToDate);
   const previousRangeRevenue = sumBy(
-    appData.bills.filter((bill) => {
-      const billDate = billBusinessDates[bill.id];
-      return bill.status === "issued" && billDate >= previousRange.from && billDate <= previousRange.to;
-    }),
-    (bill) => bill.total
+    filterPaymentsByBusinessDate(revenueCountedPayments, previousRange.from, previousRange.to),
+    (payment) => payment.amount
   );
   const revenueGrowthPct =
     previousRangeRevenue > 0 ? ((grossRevenue - previousRangeRevenue) / previousRangeRevenue) * 100 : null;
-  const averageBillValue = issuedBills.length > 0 ? grossRevenue / issuedBills.length : 0;
+  const averageBillValue = paidBillsInRange.length > 0 ? grossRevenue / paidBillsInRange.length : 0;
   const topStation =
     Object.entries(
-      issuedBills.reduce<Record<string, number>>((totals, bill) => {
+      filteredRevenuePayments.reduce<Record<string, number>>((totals, payment) => {
+        const bill = billById.get(payment.billId);
+        if (!bill) {
+          return totals;
+        }
         const stationName = bill.stationId
           ? appData.stations.find((station) => station.id === bill.stationId)?.name ?? "Unknown station"
           : "Customer tab";
-        totals[stationName] = (totals[stationName] ?? 0) + bill.total;
+        totals[stationName] = (totals[stationName] ?? 0) + payment.amount;
         return totals;
       }, {})
     ).sort((left, right) => right[1] - left[1])[0] ?? null;
-  const paymentModeTotals = computePaymentModeTotals(filteredBills, appData.payments);
+  const paymentModeTotals = computePaymentModeTotals(appData.bills, filteredRevenuePayments);
   const cashExpenseByCategory = Object.entries(
     filteredExpenses.reduce<Record<string, number>>((totals, expense) => {
       totals[expense.category] = (totals[expense.category] ?? 0) + expense.amount;
@@ -3722,8 +3729,7 @@ export default function App() {
           <div className="topbar-actions">
             <TodayMetricCard
               value={currency(
-                sumBy(appData.bills.filter((bill) => bill.status === "issued" && billBusinessDates[bill.id] === currentBusinessDay), (bill) => bill.total) +
-                sumBy(appData.bills.filter((bill) => bill.status === "pending" && bill.amountPaid > 0 && billBusinessDates[bill.id] === currentBusinessDay), (bill) => bill.amountPaid)
+                sumBy(filterPaymentsByBusinessDate(revenueCountedPayments, currentBusinessDay, currentBusinessDay), (payment) => payment.amount)
               )}
               timeLabel={formatTime(now)}
               dateLabel={currentDateLabel}
@@ -3847,6 +3853,7 @@ export default function App() {
           <BillRegisterPanel
             bills={appData.bills}
             billBusinessDates={billBusinessDates}
+            billPaymentBusinessDates={billPaymentBusinessDates}
             stations={appData.stations}
             businessProfile={appData.businessProfile}
             selectedReceiptBillId={selectedReceiptBillId}
@@ -3882,7 +3889,7 @@ export default function App() {
               grossRevenue,
               netCashEarnings,
               normalizedNetProfit,
-              issuedBillsCount: issuedBills.length,
+              issuedBillsCount: paidBillsInRange.length,
               cashExpenses,
               normalizedExpenses,
               sessionRevenue,

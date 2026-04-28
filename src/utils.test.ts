@@ -4,6 +4,9 @@ import {
   getDiscountAmount,
   buildBillPreview,
   computePaymentModeTotals,
+  allocatePaymentRevenueToBill,
+  filterPaymentsByBusinessDate,
+  getRevenueCountedPayments,
   getMostRecentHoppedSession,
   getUnbilledHoppedSessionsForCustomer,
   formatBillNumber,
@@ -328,7 +331,7 @@ describe("resolveEffectiveAmount", () => {
 
 // ─── computePaymentModeTotals ────────────────────────────────────────────────
 
-function makeBill(id: string, status: Bill["status"], amountPaid: number): Bill {
+function makeBill(id: string, status: Bill["status"], amountPaid: number, overrides: Partial<Bill> = {}): Bill {
   return {
     id,
     billNumber: id,
@@ -347,12 +350,13 @@ function makeBill(id: string, status: Bill["status"], amountPaid: number): Bill 
     createdAt: "2025-01-01T00:00:00Z",
     issuedAt: "2025-01-01T00:00:00Z",
     issuedByUserId: "u1",
-    receiptType: "digital"
+    receiptType: "digital",
+    ...overrides
   } as unknown as Bill;
 }
 
-function makePayment(billId: string, mode: Payment["mode"], amount: number): Payment {
-  return { id: `pay-${billId}-${mode}`, billId, mode, amount, createdAt: "2025-01-01T00:00:00Z", receivedByUserId: "u1" };
+function makePayment(billId: string, mode: Payment["mode"], amount: number, createdAt = "2025-01-01T00:00:00Z"): Payment {
+  return { id: `pay-${billId}-${mode}-${createdAt}`, billId, mode, amount, createdAt, receivedByUserId: "u1" };
 }
 
 describe("computePaymentModeTotals", () => {
@@ -461,6 +465,66 @@ describe("computePaymentModeTotals", () => {
     const result = computePaymentModeTotals([bill1, bill2], payments);
     expect(result.cash).toBe(300);
     expect(result.upi).toBe(800);
+  });
+});
+
+describe("payment-date revenue helpers", () => {
+  it("filters valid bill payments by payment business date, not bill issue date", () => {
+    const bill = makeBill("b1", "issued", 500, { issuedAt: "2025-01-01T10:00:00Z" });
+    const payments = [
+      makePayment("b1", "cash", 200, "2025-01-01T10:00:00Z"),
+      makePayment("b1", "upi", 300, "2025-01-02T10:00:00Z")
+    ];
+    const validPayments = getRevenueCountedPayments([bill], payments);
+    const jan2Payments = filterPaymentsByBusinessDate(validPayments, "2025-01-02", "2025-01-02");
+    expect(jan2Payments).toHaveLength(1);
+    expect(jan2Payments[0].amount).toBe(300);
+  });
+
+  it("excludes payments for voided and replaced bills from revenue", () => {
+    const issuedBill = makeBill("b1", "issued", 300);
+    const voidedBill = makeBill("b2", "voided", 0);
+    const replacedBill = makeBill("b3", "replaced", 0);
+    const payments = [
+      makePayment("b1", "cash", 300),
+      makePayment("b2", "cash", 200),
+      makePayment("b3", "upi", 100)
+    ];
+    const validPayments = getRevenueCountedPayments([issuedBill, voidedBill, replacedBill], payments);
+    expect(validPayments.map((payment) => payment.billId)).toEqual(["b1"]);
+  });
+
+  it("allocates partial payment revenue proportionally across session and item lines", () => {
+    const bill = makeBill("b1", "pending", 400, {
+      total: 1000,
+      totalDiscountAmount: 100,
+      lines: [
+        {
+          id: "line-session",
+          type: "session_charge",
+          description: "Session",
+          quantity: 1,
+          unitPrice: 800,
+          subtotal: 800,
+          discountAmount: 0,
+          total: 800
+        },
+        {
+          id: "line-item",
+          type: "inventory_item",
+          description: "Red Bull",
+          quantity: 2,
+          unitPrice: 100,
+          subtotal: 200,
+          discountAmount: 0,
+          total: 200
+        }
+      ]
+    });
+    const allocation = allocatePaymentRevenueToBill(bill, 400);
+    expect(allocation.sessionRevenue).toBe(320);
+    expect(allocation.itemRevenue).toBe(80);
+    expect(allocation.totalDiscounts).toBe(40);
   });
 });
 

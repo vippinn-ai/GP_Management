@@ -36,6 +36,7 @@ function paymentModeLabel(mode: BillPaymentMode): string {
 export function BillRegisterPanel(props: {
   bills: Bill[];
   billBusinessDates: Record<string, string>;
+  billPaymentBusinessDates: Record<string, string[]>;
   stations: Station[];
   businessProfile: { name: string; logoText: string; address: string; primaryPhone: string; secondaryPhone?: string; receiptFooter: string };
   selectedReceiptBillId: string | null;
@@ -65,6 +66,13 @@ export function BillRegisterPanel(props: {
   const filteredBills = useMemo(() => {
     let list = props.bills;
     const bdate = (b: Bill) => props.billBusinessDates[b.id] ?? toBusinessDayKey(b.issuedAt);
+    const hasBillOrPaymentInRange = (bill: Bill, fromDate: string, toDate: string) => {
+      const billDate = bdate(bill);
+      if (billDate >= fromDate && billDate <= toDate) {
+        return true;
+      }
+      return (props.billPaymentBusinessDates[bill.id] ?? []).some((paymentDate) => paymentDate >= fromDate && paymentDate <= toDate);
+    };
 
     // Quick filter overrides date/status fields
     if (quickFilter === "pending") {
@@ -74,16 +82,19 @@ export function BillRegisterPanel(props: {
     } else if (quickFilter === "voided") {
       list = list.filter((b) => b.status === "voided");
     } else if (quickFilter === "today") {
-      list = list.filter((b) => bdate(b) === today);
+      list = list.filter((b) => hasBillOrPaymentInRange(b, today, today));
     } else if (quickFilter === "this_week") {
-      list = list.filter((b) => bdate(b) >= weekAgo && bdate(b) <= today);
+      list = list.filter((b) => hasBillOrPaymentInRange(b, weekAgo, today));
     }
 
     // Full filters (only apply when quickFilter === "all")
     if (quickFilter === "all") {
       if (filterStatus) list = list.filter((b) => b.status === filterStatus);
-      if (filterFrom)   list = list.filter((b) => bdate(b) >= filterFrom);
-      if (filterTo)     list = list.filter((b) => bdate(b) <= filterTo);
+      if (filterFrom || filterTo) {
+        const fromDate = filterFrom || "0000-01-01";
+        const toDate = filterTo || "9999-12-31";
+        list = list.filter((b) => hasBillOrPaymentInRange(b, fromDate, toDate));
+      }
     }
 
     if (filterMode)    list = list.filter((b) => b.paymentMode === filterMode);
@@ -99,7 +110,7 @@ export function BillRegisterPanel(props: {
     }
 
     return list;
-  }, [props.bills, props.billBusinessDates, quickFilter, search, filterStatus, filterMode, filterStation, filterFrom, filterTo, today, weekAgo]);
+  }, [props.bills, props.billBusinessDates, props.billPaymentBusinessDates, quickFilter, search, filterStatus, filterMode, filterStation, filterFrom, filterTo, today, weekAgo]);
 
   const selected = props.selectedReceiptBill;
   const model = props.receiptPreviewModel;
