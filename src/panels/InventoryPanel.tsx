@@ -50,6 +50,8 @@ export function InventoryPanel(props: {
     inventoryItemSearch, filteredInventoryItems, inventoryCategoryOptions,
     canEditInventory, isManagerReadOnly
   } = props;
+  const isItemFormCigarette = itemForm.category === "Cigarettes";
+  const isEditItemFormCigarette = editItemForm?.category === "Cigarettes";
 
   return (
     <>
@@ -111,10 +113,10 @@ export function InventoryPanel(props: {
                   </label>
                 )}
                 <label>
-                  <span>Price (per single)</span>
+                  <span>{isItemFormCigarette ? "Price (per single)" : "Price"}</span>
                   <NumericInput required mode="decimal" min={0} value={itemForm.price} onValueChange={(value) => props.onItemFormChange({ ...itemForm, price: value })} />
                 </label>
-                {itemForm.category === "Cigarettes" && (
+                {isItemFormCigarette && (
                   <>
                     <label>
                       <span>Pack Size (cigarettes per pack)</span>
@@ -138,7 +140,7 @@ export function InventoryPanel(props: {
                   </>
                 )}
                 <label>
-                  <span>Opening Stock (individual cigarettes)</span>
+                  <span>{isItemFormCigarette ? "Opening Stock (individual cigarettes)" : "Opening Stock"}</span>
                   <NumericInput required min={0} value={itemForm.stockQty} onValueChange={(value) => props.onItemFormChange({ ...itemForm, stockQty: value })} />
                 </label>
                 <label>
@@ -344,7 +346,7 @@ export function InventoryPanel(props: {
               </label>
             )}
             <label>
-              <span>Price (per single)</span>
+              <span>{isEditItemFormCigarette ? "Price (per single)" : "Price"}</span>
               <NumericInput
                 required
                 mode="decimal"
@@ -353,7 +355,7 @@ export function InventoryPanel(props: {
                 onValueChange={(value) => props.onEditItemFormChange({ ...editItemForm, price: value })}
               />
             </label>
-            {editItemForm.category === "Cigarettes" && (
+            {isEditItemFormCigarette && (
               <>
                 <label>
                   <span>Pack Size (cigarettes per pack)</span>
