@@ -103,6 +103,7 @@ import {
   getSessionCheckoutLines,
   normalizeAppDataCustomers,
   computePaymentModeTotals,
+  getUnbilledHoppedSessionsForCustomer,
   normalizeCustomerName,
   normalizeCustomerPhone,
   parseDateTimeInputValue,
@@ -168,6 +169,8 @@ export default function App() {
   const [showStartSessionModal, setShowStartSessionModal] = useState(false);
   const [manageSessionId, setManageSessionId] = useState<string | null>(null);
   const [checkoutState, setCheckoutState] = useState<CheckoutState | null>(null);
+  const [isHopMode, setIsHopMode] = useState(false);
+  const [lastHoppedSessionId, setLastHoppedSessionId] = useState<string | null>(null);
   const [customerTabSearch, setCustomerTabSearch] = useState("");
   const [customerProfileSearch, setCustomerProfileSearch] = useState("");
   const [customerProfileSort, setCustomerProfileSort] = useState<"last_visit" | "total_spend" | "visit_count">("last_visit");
@@ -1080,6 +1083,7 @@ export default function App() {
       );
     });
     setStartSessionDraft(createStartSessionDraft());
+    setLastHoppedSessionId(null);
     setShowStartSessionModal(false);
   }
 
@@ -1355,12 +1359,22 @@ export default function App() {
       return;
     }
     const closedAt = new Date().toISOString();
+    // For hopped sessions, use the stored endedAt so the charge is billed at the hop time, not "now"
+    const effectiveEndAt = session.closeDisposition === "hopped" && session.endedAt
+      ? session.endedAt
+      : closedAt;
+    const hoppedSessions = getUnbilledHoppedSessionsForCustomer(
+      appData.sessions,
+      session.customerName ?? "",
+      session.customerPhone ?? ""
+    ).filter((s) => s.id !== sessionId);  // exclude self (relevant when billing a hopped session standalone)
+    setIsHopMode(false);
     setCheckoutState({
       mode: "session",
       sessionId,
       closedAt,
       sessionStartedAt: session.startedAt,
-      sessionEndedAt: closedAt,
+      sessionEndedAt: effectiveEndAt,
       customerId: session.customerId,
       customerName: session.customerName || "",
       customerPhone: session.customerPhone || "",
@@ -1371,6 +1385,7 @@ export default function App() {
       collectMode: "cash" as const,
       roundOffEnabled: true,
       lineDiscounts: {},
+      hoppedSessionIds: hoppedSessions.map((s) => s.id),
       ltpOutcome:
         session.ltpEligible && session.playMode === "solo"
           ? session.ltpOutcome ?? "lost"
@@ -1790,6 +1805,120 @@ export default function App() {
     setManageSessionId((previous) => (previous === sessionId ? null : previous));
   }
 
+  async function hopSession() {
+    if (!activeUser || !checkoutState || checkoutState.mode !== "session" || !checkoutState.sessionId) {
+      return;
+    }
+    const sessionId = checkoutState.sessionId;
+    const effectiveEndAt = checkoutState.sessionEndedAt ?? checkoutState.closedAt ?? new Date().toISOString();
+    // Capture customer before clearing checkout state
+    const hopCustomerName = checkoutState.customerName;
+    const hopCustomerPhone = checkoutState.customerPhone;
+    const hopCustomerId = checkoutState.customerId;
+    if (new Date(effectiveEndAt).getTime() > Date.now()) {
+      window.alert("Session end time cannot be in the future.");
+      return;
+    }
+    let baseAppData = appData;
+    let baseVersion = remoteVersion;
+    if (backendConfigured) {
+      const snapshot = await loadRemoteAppDataSnapshot();
+      baseAppData = snapshot.appData;
+      baseVersion = snapshot.version;
+      setRemoteVersion(baseVersion);
+      const remoteSession = baseAppData.sessions.find((s) => s.id === sessionId);
+      if (!remoteSession || remoteSession.status === "closed") {
+        skipRemotePersistRef.current = true;
+        setAppData(normalizeAppDataCustomers(baseAppData));
+        setCheckoutState(null);
+        setIsHopMode(false);
+        window.alert("This session was already closed from another browser. Latest data has been loaded.");
+        return;
+      }
+      skipRemotePersistRef.current = true;
+      setAppData(normalizeAppDataCustomers(baseAppData));
+    }
+    const nextAppData = cloneValue(baseAppData);
+    const draft = nextAppData;
+    const targetSession = draft.sessions.find((s) => s.id === sessionId);
+    if (!targetSession || targetSession.status === "closed") {
+      return;
+    }
+    if (targetSession.status === "paused") {
+      const openPause = draft.sessionPauseLogs.find((entry) => entry.sessionId === sessionId && !entry.resumedAt);
+      if (openPause) {
+        openPause.resumedAt = effectiveEndAt;
+      }
+    }
+    targetSession.status = "closed";
+    targetSession.endedAt = effectiveEndAt;
+    targetSession.closeDisposition = "hopped";
+    addAuditLog(draft, activeUser.id, "session_hopped", "session", sessionId, `Game hop: closed ${targetSession.stationNameSnapshot} without billing. Station released for next customer.`);
+    if (backendConfigured) {
+      skipRemotePersistRef.current = true;
+      setAppData(normalizeAppDataCustomers(nextAppData));
+      await saveRemoteSnapshot(nextAppData, baseVersion);
+    } else {
+      setAppData(normalizeAppDataCustomers(nextAppData));
+    }
+    setCheckoutState(null);
+    setIsHopMode(false);
+    setLastHoppedSessionId(sessionId);
+    setManageSessionId((previous) => (previous === sessionId ? null : previous));
+    // Immediately prompt to start a new session for this customer
+    setStartSessionDraft((prev) => ({
+      ...prev,
+      customerId: hopCustomerId,
+      customerName: hopCustomerName,
+      customerPhone: hopCustomerPhone
+    }));
+    setShowStartSessionModal(true);
+  }
+
+  function handleSetShowStartSessionModal(show: boolean) {
+    if (!show) {
+      setLastHoppedSessionId(null);
+    }
+    if (show && lastHoppedSessionId) {
+      const hoppedSession = appData.sessions.find((s) => s.id === lastHoppedSessionId);
+      if (hoppedSession) {
+        setStartSessionDraft((prev) => ({
+          ...prev,
+          customerId: hoppedSession.customerId,
+          customerName: hoppedSession.customerName ?? "",
+          customerPhone: hoppedSession.customerPhone ?? ""
+        }));
+      }
+      setLastHoppedSessionId(null);
+    }
+    setShowStartSessionModal(show);
+  }
+
+  function billHoppedSession() {
+    if (!lastHoppedSessionId) return;
+    const sessionId = lastHoppedSessionId;
+    // Keep lastHoppedSessionId alive — needed to loop back to "Start Next Game" if billing is cancelled
+    setShowStartSessionModal(false);  // bypass handleSetShowStartSessionModal so the ID stays set
+    setStartSessionDraft(createStartSessionDraft());
+    openSessionCheckout(sessionId);
+  }
+
+  function returnToStartNextGame() {
+    const hoppedSession = checkoutState?.sessionId ? getSessionById(checkoutState.sessionId) : null;
+    setCheckoutState(null);
+    setIsHopMode(false);
+    setReplacementItemForm({ itemId: "", quantity: 1 });
+    if (hoppedSession?.closeDisposition === "hopped") {
+      setStartSessionDraft((prev) => ({
+        ...prev,
+        customerId: hoppedSession.customerId,
+        customerName: hoppedSession.customerName ?? "",
+        customerPhone: hoppedSession.customerPhone ?? ""
+      }));
+      setShowStartSessionModal(true);
+    }
+  }
+
   function rejectCustomerTab(customerTabId: string) {
     if (!activeUser) {
       return;
@@ -1975,12 +2104,29 @@ export default function App() {
       setRemoteVersion(baseVersion);
       if (checkoutState.mode === "session" && checkoutState.sessionId) {
         const remoteSession = baseAppData.sessions.find((entry) => entry.id === checkoutState.sessionId);
-        if (!remoteSession || remoteSession.status === "closed") {
+        if (!remoteSession) {
+          skipRemotePersistRef.current = true;
+          setAppData(normalizeAppDataCustomers(baseAppData));
+          setCheckoutState(null);
+          setManageSessionId(null);
+          window.alert("This session no longer exists. Latest data has been loaded.");
+          return;
+        }
+        // Allow billing a hopped session (status "closed" but not yet billed)
+        const isHoppedSession = remoteSession.closeDisposition === "hopped" && !remoteSession.closedBillId;
+        if (!isHoppedSession && remoteSession.status === "closed") {
           skipRemotePersistRef.current = true;
           setAppData(normalizeAppDataCustomers(baseAppData));
           setCheckoutState(null);
           setManageSessionId(null);
           window.alert("This session was already closed from another browser. Latest data has been loaded.");
+          return;
+        }
+        if (isHoppedSession && remoteSession.closedBillId) {
+          skipRemotePersistRef.current = true;
+          setAppData(normalizeAppDataCustomers(baseAppData));
+          setCheckoutState(null);
+          window.alert("This session was already billed from another browser. Latest data has been loaded.");
           return;
         }
       }
@@ -2001,6 +2147,16 @@ export default function App() {
           setAppData(normalizeAppDataCustomers(baseAppData));
           setCheckoutState(null);
           window.alert("This bill was already changed from another browser. Latest data has been loaded.");
+          return;
+        }
+      }
+      for (const hId of (checkoutState.hoppedSessionIds ?? [])) {
+        const remoteHopped = baseAppData.sessions.find((s) => s.id === hId);
+        if (remoteHopped && remoteHopped.closeDisposition !== "hopped") {
+          skipRemotePersistRef.current = true;
+          setAppData(normalizeAppDataCustomers(baseAppData));
+          setCheckoutState((prev) => prev ? { ...prev, hoppedSessionIds: (prev.hoppedSessionIds ?? []).filter((id) => id !== hId) } : prev);
+          window.alert(`A previous session (${remoteHopped.stationNameSnapshot}) was already billed from another browser. It has been removed from this bill. Please review the updated selection and try again.`);
           return;
         }
       }
@@ -2044,9 +2200,14 @@ export default function App() {
       checkoutState.mode === "bill_replacement" && checkoutState.replacementBillId
         ? baseAppData.bills.find((entry) => entry.id === checkoutState.replacementBillId)
         : undefined;
+    const hoppedSourceLines = (checkoutState.hoppedSessionIds ?? []).flatMap((hId) => {
+      const hSession = baseAppData.sessions.find((s) => s.id === hId);
+      if (!hSession || !hSession.endedAt) return [];
+      return getSessionCheckoutLines(hSession, calculateSessionCharge(hSession, baseAppData.sessionPauseLogs, hSession.endedAt));
+    });
     const sourceLines =
       checkoutState.mode === "session" && previewSession
-        ? getSessionCheckoutLines(previewSession, calculateSessionCharge(previewSession, baseAppData.sessionPauseLogs, effectiveClosedAt))
+        ? [...hoppedSourceLines, ...getSessionCheckoutLines(previewSession, calculateSessionCharge(previewSession, baseAppData.sessionPauseLogs, effectiveClosedAt))]
         : checkoutState.mode === "customer_tab"
           ? getCustomerTabCheckoutLines(customerTab?.items ?? [])
           : checkoutState.replacementLines ?? [];
@@ -2109,7 +2270,8 @@ export default function App() {
       session?.playMode === "solo" &&
       checkoutState.ltpOutcome === "won";
     if (ltpWinningSession) {
-      const sessionLine = sourceLines.find((line) => line.type === "session_charge");
+      const currentSessionLineId = `line-session-${checkoutState.sessionId}`;
+      const sessionLine = sourceLines.find((line) => line.id === currentSessionLineId);
       if (sessionLine) {
         effectiveLineDiscounts[sessionLine.id] = {
           type: "amount",
@@ -2330,6 +2492,14 @@ export default function App() {
           targetTab.closeReason = undefined;
         }
       }
+      for (const hoppedSessionId of (checkoutState.hoppedSessionIds ?? [])) {
+        const hoppedSession = draft.sessions.find((s) => s.id === hoppedSessionId);
+        if (hoppedSession && hoppedSession.closeDisposition === "hopped") {
+          hoppedSession.closedBillId = billId;
+          hoppedSession.closeDisposition = "billed";
+          addAuditLog(draft, activeUser.id, "session_hop_billed", "session", hoppedSessionId, `Included in combined bill ${billNumber} (${hoppedSession.stationNameSnapshot}).`);
+        }
+      }
       if (session) {
         const detailChanges: string[] = [];
         if ((session.customerName ?? "") !== checkoutState.customerName.trim()) {
@@ -2390,6 +2560,7 @@ export default function App() {
     setSelectedCustomerTabId(null);
     setCustomerTabDraft({ customerId: undefined, customerName: "", customerPhone: "" });
     setReplacementItemForm({ itemId: "", quantity: 1 });
+    setLastHoppedSessionId(null);
     openReceiptWindow(nextAppData.businessProfile, issuedBill, nextAppData.bills);
     downloadReceiptPdf(nextAppData.businessProfile, issuedBill, nextAppData.bills);
   }
@@ -3223,6 +3394,11 @@ export default function App() {
     : null;
   const managedSession = manageSessionId ? getSessionById(manageSessionId) ?? null : null;
   const managedSessionCharge = managedSession ? getSessionChargeSummary(managedSession, getFrozenEndAtForSession(managedSession.id)) : null;
+  const managedSessionPreviousHops = managedSession
+    ? getUnbilledHoppedSessionsForCustomer(appData.sessions, managedSession.customerName ?? "", managedSession.customerPhone ?? "")
+        .filter((s) => s.id !== managedSession.id)
+    : [];
+  const managedSessionPreviousHopTotal = sumBy(managedSessionPreviousHops, (s) => getSessionLiveTotal(s, s.endedAt));
   const selectedStartStation =
     startSessionDraft.stationId ? appData.stations.find((station) => station.id === startSessionDraft.stationId) ?? null : null;
   const selectedArcadeStartItem =
@@ -3283,12 +3459,18 @@ export default function App() {
       ? (() => {
           const session = getSessionById(checkoutState.sessionId);
           const previewSession = session ? getCheckoutSessionPreview(session, checkoutState) : null;
-          return session
+          const currentLines = session
             ? getSessionCheckoutLines(
                 previewSession ?? session,
                 getSessionChargeSummary(previewSession ?? session, checkoutState.sessionEndedAt ?? checkoutState.closedAt ?? now)
               )
             : [];
+          const hoppedLines = (checkoutState.hoppedSessionIds ?? []).flatMap((hId) => {
+            const hSession = getSessionById(hId);
+            if (!hSession || !hSession.endedAt) return [];
+            return getSessionCheckoutLines(hSession, getSessionChargeSummary(hSession, hSession.endedAt));
+          });
+          return [...hoppedLines, ...currentLines];
         })()
       : checkoutState?.mode === "customer_tab" && checkoutState.customerTabId
         ? getCustomerTabCheckoutLines(getCustomerTabById(checkoutState.customerTabId)?.items ?? [])
@@ -3303,6 +3485,10 @@ export default function App() {
     checkoutState?.mode === "bill_replacement" && checkoutState.replacementBillId
       ? getBillById(checkoutState.replacementBillId) ?? null
       : null;
+  const checkoutHoppedSessionCandidates: Session[] = checkoutState?.mode === "session" && checkoutState.sessionId
+    ? getUnbilledHoppedSessionsForCustomer(appData.sessions, checkoutState.customerName, checkoutState.customerPhone)
+        .filter((s) => s.id !== checkoutState.sessionId)
+    : [];
   const checkoutLineDiscounts: DraftLineDiscountMap = checkoutState ? { ...checkoutState.lineDiscounts } : {};
   if (
     checkoutState?.mode === "session" &&
@@ -3310,7 +3496,8 @@ export default function App() {
     checkoutSession.playMode === "solo" &&
     checkoutState.ltpOutcome === "won"
   ) {
-    const sessionLine = checkoutLines.find((line) => line.type === "session_charge");
+    const currentSessionLineId = `line-session-${checkoutState.sessionId}`;
+    const sessionLine = checkoutLines.find((line) => line.id === currentSessionLineId);
     if (sessionLine) {
       checkoutLineDiscounts[sessionLine.id] = {
         type: "amount",
@@ -3526,7 +3713,7 @@ export default function App() {
         </div>
       </aside>
 
-      <main className={`main-content ${activeTab === "dashboard" ? "is-dashboard-tab" : activeTab === "bills" ? "is-bills-tab" : ""}`}>
+      <main className={`main-content ${activeTab === "dashboard" ? "is-dashboard-tab" : activeTab === "bills" ? "is-bills-tab" : activeTab === "sale" ? "is-sale-tab" : ""}`}>
         <header className="topbar">
           <div>
             <h1>{pageTitle}</h1>
@@ -3566,6 +3753,11 @@ export default function App() {
             occupiedItems={occupiedItems}
             getActiveSessionForStation={getActiveSessionForStation}
             getSessionLiveTotal={getSessionLiveTotal}
+            getPreviousHopTotalForSession={(session) => {
+              const hops = getUnbilledHoppedSessionsForCustomer(appData.sessions, session.customerName ?? "", session.customerPhone ?? "")
+                .filter((s) => s.id !== session.id);
+              return sumBy(hops, (s) => getSessionLiveTotal(s, s.endedAt));
+            }}
             getFrozenEndAtForSession={getFrozenEndAtForSession}
             getCustomerTabTotal={getCustomerTabTotal}
             getInventoryState={getInventoryState}
@@ -3577,7 +3769,7 @@ export default function App() {
             onStartSessionDraftChange={setStartSessionDraft}
             onDashboardCustomerTabDraftChange={setDashboardCustomerTabDraft}
             onSetManageSessionId={setManageSessionId}
-            onSetShowStartSessionModal={setShowStartSessionModal}
+            onSetShowStartSessionModal={handleSetShowStartSessionModal}
             onToggleSessionPause={toggleSessionPause}
             onRejectSession={rejectSession}
             onOpenSessionCheckout={openSessionCheckout}
@@ -3797,10 +3989,14 @@ export default function App() {
 
       {showStartSessionModal && (
         <Modal
-          title="Start New Session"
+          title={lastHoppedSessionId ? "Start Next Game" : "Start New Session"}
           onClose={() => {
-            setShowStartSessionModal(false);
-            setStartSessionDraft(createStartSessionDraft());
+            if (lastHoppedSessionId) {
+              billHoppedSession();
+            } else {
+              handleSetShowStartSessionModal(false);
+              setStartSessionDraft(createStartSessionDraft());
+            }
           }}
         >
           <form className="form-grid" onSubmit={startSession}>
@@ -3907,12 +4103,18 @@ export default function App() {
               </>
             )}
             <div className="button-row field-span-full">
-              <button className="secondary-button" type="button" onClick={() => {
-                setShowStartSessionModal(false);
-                setStartSessionDraft(createStartSessionDraft());
-              }}>
-                Cancel
-              </button>
+              {lastHoppedSessionId ? (
+                <button className="secondary-button" type="button" onClick={billHoppedSession}>
+                  Bill &amp; Done
+                </button>
+              ) : (
+                <button className="secondary-button" type="button" onClick={() => {
+                  handleSetShowStartSessionModal(false);
+                  setStartSessionDraft(createStartSessionDraft());
+                }}>
+                  Cancel
+                </button>
+              )}
               <button className="primary-button" type="submit" disabled={selectedStartStation?.mode === "unit_sale" && arcadeInventoryItems.length === 0}>
                 Start Session
               </button>
@@ -3930,7 +4132,12 @@ export default function App() {
           }}
         >
           <div className="metrics-row">
-            <MetricCard label={managedSession.mode === "timed" ? "Live bill" : "Current total"} value={currency(getSessionLiveTotal(managedSession, getFrozenEndAtForSession(managedSession.id)))} />
+            <MetricCard
+              label={managedSessionPreviousHopTotal > 0
+                ? (managedSession.mode === "timed" ? "Live total (all sessions)" : "Current total (all sessions)")
+                : (managedSession.mode === "timed" ? "Live bill" : "Current total")}
+              value={currency(getSessionLiveTotal(managedSession, getFrozenEndAtForSession(managedSession.id)) + managedSessionPreviousHopTotal)}
+            />
             {managedSession.mode === "timed" ? (
               <>
                 <MetricCard label="Billed time" value={formatMinutes(managedSessionCharge.billedMinutes)} />
@@ -3943,6 +4150,34 @@ export default function App() {
               </>
             )}
           </div>
+          {managedSessionPreviousHops.length > 0 && (
+            <>
+              <div className="panel-header compact-header">
+                <div>
+                  <h2>Previous Game Sessions</h2>
+                  <p>Game charges carried forward — will be included in the combined bill.</p>
+                </div>
+              </div>
+              <div className="line-items">
+                {managedSessionPreviousHops.map((hSession) => {
+                  const hCharge = getSessionChargeSummary(hSession, hSession.endedAt);
+                  return (
+                    <div key={hSession.id} className="session-item-row">
+                      <div>
+                        <strong>{hSession.stationNameSnapshot}</strong>
+                        {hSession.mode === "timed" && (
+                          <div className="muted">{formatMinutes(hCharge.billedMinutes)} · {currency(hCharge.subtotal)}/session</div>
+                        )}
+                      </div>
+                      <div className="session-item-actions">
+                        <span>{currency(hCharge.subtotal)}</span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </>
+          )}
           <div className="frozen-billing-banner">
             Add consumables to the live session here. The running game time is not changed by this action.
           </div>
@@ -4021,7 +4256,30 @@ export default function App() {
             return <div className="warning-banner">⚠ This item has a ₹0 price — confirm or update it in Inventory before adding.</div>;
           })()}
           <div className="line-items">
-            {managedSession.items.length === 0 && <div className="empty-state">No consumables added yet.</div>}
+            {managedSessionPreviousHops.flatMap((hSession) =>
+              hSession.items.map((item) => {
+                const invCategory = appData.inventoryItems.find((i) => i.id === item.inventoryItemId)?.category ?? "";
+                const catImage = getCategoryImage(invCategory);
+                return (
+                  <div key={`${hSession.id}-${item.id}`} className="session-item-row">
+                    <div>
+                      <strong>
+                        {catImage
+                          ? <img src={catImage} alt="" className="category-icon-img" />
+                          : invCategory ? <span className="category-icon">{getCategoryIcon(invCategory)}</span> : null}
+                        {item.name}{item.soldAsPackOf ? ` (Pack of ${item.soldAsPackOf})` : ""}
+                      </strong>
+                      <div className="muted">From: {hSession.stationNameSnapshot}</div>
+                    </div>
+                    <div className="session-item-actions">
+                      <span>{item.quantity} × {currency(item.unitPrice)}</span>
+                      <button className="ghost-button danger" type="button" onClick={() => removeItemFromSession(hSession.id, item.id)}>Remove</button>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+            {managedSession.items.length === 0 && managedSessionPreviousHops.every(h => h.items.length === 0) && <div className="empty-state">No consumables added yet.</div>}
             {managedSession.items.map((item: SessionItem) => {
               const invCategory = appData.inventoryItems.find((i) => i.id === item.inventoryItemId)?.category ?? "";
               const catImage = getCategoryImage(invCategory);
@@ -4168,14 +4426,21 @@ export default function App() {
         <Modal
           title={
             checkoutState.mode === "session"
-              ? "Close Session Bill"
+              ? checkoutSession?.closeDisposition === "hopped"
+                ? "Bill Hopped Session"
+                : "Close Session Bill"
               : checkoutState.mode === "customer_tab"
                 ? "Finalize Customer Tab Bill"
                 : "Replace Issued Bill"
           }
           onClose={() => {
-            setCheckoutState(null);
-            setReplacementItemForm({ itemId: "", quantity: 1 });
+            if (checkoutSession?.closeDisposition === "hopped") {
+              returnToStartNextGame();
+            } else {
+              setCheckoutState(null);
+              setIsHopMode(false);
+              setReplacementItemForm({ itemId: "", quantity: 1 });
+            }
           }}
           wide
         >
@@ -4188,9 +4453,59 @@ export default function App() {
               disabled={!canEditSessionCustomerDetails && checkoutState.mode !== "bill_replacement"}
               onChange={(next) => setCheckoutState((p) => (p ? { ...p, ...next } : p))}
             />
-            <label><span>Payment Mode</span><select value={checkoutState.paymentMode} onChange={(event) => setCheckoutState((p) => p ? { ...p, paymentMode: event.target.value as BillPaymentMode, splitCashAmount: 0, splitUpiAmount: 0, collectAmount: 0 } : p)}><option value="cash">Cash</option><option value="upi">UPI</option><option value="split">Split (Cash + UPI)</option>{checkoutState.mode !== "bill_replacement" && <option value="deferred">Pay Later</option>}</select></label>
+            {!isHopMode && <label><span>Payment Mode</span><select value={checkoutState.paymentMode} onChange={(event) => setCheckoutState((p) => p ? { ...p, paymentMode: event.target.value as BillPaymentMode, splitCashAmount: 0, splitUpiAmount: 0, collectAmount: 0 } : p)}><option value="cash">Cash</option><option value="upi">UPI</option><option value="split">Split (Cash + UPI)</option>{checkoutState.mode !== "bill_replacement" && <option value="deferred">Pay Later</option>}</select></label>}
           </div>
-          {checkoutState.paymentMode === "split" && (
+          {checkoutState.mode === "session" && checkoutSession?.status !== "closed" && (
+            <div className="form-grid">
+              <label className="checkbox-field">
+                <input
+                  type="checkbox"
+                  checked={isHopMode}
+                  onChange={(event) => setIsHopMode(event.target.checked)}
+                />
+                <span>Game hop — close station without billing (customer will pay with their next game)</span>
+              </label>
+            </div>
+          )}
+          {isHopMode && (
+            <div className="frozen-billing-banner">
+              Game hop mode — the station will be released immediately. No bill will be issued. This session's charges will be included when the customer checks out their next game.
+            </div>
+          )}
+          {!isHopMode && checkoutState.mode === "session" && checkoutHoppedSessionCandidates.length > 0 && (
+            <div>
+              <div className="muted" style={{ marginBottom: "0.5rem", fontWeight: 600 }}>Previous unbilled sessions for this customer</div>
+              {checkoutHoppedSessionCandidates.map((hSession) => {
+                const hCharge = getSessionChargeSummary(hSession, hSession.endedAt);
+                const isSelected = (checkoutState.hoppedSessionIds ?? []).includes(hSession.id);
+                return (
+                  <label className="checkbox-field" key={hSession.id} style={{ marginBottom: "0.25rem" }}>
+                    <input
+                      type="checkbox"
+                      checked={isSelected}
+                      onChange={(event) => {
+                        if (!event.target.checked && !window.confirm(
+                          `Remove "${hSession.stationNameSnapshot}" (${currency(hCharge.subtotal)}) from this bill?\n\nThat session will remain unlinked and must be billed separately later.`
+                        )) {
+                          return;
+                        }
+                        setCheckoutState((p) =>
+                          p ? {
+                            ...p,
+                            hoppedSessionIds: event.target.checked
+                              ? [...(p.hoppedSessionIds ?? []), hSession.id]
+                              : (p.hoppedSessionIds ?? []).filter((id) => id !== hSession.id)
+                          } : p
+                        );
+                      }}
+                    />
+                    <span>{hSession.stationNameSnapshot} — {formatMinutes(hCharge.billedMinutes)} — {currency(hCharge.subtotal)}</span>
+                  </label>
+                );
+              })}
+            </div>
+          )}
+          {!isHopMode && checkoutState.paymentMode === "split" && (
             <div className="form-grid">
               <label>
                 <span>Cash Amount</span>
@@ -4202,7 +4517,7 @@ export default function App() {
               </label>
             </div>
           )}
-          {checkoutState.paymentMode === "deferred" && (
+          {!isHopMode && checkoutState.paymentMode === "deferred" && (
             <div className="form-grid">
               <label>
                 <span>Collect Upfront (optional)</span>
@@ -4242,20 +4557,22 @@ export default function App() {
               </label>
             </div>
           )}
-          <div className="form-grid">
-            <label className="checkbox-field">
-              <input
-                type="checkbox"
-                checked={checkoutState.roundOffEnabled}
-                onChange={(event) =>
-                  setCheckoutState((previous) =>
-                    previous ? { ...previous, roundOffEnabled: event.target.checked } : previous
-                  )
-                }
-              />
-              <span>Round off final bill to nearest rupee</span>
-            </label>
-          </div>
+          {!isHopMode && (
+            <div className="form-grid">
+              <label className="checkbox-field">
+                <input
+                  type="checkbox"
+                  checked={checkoutState.roundOffEnabled}
+                  onChange={(event) =>
+                    setCheckoutState((previous) =>
+                      previous ? { ...previous, roundOffEnabled: event.target.checked } : previous
+                    )
+                  }
+                />
+                <span>Round off final bill to nearest rupee</span>
+              </label>
+            </div>
+          )}
           {checkoutReplacementBill && (
             <>
               <div className="frozen-billing-banner">
@@ -4560,21 +4877,42 @@ export default function App() {
             )}
           </div>
           <div className="button-row">
-            <button className="secondary-button" type="button" onClick={() => { setCheckoutState(null); setReplacementItemForm({ itemId: "", quantity: 1 }); }}>Cancel</button>
-            <button
-              className="primary-button"
-              type="button"
-              onClick={() =>
-                void runBlockingAction(
-                  checkoutState.mode === "bill_replacement" ? "Issuing replacement bill..." : "Issuing bill...",
-                  finalizeCheckout
-                )
+            <button className="secondary-button" type="button" onClick={() => {
+              if (checkoutSession?.closeDisposition === "hopped") {
+                returnToStartNextGame();
+              } else {
+                setCheckoutState(null);
+                setIsHopMode(false);
+                setReplacementItemForm({ itemId: "", quantity: 1 });
               }
-              disabled={remoteSaving || Boolean(blockingActionLabel) || checkoutPreview.isZeroTotal}
-              title={checkoutPreview.isZeroTotal ? "Bill total is ₹0 — add items or remove discounts" : undefined}
-            >
-              {checkoutState.mode === "bill_replacement" ? "Issue Replacement Bill" : "Issue Bill"}
+            }}>
+              {checkoutSession?.closeDisposition === "hopped" ? "Start New Game Instead" : "Cancel"}
             </button>
+            {isHopMode ? (
+              <button
+                className="primary-button"
+                type="button"
+                onClick={() => void runBlockingAction("Closing session for game hop...", hopSession)}
+                disabled={remoteSaving || Boolean(blockingActionLabel)}
+              >
+                Confirm Game Hop
+              </button>
+            ) : (
+              <button
+                className="primary-button"
+                type="button"
+                onClick={() =>
+                  void runBlockingAction(
+                    checkoutState.mode === "bill_replacement" ? "Issuing replacement bill..." : "Issuing bill...",
+                    finalizeCheckout
+                  )
+                }
+                disabled={remoteSaving || Boolean(blockingActionLabel) || checkoutPreview.isZeroTotal}
+                title={checkoutPreview.isZeroTotal ? "Bill total is ₹0 — add items or remove discounts" : undefined}
+              >
+                {checkoutState.mode === "bill_replacement" ? "Issue Replacement Bill" : "Issue Bill"}
+              </button>
+            )}
           </div>
         </Modal>
       )}

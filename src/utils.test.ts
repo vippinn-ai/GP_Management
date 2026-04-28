@@ -4,11 +4,13 @@ import {
   getDiscountAmount,
   buildBillPreview,
   computePaymentModeTotals,
+  getMostRecentHoppedSession,
+  getUnbilledHoppedSessionsForCustomer,
   formatBillNumber,
   getReportRange,
   resolveEffectiveAmount
 } from "./utils";
-import type { AppData, Bill, DraftBillLine, ExpenseTemplate, ExpenseTemplateOverride, Payment } from "./types";
+import type { AppData, Bill, DraftBillLine, ExpenseTemplate, ExpenseTemplateOverride, Payment, Session } from "./types";
 
 // ─── toLocalDateKey ─────────────────────────────────────────────────────────
 
@@ -459,5 +461,160 @@ describe("computePaymentModeTotals", () => {
     const result = computePaymentModeTotals([bill1, bill2], payments);
     expect(result.cash).toBe(300);
     expect(result.upi).toBe(800);
+  });
+});
+
+// ─── getUnbilledHoppedSessionsForCustomer ────────────────────────────────────
+
+function makeHoppedSession(id: string, customerName: string, customerPhone: string, closedBillId?: string): Session {
+  return {
+    id,
+    stationId: "s1",
+    stationNameSnapshot: "8 Ball Pool",
+    mode: "timed",
+    startedAt: "2025-06-15T10:00:00Z",
+    endedAt: "2025-06-15T11:00:00Z",
+    status: "closed",
+    customerName,
+    customerPhone,
+    playMode: "group",
+    ltpEligible: false,
+    pricingSnapshot: [],
+    items: [],
+    pauseLogIds: [],
+    closeDisposition: "hopped",
+    closedBillId
+  } as unknown as Session;
+}
+
+describe("getUnbilledHoppedSessionsForCustomer", () => {
+  it("returns sessions matched by phone number", () => {
+    const sessions = [
+      makeHoppedSession("s1", "Alice", "9876543210"),
+      makeHoppedSession("s2", "Bob", "1111111111")
+    ];
+    const result = getUnbilledHoppedSessionsForCustomer(sessions, "", "9876543210");
+    expect(result).toHaveLength(1);
+    expect(result[0].id).toBe("s1");
+  });
+
+  it("returns sessions matched by name case-insensitively", () => {
+    const sessions = [
+      makeHoppedSession("s1", "Alice", ""),
+      makeHoppedSession("s2", "Bob", "")
+    ];
+    const result = getUnbilledHoppedSessionsForCustomer(sessions, "ALICE", "");
+    expect(result).toHaveLength(1);
+    expect(result[0].id).toBe("s1");
+  });
+
+  it("excludes sessions that are already billed (closedBillId set)", () => {
+    const sessions = [
+      makeHoppedSession("s1", "Alice", "9876543210", "bill-123"),
+      makeHoppedSession("s2", "Alice", "9876543210")
+    ];
+    const result = getUnbilledHoppedSessionsForCustomer(sessions, "Alice", "9876543210");
+    expect(result).toHaveLength(1);
+    expect(result[0].id).toBe("s2");
+  });
+
+  it("excludes sessions with different closeDisposition", () => {
+    const sessions: Session[] = [
+      { ...makeHoppedSession("s1", "Alice", ""), closeDisposition: "rejected" } as unknown as Session
+    ];
+    const result = getUnbilledHoppedSessionsForCustomer(sessions, "Alice", "");
+    expect(result).toHaveLength(0);
+  });
+
+  it("returns empty when name and phone are both blank", () => {
+    const sessions = [makeHoppedSession("s1", "Alice", "9876543210")];
+    const result = getUnbilledHoppedSessionsForCustomer(sessions, "", "");
+    expect(result).toHaveLength(0);
+  });
+
+  it("phone takes priority — name match is ignored when phone is provided but does not match", () => {
+    // Session belongs to "Alice" with phone 999. Caller provides Alice's name but a DIFFERENT phone.
+    // Under the old (buggy) logic this would have matched by name. It must NOT match.
+    const sessions = [makeHoppedSession("s1", "Alice", "9999999999")];
+    const result = getUnbilledHoppedSessionsForCustomer(sessions, "Alice", "1111111111");
+    expect(result).toHaveLength(0);
+  });
+
+  it("falls back to name match when no phone is provided", () => {
+    const sessions = [makeHoppedSession("s1", "Alice", "9999999999")];
+    const result = getUnbilledHoppedSessionsForCustomer(sessions, "Alice", "");
+    expect(result).toHaveLength(1);
+  });
+});
+
+// ─── getMostRecentHoppedSession ──────────────────────────────────────────────
+
+describe("getMostRecentHoppedSession", () => {
+  it("returns the session with the latest endedAt", () => {
+    const sessions = [
+      makeHoppedSession("s1", "Alice", ""),
+      { ...makeHoppedSession("s2", "Alice", ""), endedAt: "2025-06-15T12:00:00Z" } as unknown as Session,
+      makeHoppedSession("s3", "Alice", "")
+    ];
+    const result = getMostRecentHoppedSession(sessions);
+    expect(result?.id).toBe("s2");
+  });
+
+  it("returns null when no hopped sessions exist", () => {
+    expect(getMostRecentHoppedSession([])).toBeNull();
+  });
+
+  it("ignores sessions that are already billed", () => {
+    const sessions = [makeHoppedSession("s1", "Alice", "", "bill-abc")];
+    expect(getMostRecentHoppedSession(sessions)).toBeNull();
+  });
+});
+
+// ─── Combined bill preview (getSessionCheckoutLines multi-session) ────────────
+
+describe("buildBillPreview — combined multi-session lines", () => {
+  it("combined lines from two sessions have correct total subtotal", () => {
+    const sessionLine1: DraftBillLine = {
+      id: "line-session-s1",
+      type: "session_charge",
+      description: "PS5 session (60 min)",
+      quantity: 1,
+      unitPrice: 300,
+      linkedSessionId: "s1"
+    };
+    const sessionLine2: DraftBillLine = {
+      id: "line-session-s2",
+      type: "session_charge",
+      description: "8 Ball Pool session (45 min)",
+      quantity: 1,
+      unitPrice: 200,
+      linkedSessionId: "s2"
+    };
+    const result = buildBillPreview([sessionLine1, sessionLine2], {});
+    expect(result.subtotal).toBe(500);
+    expect(result.total).toBe(500);
+    expect(result.isZeroTotal).toBe(false);
+  });
+
+  it("hopped session with items — item lines appear in combined bill", () => {
+    const sessionCharge: DraftBillLine = {
+      id: "line-session-s1",
+      type: "session_charge",
+      description: "PS5 session (30 min)",
+      quantity: 1,
+      unitPrice: 150,
+      linkedSessionId: "s1"
+    };
+    const consumable: DraftBillLine = {
+      id: "line-item-i1",
+      type: "inventory_item",
+      description: "Red Bull",
+      quantity: 2,
+      unitPrice: 60,
+      inventoryItemId: "i1"
+    };
+    const result = buildBillPreview([sessionCharge, consumable], {});
+    expect(result.processedLines).toHaveLength(2);
+    expect(result.subtotal).toBe(270); // 150 + (2 × 60)
   });
 });

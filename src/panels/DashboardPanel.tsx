@@ -63,6 +63,7 @@ export function DashboardPanel(props: {
   sessionPauseLogs: SessionPauseLog[];
   getActiveSessionForStation: (stationId: string) => Session | undefined;
   getSessionLiveTotal: (session: Session, effectiveEndAt?: string) => number;
+  getPreviousHopTotalForSession: (session: Session) => number;
   getFrozenEndAtForSession: (sessionId: string) => string | undefined;
   getCustomerTabTotal: (tab: CustomerTab) => number;
   getInventoryState: (item: InventoryItem) => InventoryState;
@@ -166,20 +167,28 @@ export function DashboardPanel(props: {
                     </div>
                     {session ? (
                       <>
-                        <div className="station-metrics">
-                          <div>
-                            <span className="muted">Started</span>
-                            <strong>{formatTime(session.startedAt)}</strong>
-                          </div>
-                          <div>
-                            <span className="muted">Live bill</span>
-                            <strong>{currency(props.getSessionLiveTotal(session, props.getFrozenEndAtForSession(session.id)))}</strong>
-                          </div>
-                          <div>
-                            <span className="muted">Customer</span>
-                            <strong>{session.customerName || "Walk-in"}</strong>
-                          </div>
-                        </div>
+                        {(() => {
+                          const liveTotal = props.getSessionLiveTotal(session, props.getFrozenEndAtForSession(session.id));
+                          const prevHopTotal = props.getPreviousHopTotalForSession(session);
+                          const combinedTotal = liveTotal + prevHopTotal;
+                          return (
+                            <div className="station-metrics">
+                              <div>
+                                <span className="muted">Started</span>
+                                <strong>{formatTime(session.startedAt)}</strong>
+                              </div>
+                              <div>
+                                <span className="muted">{prevHopTotal > 0 ? "Live total" : "Live bill"}</span>
+                                <strong>{currency(combinedTotal)}</strong>
+                                {prevHopTotal > 0 && <div className="muted" style={{ fontSize: "0.7em" }}>incl. prev. sessions</div>}
+                              </div>
+                              <div>
+                                <span className="muted">Customer</span>
+                                <strong>{session.customerName || "Walk-in"}</strong>
+                              </div>
+                            </div>
+                          );
+                        })()}
                         <div className="button-row">
                           <button
                             className="secondary-button"

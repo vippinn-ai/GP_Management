@@ -89,7 +89,7 @@ export interface Session {
   items: SessionItem[];
   pauseLogIds: string[];
   closedBillId?: string;
-  closeDisposition?: "billed" | "rejected";
+  closeDisposition?: "billed" | "rejected" | "hopped";
   closeReason?: string;
 }
 
@@ -361,6 +361,7 @@ export interface CheckoutState {
   lineDiscounts: DraftLineDiscountMap;
   billDiscount?: DraftDiscountInput;
   ltpOutcome?: LtpOutcome;
+  hoppedSessionIds?: string[];
   replacementLines?: DraftBillLine[];
   replaceReason?: string;
 }
