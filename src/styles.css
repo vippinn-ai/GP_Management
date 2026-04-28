@@ -380,6 +380,100 @@ td {
   padding: 1.5rem 1.5rem 0;
 }
 
+/* === Sale / Consumables tab: fixed viewport, two-pane independent scroll === */
+
+.main-content.is-sale-tab {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.is-sale-tab .sales-layout {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  align-items: stretch;
+  grid-template-rows: minmax(0, 1fr);
+}
+
+.is-sale-tab .sales-layout > .panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.is-sale-tab .sale-catalog-panel > .panel-header,
+.is-sale-tab .sale-catalog-panel > .search-input,
+.is-sale-tab .sale-tab-panel > .panel-header {
+  flex-shrink: 0;
+}
+
+.is-sale-tab .sale-catalog-panel .catalog-grid {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  align-content: start;
+}
+
+.is-sale-tab .sale-tab-panel {
+  gap: 1rem;
+}
+
+.is-sale-tab .sale-tab-panel .section-block {
+  margin-top: 0;
+}
+
+.is-sale-tab .sale-tab-list-section,
+.is-sale-tab .sale-current-tab-section {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.is-sale-tab .sale-tab-list-section {
+  display: flex;
+  flex-direction: column;
+  flex: 0 1 42%;
+}
+
+.is-sale-tab .sale-tab-list-section > .section-block-header,
+.is-sale-tab .sale-tab-list-section > .form-grid {
+  flex-shrink: 0;
+}
+
+.is-sale-tab .sale-tab-list-section .tab-chip-grid {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  align-content: start;
+  padding-right: 0.2rem;
+}
+
+.is-sale-tab .sale-current-tab-section {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 58%;
+}
+
+.is-sale-tab .sale-current-tab-section > .section-block-header,
+.is-sale-tab .sale-current-tab-section > .checkout-footer {
+  flex-shrink: 0;
+}
+
+.is-sale-tab .sale-current-tab-section .line-items {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 0.2rem;
+}
+
+.is-sale-tab .checkout-footer {
+  background: linear-gradient(180deg, rgba(244, 248, 245, 0.98), rgba(239, 245, 241, 0.98));
+  padding-top: 0.75rem;
+  margin-top: 0.25rem;
+}
+
 .topbar {
   display: flex;
   justify-content: space-between;
@@ -931,23 +1025,36 @@ td {
 
 .catalog-card {
   text-align: left;
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  gap: 0.6rem;
+  gap: 0.75rem;
   color: #10211a;
   background: #fefefe;
   border: 1px solid #d8e4dc;
+  min-height: 7.25rem;
+  overflow: hidden;
 }
 
 .catalog-card-info {
   display: grid;
   gap: 0.3rem;
-  flex: 1;
   min-width: 0;
+  align-content: center;
+}
+
+.catalog-card-info strong,
+.catalog-card-info span {
+  min-width: 0;
+  max-width: 100%;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .catalog-card-icon-large {
-  flex-shrink: 0;
+  justify-self: end;
+  max-width: 4.5rem;
   user-select: none;
 }
 
@@ -1917,6 +2024,16 @@ span.catalog-card-icon-large {
 
   .main-content.is-bills-tab > .topbar {
     padding: 1.25rem 1.25rem 0;
+  }
+
+  .main-content.is-sale-tab {
+    height: 100vh;
+    display: flex;
+    overflow: hidden;
+  }
+
+  .is-sale-tab .sales-layout {
+    grid-template-rows: minmax(12rem, 0.85fr) minmax(18rem, 1.15fr);
   }
 
   .bill-register-page {

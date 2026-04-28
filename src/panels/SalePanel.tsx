@@ -39,7 +39,7 @@ export function SalePanel(props: {
   return (
     <>
       <section className="section-grid sales-layout">
-        <div className="panel">
+        <div className="panel sale-catalog-panel">
           <div className="panel-header">
             <div>
               <h2>Consumables Catalog</h2>
@@ -92,14 +92,14 @@ export function SalePanel(props: {
           </div>
         </div>
 
-        <div className="panel">
+        <div className="panel sale-tab-panel">
           <div className="panel-header">
             <div>
               <h2>Consumables Tab</h2>
               <p>Track sheesha, food, and drink items for customers who pay when they leave.</p>
             </div>
           </div>
-          <div className="section-block">
+          <div className="section-block sale-tab-list-section">
             <div className="section-block-header">
               <h3>Open or Find Customer Tab</h3>
               <p>One active tab per customer. Reusing a customer automatically opens their current tab.</p>
@@ -141,7 +141,7 @@ export function SalePanel(props: {
               ))}
             </div>
           </div>
-          <div className="section-block section-block-muted">
+          <div className="section-block section-block-muted sale-current-tab-section">
             <div className="section-block-header">
               <h3>{selectedCustomerTab ? `${selectedCustomerTab.customerName}'s Tab` : "Current Tab"}</h3>
               <p>{selectedCustomerTab ? "Add items from the left panel and finalize when the customer leaves." : "Open a tab to begin tracking consumables."}</p>
