@@ -1,5 +1,5 @@
 import { useState, useMemo } from "react";
-import type { Bill, BillStatus, BillPaymentMode, Station } from "../types";
+import type { Bill, BillStatus, BillPaymentMode, Payment, Station } from "../types";
 import type { ReceiptPreviewModel } from "../exporters";
 import { openReceiptWindow, downloadReceiptPdf } from "../exporters";
 import { currency, formatDateTime, toBusinessDayKey, toLocalDateKey, addDays } from "../utils";
@@ -43,6 +43,7 @@ export function BillRegisterPanel(props: {
   selectedReceiptBill: Bill | null;
   receiptPreviewModel: ReceiptPreviewModel | null;
   allBills: Bill[];
+  allPayments: Payment[];
   canReplaceIssuedBills: boolean;
   canVoidRefundBills: boolean;
   canSettlePendingBills: boolean;
@@ -337,14 +338,14 @@ export function BillRegisterPanel(props: {
               <button
                 className="secondary-button"
                 type="button"
-                onClick={() => openReceiptWindow(props.businessProfile, selected, props.allBills)}
+                onClick={() => openReceiptWindow(props.businessProfile, selected, props.allBills, props.allPayments)}
               >
                 Print Receipt
               </button>
               <button
                 className="secondary-button"
                 type="button"
-                onClick={() => downloadReceiptPdf(props.businessProfile, selected, props.allBills)}
+                onClick={() => downloadReceiptPdf(props.businessProfile, selected, props.allBills, props.allPayments)}
               >
                 Download PDF
               </button>

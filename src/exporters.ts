@@ -1,7 +1,7 @@
 import { jsPDF } from "jspdf";
 import * as XLSX from "xlsx";
 import brandLogo from "../Branding/Logo.png";
-import type { Bill, BusinessProfile } from "./types";
+import type { Bill, BusinessProfile, Payment } from "./types";
 import { currency, downloadBlob, escapeHtml, formatDateTime } from "./utils";
 
 interface ReportRow {
@@ -97,8 +97,8 @@ export function exportRowsToPdf(rows: ReportRow[], filename: string, businessNam
   pdf.save(filename);
 }
 
-export async function downloadReceiptPdf(business: BusinessProfile, bill: Bill, allBills?: Bill[]): Promise<void> {
-  const receipt = buildReceiptPreviewModel(business, bill, allBills);
+export async function downloadReceiptPdf(business: BusinessProfile, bill: Bill, allBills?: Bill[], allPayments?: Payment[]): Promise<void> {
+  const receipt = buildReceiptPreviewModel(business, bill, allBills, allPayments);
   const pageWidth = 226.77;
   const horizontalPadding = 16;
   const contentWidth = pageWidth - horizontalPadding * 2;
@@ -208,8 +208,8 @@ export async function downloadReceiptPdf(business: BusinessProfile, bill: Bill, 
   pdf.save(`${bill.billNumber}.pdf`);
 }
 
-export function openReceiptWindow(business: BusinessProfile, bill: Bill, allBills?: Bill[]): void {
-  const receipt = buildReceiptPreviewModel(business, bill, allBills);
+export function openReceiptWindow(business: BusinessProfile, bill: Bill, allBills?: Bill[], allPayments?: Payment[]): void {
+  const receipt = buildReceiptPreviewModel(business, bill, allBills, allPayments);
   const receiptHtml = `
     <html>
       <head>
@@ -314,7 +314,7 @@ export function openReceiptWindow(business: BusinessProfile, bill: Bill, allBill
   receiptWindow?.document.close();
 }
 
-export function buildReceiptPreviewModel(business: BusinessProfile, bill: Bill, allBills?: Bill[]): ReceiptPreviewModel {
+export function buildReceiptPreviewModel(business: BusinessProfile, bill: Bill, allBills?: Bill[], allPayments?: Payment[]): ReceiptPreviewModel {
   const brand = getReceiptBrandHeader(business);
   const replacementOfBill = bill.replacementOfBillId
     ? allBills?.find((entry) => entry.id === bill.replacementOfBillId)
@@ -323,6 +323,18 @@ export function buildReceiptPreviewModel(business: BusinessProfile, bill: Bill, 
     ? allBills?.find((entry) => entry.id === bill.replacedByBillId)
     : undefined;
   const infoLines = [business.address, business.primaryPhone, business.secondaryPhone].filter(Boolean) as string[];
+  const splitPaymentTotals =
+    bill.paymentMode === "split"
+      ? (allPayments ?? [])
+          .filter((payment) => payment.billId === bill.id)
+          .reduce(
+            (totals, payment) => ({
+              cash: totals.cash + (payment.mode === "cash" ? payment.amount : 0),
+              upi: totals.upi + (payment.mode === "upi" ? payment.amount : 0)
+            }),
+            { cash: 0, upi: 0 }
+          )
+      : null;
   const entries: ReceiptDisplayEntry[] = [
     ...bill.lines.map((line) => ({
       id: line.id,
@@ -346,7 +358,15 @@ export function buildReceiptPreviewModel(business: BusinessProfile, bill: Bill, 
     metaRows: [
       { label: "Bill No", value: bill.billNumber },
       { label: "Issued At", value: formatDateTime(bill.issuedAt) },
+      ...(bill.customerName ? [{ label: "Customer", value: bill.customerName }] : []),
+      ...(bill.customerPhone ? [{ label: "Phone", value: bill.customerPhone }] : []),
       { label: "Payment", value: bill.paymentMode.toUpperCase() },
+      ...(splitPaymentTotals
+        ? [
+            { label: "Cash Paid", value: currency(splitPaymentTotals.cash) },
+            { label: "UPI Paid", value: currency(splitPaymentTotals.upi) }
+          ]
+        : []),
       ...(bill.replacementOfBillId
         ? [{ label: "Replaces", value: replacementOfBill?.billNumber ?? bill.replacementOfBillId }]
         : []),

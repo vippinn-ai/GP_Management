@@ -176,7 +176,7 @@ export function InventoryPanel(props: {
               onChange={(event) => props.onInventoryItemSearchChange(event.target.value)}
               placeholder="Search by item name or category"
             />
-            <div className="table-wrap">
+            <div className="table-wrap inventory-table-wrap">
               <table>
                 <thead>
                   <tr><th>Item</th><th>Category</th><th>Type</th><th>Price</th><th>Stock</th><th>Threshold</th><th>Status</th><th>Barcode</th>{canEditInventory && <th />}</tr>
@@ -228,6 +228,56 @@ export function InventoryPanel(props: {
                   })}
                 </tbody>
               </table>
+            </div>
+            <div className="inventory-mobile-list">
+              {filteredInventoryItems.length === 0 && (
+                <div className="empty-state">No inventory items match this search.</div>
+              )}
+              {filteredInventoryItems.map((item) => {
+                const state = props.getInventoryState(item);
+                const availableStock = props.getAvailableStock(item);
+                const reservedStock = item.stockQty - availableStock;
+                const categoryImage = getCategoryImage(item.category);
+                return (
+                  <article key={item.id} className="inventory-mobile-card">
+                    <div className="inventory-mobile-card-head">
+                      <div>
+                        <strong>{item.name}</strong>
+                        <div className="inventory-mobile-category">
+                          {categoryImage ? (
+                            <img src={categoryImage} alt="" className="category-icon-img" />
+                          ) : (
+                            <span className={`category-icon${item.category === "Cigarettes" ? " category-icon--cigarettes" : ""}`}>{getCategoryIcon(item.category)}</span>
+                          )}
+                          <span>{item.category}</span>
+                        </div>
+                      </div>
+                      <span className={`inventory-badge is-${state}`}>{props.getInventoryStateLabel(state)}</span>
+                    </div>
+                    <div className="inventory-mobile-details">
+                      <div><span className="muted">Type</span><strong>{item.isReusable ? "Reusable" : "Consumable"}</strong></div>
+                      <div><span className="muted">Price</span><strong>{currency(item.price)}</strong></div>
+                      <div>
+                        <span className="muted">Stock</span>
+                        <strong>{availableStock}</strong>
+                        {reservedStock > 0 && <small className="muted">{reservedStock} in sessions</small>}
+                        {item.cigarettePack && (
+                          <small className="muted">
+                            ~{Math.floor(availableStock / item.cigarettePack.size)} packs + {availableStock % item.cigarettePack.size} loose
+                          </small>
+                        )}
+                      </div>
+                      <div><span className="muted">Threshold</span><strong>{item.lowStockThreshold}</strong></div>
+                      <div><span className="muted">Barcode</span><strong>{item.barcode || "None"}</strong></div>
+                    </div>
+                    {canEditInventory && (
+                      <button className="secondary-button" type="button" onClick={() => props.onBeginEditInventoryItem(item)}>
+                        Edit Item
+                      </button>
+                    )}
+                  </article>
+                );
+              })}
             </div>
           </div>
         </div>

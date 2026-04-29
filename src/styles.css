@@ -1227,6 +1227,51 @@ span.catalog-card-icon-large {
   min-width: 45rem;
 }
 
+.inventory-mobile-list {
+  display: none;
+}
+
+.inventory-mobile-card {
+  display: grid;
+  gap: 0.85rem;
+  padding: 1rem;
+  border-radius: 1rem;
+  border: 1px solid #d7e3db;
+  background: #f7fbf8;
+}
+
+.inventory-mobile-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 0.8rem;
+}
+
+.inventory-mobile-category {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-top: 0.25rem;
+  color: #667a70;
+}
+
+.inventory-mobile-details {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.inventory-mobile-details > div {
+  display: grid;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
+.inventory-mobile-details strong,
+.inventory-mobile-card-head strong {
+  overflow-wrap: anywhere;
+}
+
 .bill-register-wrap {
   min-height: 0;
   overflow: auto;
@@ -2027,13 +2072,33 @@ span.catalog-card-icon-large {
   }
 
   .main-content.is-sale-tab {
-    height: 100vh;
-    display: flex;
-    overflow: hidden;
+    height: auto;
+    display: block;
+    overflow: visible;
   }
 
   .is-sale-tab .sales-layout {
-    grid-template-rows: minmax(12rem, 0.85fr) minmax(18rem, 1.15fr);
+    grid-template-rows: auto;
+    overflow: visible;
+  }
+
+  .is-sale-tab .sales-layout > .panel {
+    display: block;
+    overflow: visible;
+  }
+
+  .is-sale-tab .sale-catalog-panel .catalog-grid,
+  .is-sale-tab .sale-tab-list-section .tab-chip-grid,
+  .is-sale-tab .sale-current-tab-section .line-items {
+    flex: none;
+    overflow: visible;
+    padding-right: 0;
+  }
+
+  .is-sale-tab .sale-tab-list-section,
+  .is-sale-tab .sale-current-tab-section {
+    display: block;
+    overflow: visible;
   }
 
   .bill-register-page {
@@ -2297,6 +2362,15 @@ span.catalog-card-icon-large {
   .table-wrap table {
     min-width: 40rem;
     font-size: 0.92rem;
+  }
+
+  .inventory-table-wrap {
+    display: none;
+  }
+
+  .inventory-mobile-list {
+    display: grid;
+    gap: 0.85rem;
   }
 
   th,

@@ -2572,8 +2572,8 @@ export default function App() {
     setCustomerTabDraft({ customerId: undefined, customerName: "", customerPhone: "" });
     setReplacementItemForm({ itemId: "", quantity: 1 });
     setLastHoppedSessionId(null);
-    openReceiptWindow(nextAppData.businessProfile, issuedBill, nextAppData.bills);
-    downloadReceiptPdf(nextAppData.businessProfile, issuedBill, nextAppData.bills);
+    openReceiptWindow(nextAppData.businessProfile, issuedBill, nextAppData.bills, nextAppData.payments);
+    downloadReceiptPdf(nextAppData.businessProfile, issuedBill, nextAppData.bills, nextAppData.payments);
   }
 
   function settlePayment(draft: SettlementDraft): boolean {
@@ -3401,7 +3401,7 @@ export default function App() {
 
   const selectedReceiptBill = appData.bills.find((bill) => bill.id === selectedReceiptBillId) ?? appData.bills[0] ?? null;
   const receiptPreviewModel = selectedReceiptBill
-    ? buildReceiptPreviewModel(appData.businessProfile, selectedReceiptBill, appData.bills)
+    ? buildReceiptPreviewModel(appData.businessProfile, selectedReceiptBill, appData.bills, appData.payments)
     : null;
   const managedSession = manageSessionId ? getSessionById(manageSessionId) ?? null : null;
   const managedSessionCharge = managedSession ? getSessionChargeSummary(managedSession, getFrozenEndAtForSession(managedSession.id)) : null;
@@ -3525,6 +3525,15 @@ export default function App() {
         checkoutState.roundOffEnabled
       )
     : null;
+  const checkoutSummaryCurrency = (value: number) =>
+    checkoutState?.roundOffEnabled
+      ? new Intl.NumberFormat("en-IN", {
+          style: "currency",
+          currency: "INR",
+          minimumFractionDigits: 0,
+          maximumFractionDigits: 0
+        }).format(Math.round(value))
+      : currency(value);
 
   const billById = new Map(appData.bills.map((bill) => [bill.id, bill]));
   const paidBillIds = new Set(filteredRevenuePayments.map((payment) => payment.billId));
@@ -3860,6 +3869,7 @@ export default function App() {
             selectedReceiptBill={selectedReceiptBill}
             receiptPreviewModel={receiptPreviewModel}
             allBills={appData.bills}
+            allPayments={appData.payments}
             canReplaceIssuedBills={canReplaceIssuedBills}
             canVoidRefundBills={canVoidRefundBills}
             canSettlePendingBills={canSettlePendingBills}
@@ -4865,21 +4875,21 @@ export default function App() {
             <label><span>Bill Discount Reason</span><input value={checkoutState.billDiscount?.reason ?? ""} onChange={(event) => setCheckoutState((p) => p ? { ...p, billDiscount: { type: p.billDiscount?.type ?? "amount", value: p.billDiscount?.value ?? 0, reason: event.target.value } } : p)} /></label>
           </div>
           <div className="checkout-summary">
-            <div><span className="muted">Subtotal</span><strong>{currency(checkoutPreview.subtotal)}</strong></div>
-            <div><span className="muted">Line Discounts</span><strong>{currency(checkoutPreview.lineDiscountAmount)}</strong></div>
-            <div><span className="muted">Bill Discount</span><strong>{currency(checkoutPreview.billDiscountAmount)}</strong></div>
+            <div><span className="muted">Subtotal</span><strong>{checkoutSummaryCurrency(checkoutPreview.subtotal)}</strong></div>
+            <div><span className="muted">Line Discounts</span><strong>{checkoutSummaryCurrency(checkoutPreview.lineDiscountAmount)}</strong></div>
+            <div><span className="muted">Bill Discount</span><strong>{checkoutSummaryCurrency(checkoutPreview.billDiscountAmount)}</strong></div>
             <div><span className="muted">Round Off</span><strong>{currency(checkoutPreview.roundOffAmount)}</strong></div>
-            <div><span className="muted">Total</span><strong>{currency(checkoutPreview.total)}</strong></div>
+            <div><span className="muted">Total</span><strong>{checkoutSummaryCurrency(checkoutPreview.total)}</strong></div>
             {checkoutState.paymentMode === "split" && (
               <>
-                <div><span className="muted">Cash</span><strong>{currency(checkoutState.splitCashAmount)}</strong></div>
-                <div><span className="muted">UPI</span><strong>{currency(checkoutState.splitUpiAmount)}</strong></div>
+                <div><span className="muted">Cash</span><strong>{checkoutSummaryCurrency(checkoutState.splitCashAmount)}</strong></div>
+                <div><span className="muted">UPI</span><strong>{checkoutSummaryCurrency(checkoutState.splitUpiAmount)}</strong></div>
               </>
             )}
             {checkoutState.paymentMode === "deferred" && (
               <>
-                <div><span className="muted">Collecting Now</span><strong>{currency(checkoutState.collectAmount)}</strong></div>
-                <div><span className="muted pending-amount">Amount Due Later</span><strong className="pending-amount">{currency(Math.max(0, checkoutPreview.total - checkoutState.collectAmount))}</strong></div>
+                <div><span className="muted">Collecting Now</span><strong>{checkoutSummaryCurrency(checkoutState.collectAmount)}</strong></div>
+                <div><span className="muted pending-amount">Amount Due Later</span><strong className="pending-amount">{checkoutSummaryCurrency(Math.max(0, checkoutPreview.total - checkoutState.collectAmount))}</strong></div>
               </>
             )}
           </div>
