@@ -1,6 +1,6 @@
 import { type FormEvent, useState } from "react";
-import type { Customer, CustomerTab, CustomerTabDraft, CustomerTabEditDraft, CustomerTabItem, InventoryItem } from "../types";
-import { currency } from "../utils";
+import type { Customer, CustomerTab, CustomerTabDraft, CustomerTabEditDraft, CustomerTabItem, InventoryItem, Session } from "../types";
+import { currency, formatMinutes } from "../utils";
 import { getCategoryIcon } from "../constants";
 import { Modal } from "../components/Modal";
 import { CATEGORY_IMAGES } from "../categoryImages";
@@ -16,10 +16,13 @@ export function SalePanel(props: {
   customerTabDraft: CustomerTabDraft;
   openCustomerTabs: CustomerTab[];
   selectedCustomerTab: CustomerTab | null;
+  selectedCustomerTabPreviousHops: Session[];
   editCustomerTabDraft: CustomerTabEditDraft | null;
   canEditCustomerTabDetails: boolean;
   getInventoryPickerDetail: (item: InventoryItem, ignoreSessionId?: string, ignoreCustomerTabId?: string) => string;
   getCustomerTabTotal: (tab: CustomerTab) => number;
+  getSessionLiveTotal: (session: Session, effectiveEndAt?: string) => number;
+  getSessionBilledMinutes: (session: Session) => number;
   onCustomerTabSearchChange: (value: string) => void;
   onCustomerTabDraftChange: (next: CustomerTabDraft) => void;
   onSelectCustomerTab: (tabId: string) => void;
@@ -33,8 +36,21 @@ export function SalePanel(props: {
   onBeginCustomerTabCheckout: () => void;
   onSaveCustomerTabDetails: (event: FormEvent<HTMLFormElement>) => void;
 }) {
-  const { customerTabDraft, openCustomerTabs, selectedCustomerTab, editCustomerTabDraft, canEditCustomerTabDetails } = props;
+  const {
+    customerTabDraft,
+    openCustomerTabs,
+    selectedCustomerTab,
+    selectedCustomerTabPreviousHops,
+    editCustomerTabDraft,
+    canEditCustomerTabDetails
+  } = props;
   const [cigPackModal, setCigPackModal] = useState<{ item: InventoryItem } | null>(null);
+  const previousHopTotal = selectedCustomerTabPreviousHops.reduce(
+    (total, session) => total + props.getSessionLiveTotal(session, session.endedAt),
+    0
+  );
+  const currentTabTotal = selectedCustomerTab ? props.getCustomerTabTotal(selectedCustomerTab) : 0;
+  const liveTotal = currentTabTotal + previousHopTotal;
 
   return (
     <>
@@ -148,9 +164,29 @@ export function SalePanel(props: {
             </div>
             <div className="line-items">
               {!selectedCustomerTab && <div className="empty-state">Open or select a customer tab first.</div>}
-              {selectedCustomerTab && selectedCustomerTab.items.length === 0 && (
+              {selectedCustomerTab && selectedCustomerTab.items.length === 0 && selectedCustomerTabPreviousHops.length === 0 && (
                 <div className="empty-state">Add items from the left panel.</div>
               )}
+              {selectedCustomerTabPreviousHops.map((session) => (
+                <div key={session.id} className="line-item-row">
+                  <div>
+                    <strong>{session.stationNameSnapshot}</strong>
+                    <div className="muted">
+                      Previous game session
+                      {session.mode === "timed" ? ` · ${formatMinutes(props.getSessionBilledMinutes(session))}` : ""}
+                    </div>
+                    {session.items.length > 0 && (
+                      <div className="muted">
+                        {session.items.map((item) => `${item.quantity} x ${item.name}`).join(", ")}
+                      </div>
+                    )}
+                  </div>
+                  <div className="button-row dense">
+                    <strong>{currency(props.getSessionLiveTotal(session, session.endedAt))}</strong>
+                    <span className="muted">Carried forward</span>
+                  </div>
+                </div>
+              ))}
               {selectedCustomerTab?.items.map((item: CustomerTabItem) => {
                 const invCategory = props.inventoryItems.find((i) => i.id === item.inventoryItemId)?.category ?? "";
                 const catImage = CATEGORY_IMAGES[invCategory];
@@ -186,8 +222,9 @@ export function SalePanel(props: {
             </div>
             <div className="checkout-footer">
               <div className="checkout-total-block">
-                <span className="muted">Tab total</span>
-                <strong>{currency(selectedCustomerTab ? props.getCustomerTabTotal(selectedCustomerTab) : 0)}</strong>
+                <span className="muted">{previousHopTotal > 0 ? "Live total" : "Tab total"}</span>
+                <strong>{currency(selectedCustomerTab ? liveTotal : 0)}</strong>
+                {previousHopTotal > 0 && <small className="muted">Includes previous sessions</small>}
               </div>
               <div className="button-row">
                 {selectedCustomerTab && canEditCustomerTabDetails && (

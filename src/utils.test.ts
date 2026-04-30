@@ -7,13 +7,14 @@ import {
   allocatePaymentRevenueToBill,
   filterPaymentsByBusinessDate,
   getRevenueCountedPayments,
+  getCustomerTabCheckoutLines,
   getMostRecentHoppedSession,
   getUnbilledHoppedSessionsForCustomer,
   formatBillNumber,
   getReportRange,
   resolveEffectiveAmount
 } from "./utils";
-import type { AppData, Bill, DraftBillLine, ExpenseTemplate, ExpenseTemplateOverride, Payment, Session } from "./types";
+import type { AppData, Bill, CustomerTabItem, DraftBillLine, ExpenseTemplate, ExpenseTemplateOverride, Payment, Session } from "./types";
 
 // ─── toLocalDateKey ─────────────────────────────────────────────────────────
 
@@ -31,6 +32,48 @@ describe("toLocalDateKey", () => {
     const localDate = new Date(2025, 5, 15); // June 15 2025, local midnight
     const key = toLocalDateKey(localDate.toISOString());
     expect(key).toBe("2025-06-15");
+  });
+});
+
+describe("buildBillPreview - customer tab with hopped session lines", () => {
+  const tabItems: CustomerTabItem[] = [
+    {
+      id: "tab-line-coke",
+      inventoryItemId: "coke",
+      name: "Coke",
+      quantity: 2,
+      unitPrice: 40,
+      addedAt: "2025-06-15T12:00:00Z"
+    }
+  ];
+
+  const hoppedGameLine: DraftBillLine = {
+    id: "line-session-hop-1",
+    type: "session_charge",
+    description: "PS5 session (60 min)",
+    quantity: 1,
+    unitPrice: 300,
+    linkedSessionId: "hop-1"
+  };
+
+  it("includes selected previous game charges with customer tab consumables", () => {
+    const result = buildBillPreview(
+      [hoppedGameLine, ...getCustomerTabCheckoutLines(tabItems)],
+      {}
+    );
+
+    expect(result.processedLines.map((line) => line.id)).toEqual([
+      "line-session-hop-1",
+      "tab-line-coke"
+    ]);
+    expect(result.subtotal).toBe(380);
+  });
+
+  it("excludes deselected previous game charges from customer tab preview", () => {
+    const result = buildBillPreview(getCustomerTabCheckoutLines(tabItems), {});
+
+    expect(result.processedLines.map((line) => line.id)).toEqual(["tab-line-coke"]);
+    expect(result.subtotal).toBe(80);
   });
 });
 

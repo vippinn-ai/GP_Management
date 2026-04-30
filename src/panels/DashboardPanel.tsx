@@ -64,6 +64,8 @@ export function DashboardPanel(props: {
   getActiveSessionForStation: (stationId: string) => Session | undefined;
   getSessionLiveTotal: (session: Session, effectiveEndAt?: string) => number;
   getPreviousHopTotalForSession: (session: Session) => number;
+  getPreviousHopTotalForCustomerTab: (tab: CustomerTab) => number;
+  getPreviousHopItemCountForCustomerTab: (tab: CustomerTab) => number;
   getFrozenEndAtForSession: (sessionId: string) => string | undefined;
   getCustomerTabTotal: (tab: CustomerTab) => number;
   getInventoryState: (item: InventoryItem) => InventoryState;
@@ -112,6 +114,9 @@ export function DashboardPanel(props: {
               ].map((entry) => {
                 if ("customerName" in entry) {
                   const tab = entry;
+                  const prevHopTotal = props.getPreviousHopTotalForCustomerTab(tab);
+                  const combinedTotal = props.getCustomerTabTotal(tab) + prevHopTotal;
+                  const combinedItems = tab.items.length + props.getPreviousHopItemCountForCustomerTab(tab);
                   return (
                     <article key={tab.id} className="station-card is-active customer-tab-live-card">
                       <div className="station-card-header">
@@ -123,8 +128,12 @@ export function DashboardPanel(props: {
                       </div>
                       <div className="station-metrics">
                         <div><span className="muted">Opened</span><strong>{formatTime(tab.createdAt)}</strong></div>
-                        <div><span className="muted">Live bill</span><strong>{currency(props.getCustomerTabTotal(tab))}</strong></div>
-                        <div><span className="muted">Items</span><strong>{`${tab.items.length}`}</strong></div>
+                        <div>
+                          <span className="muted">{prevHopTotal > 0 ? "Live total" : "Live bill"}</span>
+                          <strong>{currency(combinedTotal)}</strong>
+                          {prevHopTotal > 0 && <div className="muted" style={{ fontSize: "0.7em" }}>incl. prev. sessions</div>}
+                        </div>
+                        <div><span className="muted">Items</span><strong>{`${combinedItems}`}</strong></div>
                       </div>
                       <div className="button-row">
                         <button className="secondary-button" type="button" onClick={() => props.onOpenCustomerTabWorkspace(tab.id)}>Manage Items</button>

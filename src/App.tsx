@@ -124,6 +124,8 @@ import {
   validateCheckoutPayment
 } from "./billing";
 
+type PostHopContinuationMode = "gaming" | "consumables";
+
 async function hashPassword(password: string): Promise<string> {
   const salt = crypto.getRandomValues(new Uint8Array(16));
   const enc = new TextEncoder();
@@ -174,6 +176,7 @@ export default function App() {
   const [checkoutState, setCheckoutState] = useState<CheckoutState | null>(null);
   const [isHopMode, setIsHopMode] = useState(false);
   const [lastHoppedSessionId, setLastHoppedSessionId] = useState<string | null>(null);
+  const [postHopContinuationMode, setPostHopContinuationMode] = useState<PostHopContinuationMode>("gaming");
   const [customerTabSearch, setCustomerTabSearch] = useState("");
   const [customerProfileSearch, setCustomerProfileSearch] = useState("");
   const [customerProfileSort, setCustomerProfileSort] = useState<"last_visit" | "total_spend" | "visit_count">("last_visit");
@@ -802,9 +805,6 @@ export default function App() {
     options?: { ignoreSessionId?: string; ignoreCustomerTabId?: string }
   ) {
     const sessionReserved = getSessionReservedQuantity(item.id, options?.ignoreSessionId);
-    if (!item.isReusable) {
-      return sessionReserved;
-    }
     return sessionReserved + getCustomerTabReservedQuantity(item.id, options?.ignoreCustomerTabId);
   }
 
@@ -843,6 +843,14 @@ export default function App() {
 
   function getCustomerTabTotal(tab: CustomerTab) {
     return sumBy(tab.items, (item) => item.quantity * item.unitPrice);
+  }
+
+  function getUnbilledHoppedSessionsForTab(tab: CustomerTab) {
+    return getUnbilledHoppedSessionsForCustomer(
+      appData.sessions,
+      tab.customerName,
+      tab.customerPhone ?? ""
+    );
   }
 
   function resetItemForm() {
@@ -1095,6 +1103,7 @@ export default function App() {
     });
     setStartSessionDraft(createStartSessionDraft());
     setLastHoppedSessionId(null);
+    setPostHopContinuationMode("gaming");
     setShowStartSessionModal(false);
   }
 
@@ -1718,7 +1727,8 @@ export default function App() {
   }
 
   function beginCustomerTabCheckout() {
-    if (!selectedCustomerTab || selectedCustomerTab.items.length === 0) {
+    const previousHops = selectedCustomerTab ? getUnbilledHoppedSessionsForTab(selectedCustomerTab) : [];
+    if (!selectedCustomerTab || (selectedCustomerTab.items.length === 0 && previousHops.length === 0)) {
       window.alert("Open a customer tab and add items first.");
       return;
     }
@@ -1734,7 +1744,8 @@ export default function App() {
       collectAmount: 0,
       collectMode: "cash" as const,
       roundOffEnabled: true,
-      lineDiscounts: {}
+      lineDiscounts: {},
+      hoppedSessionIds: previousHops.map((session) => session.id)
     });
   }
 
@@ -1754,7 +1765,8 @@ export default function App() {
 
   function beginCustomerTabCheckoutById(customerTabId: string) {
     const tab = getCustomerTabById(customerTabId);
-    if (!tab || tab.status !== "open" || tab.items.length === 0) {
+    const previousHops = tab ? getUnbilledHoppedSessionsForTab(tab) : [];
+    if (!tab || tab.status !== "open" || (tab.items.length === 0 && previousHops.length === 0)) {
       window.alert("Open a customer tab and add items first.");
       return;
     }
@@ -1776,7 +1788,8 @@ export default function App() {
       collectAmount: 0,
       collectMode: "cash" as const,
       roundOffEnabled: true,
-      lineDiscounts: {}
+      lineDiscounts: {},
+      hoppedSessionIds: previousHops.map((session) => session.id)
     });
   }
 
@@ -1875,6 +1888,7 @@ export default function App() {
     setCheckoutState(null);
     setIsHopMode(false);
     setLastHoppedSessionId(sessionId);
+    setPostHopContinuationMode("gaming");
     setManageSessionId((previous) => (previous === sessionId ? null : previous));
     // Immediately prompt to start a new session for this customer
     setStartSessionDraft((prev) => ({
@@ -1889,6 +1903,7 @@ export default function App() {
   function handleSetShowStartSessionModal(show: boolean) {
     if (!show) {
       setLastHoppedSessionId(null);
+      setPostHopContinuationMode("gaming");
     }
     if (show && lastHoppedSessionId) {
       const hoppedSession = appData.sessions.find((s) => s.id === lastHoppedSessionId);
@@ -1910,8 +1925,33 @@ export default function App() {
     const sessionId = lastHoppedSessionId;
     // Keep lastHoppedSessionId alive — needed to loop back to "Start Next Game" if billing is cancelled
     setShowStartSessionModal(false);  // bypass handleSetShowStartSessionModal so the ID stays set
+    setPostHopContinuationMode("gaming");
     setStartSessionDraft(createStartSessionDraft());
     openSessionCheckout(sessionId);
+  }
+
+  function startPostHopConsumablesTab(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!lastHoppedSessionId) return;
+    const hoppedSession = getSessionById(lastHoppedSessionId);
+    const draftValue: CustomerTabDraft = {
+      customerId: startSessionDraft.customerId ?? hoppedSession?.customerId,
+      customerName: startSessionDraft.customerName || hoppedSession?.customerName || "",
+      customerPhone: startSessionDraft.customerPhone || hoppedSession?.customerPhone || ""
+    };
+    if (!draftValue.customerName.trim()) {
+      window.alert("Customer name is required to start a consumables tab.");
+      return;
+    }
+    openOrCreateCustomerTab(draftValue, {
+      updateSaleDraft: true,
+      clearDraft: false,
+      switchToSale: true
+    });
+    setShowStartSessionModal(false);
+    setLastHoppedSessionId(null);
+    setPostHopContinuationMode("gaming");
+    setStartSessionDraft(createStartSessionDraft());
   }
 
   function returnToStartNextGame() {
@@ -1920,6 +1960,7 @@ export default function App() {
     setIsHopMode(false);
     setReplacementItemForm({ itemId: "", quantity: 1 });
     if (hoppedSession?.closeDisposition === "hopped") {
+      setPostHopContinuationMode("gaming");
       setStartSessionDraft((prev) => ({
         ...prev,
         customerId: hoppedSession.customerId,
@@ -2184,12 +2225,10 @@ export default function App() {
         data.sessions.filter((entry) => entry.status !== "closed" && entry.id !== ignoreSessionId),
         (entry) => sumBy(entry.items.filter((line) => line.inventoryItemId === item.id), (line) => line.soldAsPackOf ? line.quantity * line.soldAsPackOf : line.quantity)
       );
-      const tabReserved = item.isReusable
-        ? sumBy(
-            data.customerTabs.filter((entry) => entry.status === "open" && entry.id !== ignoreCustomerTabId),
-            (entry) => sumBy(entry.items.filter((line) => line.inventoryItemId === item.id), (line) => line.soldAsPackOf ? line.quantity * line.soldAsPackOf : line.quantity)
-          )
-        : 0;
+      const tabReserved = sumBy(
+        data.customerTabs.filter((entry) => entry.status === "open" && entry.id !== ignoreCustomerTabId),
+        (entry) => sumBy(entry.items.filter((line) => line.inventoryItemId === item.id), (line) => line.soldAsPackOf ? line.quantity * line.soldAsPackOf : line.quantity)
+      );
       return Math.max(0, item.stockQty - sessionReserved - tabReserved);
     }
     const issuedAt = new Date().toISOString();
@@ -2220,7 +2259,7 @@ export default function App() {
       checkoutState.mode === "session" && previewSession
         ? [...hoppedSourceLines, ...getSessionCheckoutLines(previewSession, calculateSessionCharge(previewSession, baseAppData.sessionPauseLogs, effectiveClosedAt))]
         : checkoutState.mode === "customer_tab"
-          ? getCustomerTabCheckoutLines(customerTab?.items ?? [])
+          ? [...hoppedSourceLines, ...getCustomerTabCheckoutLines(customerTab?.items ?? [])]
           : checkoutState.replacementLines ?? [];
     if (previewSession) {
       const startedAt = new Date(previewSession.startedAt);
@@ -2236,7 +2275,8 @@ export default function App() {
       }
     }
     if (customerTab) {
-      const unavailableLine = sourceLines.find((line) => {
+      const customerTabLines = getCustomerTabCheckoutLines(customerTab.items);
+      const unavailableLine = customerTabLines.find((line) => {
         if (!line.inventoryItemId) {
           return false;
         }
@@ -3410,6 +3450,9 @@ export default function App() {
         .filter((s) => s.id !== managedSession.id)
     : [];
   const managedSessionPreviousHopTotal = sumBy(managedSessionPreviousHops, (s) => getSessionLiveTotal(s, s.endedAt));
+  const selectedCustomerTabPreviousHops = selectedCustomerTab
+    ? getUnbilledHoppedSessionsForTab(selectedCustomerTab)
+    : [];
   const selectedStartStation =
     startSessionDraft.stationId ? appData.stations.find((station) => station.id === startSessionDraft.stationId) ?? null : null;
   const selectedArcadeStartItem =
@@ -3484,7 +3527,15 @@ export default function App() {
           return [...hoppedLines, ...currentLines];
         })()
       : checkoutState?.mode === "customer_tab" && checkoutState.customerTabId
-        ? getCustomerTabCheckoutLines(getCustomerTabById(checkoutState.customerTabId)?.items ?? [])
+        ? (() => {
+            const tabLines = getCustomerTabCheckoutLines(getCustomerTabById(checkoutState.customerTabId)?.items ?? []);
+            const hoppedLines = (checkoutState.hoppedSessionIds ?? []).flatMap((hId) => {
+              const hSession = getSessionById(hId);
+              if (!hSession || !hSession.endedAt) return [];
+              return getSessionCheckoutLines(hSession, getSessionChargeSummary(hSession, hSession.endedAt));
+            });
+            return [...hoppedLines, ...tabLines];
+          })()
         : checkoutState?.mode === "bill_replacement"
           ? checkoutState.replacementLines ?? []
           : [];
@@ -3496,7 +3547,7 @@ export default function App() {
     checkoutState?.mode === "bill_replacement" && checkoutState.replacementBillId
       ? getBillById(checkoutState.replacementBillId) ?? null
       : null;
-  const checkoutHoppedSessionCandidates: Session[] = checkoutState?.mode === "session" && checkoutState.sessionId
+  const checkoutHoppedSessionCandidates: Session[] = checkoutState && (checkoutState.mode === "session" || checkoutState.mode === "customer_tab")
     ? getUnbilledHoppedSessionsForCustomer(appData.sessions, checkoutState.customerName, checkoutState.customerPhone)
         .filter((s) => s.id !== checkoutState.sessionId)
     : [];
@@ -3773,6 +3824,12 @@ export default function App() {
                 .filter((s) => s.id !== session.id);
               return sumBy(hops, (s) => getSessionLiveTotal(s, s.endedAt));
             }}
+            getPreviousHopTotalForCustomerTab={(tab) =>
+              sumBy(getUnbilledHoppedSessionsForTab(tab), (session) => getSessionLiveTotal(session, session.endedAt))
+            }
+            getPreviousHopItemCountForCustomerTab={(tab) =>
+              sumBy(getUnbilledHoppedSessionsForTab(tab), (session) => session.items.length)
+            }
             getFrozenEndAtForSession={getFrozenEndAtForSession}
             getCustomerTabTotal={getCustomerTabTotal}
             getInventoryState={getInventoryState}
@@ -3804,10 +3861,13 @@ export default function App() {
             customerTabDraft={customerTabDraft}
             openCustomerTabs={openCustomerTabs}
             selectedCustomerTab={selectedCustomerTab}
+            selectedCustomerTabPreviousHops={selectedCustomerTabPreviousHops}
             editCustomerTabDraft={editCustomerTabDraft}
             canEditCustomerTabDetails={canEditSessionCustomerDetails}
             getInventoryPickerDetail={getInventoryPickerDetail}
             getCustomerTabTotal={getCustomerTabTotal}
+            getSessionLiveTotal={getSessionLiveTotal}
+            getSessionBilledMinutes={(session) => getSessionChargeSummary(session, session.endedAt).billedMinutes}
             onCustomerTabSearchChange={setCustomerTabSearch}
             onCustomerTabDraftChange={setCustomerTabDraft}
             onSelectCustomerTab={setSelectedCustomerTabId}
@@ -4006,7 +4066,7 @@ export default function App() {
 
       {showStartSessionModal && (
         <Modal
-          title={lastHoppedSessionId ? "Start Next Game" : "Start New Session"}
+          title={lastHoppedSessionId ? "Continue Customer" : "Start New Session"}
           onClose={() => {
             if (lastHoppedSessionId) {
               billHoppedSession();
@@ -4016,34 +4076,51 @@ export default function App() {
             }
           }}
         >
-          <form className="form-grid" onSubmit={startSession}>
-            <label>
-              <span>Station</span>
-              <select
-                value={startSessionDraft.stationId}
-                onChange={(event) =>
-                  setStartSessionDraft((previous) => {
-                    const nextStation = appData.stations.find((station) => station.id === event.target.value);
-                    return {
-                      ...previous,
-                      stationId: event.target.value,
-                      playMode: nextStation?.ltpEnabled ? previous.playMode : "group",
-                      arcadeItemId: nextStation?.mode === "unit_sale" ? defaultArcadeInventoryItem?.id ?? "" : "",
-                      arcadeQuantity: 1
-                    };
-                  })
-                }
-              >
-                <option value="">Select station</option>
-                {stations
-                  .filter((station) => !getActiveSessionForStation(station.id))
-                  .map((station) => (
-                    <option key={station.id} value={station.id}>
-                      {station.name}
-                    </option>
-                  ))}
-              </select>
-            </label>
+          <form
+            className="form-grid"
+            onSubmit={lastHoppedSessionId && postHopContinuationMode === "consumables" ? startPostHopConsumablesTab : startSession}
+          >
+            {lastHoppedSessionId && (
+              <label className="field-span-full">
+                <span>Continue As</span>
+                <select
+                  value={postHopContinuationMode}
+                  onChange={(event) => setPostHopContinuationMode(event.target.value as PostHopContinuationMode)}
+                >
+                  <option value="gaming">Gaming Session</option>
+                  <option value="consumables">Consumables Tab</option>
+                </select>
+              </label>
+            )}
+            {(!lastHoppedSessionId || postHopContinuationMode === "gaming") && (
+              <label>
+                <span>Station</span>
+                <select
+                  value={startSessionDraft.stationId}
+                  onChange={(event) =>
+                    setStartSessionDraft((previous) => {
+                      const nextStation = appData.stations.find((station) => station.id === event.target.value);
+                      return {
+                        ...previous,
+                        stationId: event.target.value,
+                        playMode: nextStation?.ltpEnabled ? previous.playMode : "group",
+                        arcadeItemId: nextStation?.mode === "unit_sale" ? defaultArcadeInventoryItem?.id ?? "" : "",
+                        arcadeQuantity: 1
+                      };
+                    })
+                  }
+                >
+                  <option value="">Select station</option>
+                  {stations
+                    .filter((station) => !getActiveSessionForStation(station.id))
+                    .map((station) => (
+                      <option key={station.id} value={station.id}>
+                        {station.name}
+                      </option>
+                    ))}
+                </select>
+              </label>
+            )}
             <CustomerAutocompleteFields
               customers={appData.customers}
               customerId={startSessionDraft.customerId}
@@ -4054,7 +4131,7 @@ export default function App() {
               phoneFieldClassName="field-span-full"
               onChange={(next) => setStartSessionDraft((previous) => ({ ...previous, ...next }))}
             />
-            {selectedStartStation?.ltpEnabled && (
+            {(!lastHoppedSessionId || postHopContinuationMode === "gaming") && selectedStartStation?.ltpEnabled && (
               <label className="field-span-full">
                 <span>Play Mode</span>
                 <select
@@ -4071,7 +4148,7 @@ export default function App() {
                 </select>
               </label>
             )}
-            {selectedStartStation?.mode === "unit_sale" && (
+            {(!lastHoppedSessionId || postHopContinuationMode === "gaming") && selectedStartStation?.mode === "unit_sale" && (
               <>
                 {arcadeInventoryItems.length === 0 && (
                   <div className="field-span-full error-text">
@@ -4132,8 +4209,12 @@ export default function App() {
                   Cancel
                 </button>
               )}
-              <button className="primary-button" type="submit" disabled={selectedStartStation?.mode === "unit_sale" && arcadeInventoryItems.length === 0}>
-                Start Session
+              <button
+                className="primary-button"
+                type="submit"
+                disabled={postHopContinuationMode === "gaming" && selectedStartStation?.mode === "unit_sale" && arcadeInventoryItems.length === 0}
+              >
+                {lastHoppedSessionId && postHopContinuationMode === "consumables" ? "Start Consumables Tab" : "Start Session"}
               </button>
             </div>
           </form>
@@ -4489,7 +4570,7 @@ export default function App() {
               Game hop mode — the station will be released immediately. No bill will be issued. This session's charges will be included when the customer checks out their next game.
             </div>
           )}
-          {!isHopMode && checkoutState.mode === "session" && checkoutHoppedSessionCandidates.length > 0 && (
+          {!isHopMode && (checkoutState.mode === "session" || checkoutState.mode === "customer_tab") && checkoutHoppedSessionCandidates.length > 0 && (
             <div>
               <div className="muted" style={{ marginBottom: "0.5rem", fontWeight: 600 }}>Previous unbilled sessions for this customer</div>
               {checkoutHoppedSessionCandidates.map((hSession) => {
