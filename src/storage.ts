@@ -69,6 +69,7 @@ export function hydrateAppData(parsed: Partial<AppData>): AppData {
       ...session,
       playMode: session.playMode ?? "group",
       ltpEligible: session.ltpEligible ?? false,
+      continuedFromSessionIds: session.continuedFromSessionIds ?? undefined,
       closeDisposition: session.closeDisposition ?? (session.closedBillId ? "billed" : undefined),
       closeReason: session.closeReason ?? undefined
     })),
@@ -87,6 +88,7 @@ export function hydrateAppData(parsed: Partial<AppData>): AppData {
     })),
     customerTabs: (parsed.customerTabs ?? cloneValue(emptyAppData.customerTabs)).map((tab) => ({
       ...tab,
+      continuedFromSessionIds: tab.continuedFromSessionIds ?? undefined,
       closeDisposition: tab.closeDisposition ?? (tab.closedBillId ? "billed" : undefined),
       closeReason: tab.closeReason ?? undefined
     })),

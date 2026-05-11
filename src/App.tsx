@@ -106,6 +106,7 @@ import {
   computePaymentModeTotals,
   filterPaymentsByBusinessDate,
   getRevenueCountedPayments,
+  getDirectlyLinkedHoppedSessions,
   getUnbilledHoppedSessionsForCustomer,
   normalizeCustomerName,
   normalizeCustomerPhone,
@@ -177,6 +178,7 @@ export default function App() {
   const [isHopMode, setIsHopMode] = useState(false);
   const [lastHoppedSessionId, setLastHoppedSessionId] = useState<string | null>(null);
   const [postHopContinuationMode, setPostHopContinuationMode] = useState<PostHopContinuationMode>("gaming");
+  const [postHopCustomerLocked, setPostHopCustomerLocked] = useState(true);
   const [customerTabSearch, setCustomerTabSearch] = useState("");
   const [customerProfileSearch, setCustomerProfileSearch] = useState("");
   const [customerProfileSort, setCustomerProfileSort] = useState<"last_visit" | "total_spend" | "visit_count">("last_visit");
@@ -846,11 +848,24 @@ export default function App() {
   }
 
   function getUnbilledHoppedSessionsForTab(tab: CustomerTab) {
-    return getUnbilledHoppedSessionsForCustomer(
-      appData.sessions,
-      tab.customerName,
-      tab.customerPhone ?? ""
-    );
+    return getDirectlyLinkedHoppedSessions(appData.sessions, tab.continuedFromSessionIds);
+  }
+
+  function getUnbilledHoppedSessionsForSession(session: Session) {
+    return getDirectlyLinkedHoppedSessions(appData.sessions, session.continuedFromSessionIds, session.id);
+  }
+
+  function getPossibleUnbilledHoppedSessionsForCustomer(name: string, phone: string, excludedIds: string[] = []) {
+    const excluded = new Set(excludedIds);
+    return getUnbilledHoppedSessionsForCustomer(appData.sessions, name, phone)
+      .filter((session) => !excluded.has(session.id));
+  }
+
+  function getContinuationSessionIds(hoppedSession: Session | undefined) {
+    if (!hoppedSession) {
+      return [];
+    }
+    return Array.from(new Set([...(hoppedSession.continuedFromSessionIds ?? []), hoppedSession.id]));
   }
 
   function resetItemForm() {
@@ -1074,10 +1089,17 @@ export default function App() {
     }
     const customerName = startSessionDraft.customerName;
     const customerPhone = startSessionDraft.customerPhone;
+    const continuedFromSession = lastHoppedSessionId && postHopContinuationMode === "gaming"
+      ? appData.sessions.find((session) => session.id === lastHoppedSessionId)
+      : undefined;
+    const continuedFromSessionIds = continuedFromSession
+      ? getContinuationSessionIds(continuedFromSession)
+      : undefined;
+    const sessionId = createId("session");
     mutateAppData((draft) => {
       const customerId = resolveCustomerProfile(draft, customerName, customerPhone);
       draft.sessions.unshift({
-        id: createId("session"),
+        id: sessionId,
         stationId: station.id,
         stationNameSnapshot: station.name,
         mode: station.mode,
@@ -1090,20 +1112,24 @@ export default function App() {
         ltpEligible: station.ltpEnabled,
         pricingSnapshot,
         items: initialItems,
-        pauseLogIds: []
+        pauseLogIds: [],
+        continuedFromSessionIds
       });
       addAuditLog(
         draft,
         activeUser.id,
         "session_started",
-        "station",
-        station.id,
-        `Started ${sessionPlayMode} session on ${station.name}${station.mode === "unit_sale" ? ` with ${initialItems[0]?.quantity ?? 0} ${initialItems[0]?.name ?? "coin pack(s)"}.` : station.ltpEnabled ? " with LTP enabled." : "."}`
+        "session",
+        sessionId,
+        continuedFromSession
+          ? `Started ${sessionPlayMode} session on ${station.name}, continuing hopped session from ${continuedFromSession.stationNameSnapshot}.`
+          : `Started ${sessionPlayMode} session on ${station.name}${station.mode === "unit_sale" ? ` with ${initialItems[0]?.quantity ?? 0} ${initialItems[0]?.name ?? "coin pack(s)"}.` : station.ltpEnabled ? " with LTP enabled." : "."}`
       );
     });
     setStartSessionDraft(createStartSessionDraft());
     setLastHoppedSessionId(null);
     setPostHopContinuationMode("gaming");
+    setPostHopCustomerLocked(true);
     setShowStartSessionModal(false);
   }
 
@@ -1383,11 +1409,7 @@ export default function App() {
     const effectiveEndAt = session.closeDisposition === "hopped" && session.endedAt
       ? session.endedAt
       : closedAt;
-    const hoppedSessions = getUnbilledHoppedSessionsForCustomer(
-      appData.sessions,
-      session.customerName ?? "",
-      session.customerPhone ?? ""
-    ).filter((s) => s.id !== sessionId);  // exclude self (relevant when billing a hopped session standalone)
+    const directlyLinkedHops = getUnbilledHoppedSessionsForSession(session);
     setIsHopMode(false);
     setCheckoutState({
       mode: "session",
@@ -1405,7 +1427,7 @@ export default function App() {
       collectMode: "cash" as const,
       roundOffEnabled: true,
       lineDiscounts: {},
-      hoppedSessionIds: hoppedSessions.map((s) => s.id),
+      hoppedSessionIds: directlyLinkedHops.map((s) => s.id),
       ltpOutcome:
         session.ltpEligible && session.playMode === "solo"
           ? session.ltpOutcome ?? "lost"
@@ -1424,7 +1446,7 @@ export default function App() {
 
   function openOrCreateCustomerTab(
     draftValue: CustomerTabDraft,
-    options?: { updateSaleDraft?: boolean; clearDraft?: boolean; switchToSale?: boolean }
+    options?: { updateSaleDraft?: boolean; clearDraft?: boolean; switchToSale?: boolean; continuedFromSessionIds?: string[] }
   ) {
     if (!activeUser) {
       return;
@@ -1438,14 +1460,31 @@ export default function App() {
     const matchingCustomer = draftValue.customerId
       ? getCustomerById(draftValue.customerId)
       : findCustomerProfileMatch(appData, customerName, customerPhone);
+    const isContinuation = Boolean(options?.continuedFromSessionIds?.length);
     const existing = appData.customerTabs.find(
       (tab) =>
         tab.status === "open" &&
-        ((matchingCustomer && tab.customerId === matchingCustomer.id) ||
-          tab.customerName.trim().toLowerCase() === customerName.toLowerCase() ||
-          (customerPhone && tab.customerPhone?.trim() === customerPhone))
+        (isContinuation
+          ? ((matchingCustomer && tab.customerId === matchingCustomer.id) ||
+            (customerPhone && tab.customerPhone?.trim() === customerPhone))
+          : ((matchingCustomer && tab.customerId === matchingCustomer.id) ||
+            tab.customerName.trim().toLowerCase() === customerName.toLowerCase() ||
+            (customerPhone && tab.customerPhone?.trim() === customerPhone)))
     );
     if (existing) {
+      if (options?.continuedFromSessionIds?.length) {
+        mutateAppData((draft) => {
+          const targetTab = draft.customerTabs.find((tab) => tab.id === existing.id && tab.status === "open");
+          if (!targetTab) return;
+          targetTab.continuedFromSessionIds = Array.from(new Set([...(targetTab.continuedFromSessionIds ?? []), ...options.continuedFromSessionIds!]));
+          for (const sessionId of options.continuedFromSessionIds!) {
+            const hoppedSession = draft.sessions.find((session) => session.id === sessionId);
+            if (hoppedSession) {
+              addAuditLog(draft, activeUser.id, "customer_tab_continuation_linked", "customer_tab", existing.id, `Linked ${existing.customerName}'s tab to hopped session from ${hoppedSession.stationNameSnapshot}.`);
+            }
+          }
+        });
+      }
       setSelectedCustomerTabId(existing.id);
       if (options?.updateSaleDraft) {
         setCustomerTabDraft({
@@ -1474,7 +1513,7 @@ export default function App() {
 
   function doCommitTabDirect(
     draftValue: CustomerTabDraft,
-    options?: { updateSaleDraft?: boolean; clearDraft?: boolean; switchToSale?: boolean }
+    options?: { updateSaleDraft?: boolean; clearDraft?: boolean; switchToSale?: boolean; continuedFromSessionIds?: string[] }
   ) {
     if (!activeUser) {
       return;
@@ -1493,9 +1532,24 @@ export default function App() {
         customerPhone: customerPhone || undefined,
         status: "open",
         createdAt: new Date().toISOString(),
-        items: []
+        items: [],
+        continuedFromSessionIds: options?.continuedFromSessionIds?.length
+          ? Array.from(new Set(options.continuedFromSessionIds))
+          : undefined
       });
-      addAuditLog(draft, activeUser.id, "customer_tab_opened", "customer_tab", tabId, `Opened customer tab for ${customerName}.`);
+      const continuedFromSession = options?.continuedFromSessionIds?.[0]
+        ? draft.sessions.find((session) => session.id === options.continuedFromSessionIds![0])
+        : undefined;
+      addAuditLog(
+        draft,
+        activeUser.id,
+        "customer_tab_opened",
+        "customer_tab",
+        tabId,
+        continuedFromSession
+          ? `Opened customer tab for ${customerName}, continuing hopped session from ${continuedFromSession.stationNameSnapshot}.`
+          : `Opened customer tab for ${customerName}.`
+      );
     });
     setSelectedCustomerTabId(tabId);
     if (options?.updateSaleDraft) {
@@ -1889,6 +1943,7 @@ export default function App() {
     setIsHopMode(false);
     setLastHoppedSessionId(sessionId);
     setPostHopContinuationMode("gaming");
+    setPostHopCustomerLocked(true);
     setManageSessionId((previous) => (previous === sessionId ? null : previous));
     // Immediately prompt to start a new session for this customer
     setStartSessionDraft((prev) => ({
@@ -1904,6 +1959,7 @@ export default function App() {
     if (!show) {
       setLastHoppedSessionId(null);
       setPostHopContinuationMode("gaming");
+      setPostHopCustomerLocked(true);
     }
     if (show && lastHoppedSessionId) {
       const hoppedSession = appData.sessions.find((s) => s.id === lastHoppedSessionId);
@@ -1915,7 +1971,7 @@ export default function App() {
           customerPhone: hoppedSession.customerPhone ?? ""
         }));
       }
-      setLastHoppedSessionId(null);
+      setPostHopCustomerLocked(true);
     }
     setShowStartSessionModal(show);
   }
@@ -1928,6 +1984,33 @@ export default function App() {
     setPostHopContinuationMode("gaming");
     setStartSessionDraft(createStartSessionDraft());
     openSessionCheckout(sessionId);
+  }
+
+  function detachPostHopContinuation() {
+    if (!lastHoppedSessionId || !activeUser) {
+      return;
+    }
+    const detachedSessionId = lastHoppedSessionId;
+    const hoppedSession = getSessionById(detachedSessionId);
+    mutateAppData((draft) => {
+      addAuditLog(
+        draft,
+        activeUser.id,
+        "hop_continuation_detached",
+        "session",
+        detachedSessionId,
+        `Detached post-hop continuation${hoppedSession ? ` from ${hoppedSession.stationNameSnapshot}` : ""}.`
+      );
+    });
+    setLastHoppedSessionId(null);
+    setPostHopContinuationMode("gaming");
+    setPostHopCustomerLocked(false);
+    setStartSessionDraft((previous) => ({
+      ...previous,
+      customerId: undefined,
+      customerName: "",
+      customerPhone: ""
+    }));
   }
 
   function startPostHopConsumablesTab(event: FormEvent<HTMLFormElement>) {
@@ -1946,11 +2029,13 @@ export default function App() {
     openOrCreateCustomerTab(draftValue, {
       updateSaleDraft: true,
       clearDraft: false,
-      switchToSale: true
+      switchToSale: true,
+      continuedFromSessionIds: getContinuationSessionIds(hoppedSession)
     });
     setShowStartSessionModal(false);
     setLastHoppedSessionId(null);
     setPostHopContinuationMode("gaming");
+    setPostHopCustomerLocked(true);
     setStartSessionDraft(createStartSessionDraft());
   }
 
@@ -1960,7 +2045,9 @@ export default function App() {
     setIsHopMode(false);
     setReplacementItemForm({ itemId: "", quantity: 1 });
     if (hoppedSession?.closeDisposition === "hopped") {
+      setLastHoppedSessionId(hoppedSession.id);
       setPostHopContinuationMode("gaming");
+      setPostHopCustomerLocked(true);
       setStartSessionDraft((prev) => ({
         ...prev,
         customerId: hoppedSession.customerId,
@@ -2204,11 +2291,11 @@ export default function App() {
       }
       for (const hId of (checkoutState.hoppedSessionIds ?? [])) {
         const remoteHopped = baseAppData.sessions.find((s) => s.id === hId);
-        if (remoteHopped && remoteHopped.closeDisposition !== "hopped") {
+        if (!remoteHopped || remoteHopped.closeDisposition !== "hopped" || remoteHopped.closedBillId) {
           skipRemotePersistRef.current = true;
           setAppData(normalizeAppDataCustomers(baseAppData));
           setCheckoutState((prev) => prev ? { ...prev, hoppedSessionIds: (prev.hoppedSessionIds ?? []).filter((id) => id !== hId) } : prev);
-          window.alert(`A previous session (${remoteHopped.stationNameSnapshot}) was already billed from another browser. It has been removed from this bill. Please review the updated selection and try again.`);
+          window.alert(`A previous session${remoteHopped ? ` (${remoteHopped.stationNameSnapshot})` : ""} was already billed or is no longer available. It has been removed from this bill. Please review the updated selection and try again.`);
           return;
         }
       }
@@ -2545,7 +2632,7 @@ export default function App() {
       }
       for (const hoppedSessionId of (checkoutState.hoppedSessionIds ?? [])) {
         const hoppedSession = draft.sessions.find((s) => s.id === hoppedSessionId);
-        if (hoppedSession && hoppedSession.closeDisposition === "hopped") {
+        if (hoppedSession && hoppedSession.closeDisposition === "hopped" && !hoppedSession.closedBillId) {
           hoppedSession.closedBillId = billId;
           hoppedSession.closeDisposition = "billed";
           addAuditLog(draft, activeUser.id, "session_hop_billed", "session", hoppedSessionId, `Included in combined bill ${billNumber} (${hoppedSession.stationNameSnapshot}).`);
@@ -3446,8 +3533,7 @@ export default function App() {
   const managedSession = manageSessionId ? getSessionById(manageSessionId) ?? null : null;
   const managedSessionCharge = managedSession ? getSessionChargeSummary(managedSession, getFrozenEndAtForSession(managedSession.id)) : null;
   const managedSessionPreviousHops = managedSession
-    ? getUnbilledHoppedSessionsForCustomer(appData.sessions, managedSession.customerName ?? "", managedSession.customerPhone ?? "")
-        .filter((s) => s.id !== managedSession.id)
+    ? getUnbilledHoppedSessionsForSession(managedSession)
     : [];
   const managedSessionPreviousHopTotal = sumBy(managedSessionPreviousHops, (s) => getSessionLiveTotal(s, s.endedAt));
   const selectedCustomerTabPreviousHops = selectedCustomerTab
@@ -3459,6 +3545,8 @@ export default function App() {
     startSessionDraft.arcadeItemId
       ? arcadeInventoryItems.find((item) => item.id === startSessionDraft.arcadeItemId) ?? null
       : defaultArcadeInventoryItem;
+  const postHopSession = lastHoppedSessionId ? getSessionById(lastHoppedSessionId) ?? null : null;
+  const postHopSessionCharge = postHopSession ? getSessionChargeSummary(postHopSession, postHopSession.endedAt) : null;
 
   useEffect(() => {
     if (activeTab !== "reports") {
@@ -3547,9 +3635,34 @@ export default function App() {
     checkoutState?.mode === "bill_replacement" && checkoutState.replacementBillId
       ? getBillById(checkoutState.replacementBillId) ?? null
       : null;
+  const checkoutDirectHoppedSessionIds = checkoutState?.mode === "session" && checkoutSession
+    ? getUnbilledHoppedSessionsForSession(checkoutSession).map((session) => session.id)
+    : checkoutState?.mode === "customer_tab" && checkoutState.customerTabId
+      ? getDirectlyLinkedHoppedSessions(
+          appData.sessions,
+          getCustomerTabById(checkoutState.customerTabId)?.continuedFromSessionIds
+        ).map((session) => session.id)
+      : [];
+  const checkoutSelectedHoppedSessionIds = checkoutState?.hoppedSessionIds ?? [];
+  const checkoutCandidateExclusions = Array.from(new Set([
+    ...checkoutDirectHoppedSessionIds,
+    ...checkoutSelectedHoppedSessionIds,
+    checkoutState?.sessionId ?? ""
+  ].filter(Boolean)));
+  const checkoutPossibleHoppedSessions = checkoutState && (checkoutState.mode === "session" || checkoutState.mode === "customer_tab")
+    ? getPossibleUnbilledHoppedSessionsForCustomer(
+        checkoutState.customerName,
+        checkoutState.customerPhone,
+        checkoutCandidateExclusions
+      )
+    : [];
   const checkoutHoppedSessionCandidates: Session[] = checkoutState && (checkoutState.mode === "session" || checkoutState.mode === "customer_tab")
-    ? getUnbilledHoppedSessionsForCustomer(appData.sessions, checkoutState.customerName, checkoutState.customerPhone)
-        .filter((s) => s.id !== checkoutState.sessionId)
+    ? [
+        ...checkoutSelectedHoppedSessionIds
+          .map((sessionId) => getSessionById(sessionId))
+          .filter((session): session is Session => Boolean(session)),
+        ...checkoutPossibleHoppedSessions
+      ]
     : [];
   const checkoutLineDiscounts: DraftLineDiscountMap = checkoutState ? { ...checkoutState.lineDiscounts } : {};
   if (
@@ -3820,9 +3933,7 @@ export default function App() {
             getActiveSessionForStation={getActiveSessionForStation}
             getSessionLiveTotal={getSessionLiveTotal}
             getPreviousHopTotalForSession={(session) => {
-              const hops = getUnbilledHoppedSessionsForCustomer(appData.sessions, session.customerName ?? "", session.customerPhone ?? "")
-                .filter((s) => s.id !== session.id);
-              return sumBy(hops, (s) => getSessionLiveTotal(s, s.endedAt));
+              return sumBy(getUnbilledHoppedSessionsForSession(session), (s) => getSessionLiveTotal(s, s.endedAt));
             }}
             getPreviousHopTotalForCustomerTab={(tab) =>
               sumBy(getUnbilledHoppedSessionsForTab(tab), (session) => getSessionLiveTotal(session, session.endedAt))
@@ -4081,16 +4192,33 @@ export default function App() {
             onSubmit={lastHoppedSessionId && postHopContinuationMode === "consumables" ? startPostHopConsumablesTab : startSession}
           >
             {lastHoppedSessionId && (
-              <label className="field-span-full">
-                <span>Continue As</span>
-                <select
-                  value={postHopContinuationMode}
-                  onChange={(event) => setPostHopContinuationMode(event.target.value as PostHopContinuationMode)}
-                >
-                  <option value="gaming">Gaming Session</option>
-                  <option value="consumables">Consumables Tab</option>
-                </select>
-              </label>
+              <>
+                <div className="field-span-full frozen-billing-banner">
+                  <strong>Continuing from: {postHopSession?.customerName || "Customer"} · {postHopSession?.stationNameSnapshot ?? "Previous session"}</strong>
+                  <span>
+                    {postHopSessionCharge
+                      ? `${formatMinutes(postHopSessionCharge.billedMinutes)} · ${currency(postHopSessionCharge.subtotal)}`
+                      : "Previous unbilled session will stay directly linked."}
+                  </span>
+                  {postHopCustomerLocked ? (
+                    <button className="secondary-button" type="button" onClick={detachPostHopContinuation}>
+                      Change Customer
+                    </button>
+                  ) : (
+                    <span className="muted">Customer changed. Previous hopped session remains unbilled.</span>
+                  )}
+                </div>
+                <label className="field-span-full">
+                  <span>Continue As</span>
+                  <select
+                    value={postHopContinuationMode}
+                    onChange={(event) => setPostHopContinuationMode(event.target.value as PostHopContinuationMode)}
+                  >
+                    <option value="gaming">Gaming Session</option>
+                    <option value="consumables">Consumables Tab</option>
+                  </select>
+                </label>
+              </>
             )}
             {(!lastHoppedSessionId || postHopContinuationMode === "gaming") && (
               <label>
@@ -4129,6 +4257,7 @@ export default function App() {
               namePlaceholder="Optional"
               phonePlaceholder="Optional"
               phoneFieldClassName="field-span-full"
+              disabled={Boolean(lastHoppedSessionId && postHopCustomerLocked)}
               onChange={(next) => setStartSessionDraft((previous) => ({ ...previous, ...next }))}
             />
             {(!lastHoppedSessionId || postHopContinuationMode === "gaming") && selectedStartStation?.ltpEnabled && (
@@ -4576,12 +4705,18 @@ export default function App() {
               {checkoutHoppedSessionCandidates.map((hSession) => {
                 const hCharge = getSessionChargeSummary(hSession, hSession.endedAt);
                 const isSelected = (checkoutState.hoppedSessionIds ?? []).includes(hSession.id);
+                const isDirectlyLinked = checkoutDirectHoppedSessionIds.includes(hSession.id);
                 return (
                   <label className="checkbox-field" key={hSession.id} style={{ marginBottom: "0.25rem" }}>
                     <input
                       type="checkbox"
                       checked={isSelected}
                       onChange={(event) => {
+                        if (event.target.checked && !isDirectlyLinked && !window.confirm(
+                          `Include possible match "${hSession.stationNameSnapshot}" (${currency(hCharge.subtotal)}) in this bill?\n\nThis session was matched by customer details, not by direct hop continuation.`
+                        )) {
+                          return;
+                        }
                         if (!event.target.checked && !window.confirm(
                           `Remove "${hSession.stationNameSnapshot}" (${currency(hCharge.subtotal)}) from this bill?\n\nThat session will remain unlinked and must be billed separately later.`
                         )) {
@@ -4597,7 +4732,7 @@ export default function App() {
                         );
                       }}
                     />
-                    <span>{hSession.stationNameSnapshot} — {formatMinutes(hCharge.billedMinutes)} — {currency(hCharge.subtotal)}</span>
+                    <span>{hSession.stationNameSnapshot} — {formatMinutes(hCharge.billedMinutes)} — {currency(hCharge.subtotal)}{isDirectlyLinked ? " — linked continuation" : " — possible match"}</span>
                   </label>
                 );
               })}

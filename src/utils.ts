@@ -263,6 +263,24 @@ export function getUnbilledHoppedSessionsForCustomer(
   });
 }
 
+export function getDirectlyLinkedHoppedSessions(
+  sessions: Session[],
+  continuedFromSessionIds?: string[],
+  excludeSessionId?: string
+): Session[] {
+  if (!continuedFromSessionIds?.length) {
+    return [];
+  }
+  const uniqueIds = Array.from(new Set(continuedFromSessionIds));
+  return uniqueIds.flatMap((sessionId) => {
+    const session = sessions.find((entry) => entry.id === sessionId);
+    if (!session || session.id === excludeSessionId || session.closeDisposition !== "hopped" || session.closedBillId) {
+      return [];
+    }
+    return [session];
+  });
+}
+
 export function computePaymentModeTotals(
   filteredBills: Bill[],
   allPayments: Payment[]

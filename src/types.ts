@@ -88,6 +88,7 @@ export interface Session {
   pricingSnapshot: PricingRule[];
   items: SessionItem[];
   pauseLogIds: string[];
+  continuedFromSessionIds?: string[];
   closedBillId?: string;
   closeDisposition?: "billed" | "rejected" | "hopped";
   closeReason?: string;
@@ -112,6 +113,7 @@ export interface CustomerTab {
   createdAt: string;
   closedAt?: string;
   items: CustomerTabItem[];
+  continuedFromSessionIds?: string[];
   closedBillId?: string;
   closeDisposition?: "billed" | "rejected";
   closeReason?: string;

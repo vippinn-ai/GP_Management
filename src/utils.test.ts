@@ -8,6 +8,7 @@ import {
   filterPaymentsByBusinessDate,
   getRevenueCountedPayments,
   getCustomerTabCheckoutLines,
+  getDirectlyLinkedHoppedSessions,
   getMostRecentHoppedSession,
   getUnbilledHoppedSessionsForCustomer,
   formatBillNumber,
@@ -655,6 +656,41 @@ describe("getUnbilledHoppedSessionsForCustomer", () => {
 });
 
 // ─── getMostRecentHoppedSession ──────────────────────────────────────────────
+
+describe("getDirectlyLinkedHoppedSessions", () => {
+  it("returns only directly linked hopped sessions when duplicate names have no phone", () => {
+    const sessions = [
+      makeHoppedSession("hop-vansh-1", "VANSH", ""),
+      makeHoppedSession("hop-vansh-2", "VANSH", "")
+    ];
+
+    const result = getDirectlyLinkedHoppedSessions(sessions, ["hop-vansh-2"]);
+
+    expect(result.map((session) => session.id)).toEqual(["hop-vansh-2"]);
+  });
+
+  it("excludes already billed direct links", () => {
+    const sessions = [
+      makeHoppedSession("hop-vansh-1", "VANSH", "", "bill-1"),
+      makeHoppedSession("hop-vansh-2", "VANSH", "")
+    ];
+
+    const result = getDirectlyLinkedHoppedSessions(sessions, ["hop-vansh-1", "hop-vansh-2"]);
+
+    expect(result.map((session) => session.id)).toEqual(["hop-vansh-2"]);
+  });
+
+  it("excludes the current session from direct checkout candidates", () => {
+    const sessions = [
+      makeHoppedSession("hop-vansh-1", "VANSH", ""),
+      makeHoppedSession("current", "VANSH", "")
+    ];
+
+    const result = getDirectlyLinkedHoppedSessions(sessions, ["hop-vansh-1", "current"], "current");
+
+    expect(result.map((session) => session.id)).toEqual(["hop-vansh-1"]);
+  });
+});
 
 describe("getMostRecentHoppedSession", () => {
   it("returns the session with the latest endedAt", () => {
