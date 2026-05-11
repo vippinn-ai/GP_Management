@@ -37,6 +37,11 @@ button {
   min-height: 2.875rem;
 }
 
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 input,
 select {
   width: 100%;
@@ -805,6 +810,8 @@ td {
   display: grid;
   gap: 1rem;
   min-height: 13rem;
+  align-content: start;
+  min-width: 0;
   transition: transform 180ms ease, box-shadow 180ms ease, border-color 180ms ease;
 }
 
@@ -860,6 +867,15 @@ td {
   justify-content: space-between;
   gap: 1rem;
   align-items: center;
+}
+
+.station-card-header > div,
+.station-metrics > div {
+  min-width: 0;
+}
+
+.station-card-header h3 {
+  overflow-wrap: anywhere;
 }
 
 .station-metrics {
@@ -1109,6 +1125,69 @@ span.catalog-card-icon-large {
   border-color: #2a8d62;
   background: linear-gradient(180deg, rgba(232, 255, 242, 0.98), rgba(219, 247, 230, 0.98));
   box-shadow: 0 12px 24px rgba(24, 131, 77, 0.1);
+}
+
+.active-tab-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 1rem;
+  padding: 0.95rem 1rem;
+  border-radius: 1rem;
+  border: 1px solid #cfe2d7;
+  background: #f5fbf7;
+  margin-bottom: 1rem;
+}
+
+.active-tab-banner.is-selected {
+  border-color: #2a8d62;
+  background: linear-gradient(180deg, rgba(232, 255, 242, 0.98), rgba(219, 247, 230, 0.98));
+}
+
+.active-tab-banner.is-empty {
+  border-color: #f2b84b;
+  background: #fff8e6;
+}
+
+.active-tab-banner h2 {
+  margin: 0.1rem 0;
+  font-size: 1.05rem;
+}
+
+.active-tab-banner p {
+  margin: 0;
+  color: #5e6f65;
+}
+
+.active-tab-kicker {
+  display: block;
+  color: #577062;
+  font-size: 0.75rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.inline-tab-switcher {
+  flex: 1 0 100%;
+  margin-top: 0.15rem;
+  padding: 0.85rem;
+  border: 1px solid #d8e4dc;
+  border-radius: 1rem;
+  background: #fbfdfb;
+}
+
+.inline-tab-switcher-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: center;
+  margin-bottom: 0.75rem;
+}
+
+.tab-chip-grid.compact {
+  grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+  margin-top: 0;
 }
 
 .line-items,
@@ -2078,8 +2157,20 @@ span.catalog-card-icon-large {
   }
 
   .is-sale-tab .sales-layout {
+    display: flex;
+    flex-direction: column;
     grid-template-rows: auto;
     overflow: visible;
+  }
+
+  .is-sale-tab .sale-tab-panel {
+    order: 1;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .is-sale-tab .sale-catalog-panel {
+    order: 2;
   }
 
   .is-sale-tab .sales-layout > .panel {
@@ -2099,6 +2190,10 @@ span.catalog-card-icon-large {
   .is-sale-tab .sale-current-tab-section {
     display: block;
     overflow: visible;
+  }
+
+  .is-sale-tab .sale-current-tab-section {
+    order: -1;
   }
 
   .bill-register-page {
@@ -2409,6 +2504,14 @@ span.catalog-card-icon-large {
   .station-grid,
   .catalog-grid {
     grid-template-columns: 1fr;
+  }
+
+  .active-tab-banner {
+    position: sticky;
+    top: 0.5rem;
+    z-index: 5;
+    align-items: flex-start;
+    flex-direction: column;
   }
 
   .login-logo-frame {

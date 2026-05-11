@@ -111,6 +111,7 @@ import {
   normalizeCustomerName,
   normalizeCustomerPhone,
   parseDateTimeInputValue,
+  resolveCustomerTabWorkspaceSelection,
   resolveCustomerProfile,
   sumBy,
   toBusinessDayKey,
@@ -437,12 +438,7 @@ export default function App() {
   );
   const activeSessions = appData.sessions.filter((session) => session.status !== "closed");
   const openCustomerTabs = appData.customerTabs.filter((tab) => tab.status === "open");
-  const selectedCustomerTab =
-    (selectedCustomerTabId
-      ? appData.customerTabs.find((tab) => tab.id === selectedCustomerTabId && tab.status === "open")
-      : undefined) ??
-    openCustomerTabs[0] ??
-    null;
+  const selectedCustomerTab = resolveCustomerTabWorkspaceSelection(openCustomerTabs, selectedCustomerTabId);
   // Build O(1) index maps so getBillBusinessDate is O(n) total, not O(n²).
   const sessionById = new Map(appData.sessions.map((s) => [s.id, s]));
   const tabByBillId = new Map(
@@ -691,9 +687,9 @@ export default function App() {
 
   useEffect(() => {
     if (selectedCustomerTabId && !openCustomerTabs.some((tab) => tab.id === selectedCustomerTabId)) {
-      setSelectedCustomerTabId(openCustomerTabs[0]?.id ?? null);
+      setSelectedCustomerTabId(openCustomerTabs.length === 1 ? openCustomerTabs[0].id : null);
     }
-    if (!selectedCustomerTabId && openCustomerTabs[0]) {
+    if (!selectedCustomerTabId && openCustomerTabs.length === 1) {
       setSelectedCustomerTabId(openCustomerTabs[0].id);
     }
   }, [openCustomerTabs, selectedCustomerTabId]);
@@ -1747,8 +1743,9 @@ export default function App() {
     }, () => setEditCustomerProfileDraft(null));
   }
 
-  function addItemToCustomerTab(item: InventoryItem, sellAsPackOf?: number) {
-    if (!activeUser || !selectedCustomerTab) {
+  function addItemToCustomerTab(customerTabId: string, item: InventoryItem, sellAsPackOf?: number) {
+    const targetTab = appData.customerTabs.find((tab) => tab.id === customerTabId && tab.status === "open");
+    if (!activeUser || !targetTab) {
       window.alert("Open or select a customer tab first.");
       return;
     }
@@ -1762,7 +1759,7 @@ export default function App() {
       return;
     }
     void commitAppDataChange("Adding item...", (draft) => {
-      const tab = draft.customerTabs.find((entry) => entry.id === selectedCustomerTab.id && entry.status === "open");
+      const tab = draft.customerTabs.find((entry) => entry.id === targetTab.id && entry.status === "open");
       if (!tab) return false;
       const existing = tab.items.find((entry) => entry.inventoryItemId === item.id && entry.soldAsPackOf === sellAsPackOf);
       if (existing) {
@@ -1782,25 +1779,26 @@ export default function App() {
     });
   }
 
-  function updateCustomerTabItemQuantity(lineId: string, quantity: number) {
-    if (!activeUser || !selectedCustomerTab) {
+  function updateCustomerTabItemQuantity(customerTabId: string, lineId: string, quantity: number) {
+    const targetTab = appData.customerTabs.find((tab) => tab.id === customerTabId && tab.status === "open");
+    if (!activeUser || !targetTab) {
       return;
     }
     const nextQuantity = clampNumber(quantity, 1);
-    const currentLine = selectedCustomerTab.items.find((entry) => entry.id === lineId);
+    const currentLine = targetTab.items.find((entry) => entry.id === lineId);
     const currentItem = currentLine
       ? appData.inventoryItems.find((entry) => entry.id === currentLine.inventoryItemId && entry.active)
       : undefined;
     if (
       currentLine &&
       currentItem &&
-      nextQuantity > getAvailableStock(currentItem, undefined, selectedCustomerTab.id)
+      nextQuantity > getAvailableStock(currentItem, undefined, targetTab.id)
     ) {
-      window.alert(`Only ${getAvailableStock(currentItem, undefined, selectedCustomerTab.id)} available for ${currentItem.name}.`);
+      window.alert(`Only ${getAvailableStock(currentItem, undefined, targetTab.id)} available for ${currentItem.name}.`);
       return;
     }
     void commitAppDataChange("Updating item quantity...", (draft) => {
-      const tab = draft.customerTabs.find((entry) => entry.id === selectedCustomerTab.id && entry.status === "open");
+      const tab = draft.customerTabs.find((entry) => entry.id === targetTab.id && entry.status === "open");
       const line = tab?.items.find((entry) => entry.id === lineId);
       if (!tab || !line) {
         return false;
@@ -1809,12 +1807,13 @@ export default function App() {
     });
   }
 
-  function removeItemFromCustomerTab(lineId: string) {
-    if (!activeUser || !selectedCustomerTab) {
+  function removeItemFromCustomerTab(customerTabId: string, lineId: string) {
+    const targetTab = appData.customerTabs.find((tab) => tab.id === customerTabId && tab.status === "open");
+    if (!activeUser || !targetTab) {
       return;
     }
     void commitAppDataChange("Removing item...", (draft) => {
-      const tab = draft.customerTabs.find((entry) => entry.id === selectedCustomerTab.id && entry.status === "open");
+      const tab = draft.customerTabs.find((entry) => entry.id === targetTab.id && entry.status === "open");
       if (!tab) {
         return false;
       }
@@ -4031,7 +4030,7 @@ export default function App() {
             onCustomerTabDraftChange={setCustomerTabDraft}
             onSelectCustomerTab={setSelectedCustomerTabId}
             onEditCustomerTabDraftChange={setEditCustomerTabDraft}
-            onAddItemToCustomerTab={(item, sellAsPackOf) => addItemToCustomerTab(item, sellAsPackOf)}
+            onAddItemToCustomerTab={(customerTabId, item, sellAsPackOf) => addItemToCustomerTab(customerTabId, item, sellAsPackOf)}
             onCreateOrSelectCustomerTab={createOrSelectCustomerTab}
             onUpdateCustomerTabItemQuantity={updateCustomerTabItemQuantity}
             onRemoveItemFromCustomerTab={removeItemFromCustomerTab}

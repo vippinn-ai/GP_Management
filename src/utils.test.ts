@@ -13,9 +13,10 @@ import {
   getUnbilledHoppedSessionsForCustomer,
   formatBillNumber,
   getReportRange,
+  resolveCustomerTabWorkspaceSelection,
   resolveEffectiveAmount
 } from "./utils";
-import type { AppData, Bill, CustomerTabItem, DraftBillLine, ExpenseTemplate, ExpenseTemplateOverride, Payment, Session } from "./types";
+import type { AppData, Bill, CustomerTab, CustomerTabItem, DraftBillLine, ExpenseTemplate, ExpenseTemplateOverride, Payment, Session } from "./types";
 
 // ─── toLocalDateKey ─────────────────────────────────────────────────────────
 
@@ -33,6 +34,36 @@ describe("toLocalDateKey", () => {
     const localDate = new Date(2025, 5, 15); // June 15 2025, local midnight
     const key = toLocalDateKey(localDate.toISOString());
     expect(key).toBe("2025-06-15");
+  });
+});
+
+describe("resolveCustomerTabWorkspaceSelection", () => {
+  const tab = (id: string, customerName: string): CustomerTab => ({
+    id,
+    customerName,
+    status: "open",
+    createdAt: "2026-05-11T10:00:00.000Z",
+    items: []
+  });
+
+  it("returns the explicitly selected tab when it exists", () => {
+    const tabs = [tab("tab-a", "A"), tab("tab-b", "B")];
+    expect(resolveCustomerTabWorkspaceSelection(tabs, "tab-a")?.id).toBe("tab-a");
+  });
+
+  it("does not fall back to another tab when the selected tab is missing", () => {
+    const tabs = [tab("tab-b", "B"), tab("tab-c", "C")];
+    expect(resolveCustomerTabWorkspaceSelection(tabs, "tab-a")).toBeNull();
+  });
+
+  it("auto-selects only when exactly one tab is open", () => {
+    const tabs = [tab("tab-a", "A")];
+    expect(resolveCustomerTabWorkspaceSelection(tabs, null)?.id).toBe("tab-a");
+  });
+
+  it("does not silently pick the first tab when multiple tabs are open", () => {
+    const tabs = [tab("tab-a", "A"), tab("tab-b", "B")];
+    expect(resolveCustomerTabWorkspaceSelection(tabs, null)).toBeNull();
   });
 });
 

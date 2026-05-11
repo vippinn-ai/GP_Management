@@ -3,6 +3,7 @@ import type {
   Bill,
   BillLine,
   Customer,
+  CustomerTab,
   CustomerTabItem,
   DraftBillLine,
   DraftDiscountInput,
@@ -92,6 +93,16 @@ export function minuteToTimeLabel(value: number): string {
 
 export function sumBy<T>(values: T[], getter: (value: T) => number): number {
   return values.reduce((total, value) => total + getter(value), 0);
+}
+
+export function resolveCustomerTabWorkspaceSelection(
+  openTabs: CustomerTab[],
+  selectedTabId: string | null
+): CustomerTab | null {
+  if (selectedTabId) {
+    return openTabs.find((tab) => tab.id === selectedTabId) ?? null;
+  }
+  return openTabs.length === 1 ? openTabs[0] : null;
 }
 
 /** Hour at which a new business day starts (7 = 7:00 AM). */

@@ -12,6 +12,7 @@
     "bootstrap:production": "node scripts/bootstrap-production.mjs scripts/production-config.sample.json",
     "test": "vitest",
     "test:ui": "vitest --ui",
+    "test:ui:consumables": "node scripts/consumables-tab-ui-regression.mjs",
     "lint": "eslint src --ext ts,tsx"
   },
   "dependencies": {

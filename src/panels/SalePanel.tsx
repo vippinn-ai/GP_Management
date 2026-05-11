@@ -27,10 +27,10 @@ export function SalePanel(props: {
   onCustomerTabDraftChange: (next: CustomerTabDraft) => void;
   onSelectCustomerTab: (tabId: string) => void;
   onEditCustomerTabDraftChange: (next: CustomerTabEditDraft | null) => void;
-  onAddItemToCustomerTab: (item: InventoryItem, sellAsPackOf?: number) => void;
+  onAddItemToCustomerTab: (customerTabId: string, item: InventoryItem, sellAsPackOf?: number) => void;
   onCreateOrSelectCustomerTab: (event: FormEvent<HTMLFormElement>) => void;
-  onUpdateCustomerTabItemQuantity: (lineId: string, quantity: number) => void;
-  onRemoveItemFromCustomerTab: (lineId: string) => void;
+  onUpdateCustomerTabItemQuantity: (customerTabId: string, lineId: string, quantity: number) => void;
+  onRemoveItemFromCustomerTab: (customerTabId: string, lineId: string) => void;
   onBeginEditCustomerTabDetails: (tab: CustomerTab) => void;
   onRejectCustomerTab: (tabId: string) => void;
   onBeginCustomerTabCheckout: () => void;
@@ -45,21 +45,77 @@ export function SalePanel(props: {
     canEditCustomerTabDetails
   } = props;
   const [cigPackModal, setCigPackModal] = useState<{ item: InventoryItem } | null>(null);
+  const [showInlineTabSwitcher, setShowInlineTabSwitcher] = useState(false);
   const previousHopTotal = selectedCustomerTabPreviousHops.reduce(
     (total, session) => total + props.getSessionLiveTotal(session, session.endedAt),
     0
   );
   const currentTabTotal = selectedCustomerTab ? props.getCustomerTabTotal(selectedCustomerTab) : 0;
   const liveTotal = currentTabTotal + previousHopTotal;
+  const selectedTabItemCount =
+    (selectedCustomerTab?.items.length ?? 0) +
+    selectedCustomerTabPreviousHops.reduce((total, session) => total + session.items.length, 0);
+  const hasSelectedTab = Boolean(selectedCustomerTab);
+
+  function selectCustomerTab(tab: CustomerTab) {
+    props.onSelectCustomerTab(tab.id);
+    props.onCustomerTabDraftChange({
+      customerId: tab.customerId,
+      customerName: tab.customerName,
+      customerPhone: tab.customerPhone ?? ""
+    });
+    setShowInlineTabSwitcher(false);
+  }
 
   return (
     <>
       <section className="section-grid sales-layout">
         <div className="panel sale-catalog-panel">
+          <div className={`active-tab-banner ${selectedCustomerTab ? "is-selected" : "is-empty"}`}>
+            <div>
+              <span className="active-tab-kicker">Adding to</span>
+              <h2>{selectedCustomerTab ? selectedCustomerTab.customerName : "No customer tab selected"}</h2>
+              <p>
+                {selectedCustomerTab
+                  ? [
+                      selectedCustomerTab.customerPhone || "No phone",
+                      `${selectedTabItemCount} item${selectedTabItemCount === 1 ? "" : "s"}`,
+                      currency(liveTotal)
+                    ].join(" · ")
+                  : "Select the correct customer before adding inventory items."}
+              </p>
+            </div>
+            <button className="secondary-button" type="button" onClick={() => setShowInlineTabSwitcher((value) => !value)}>
+              {selectedCustomerTab ? "Change Tab" : "Select Tab"}
+            </button>
+            {showInlineTabSwitcher && (
+              <div className="inline-tab-switcher">
+                <div className="inline-tab-switcher-header">
+                  <strong>Select customer tab</strong>
+                  <span className="muted">{openCustomerTabs.length} open</span>
+                </div>
+                <div className="tab-chip-grid compact">
+                  {openCustomerTabs.length === 0 && <div className="empty-state">No open customer tabs yet.</div>}
+                  {openCustomerTabs.map((tab) => (
+                    <button
+                      key={tab.id}
+                      type="button"
+                      className={`tab-chip ${selectedCustomerTab?.id === tab.id ? "is-active" : ""}`}
+                      onClick={() => selectCustomerTab(tab)}
+                    >
+                      <strong>{tab.customerName}</strong>
+                      <span>{tab.customerPhone || "No phone"}</span>
+                      <span>{tab.items.length} item{tab.items.length === 1 ? "" : "s"} · {currency(props.getCustomerTabTotal(tab))}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
           <div className="panel-header">
             <div>
               <h2>Consumables Catalog</h2>
-              <p>Search by name or barcode and add items to the selected customer tab.</p>
+              <p>{selectedCustomerTab ? `Managing: ${selectedCustomerTab.customerName}` : "Select a customer tab before adding items."}</p>
             </div>
           </div>
           <input
@@ -79,11 +135,15 @@ export function SalePanel(props: {
                   key={item.id}
                   type="button"
                   className="catalog-card"
+                  disabled={!hasSelectedTab}
                   onClick={() => {
+                    if (!selectedCustomerTab) {
+                      return;
+                    }
                     if (item.cigarettePack) {
                       setCigPackModal({ item });
                     } else {
-                      props.onAddItemToCustomerTab(item);
+                      props.onAddItemToCustomerTab(selectedCustomerTab.id, item);
                     }
                   }}
                 >
@@ -106,6 +166,9 @@ export function SalePanel(props: {
                 </button>
               ))}
           </div>
+          {!selectedCustomerTab && (
+            <div className="warning-banner">Select a customer tab first. Item buttons are disabled until the target is clear.</div>
+          )}
         </div>
 
         <div className="panel sale-tab-panel">
@@ -142,17 +205,11 @@ export function SalePanel(props: {
                   key={tab.id}
                   type="button"
                   className={`tab-chip ${selectedCustomerTab?.id === tab.id ? "is-active" : ""}`}
-                  onClick={() => {
-                    props.onSelectCustomerTab(tab.id);
-                    props.onCustomerTabDraftChange({
-                      customerId: tab.customerId,
-                      customerName: tab.customerName,
-                      customerPhone: tab.customerPhone ?? ""
-                    });
-                  }}
+                  onClick={() => selectCustomerTab(tab)}
                 >
                   <strong>{tab.customerName}</strong>
-                  <span>{currency(props.getCustomerTabTotal(tab))}</span>
+                  <span>{tab.customerPhone || "No phone"}</span>
+                  <span>{tab.items.length} item{tab.items.length === 1 ? "" : "s"} · {currency(props.getCustomerTabTotal(tab))}</span>
                 </button>
               ))}
             </div>
@@ -207,12 +264,12 @@ export function SalePanel(props: {
                       value={item.quantity}
                       min={1}
                       defaultValue={1}
-                      onValueChange={(value) => props.onUpdateCustomerTabItemQuantity(item.id, value)}
+                      onValueChange={(value) => props.onUpdateCustomerTabItemQuantity(selectedCustomerTab.id, item.id, value)}
                     />
                   </label>
                   <div className="button-row dense">
                     <strong>{currency(item.unitPrice * item.quantity)}</strong>
-                    <button className="ghost-button danger" type="button" onClick={() => props.onRemoveItemFromCustomerTab(item.id)}>
+                    <button className="ghost-button danger" type="button" onClick={() => props.onRemoveItemFromCustomerTab(selectedCustomerTab.id, item.id)}>
                       Remove
                     </button>
                   </div>
@@ -255,7 +312,9 @@ export function SalePanel(props: {
                 className="secondary-button"
                 type="button"
                 onClick={() => {
-                  props.onAddItemToCustomerTab(cigPackModal.item, undefined);
+                  if (selectedCustomerTab) {
+                    props.onAddItemToCustomerTab(selectedCustomerTab.id, cigPackModal.item, undefined);
+                  }
                   setCigPackModal(null);
                 }}
               >
@@ -265,7 +324,9 @@ export function SalePanel(props: {
                 className="primary-button"
                 type="button"
                 onClick={() => {
-                  props.onAddItemToCustomerTab(cigPackModal.item, cigPackModal.item.cigarettePack!.size);
+                  if (selectedCustomerTab) {
+                    props.onAddItemToCustomerTab(selectedCustomerTab.id, cigPackModal.item, cigPackModal.item.cigarettePack!.size);
+                  }
                   setCigPackModal(null);
                 }}
               >
