@@ -265,7 +265,7 @@ export default function App() {
     customerLabel: string;
     intent:
       | { type: "session" }
-      | { type: "tab"; draftValue: CustomerTabDraft; options?: { updateSaleDraft?: boolean; clearDraft?: boolean; switchToSale?: boolean } };
+      | { type: "tab"; draftValue: CustomerTabDraft; options?: { updateSaleDraft?: boolean; clearDraft?: boolean; switchToSale?: boolean; continuedFromSessionIds?: string[]; onSuccess?: () => void } };
   } | null>(null);
   const [expenseForm, setExpenseForm] = useState({
     title: "",
@@ -734,6 +734,34 @@ export default function App() {
     }
   }
 
+  async function commitAppDataChange(
+    label: string,
+    mutator: (draft: AppData) => void | false,
+    onSuccess?: (nextAppData: AppData) => void
+  ) {
+    const nextAppData = cloneValue(appData);
+    const result = mutator(nextAppData);
+    if (result === false) {
+      return false;
+    }
+    try {
+      await runBlockingAction(label, async () => {
+        if (backendConfigured) {
+          await saveRemoteSnapshot(nextAppData, remoteVersion);
+          skipRemotePersistRef.current = true;
+        }
+        setAppData(nextAppData);
+        onSuccess?.(nextAppData);
+      });
+      return true;
+    } catch (error) {
+      if (!backendConfigured) {
+        setRemoteError(error instanceof Error ? error.message : "Unable to save changes.");
+      }
+      return false;
+    }
+  }
+
   function getSessionById(sessionId: string) {
     return appData.sessions.find((session) => session.id === sessionId);
   }
@@ -1022,11 +1050,10 @@ export default function App() {
       void (async () => {
         if (!activeUser) return;
         const hashed = await hashPassword(ownPasswordDraft.password);
-        mutateAppData((data) => {
+        void commitAppDataChange("Updating password...", (data) => {
           const user = data.users.find((u) => u.id === activeUser.id);
           if (user) user.password = hashed;
-        });
-        setOwnPasswordDraft(null);
+        }, () => setOwnPasswordDraft(null));
       })();
     }
   }
@@ -1096,7 +1123,7 @@ export default function App() {
       ? getContinuationSessionIds(continuedFromSession)
       : undefined;
     const sessionId = createId("session");
-    mutateAppData((draft) => {
+    void commitAppDataChange("Starting session...", (draft) => {
       const customerId = resolveCustomerProfile(draft, customerName, customerPhone);
       draft.sessions.unshift({
         id: sessionId,
@@ -1125,12 +1152,13 @@ export default function App() {
           ? `Started ${sessionPlayMode} session on ${station.name}, continuing hopped session from ${continuedFromSession.stationNameSnapshot}.`
           : `Started ${sessionPlayMode} session on ${station.name}${station.mode === "unit_sale" ? ` with ${initialItems[0]?.quantity ?? 0} ${initialItems[0]?.name ?? "coin pack(s)"}.` : station.ltpEnabled ? " with LTP enabled." : "."}`
       );
+    }, () => {
+      setStartSessionDraft(createStartSessionDraft());
+      setLastHoppedSessionId(null);
+      setPostHopContinuationMode("gaming");
+      setPostHopCustomerLocked(true);
+      setShowStartSessionModal(false);
     });
-    setStartSessionDraft(createStartSessionDraft());
-    setLastHoppedSessionId(null);
-    setPostHopContinuationMode("gaming");
-    setPostHopCustomerLocked(true);
-    setShowStartSessionModal(false);
   }
 
   function startSession(event: FormEvent<HTMLFormElement>) {
@@ -1157,10 +1185,10 @@ export default function App() {
     if (!activeUser) {
       return;
     }
-    mutateAppData((draft) => {
+    void commitAppDataChange(shouldPause ? "Pausing session..." : "Resuming session...", (draft) => {
       const session = draft.sessions.find((entry) => entry.id === sessionId);
       if (!session) {
-        return;
+        return false;
       }
       if (shouldPause && session.status === "active") {
         const pauseLogId = createId("pause");
@@ -1216,14 +1244,13 @@ export default function App() {
       window.alert("Pause intervals cannot overlap.");
       return;
     }
-    mutateAppData((draft) => {
+    void commitAppDataChange("Saving pause log...", (draft) => {
       const entry = draft.sessionPauseLogs.find((e) => e.id === logId);
-      if (!entry) return;
+      if (!entry) return false;
       if (patch.pausedAt) entry.pausedAt = new Date(patch.pausedAt).toISOString();
       if (patch.resumedAt !== undefined) entry.resumedAt = patch.resumedAt ? new Date(patch.resumedAt).toISOString() : undefined;
       addAuditLog(draft, activeUser.id, "pause_log_edited", "session", log.sessionId, `Edited pause log entry for ${session.stationNameSnapshot}.`);
-    });
-    setEditingPauseLogId(null);
+    }, () => setEditingPauseLogId(null));
   }
 
   function deletePauseLogEntry(logId: string) {
@@ -1233,7 +1260,7 @@ export default function App() {
     const session = appData.sessions.find((entry) => entry.id === log.sessionId);
     if (!session) return;
     const isOpenPause = !log.resumedAt;
-    mutateAppData((draft) => {
+    void commitAppDataChange("Deleting pause log...", (draft) => {
       draft.sessionPauseLogs = draft.sessionPauseLogs.filter((entry) => entry.id !== logId);
       const draftSession = draft.sessions.find((entry) => entry.id === log.sessionId);
       if (draftSession) {
@@ -1243,8 +1270,7 @@ export default function App() {
         }
       }
       addAuditLog(draft, activeUser.id, "pause_log_deleted", "session", log.sessionId, `Deleted pause log entry for ${session.stationNameSnapshot}.`);
-    });
-    setPauseLogDeleteConfirmId(null);
+    }, () => setPauseLogDeleteConfirmId(null));
   }
 
   function addItemToSession(sessionId: string) {
@@ -1263,9 +1289,9 @@ export default function App() {
       }
       return;
     }
-    mutateAppData((draft) => {
+    void commitAppDataChange("Adding item...", (draft) => {
       const session = draft.sessions.find((entry) => entry.id === sessionId);
-      if (!session) return;
+      if (!session) return false;
       session.items.push({
         id: createId("session-item"),
         inventoryItemId: item.id,
@@ -1288,21 +1314,22 @@ export default function App() {
         });
       }
       addAuditLog(draft, activeUser.id, "session_item_added", "session", sessionId, `Added ${item.name}${packOf ? " (pack)" : ""} to ${session.stationNameSnapshot}.`);
+    }, () => {
+      setSessionItemForm((previous) => ({
+        ...previous,
+        [sessionId]: { itemId: form.itemId, quantity: 1, sellAsPackOf: packOf }
+      }));
     });
-    setSessionItemForm((previous) => ({
-      ...previous,
-      [sessionId]: { itemId: form.itemId, quantity: 1, sellAsPackOf: packOf }
-    }));
   }
 
   function removeItemFromSession(sessionId: string, sessionItemId: string) {
     if (!activeUser) {
       return;
     }
-    mutateAppData((draft) => {
+    void commitAppDataChange("Removing item...", (draft) => {
       const session = draft.sessions.find((entry) => entry.id === sessionId);
       if (!session) {
-        return;
+        return false;
       }
       const item = session.items.find((entry) => entry.id === sessionItemId);
       session.items = session.items.filter((entry) => entry.id !== sessionItemId);
@@ -1365,10 +1392,10 @@ export default function App() {
         return;
       }
     }
-    mutateAppData((draft) => {
+    void commitAppDataChange("Saving session details...", (draft) => {
       const session = draft.sessions.find((entry) => entry.id === editSessionDraft.sessionId && entry.status !== "closed");
       if (!session) {
-        return;
+        return false;
       }
       const nextCustomerName = editSessionDraft.customerName.trim() || undefined;
       const nextCustomerPhone = editSessionDraft.customerPhone.trim() || undefined;
@@ -1395,8 +1422,7 @@ export default function App() {
       if (changes.length > 0) {
         addAuditLog(draft, activeUser.id, "session_details_updated", "session", session.id, `Updated ${session.stationNameSnapshot}: ${changes.join("; ")}`);
       }
-    });
-    setEditSessionDraft(null);
+    }, () => setEditSessionDraft(null));
   }
 
   function openSessionCheckout(sessionId: string) {
@@ -1446,7 +1472,7 @@ export default function App() {
 
   function openOrCreateCustomerTab(
     draftValue: CustomerTabDraft,
-    options?: { updateSaleDraft?: boolean; clearDraft?: boolean; switchToSale?: boolean; continuedFromSessionIds?: string[] }
+    options?: { updateSaleDraft?: boolean; clearDraft?: boolean; switchToSale?: boolean; continuedFromSessionIds?: string[]; onSuccess?: () => void }
   ) {
     if (!activeUser) {
       return;
@@ -1473,9 +1499,9 @@ export default function App() {
     );
     if (existing) {
       if (options?.continuedFromSessionIds?.length) {
-        mutateAppData((draft) => {
+        void commitAppDataChange("Linking customer tab...", (draft) => {
           const targetTab = draft.customerTabs.find((tab) => tab.id === existing.id && tab.status === "open");
-          if (!targetTab) return;
+          if (!targetTab) return false;
           targetTab.continuedFromSessionIds = Array.from(new Set([...(targetTab.continuedFromSessionIds ?? []), ...options.continuedFromSessionIds!]));
           for (const sessionId of options.continuedFromSessionIds!) {
             const hoppedSession = draft.sessions.find((session) => session.id === sessionId);
@@ -1483,7 +1509,24 @@ export default function App() {
               addAuditLog(draft, activeUser.id, "customer_tab_continuation_linked", "customer_tab", existing.id, `Linked ${existing.customerName}'s tab to hopped session from ${hoppedSession.stationNameSnapshot}.`);
             }
           }
+        }, () => {
+          setSelectedCustomerTabId(existing.id);
+          if (options?.updateSaleDraft) {
+            setCustomerTabDraft({
+              customerId: existing.customerId,
+              customerName: existing.customerName,
+              customerPhone: existing.customerPhone ?? ""
+            });
+          }
+          if (options?.clearDraft) {
+            setDashboardCustomerTabDraft({ customerId: undefined, customerName: "", customerPhone: "" });
+          }
+          if (options?.switchToSale) {
+            setActiveTab("sale");
+          }
+          options?.onSuccess?.();
         });
+        return;
       }
       setSelectedCustomerTabId(existing.id);
       if (options?.updateSaleDraft) {
@@ -1499,6 +1542,7 @@ export default function App() {
       if (options?.switchToSale) {
         setActiveTab("sale");
       }
+      options?.onSuccess?.();
       return;
     }
 
@@ -1513,7 +1557,7 @@ export default function App() {
 
   function doCommitTabDirect(
     draftValue: CustomerTabDraft,
-    options?: { updateSaleDraft?: boolean; clearDraft?: boolean; switchToSale?: boolean; continuedFromSessionIds?: string[] }
+    options?: { updateSaleDraft?: boolean; clearDraft?: boolean; switchToSale?: boolean; continuedFromSessionIds?: string[]; onSuccess?: () => void }
   ) {
     if (!activeUser) {
       return;
@@ -1522,7 +1566,7 @@ export default function App() {
     const customerPhone = draftValue.customerPhone.trim();
     const tabId = createId("customer-tab");
     let resolvedCustomerId = draftValue.customerId;
-    mutateAppData((draft) => {
+    void commitAppDataChange("Opening customer tab...", (draft) => {
       const customerId = resolveCustomerProfile(draft, customerName, customerPhone);
       resolvedCustomerId = customerId;
       draft.customerTabs.unshift({
@@ -1550,17 +1594,19 @@ export default function App() {
           ? `Opened customer tab for ${customerName}, continuing hopped session from ${continuedFromSession.stationNameSnapshot}.`
           : `Opened customer tab for ${customerName}.`
       );
+    }, () => {
+      setSelectedCustomerTabId(tabId);
+      if (options?.updateSaleDraft) {
+        setCustomerTabDraft({ customerId: resolvedCustomerId, customerName, customerPhone });
+      }
+      if (options?.clearDraft) {
+        setDashboardCustomerTabDraft({ customerId: undefined, customerName: "", customerPhone: "" });
+      }
+      if (options?.switchToSale) {
+        setActiveTab("sale");
+      }
+      options?.onSuccess?.();
     });
-    setSelectedCustomerTabId(tabId);
-    if (options?.updateSaleDraft) {
-      setCustomerTabDraft({ customerId: resolvedCustomerId, customerName, customerPhone });
-    }
-    if (options?.clearDraft) {
-      setDashboardCustomerTabDraft({ customerId: undefined, customerName: "", customerPhone: "" });
-    }
-    if (options?.switchToSale) {
-      setActiveTab("sale");
-    }
   }
 
   function createDashboardCustomerTab(event: FormEvent<HTMLFormElement>) {
@@ -1596,10 +1642,10 @@ export default function App() {
     }
     const nextCustomerPhone = editCustomerTabDraft.customerPhone.trim() || undefined;
     let resolvedCustomerId = editCustomerTabDraft.customerId;
-    mutateAppData((draft) => {
+    void commitAppDataChange("Saving customer details...", (draft) => {
       const tab = draft.customerTabs.find((entry) => entry.id === editCustomerTabDraft.customerTabId && entry.status === "open");
       if (!tab) {
-        return;
+        return false;
       }
       const customerId = resolveCustomerProfile(draft, nextCustomerName, nextCustomerPhone, tab.createdAt);
       resolvedCustomerId = customerId;
@@ -1616,13 +1662,14 @@ export default function App() {
       if (changes.length > 0) {
         addAuditLog(draft, activeUser.id, "customer_tab_details_updated", "customer_tab", tab.id, `Updated customer tab: ${changes.join("; ")}`);
       }
+    }, () => {
+      setCustomerTabDraft({
+        customerId: resolvedCustomerId,
+        customerName: nextCustomerName,
+        customerPhone: nextCustomerPhone ?? ""
+      });
+      setEditCustomerTabDraft(null);
     });
-    setCustomerTabDraft({
-      customerId: resolvedCustomerId,
-      customerName: nextCustomerName,
-      customerPhone: nextCustomerPhone ?? ""
-    });
-    setEditCustomerTabDraft(null);
   }
 
   function beginEditCustomerProfile(customer: Customer) {
@@ -1662,10 +1709,10 @@ export default function App() {
       window.alert("Another customer profile already uses the same phone or name.");
       return;
     }
-    mutateAppData((draft) => {
+    void commitAppDataChange("Saving customer profile...", (draft) => {
       const customer = draft.customers.find((entry) => entry.id === editCustomerProfileDraft.customerId);
       if (!customer) {
-        return;
+        return false;
       }
       const previousName = customer.name;
       const previousPhone = customer.phone;
@@ -1697,8 +1744,7 @@ export default function App() {
         customer.id,
         `Updated customer profile: name ${formatAuditValue(previousName)} -> ${formatAuditValue(nextName)}; phone ${formatAuditValue(previousPhone)} -> ${formatAuditValue(nextPhone)}`
       );
-    });
-    setEditCustomerProfileDraft(null);
+    }, () => setEditCustomerProfileDraft(null));
   }
 
   function addItemToCustomerTab(item: InventoryItem, sellAsPackOf?: number) {
@@ -1715,9 +1761,9 @@ export default function App() {
       }
       return;
     }
-    mutateAppData((draft) => {
+    void commitAppDataChange("Adding item...", (draft) => {
       const tab = draft.customerTabs.find((entry) => entry.id === selectedCustomerTab.id && entry.status === "open");
-      if (!tab) return;
+      if (!tab) return false;
       const existing = tab.items.find((entry) => entry.inventoryItemId === item.id && entry.soldAsPackOf === sellAsPackOf);
       if (existing) {
         existing.quantity += 1;
@@ -1753,11 +1799,11 @@ export default function App() {
       window.alert(`Only ${getAvailableStock(currentItem, undefined, selectedCustomerTab.id)} available for ${currentItem.name}.`);
       return;
     }
-    mutateAppData((draft) => {
+    void commitAppDataChange("Updating item quantity...", (draft) => {
       const tab = draft.customerTabs.find((entry) => entry.id === selectedCustomerTab.id && entry.status === "open");
       const line = tab?.items.find((entry) => entry.id === lineId);
       if (!tab || !line) {
-        return;
+        return false;
       }
       line.quantity = nextQuantity;
     });
@@ -1767,10 +1813,10 @@ export default function App() {
     if (!activeUser || !selectedCustomerTab) {
       return;
     }
-    mutateAppData((draft) => {
+    void commitAppDataChange("Removing item...", (draft) => {
       const tab = draft.customerTabs.find((entry) => entry.id === selectedCustomerTab.id && entry.status === "open");
       if (!tab) {
-        return;
+        return false;
       }
       const line = tab.items.find((entry) => entry.id === lineId);
       tab.items = tab.items.filter((entry) => entry.id !== lineId);
@@ -1860,10 +1906,10 @@ export default function App() {
       return;
     }
     const rejectedAt = new Date().toISOString();
-    mutateAppData((draft) => {
+    void commitAppDataChange("Rejecting session...", (draft) => {
       const targetSession = draft.sessions.find((entry) => entry.id === sessionId);
       if (!targetSession || targetSession.status === "closed") {
-        return;
+        return false;
       }
       if (targetSession.status === "paused") {
         const openPause = draft.sessionPauseLogs.find((entry) => entry.sessionId === sessionId && !entry.resumedAt);
@@ -1876,11 +1922,12 @@ export default function App() {
       targetSession.closeDisposition = "rejected";
       targetSession.closeReason = reason.trim();
       addAuditLog(draft, activeUser.id, "session_rejected", "session", sessionId, `Rejected ${targetSession.stationNameSnapshot}. Reason: ${reason.trim()}`);
+    }, () => {
+      setCheckoutState((previous) =>
+        previous?.mode === "session" && previous.sessionId === sessionId ? null : previous
+      );
+      setManageSessionId((previous) => (previous === sessionId ? null : previous));
     });
-    setCheckoutState((previous) =>
-      previous?.mode === "session" && previous.sessionId === sessionId ? null : previous
-    );
-    setManageSessionId((previous) => (previous === sessionId ? null : previous));
   }
 
   async function hopSession() {
@@ -1933,9 +1980,9 @@ export default function App() {
     targetSession.closeDisposition = "hopped";
     addAuditLog(draft, activeUser.id, "session_hopped", "session", sessionId, `Game hop: closed ${targetSession.stationNameSnapshot} without billing. Station released for next customer.`);
     if (backendConfigured) {
+      await saveRemoteSnapshot(nextAppData, baseVersion);
       skipRemotePersistRef.current = true;
       setAppData(normalizeAppDataCustomers(nextAppData));
-      await saveRemoteSnapshot(nextAppData, baseVersion);
     } else {
       setAppData(normalizeAppDataCustomers(nextAppData));
     }
@@ -1992,7 +2039,7 @@ export default function App() {
     }
     const detachedSessionId = lastHoppedSessionId;
     const hoppedSession = getSessionById(detachedSessionId);
-    mutateAppData((draft) => {
+    void commitAppDataChange("Detaching continuation...", (draft) => {
       addAuditLog(
         draft,
         activeUser.id,
@@ -2001,16 +2048,17 @@ export default function App() {
         detachedSessionId,
         `Detached post-hop continuation${hoppedSession ? ` from ${hoppedSession.stationNameSnapshot}` : ""}.`
       );
+    }, () => {
+      setLastHoppedSessionId(null);
+      setPostHopContinuationMode("gaming");
+      setPostHopCustomerLocked(false);
+      setStartSessionDraft((previous) => ({
+        ...previous,
+        customerId: undefined,
+        customerName: "",
+        customerPhone: ""
+      }));
     });
-    setLastHoppedSessionId(null);
-    setPostHopContinuationMode("gaming");
-    setPostHopCustomerLocked(false);
-    setStartSessionDraft((previous) => ({
-      ...previous,
-      customerId: undefined,
-      customerName: "",
-      customerPhone: ""
-    }));
   }
 
   function startPostHopConsumablesTab(event: FormEvent<HTMLFormElement>) {
@@ -2030,13 +2078,15 @@ export default function App() {
       updateSaleDraft: true,
       clearDraft: false,
       switchToSale: true,
-      continuedFromSessionIds: getContinuationSessionIds(hoppedSession)
+      continuedFromSessionIds: getContinuationSessionIds(hoppedSession),
+      onSuccess: () => {
+        setShowStartSessionModal(false);
+        setLastHoppedSessionId(null);
+        setPostHopContinuationMode("gaming");
+        setPostHopCustomerLocked(true);
+        setStartSessionDraft(createStartSessionDraft());
+      }
     });
-    setShowStartSessionModal(false);
-    setLastHoppedSessionId(null);
-    setPostHopContinuationMode("gaming");
-    setPostHopCustomerLocked(true);
-    setStartSessionDraft(createStartSessionDraft());
   }
 
   function returnToStartNextGame() {
@@ -2071,21 +2121,22 @@ export default function App() {
       return;
     }
     const rejectedAt = new Date().toISOString();
-    mutateAppData((draft) => {
+    void commitAppDataChange("Rejecting customer tab...", (draft) => {
       const targetTab = draft.customerTabs.find((entry) => entry.id === customerTabId);
       if (!targetTab || targetTab.status !== "open") {
-        return;
+        return false;
       }
       targetTab.status = "closed";
       targetTab.closedAt = rejectedAt;
       targetTab.closeDisposition = "rejected";
       targetTab.closeReason = reason.trim();
       addAuditLog(draft, activeUser.id, "customer_tab_rejected", "customer_tab", customerTabId, `Rejected ${targetTab.customerName}'s tab. Reason: ${reason.trim()}`);
+    }, () => {
+      setCheckoutState((previous) =>
+        previous?.mode === "customer_tab" && previous.customerTabId === customerTabId ? null : previous
+      );
+      setSelectedCustomerTabId((previous) => (previous === customerTabId ? null : previous));
     });
-    setCheckoutState((previous) =>
-      previous?.mode === "customer_tab" && previous.customerTabId === customerTabId ? null : previous
-    );
-    setSelectedCustomerTabId((previous) => (previous === customerTabId ? null : previous));
   }
 
   function openBillReplacement(billId: string) {
@@ -2685,9 +2736,9 @@ export default function App() {
         addAuditLog(draft, activeUser.id, "bill_pending", "bill", billId, `${billNumber} issued as pending (due ₹${billAmountDue.toFixed(2)}).`);
       }
     if (backendConfigured) {
+      await saveRemoteSnapshot(nextAppData, baseVersion);
       skipRemotePersistRef.current = true;
       setAppData(normalizeAppDataCustomers(nextAppData));
-      await saveRemoteSnapshot(nextAppData, baseVersion);
     } else {
       setAppData(normalizeAppDataCustomers(nextAppData));
     }
@@ -2703,7 +2754,7 @@ export default function App() {
     downloadReceiptPdf(nextAppData.businessProfile, issuedBill, nextAppData.bills, nextAppData.payments);
   }
 
-  function settlePayment(draft: SettlementDraft): boolean {
+  async function settlePayment(draft: SettlementDraft): Promise<boolean> {
     if (!activeUser || !canSettlePendingBills) {
       return false;
     }
@@ -2719,9 +2770,9 @@ export default function App() {
     }
     const settledAt = new Date().toISOString();
     const settlementAmount = getSettlementAmount(draft);
-    mutateAppData((data) => {
+    return commitAppDataChange("Settling pending bill...", (data) => {
       const target = data.bills.find((b) => b.id === draft.billId);
-      if (!target || target.status !== "pending") return;
+      if (!target || target.status !== "pending") return false;
       target.amountPaid = result.newAmountPaid;
       target.amountDue = result.newAmountDue;
       target.status = result.newStatus;
@@ -2748,10 +2799,9 @@ export default function App() {
         `Settled ₹${settlementAmount.toFixed(2)} on ${target.billNumber}. Remaining due: ₹${result.newAmountDue.toFixed(2)}.`
       );
     });
-    return true;
   }
 
-  function voidPendingBill(draft: VoidPendingDraft): boolean {
+  async function voidPendingBill(draft: VoidPendingDraft): Promise<boolean> {
     if (!activeUser || activeUser.role !== "admin") {
       return false;
     }
@@ -2766,9 +2816,9 @@ export default function App() {
       return false;
     }
     const voidedAt = new Date().toISOString();
-    mutateAppData((data) => {
+    return commitAppDataChange("Writing off pending bill...", (data) => {
       const target = data.bills.find((b) => b.id === draft.billId);
-      if (!target || target.status !== "pending") return;
+      if (!target || target.status !== "pending") return false;
       target.status = "voided";
       target.voidedAt = voidedAt;
       target.voidedByUserId = activeUser.id;
@@ -2782,7 +2832,6 @@ export default function App() {
         `Voided pending bill ${target.billNumber} as bad debt. Reason: ${draft.reason.trim()}.`
       );
     });
-    return true;
   }
 
   function upsertInventoryItem(event: FormEvent<HTMLFormElement>) {
@@ -2795,11 +2844,11 @@ export default function App() {
       window.alert("Category is required.");
       return;
     }
-    mutateAppData((draft) => {
+    void commitAppDataChange(itemForm.id ? "Updating inventory item..." : "Saving inventory item...", (draft) => {
       if (itemForm.id) {
         const existing = draft.inventoryItems.find((item) => item.id === itemForm.id);
         if (!existing) {
-          return;
+          return false;
         }
         Object.assign(existing, {
           ...itemForm,
@@ -2826,8 +2875,7 @@ export default function App() {
       if (!draft.inventoryCategories.includes(resolvedCategory)) {
         draft.inventoryCategories.push(resolvedCategory);
       }
-    });
-    resetItemForm();
+    }, () => resetItemForm());
   }
 
   function saveEditedInventoryItem(event: FormEvent<HTMLFormElement>) {
@@ -2840,10 +2888,10 @@ export default function App() {
       window.alert("Category is required.");
       return;
     }
-    mutateAppData((draft) => {
+    void commitAppDataChange("Updating inventory item...", (draft) => {
       const existing = draft.inventoryItems.find((item) => item.id === editItemForm.id);
       if (!existing) {
-        return;
+        return false;
       }
       Object.assign(existing, {
         ...editItemForm,
@@ -2857,8 +2905,7 @@ export default function App() {
         draft.inventoryCategories.push(resolvedCategory);
       }
       addAuditLog(draft, activeUser.id, "inventory_updated", "inventory_item", existing.id, `Updated ${existing.name}.`);
-    });
-    closeEditInventoryModal();
+    }, () => closeEditInventoryModal());
   }
 
   function recordStockMovement(type: StockMovementType, quantityOverride?: number) {
@@ -2866,14 +2913,14 @@ export default function App() {
     if (!activeUser || !canEditInventory || !inventoryAction.itemId || effectiveQty <= 0 || !inventoryAction.reason.trim()) {
       return;
     }
-    mutateAppData((draft) => {
+    void commitAppDataChange("Recording stock movement...", (draft) => {
       const item = draft.inventoryItems.find((entry) => entry.id === inventoryAction.itemId);
       if (!item) {
-        return;
+        return false;
       }
       const signedQuantity = type === "restock" ? effectiveQty : -effectiveQty;
       if (item.stockQty + signedQuantity < 0) {
-        return;
+        return false;
       }
       item.stockQty += signedQuantity;
       draft.stockMovements.unshift({
@@ -2886,8 +2933,7 @@ export default function App() {
         userId: activeUser.id
       });
       addAuditLog(draft, activeUser.id, "stock_movement", "inventory_item", item.id, `${type} for ${item.name}.`);
-    });
-    setInventoryAction({ itemId: "", quantity: 1, reason: "" });
+    }, () => setInventoryAction({ itemId: "", quantity: 1, reason: "" }));
   }
 
   function upsertStation(event: FormEvent<HTMLFormElement>) {
@@ -2895,14 +2941,13 @@ export default function App() {
     if (!activeUser || !canEditSettings) {
       return;
     }
-    mutateAppData((draft) => {
+    void commitAppDataChange("Saving station...", (draft) => {
       draft.stations.unshift({
         ...stationForm,
         id: createId("station"),
         name: stationForm.name.trim()
       });
-    });
-    setStationForm({ id: "", name: "", mode: "timed", active: true, ltpEnabled: false });
+    }, () => setStationForm({ id: "", name: "", mode: "timed", active: true, ltpEnabled: false }));
   }
 
   function beginEditStation(station: Station) {
@@ -2923,17 +2968,16 @@ export default function App() {
     if (!activeUser || !canEditSettings || !editStationDraft) {
       return;
     }
-    mutateAppData((draft) => {
+    void commitAppDataChange("Updating station...", (draft) => {
       const existing = draft.stations.find((station) => station.id === editStationDraft.id);
       if (!existing) {
-        return;
+        return false;
       }
       Object.assign(existing, {
         ...editStationDraft,
         name: editStationDraft.name.trim()
       });
-    });
-    setEditStationDraft(null);
+    }, () => setEditStationDraft(null));
   }
 
   function deleteStation(stationId: string) {
@@ -2944,7 +2988,7 @@ export default function App() {
       window.alert("Close the active session first.");
       return;
     }
-    mutateAppData((draft) => {
+    void commitAppDataChange("Deleting station...", (draft) => {
       draft.stations = draft.stations.filter((station) => station.id !== stationId);
       draft.pricingRules = draft.pricingRules.filter((rule) => rule.stationId !== stationId);
     });
@@ -2955,7 +2999,7 @@ export default function App() {
     if (!activeUser || !canEditSettings || !pricingDraft.stationId) {
       return;
     }
-    mutateAppData((draft) => {
+    void commitAppDataChange("Saving pricing rule...", (draft) => {
       draft.pricingRules.push({
         id: createId("pricing"),
         stationId: pricingDraft.stationId,
@@ -2964,13 +3008,14 @@ export default function App() {
         endMinute: toMinuteOfDay(pricingDraft.endTime),
         hourlyRate: clampNumber(pricingDraft.hourlyRate)
       });
-    });
-    setPricingDraft({
-      stationId: pricingDraft.stationId,
-      label: "",
-      startTime: "10:00",
-      endTime: "21:00",
-      hourlyRate: 0
+    }, () => {
+      setPricingDraft({
+        stationId: pricingDraft.stationId,
+        label: "",
+        startTime: "10:00",
+        endTime: "21:00",
+        hourlyRate: 0
+      });
     });
   }
 
@@ -2978,7 +3023,7 @@ export default function App() {
     if (!canEditSettings) {
       return;
     }
-    mutateAppData((draft) => {
+    void commitAppDataChange("Deleting pricing rule...", (draft) => {
       draft.pricingRules = draft.pricingRules.filter((rule) => rule.id !== ruleId);
     });
   }
@@ -2988,7 +3033,7 @@ export default function App() {
     if (!activeUser || !canEditSettings) {
       return;
     }
-    mutateAppData((draft) => {
+    void commitAppDataChange("Saving business profile...", (draft) => {
       draft.businessProfile = {
         ...businessDraft,
         name: businessDraft.name.trim(),
@@ -3032,7 +3077,7 @@ export default function App() {
     }
     void (async () => {
       const hashedPassword = await hashPassword(userForm.password);
-      mutateAppData((draft) => {
+      void commitAppDataChange("Creating user...", (draft) => {
         const userId = createId("user");
         draft.users.push({
           id: userId,
@@ -3043,8 +3088,7 @@ export default function App() {
           active: true
         });
         addAuditLog(draft, activeUser.id, "user_created", "user", userId, `Created ${userForm.role} user ${nextUsername}.`);
-      });
-      setUserForm({ name: "", username: "", password: "", role: "receptionist" });
+      }, () => setUserForm({ name: "", username: "", password: "", role: "receptionist" }));
     })();
   }
 
@@ -3107,31 +3151,32 @@ export default function App() {
           username: nextUsername,
           role: editUserDraft.role
         });
+        const snapshot = await loadRemoteAppDataSnapshot();
+        const nextAppData = normalizeAppDataCustomers(snapshot.appData);
+        const user = nextAppData.users.find((u) => u.id === editUserDraft.id);
+        if (user) {
+          user.tabPermissions = nextTabPermissions;
+        }
+        await saveRemoteSnapshot(nextAppData, snapshot.version);
+        skipRemotePersistRef.current = true;
+        setAppData(nextAppData);
         setEditUserDraft(null);
-        await refreshRemoteState({ keepUser: true });
-        // Patch tabPermissions into the freshly-reloaded app state and save to Supabase.
-        // refreshRemoteState consumes the skip flag so this mutateAppData triggers a remote save.
-        mutateAppData((data) => {
-          const user = data.users.find((u) => u.id === editUserDraft.id);
-          if (user) user.tabPermissions = nextTabPermissions;
-        });
       }).catch((error: unknown) => {
         window.alert(error instanceof Error ? error.message : "Unable to update user.");
       });
       return;
     }
-    mutateAppData((draft) => {
+    void commitAppDataChange("Updating user...", (draft) => {
       const user = draft.users.find((entry) => entry.id === editUserDraft.id);
       if (!user) {
-        return;
+        return false;
       }
       user.name = nextName;
       user.username = nextUsername;
       user.role = editUserDraft.role;
       user.tabPermissions = nextTabPermissions;
       addAuditLog(draft, activeUser.id, "user_updated", "user", user.id, `Updated user ${user.username}.`);
-    });
-    setEditUserDraft(null);
+    }, () => setEditUserDraft(null));
   }
 
   function openChangePassword(user: User) {
@@ -3177,13 +3222,12 @@ export default function App() {
     }
     void (async () => {
       const hashedPassword = await hashPassword(nextPassword);
-      mutateAppData((draft) => {
+      void commitAppDataChange("Updating password...", (draft) => {
         const user = draft.users.find((entry) => entry.id === passwordDraft.userId);
-        if (!user) return;
+        if (!user) return false;
         user.password = hashedPassword;
         addAuditLog(draft, activeUser.id, "user_password_changed", "user", user.id, `Changed password for ${user.username}.`);
-      });
-      setPasswordDraft(null);
+      }, () => setPasswordDraft(null));
     })();
   }
 
@@ -3192,7 +3236,7 @@ export default function App() {
     if (!activeUser || !canEditReports || expenseForm.amount <= 0 || !expenseForm.title.trim()) {
       return;
     }
-    mutateAppData((draft) => {
+    void commitAppDataChange("Saving expense...", (draft) => {
       const expenseId = createId("expense");
       draft.expenses.unshift({
         id: expenseId,
@@ -3211,13 +3255,14 @@ export default function App() {
         expenseId,
         `Logged expense ${expenseForm.title.trim()} for ${currency(expenseForm.amount)}.`
       );
-    });
-    setExpenseForm({
-      title: "",
-      category: "Utilities",
-      amount: 0,
-      spentAt: toBusinessDayKey(now),
-      notes: ""
+    }, () => {
+      setExpenseForm({
+        title: "",
+        category: "Utilities",
+        amount: 0,
+        spentAt: toBusinessDayKey(now),
+        notes: ""
+      });
     });
   }
 
@@ -3227,11 +3272,11 @@ export default function App() {
       return;
     }
     let newTemplateId: string | null = null;
-    mutateAppData((draft) => {
+    void commitAppDataChange(expenseTemplateForm.id ? "Updating expense template..." : "Saving expense template...", (draft) => {
       if (expenseTemplateForm.id) {
         const existing = draft.expenseTemplates.find((entry) => entry.id === expenseTemplateForm.id);
         if (!existing) {
-          return;
+          return false;
         }
         Object.assign(existing, {
           ...expenseTemplateForm,
@@ -3253,37 +3298,38 @@ export default function App() {
         });
         addAuditLog(draft, activeUser.id, "expense_template_created", "expense_template", templateId, `Created monthly template ${expenseTemplateForm.title.trim()}.`);
       }
-    });
-    setExpenseTemplateForm({
-      id: "",
-      title: "",
-      category: "Rent",
-      amount: 0,
-      frequency: "monthly",
-      startMonth: reportToDate.slice(0, 7),
-      active: true,
-      notes: "",
-      createdByUserId: ""
-    });
-    // Show backfill prompt when a new template is created mid-year
-    if (newTemplateId) {
-      const currentMonth = todayDateKey.slice(5, 7);
-      if (currentMonth !== "01") {
-        setPendingBackfillTemplate(newTemplateId);
+    }, () => {
+      setExpenseTemplateForm({
+        id: "",
+        title: "",
+        category: "Rent",
+        amount: 0,
+        frequency: "monthly",
+        startMonth: reportToDate.slice(0, 7),
+        active: true,
+        notes: "",
+        createdByUserId: ""
+      });
+      if (newTemplateId) {
+        const currentMonth = todayDateKey.slice(5, 7);
+        if (currentMonth !== "01") {
+          setPendingBackfillTemplate(newTemplateId);
+        }
       }
-    }
+    });
   }
 
   function resolveBackfillPrompt(templateId: string, backfill: boolean) {
     if (!activeUser || !canEditReports) return;
     if (backfill) {
       const year = todayDateKey.slice(0, 4);
-      mutateAppData((draft) => {
+      void commitAppDataChange("Updating expense template...", (draft) => {
         const template = draft.expenseTemplates.find((t) => t.id === templateId);
         if (template) {
           template.startMonth = `${year}-01`;
         }
-      });
+      }, () => setPendingBackfillTemplate(null));
+      return;
     }
     setPendingBackfillTemplate(null);
   }
@@ -3292,7 +3338,7 @@ export default function App() {
     if (!activeUser || !canEditReports) {
       return;
     }
-    mutateAppData((draft) => {
+    void commitAppDataChange("Deleting expense...", (draft) => {
       const expense = draft.expenses.find((entry) => entry.id === expenseId);
       draft.expenses = draft.expenses.filter((entry) => entry.id !== expenseId);
       if (expense) {
@@ -3322,10 +3368,10 @@ export default function App() {
     if (!activeUser || !canEditReports) {
       return;
     }
-    mutateAppData((draft) => {
+    void commitAppDataChange("Updating expense template...", (draft) => {
       const template = draft.expenseTemplates.find((entry) => entry.id === templateId);
       if (!template) {
-        return;
+        return false;
       }
       template.active = !template.active;
       addAuditLog(draft, activeUser.id, template.active ? "expense_template_activated" : "expense_template_deactivated", "expense_template", templateId, `${template.active ? "Activated" : "Deactivated"} monthly template ${template.title}.`);
@@ -3336,27 +3382,28 @@ export default function App() {
     if (!activeUser || !canEditReports) {
       return;
     }
-    mutateAppData((draft) => {
+    void commitAppDataChange("Deleting expense template...", (draft) => {
       const template = draft.expenseTemplates.find((entry) => entry.id === templateId);
       draft.expenseTemplates = draft.expenseTemplates.filter((entry) => entry.id !== templateId);
       draft.expenseTemplateOverrides = draft.expenseTemplateOverrides.filter((o) => o.templateId !== templateId);
       if (template) {
         addAuditLog(draft, activeUser.id, "expense_template_deleted", "expense_template", templateId, `Deleted monthly template ${template.title}.`);
       }
+    }, () => {
+      if (expenseTemplateForm.id === templateId) {
+        setExpenseTemplateForm({
+          id: "",
+          title: "",
+          category: "Rent",
+          amount: 0,
+          frequency: "monthly",
+          startMonth: reportToDate.slice(0, 7),
+          active: true,
+          notes: "",
+          createdByUserId: ""
+        });
+      }
     });
-    if (expenseTemplateForm.id === templateId) {
-      setExpenseTemplateForm({
-        id: "",
-        title: "",
-        category: "Rent",
-        amount: 0,
-        frequency: "monthly",
-        startMonth: reportToDate.slice(0, 7),
-        active: true,
-        notes: "",
-        createdByUserId: ""
-      });
-    }
   }
 
   function createOrUpdateOverride(
@@ -3367,7 +3414,7 @@ export default function App() {
     notes?: string
   ) {
     if (!activeUser || !canEditReports) return;
-    mutateAppData((draft) => {
+    void commitAppDataChange("Saving expense override...", (draft) => {
       const existing = draft.expenseTemplateOverrides.find(
         (o) => o.templateId === templateId && o.monthKey === monthKey
       );
@@ -3404,7 +3451,7 @@ export default function App() {
     if (!activeUser || !canEditReports) return;
     const [year] = fromMonthKey.split("-").map(Number);
     const endMonthKey = `${year}-12`;
-    mutateAppData((draft) => {
+    void commitAppDataChange("Saving future expense overrides...", (draft) => {
       const now = new Date().toISOString();
       let cursor = fromMonthKey;
       while (cursor <= endMonthKey) {
@@ -3439,7 +3486,7 @@ export default function App() {
 
   function deleteOverride(templateId: string, monthKey: string) {
     if (!activeUser || !canEditReports) return;
-    mutateAppData((draft) => {
+    void commitAppDataChange("Restoring expense default...", (draft) => {
       draft.expenseTemplateOverrides = draft.expenseTemplateOverrides.filter(
         (o) => !(o.templateId === templateId && o.monthKey === monthKey)
       );
@@ -3468,19 +3515,20 @@ export default function App() {
       });
       return;
     }
-    mutateAppData((draft) => {
+    void commitAppDataChange(targetUser.active ? "Disabling user..." : "Enabling user...", (draft) => {
       const user = draft.users.find((entry) => entry.id === userId);
-      if (user) {
-        user.active = !user.active;
-        addAuditLog(
-          draft,
-          activeUser.id,
-          user.active ? "user_enabled" : "user_disabled",
-          "user",
-          user.id,
-          `${user.active ? "Enabled" : "Disabled"} user ${user.username}.`
-        );
+      if (!user) {
+        return false;
       }
+      user.active = !user.active;
+      addAuditLog(
+        draft,
+        activeUser.id,
+        user.active ? "user_enabled" : "user_disabled",
+        "user",
+        user.id,
+        `${user.active ? "Enabled" : "Disabled"} user ${user.username}.`
+      );
     });
   }
 
@@ -3493,10 +3541,10 @@ export default function App() {
       return;
     }
     const refund = window.confirm("OK = refund, Cancel = void");
-    mutateAppData((draft) => {
+    void commitAppDataChange(refund ? "Refunding bill..." : "Voiding bill...", (draft) => {
       const bill = draft.bills.find((entry) => entry.id === billId);
       if (!bill || bill.status !== "issued") {
-        return;
+        return false;
       }
       bill.status = refund ? "refunded" : "voided";
       bill.voidReason = reason.trim();
@@ -5224,7 +5272,11 @@ export default function App() {
               <button
                 className="primary-button"
                 type="button"
-                onClick={() => { if (settlePayment(settlementDraft)) setSettlementDraft(null); }}
+                onClick={() => {
+                  void settlePayment(settlementDraft).then((saved) => {
+                    if (saved) setSettlementDraft(null);
+                  });
+                }}
                 disabled={settlementTotal <= 0}
               >
                 Confirm Settlement
@@ -5256,7 +5308,11 @@ export default function App() {
               <button
                 className="danger-button"
                 type="button"
-                onClick={() => { if (voidPendingBill(voidPendingDraft)) setVoidPendingDraft(null); }}
+                onClick={() => {
+                  void voidPendingBill(voidPendingDraft).then((saved) => {
+                    if (saved) setVoidPendingDraft(null);
+                  });
+                }}
                 disabled={!voidPendingDraft.reason.trim()}
               >
                 Write Off
