@@ -1038,23 +1038,18 @@ export default function App() {
     if (trimmedUsername.length > 64) { setLoginError("Username is too long."); return; }
     if (backendConfigured) {
       void runBlockingAction("Signing in...", async () => {
-        setRemoteLoading(true);
         const profile = await signInWithUsername(loginUsername, loginPassword);
-          const snapshot = await loadRemoteAppDataSnapshot();
-          skipRemotePersistRef.current = true;
-          setAppData(normalizeAppDataCustomers(snapshot.appData));
-          setRemoteVersion(snapshot.version);
-          setActiveUserId(profile.id);
-          setLoginError("");
-          setRemoteError("");
-          setActiveTab("dashboard");
-        })
-        .catch((error: unknown) => {
-          setLoginError(error instanceof Error ? error.message : "Invalid username or password.");
-        })
-        .finally(() => {
-          setRemoteLoading(false);
-        });
+        const snapshot = await loadRemoteAppDataSnapshot();
+        skipRemotePersistRef.current = true;
+        setAppData(normalizeAppDataCustomers(snapshot.appData));
+        setRemoteVersion(snapshot.version);
+        setActiveUserId(profile.id);
+        setLoginError("");
+        setRemoteError("");
+        setActiveTab("dashboard");
+      }).catch((error: unknown) => {
+        setLoginError(error instanceof Error ? error.message : "Invalid username or password.");
+      });
       return;
     }
     const candidate = appData.users.find(

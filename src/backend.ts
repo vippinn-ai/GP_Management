@@ -11,6 +11,7 @@ import { hydrateAppData } from "./storage";
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
+const REMOTE_REQUEST_TIMEOUT_MS = 15_000;
 
 interface LoginEmailResponse {
   email: string;
@@ -45,6 +46,27 @@ export interface RemoteAppDataSnapshot {
 }
 
 let supabaseClient: SupabaseClient | null = null;
+
+async function withRemoteTimeout<T>(request: PromiseLike<T>, action: string): Promise<T> {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(
+        new Error(
+          `Unable to reach the remote server while ${action}. Check the Supabase project URL and network connection.`
+        )
+      );
+    }, REMOTE_REQUEST_TIMEOUT_MS);
+  });
+
+  try {
+    return await Promise.race([Promise.resolve(request), timeout]);
+  } finally {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+  }
+}
 
 function getSupabase(): SupabaseClient {
   if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
@@ -82,19 +104,25 @@ export function isBackendConfigured(): boolean {
 
 export async function signInWithUsername(username: string, password: string): Promise<RemoteProfile> {
   const supabase = getSupabase();
-  const { data: emailLookup, error: emailLookupError } = await supabase.functions.invoke<LoginEmailResponse>(
-    "resolve-login-email",
-    {
-      body: { username: username.trim() }
-    }
+  const { data: emailLookup, error: emailLookupError } = await withRemoteTimeout(
+    supabase.functions.invoke<LoginEmailResponse>(
+      "resolve-login-email",
+      {
+        body: { username: username.trim() }
+      }
+    ),
+    "resolving the login username"
   );
   if (emailLookupError || !emailLookup?.email) {
     throw new Error("Invalid username or password.");
   }
-  const { error } = await supabase.auth.signInWithPassword({
-    email: emailLookup.email,
-    password
-  });
+  const { error } = await withRemoteTimeout(
+    supabase.auth.signInWithPassword({
+      email: emailLookup.email,
+      password
+    }),
+    "signing in"
+  );
   if (error) {
     throw new Error("Invalid username or password.");
   }
@@ -122,11 +150,14 @@ export async function fetchCurrentProfile(): Promise<RemoteProfile | null> {
   if (!authUserId) {
     return null;
   }
-  const { data, error } = await supabase
-    .from("profiles")
-    .select("id, name, username, role, active")
-    .eq("id", authUserId)
-    .maybeSingle();
+  const { data, error } = await withRemoteTimeout(
+    supabase
+      .from("profiles")
+      .select("id, name, username, role, active")
+      .eq("id", authUserId)
+      .maybeSingle(),
+    "loading your profile"
+  );
   if (error || !data) {
     return null;
   }
@@ -135,10 +166,13 @@ export async function fetchCurrentProfile(): Promise<RemoteProfile | null> {
 
 export async function fetchProfiles(): Promise<User[]> {
   const supabase = getSupabase();
-  const { data, error } = await supabase
-    .from("profiles")
-    .select("id, name, username, role, active")
-    .order("name", { ascending: true });
+  const { data, error } = await withRemoteTimeout(
+    supabase
+      .from("profiles")
+      .select("id, name, username, role, active")
+      .order("name", { ascending: true }),
+    "loading staff profiles"
+  );
   if (error) {
     throw error;
   }
@@ -153,7 +187,10 @@ export async function loadRemoteAppDataSnapshot(): Promise<RemoteAppDataSnapshot
   const supabase = getSupabase();
   const [users, appStateResult] = await Promise.all([
     fetchProfiles(),
-    supabase.from("app_state").select("id, data, version").eq("id", "primary").maybeSingle()
+    withRemoteTimeout(
+      supabase.from("app_state").select("id, data, version").eq("id", "primary").maybeSingle(),
+      "loading app data"
+    )
   ]);
   if (appStateResult.error && appStateResult.error.code !== "PGRST116") {
     throw appStateResult.error;
@@ -174,17 +211,20 @@ export async function saveRemoteAppData(
   expectedVersion: number
 ): Promise<number> {
   const supabase = getSupabase();
-  const { data, error } = await supabase
-    .from("app_state")
-    .update({
-      data: sanitizeAppData(appData),
-      updated_by: activeUserId,
-      version: expectedVersion + 1
-    })
-    .eq("id", "primary")
-    .eq("version", expectedVersion)
-    .select("version")
-    .maybeSingle();
+  const { data, error } = await withRemoteTimeout(
+    supabase
+      .from("app_state")
+      .update({
+        data: sanitizeAppData(appData),
+        updated_by: activeUserId,
+        version: expectedVersion + 1
+      })
+      .eq("id", "primary")
+      .eq("version", expectedVersion)
+      .select("version")
+      .maybeSingle(),
+    "saving app data"
+  );
   if (error) {
     throw error;
   }
@@ -248,12 +288,15 @@ async function invokeProtectedFunction(functionName: string, body: Record<string
     throw new Error("Your session expired. Sign in again.");
   }
 
-  const { error } = await supabase.functions.invoke(functionName, {
-    body,
-    headers: {
-      Authorization: `Bearer ${session.access_token}`
-    }
-  });
+  const { error } = await withRemoteTimeout(
+    supabase.functions.invoke(functionName, {
+      body,
+      headers: {
+        Authorization: `Bearer ${session.access_token}`
+      }
+    }),
+    "calling the server function"
+  );
 
   if (error) {
     throw new Error(await resolveFunctionErrorMessage(error));
