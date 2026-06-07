@@ -935,6 +935,35 @@ td {
   gap: 0.4rem;
 }
 
+.sale-variants-editor {
+  border: 1px solid #d7e3db;
+  border-radius: 8px;
+  padding: 0.9rem;
+  background: rgba(255, 255, 255, 0.58);
+}
+
+.variant-list {
+  display: grid;
+  gap: 0.75rem;
+  margin: 0.85rem 0;
+}
+
+.variant-row {
+  display: grid;
+  grid-template-columns: minmax(150px, 1.4fr) minmax(95px, 0.8fr) minmax(110px, 0.8fr) minmax(130px, 1fr) auto auto;
+  gap: 0.7rem;
+  align-items: end;
+  padding: 0.75rem;
+  border: 1px solid #d7e3db;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.variant-active-toggle {
+  min-height: 42px;
+  align-items: center;
+}
+
 .customer-autocomplete {
   position: relative;
 }
@@ -2407,7 +2436,8 @@ span.catalog-card-icon-large {
   .form-grid,
   .form-grid.three-columns,
   .discount-grid,
-  .session-item-adder {
+  .session-item-adder,
+  .variant-row {
     grid-template-columns: 1fr;
   }
 

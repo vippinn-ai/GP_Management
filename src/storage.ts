@@ -96,7 +96,17 @@ export function hydrateAppData(parsed: Partial<AppData>): AppData {
       ...item,
       lowStockThreshold: item.lowStockThreshold ?? 5,
       unit: "piece",
-      isReusable: item.isReusable ?? false
+      isReusable: item.isReusable ?? false,
+      sellBaseItem: item.sellBaseItem ?? true,
+      saleVariants: (item.saleVariants ?? []).map((variant, index) => ({
+        ...variant,
+        id: variant.id ?? `${item.id}-variant-${index + 1}`,
+        name: variant.name ?? "",
+        price: variant.price ?? 0,
+        stockUnitsPerSale: Math.max(1, Math.trunc(variant.stockUnitsPerSale ?? 1)),
+        barcode: variant.barcode?.trim() || undefined,
+        active: variant.active ?? true
+      }))
     })),
     expenses: parsed.expenses ?? cloneValue(emptyAppData.expenses),
     expenseTemplates: parsed.expenseTemplates ?? cloneValue(emptyAppData.expenseTemplates),

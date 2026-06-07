@@ -68,6 +68,8 @@ export interface SessionItem {
   unitPrice: number;
   addedAt: string;
   soldAsPackOf?: number;
+  saleVariantId?: string;
+  stockUnitsPerSale?: number;
 }
 
 export interface Session {
@@ -102,6 +104,8 @@ export interface CustomerTabItem {
   unitPrice: number;
   addedAt: string;
   soldAsPackOf?: number;
+  saleVariantId?: string;
+  stockUnitsPerSale?: number;
 }
 
 export interface CustomerTab {
@@ -133,6 +137,15 @@ export interface CigarettePack {
   packPrice: number;
 }
 
+export interface SaleVariant {
+  id: string;
+  name: string;
+  price: number;
+  stockUnitsPerSale: number;
+  barcode?: string;
+  active: boolean;
+}
+
 export interface InventoryItem {
   id: string;
   name: string;
@@ -145,6 +158,23 @@ export interface InventoryItem {
   barcode?: string;
   active: boolean;
   cigarettePack?: CigarettePack;
+  sellBaseItem?: boolean;
+  saleVariants?: SaleVariant[];
+}
+
+export interface SellableInventoryOption {
+  id: string;
+  inventoryItemId: string;
+  saleVariantId?: string;
+  name: string;
+  sourceName: string;
+  category: string;
+  price: number;
+  barcode?: string;
+  sourceBarcode?: string;
+  isBaseItem: boolean;
+  stockUnitsPerSale: number;
+  item: InventoryItem;
 }
 
 export interface StockMovement {
@@ -182,6 +212,8 @@ export interface BillLine {
   linkedSessionId?: string;
   inventoryItemId?: string;
   soldAsPackOf?: number;
+  saleVariantId?: string;
+  stockUnitsPerSale?: number;
 }
 
 export interface Bill {
@@ -322,6 +354,8 @@ export interface DraftBillLine {
   inventoryItemId?: string;
   discount?: DraftDiscountInput;
   soldAsPackOf?: number;
+  saleVariantId?: string;
+  stockUnitsPerSale?: number;
 }
 
 export type TabId = "dashboard" | "sale" | "inventory" | "bills" | "reports" | "customers" | "settings" | "users";

@@ -54,8 +54,10 @@ import type {
   DraftLineDiscountMap,
   InventoryItem,
   InventoryState,
+  SaleVariant,
   ExpenseTemplate,
   ExpenseTemplateOverride,
+  SellableInventoryOption,
   LtpOutcome,
   PaymentMode,
   PlayMode,
@@ -96,10 +98,13 @@ import {
   getCustomerTabCheckoutLines,
   getDiscountAmount,
   getInventoryQuantityMap,
+  getLineStockQuantity,
   getMonthKeysInRange,
   getPreviousRange,
   prorateFactor,
   getReportRange,
+  getSellableInventoryOptions,
+  getStockUnitsPerSale,
   getSessionCheckoutLines,
   normalizeAppDataCustomers,
   allocatePaymentRevenueToBill,
@@ -127,6 +132,7 @@ import {
 } from "./billing";
 
 type PostHopContinuationMode = "gaming" | "consumables";
+type SessionItemFormState = Record<string, { sellableOptionId: string; quantity: number; sellAsPackOf?: number }>;
 
 async function hashPassword(password: string): Promise<string> {
   const salt = crypto.getRandomValues(new Uint8Array(16));
@@ -197,8 +203,8 @@ export default function App() {
     customerName: "",
     customerPhone: ""
   });
-  const [replacementItemForm, setReplacementItemForm] = useState({ itemId: "", quantity: 1 });
-  const [sessionItemForm, setSessionItemForm] = useState<Record<string, { itemId: string; quantity: number; sellAsPackOf?: number }>>({});
+  const [replacementItemForm, setReplacementItemForm] = useState({ sellableOptionId: "", quantity: 1 });
+  const [sessionItemForm, setSessionItemForm] = useState<SessionItemFormState>({});
   const [selectedReceiptBillId, setSelectedReceiptBillId] = useState<string | null>(null);
   const receiptPreviewBlockRef = useRef<HTMLDivElement | null>(null);
   const [, setReceiptPreviewBlockHeight] = useState<number | null>(null);
@@ -220,7 +226,9 @@ export default function App() {
     unit: "piece",
     isReusable: false,
     barcode: "",
-    active: true
+    active: true,
+    sellBaseItem: true,
+    saleVariants: []
   });
   const [useCustomItemCategory, setUseCustomItemCategory] = useState(false);
   const [customItemCategory, setCustomItemCategory] = useState("");
@@ -382,7 +390,7 @@ export default function App() {
               && m.reason?.includes(session.stationNameSnapshot)
           );
           if (alreadyHasReservation) continue;
-          const qty = sessionItem.soldAsPackOf ? sessionItem.quantity * sessionItem.soldAsPackOf : sessionItem.quantity;
+          const qty = getLineStockQuantity(sessionItem);
           draft.stockMovements.push({
             id: createId("stock"),
             itemId: sessionItem.inventoryItemId,
@@ -511,6 +519,14 @@ export default function App() {
   );
   const arcadeInventoryItems = appData.inventoryItems.filter(
     (item) => item.active && item.category === "Arcade"
+  );
+  const sellableInventoryOptions = useMemo(
+    () => getSellableInventoryOptions(appData.inventoryItems),
+    [appData.inventoryItems]
+  );
+  const sellableOptionById = useMemo(
+    () => new Map(sellableInventoryOptions.map((option) => [option.id, option])),
+    [sellableInventoryOptions]
   );
   const defaultArcadeInventoryItem = arcadeInventoryItems[0] ?? null;
   const activeFinancialBills = appData.bills.filter((bill) => bill.status === "issued" || bill.status === "pending");
@@ -811,7 +827,7 @@ export default function App() {
       appData.sessions.filter((session) => session.status !== "closed" && session.id !== ignoreSessionId),
       (session) => sumBy(
         session.items.filter((item) => item.inventoryItemId === itemId),
-        (item) => item.soldAsPackOf ? item.quantity * item.soldAsPackOf : item.quantity
+        (item) => getLineStockQuantity(item)
       )
     );
   }
@@ -821,7 +837,7 @@ export default function App() {
       appData.customerTabs.filter((tab) => tab.status === "open" && tab.id !== ignoreCustomerTabId),
       (tab) => sumBy(
         tab.items.filter((item) => item.inventoryItemId === itemId),
-        (item) => item.soldAsPackOf ? item.quantity * item.soldAsPackOf : item.quantity
+        (item) => getLineStockQuantity(item)
       )
     );
   }
@@ -903,10 +919,29 @@ export default function App() {
       unit: "piece",
       isReusable: false,
       barcode: "",
-      active: true
+      active: true,
+      sellBaseItem: true,
+      saleVariants: []
     });
     setUseCustomItemCategory(false);
     setCustomItemCategory("");
+  }
+
+  function sanitizeSaleVariants(item: InventoryItem, resolvedCategory: string): SaleVariant[] | undefined {
+    if (item.isReusable || resolvedCategory === "Cigarettes") {
+      return undefined;
+    }
+    const variants = (item.saleVariants ?? [])
+      .map((variant) => ({
+        id: variant.id || createId("variant"),
+        name: variant.name.trim(),
+        price: Math.max(0, variant.price),
+        stockUnitsPerSale: Math.max(1, Math.trunc(variant.stockUnitsPerSale)),
+        barcode: variant.barcode?.trim() || undefined,
+        active: variant.active
+      }))
+      .filter((variant) => variant.name);
+    return variants.length > 0 ? variants : undefined;
   }
 
   function closeEditInventoryModal() {
@@ -979,6 +1014,20 @@ export default function App() {
       return `${available} left (~${packs} pack${packs !== 1 ? "s" : ""}${loose > 0 ? ` + ${loose}` : ""})`;
     }
     return `Available ${available}`;
+  }
+
+  function getSellableOptionPickerDetail(
+    option: SellableInventoryOption,
+    ignoreSessionId?: string,
+    ignoreCustomerTabId?: string
+  ) {
+    const sourceAvailable = getAvailableStock(option.item, ignoreSessionId, ignoreCustomerTabId);
+    if (option.isBaseItem) {
+      return getInventoryPickerDetail(option.item, ignoreSessionId, ignoreCustomerTabId);
+    }
+    const sellableQuantity = Math.floor(sourceAvailable / option.stockUnitsPerSale);
+    const leftover = sourceAvailable % option.stockUnitsPerSale;
+    return `${sellableQuantity} available (${sourceAvailable} ${option.sourceName} in stock, ${option.stockUnitsPerSale} per sale${leftover > 0 ? `, ${leftover} leftover` : ""})`;
   }
 
   function handleLogin(event: FormEvent<HTMLFormElement>) {
@@ -1271,17 +1320,19 @@ export default function App() {
 
   function addItemToSession(sessionId: string) {
     const form = sessionItemForm[sessionId];
-    if (!activeUser || !form?.itemId) {
+    if (!activeUser || !form?.sellableOptionId) {
       return;
     }
-    const item = appData.inventoryItems.find((entry) => entry.id === form.itemId && entry.active);
+    const option = sellableOptionById.get(form.sellableOptionId);
+    const item = option?.item;
     const packOf = form.sellAsPackOf;
-    const stockNeeded = packOf ? form.quantity * packOf : form.quantity;
-    if (!item || getAvailableStock(item, sessionId) < stockNeeded) {
+    const stockUnitsPerSale = packOf ?? option?.stockUnitsPerSale ?? 1;
+    const stockNeeded = form.quantity * stockUnitsPerSale;
+    if (!option || !item || getAvailableStock(item, sessionId) < stockNeeded) {
       if (packOf && item && getAvailableStock(item, sessionId) < stockNeeded) {
         window.alert(`Cannot sell as pack — only ${getAvailableStock(item, sessionId)} cigarettes in stock (need ${stockNeeded} for ${form.quantity} pack${form.quantity !== 1 ? "s" : ""}). Please restock first or sell as singles.`);
       } else {
-        window.alert(item?.isReusable ? `${item.name} is currently occupied.` : "Not enough stock available for that item.");
+        window.alert(item?.isReusable ? `${item.name} is currently occupied.` : `Not enough stock available for ${option?.name ?? "that item"}.`);
       }
       return;
     }
@@ -1291,10 +1342,12 @@ export default function App() {
       session.items.push({
         id: createId("session-item"),
         inventoryItemId: item.id,
-        name: item.name,
+        name: option.name,
         quantity: clampNumber(form.quantity, 1),
-        unitPrice: packOf ? item.cigarettePack!.packPrice : item.price,
+        unitPrice: packOf ? item.cigarettePack!.packPrice : option.price,
         soldAsPackOf: packOf,
+        saleVariantId: option.saleVariantId,
+        stockUnitsPerSale: option.saleVariantId ? option.stockUnitsPerSale : undefined,
         addedAt: new Date().toISOString()
       });
       const inventoryEntry = draft.inventoryItems.find((entry) => entry.id === item.id);
@@ -1304,16 +1357,16 @@ export default function App() {
           itemId: item.id,
           type: "session_reservation",
           quantity: -stockNeeded,
-          reason: `Reserved for ${session.stationNameSnapshot}`,
+          reason: `Reserved ${option.name} for ${session.stationNameSnapshot}${option.saleVariantId ? ` (${stockNeeded} ${item.name} unit${stockNeeded !== 1 ? "s" : ""})` : ""}`,
           createdAt: new Date().toISOString(),
           userId: activeUser.id
         });
       }
-      addAuditLog(draft, activeUser.id, "session_item_added", "session", sessionId, `Added ${item.name}${packOf ? " (pack)" : ""} to ${session.stationNameSnapshot}.`);
+      addAuditLog(draft, activeUser.id, "session_item_added", "session", sessionId, `Added ${option.name}${packOf ? " (pack)" : ""} to ${session.stationNameSnapshot}.`);
     }, () => {
       setSessionItemForm((previous) => ({
         ...previous,
-        [sessionId]: { itemId: form.itemId, quantity: 1, sellAsPackOf: packOf }
+        [sessionId]: { sellableOptionId: form.sellableOptionId, quantity: 1, sellAsPackOf: packOf }
       }));
     });
   }
@@ -1332,7 +1385,7 @@ export default function App() {
       if (item) {
         const inventoryEntry = draft.inventoryItems.find((entry) => entry.id === item.inventoryItemId);
         if (inventoryEntry && !inventoryEntry.isReusable) {
-          const stockReleased = item.soldAsPackOf ? item.quantity * item.soldAsPackOf : item.quantity;
+          const stockReleased = getLineStockQuantity(item);
           draft.stockMovements.unshift({
             id: createId("stock"),
             itemId: item.inventoryItemId,
@@ -1743,39 +1796,47 @@ export default function App() {
     }, () => setEditCustomerProfileDraft(null));
   }
 
-  function addItemToCustomerTab(customerTabId: string, item: InventoryItem, sellAsPackOf?: number) {
+  function addItemToCustomerTab(customerTabId: string, option: SellableInventoryOption, sellAsPackOf?: number) {
     const targetTab = appData.customerTabs.find((tab) => tab.id === customerTabId && tab.status === "open");
+    const item = option.item;
     if (!activeUser || !targetTab) {
       window.alert("Open or select a customer tab first.");
       return;
     }
-    const stockNeeded = sellAsPackOf ?? 1;
+    const stockNeeded = sellAsPackOf ?? option.stockUnitsPerSale;
     if (getAvailableStock(item) < stockNeeded) {
       if (sellAsPackOf) {
         window.alert(`Cannot sell as pack — only ${getAvailableStock(item)} cigarettes in stock (need ${sellAsPackOf} for 1 pack). Please restock first or sell as singles.`);
       } else {
-        window.alert(item.isReusable ? `${item.name} is currently occupied.` : "That item is out of stock.");
+        window.alert(item.isReusable ? `${item.name} is currently occupied.` : `${option.name} is out of stock.`);
       }
       return;
     }
     void commitAppDataChange("Adding item...", (draft) => {
       const tab = draft.customerTabs.find((entry) => entry.id === targetTab.id && entry.status === "open");
       if (!tab) return false;
-      const existing = tab.items.find((entry) => entry.inventoryItemId === item.id && entry.soldAsPackOf === sellAsPackOf);
+      const existing = tab.items.find(
+        (entry) =>
+          entry.inventoryItemId === item.id &&
+          entry.soldAsPackOf === sellAsPackOf &&
+          entry.saleVariantId === option.saleVariantId
+      );
       if (existing) {
         existing.quantity += 1;
       } else {
         tab.items.push({
           id: createId("customer-tab-item"),
           inventoryItemId: item.id,
-          name: item.name,
+          name: option.name,
           quantity: 1,
-          unitPrice: sellAsPackOf ? item.cigarettePack!.packPrice : item.price,
+          unitPrice: sellAsPackOf ? item.cigarettePack!.packPrice : option.price,
           soldAsPackOf: sellAsPackOf,
+          saleVariantId: option.saleVariantId,
+          stockUnitsPerSale: option.saleVariantId ? option.stockUnitsPerSale : undefined,
           addedAt: new Date().toISOString()
         });
       }
-      addAuditLog(draft, activeUser.id, "customer_tab_item_added", "customer_tab", tab.id, `Added ${item.name}${sellAsPackOf ? " (pack)" : ""} to ${tab.customerName}'s tab.`);
+      addAuditLog(draft, activeUser.id, "customer_tab_item_added", "customer_tab", tab.id, `Added ${option.name}${sellAsPackOf ? " (pack)" : ""} to ${tab.customerName}'s tab.`);
     });
   }
 
@@ -1792,9 +1853,10 @@ export default function App() {
     if (
       currentLine &&
       currentItem &&
-      nextQuantity > getAvailableStock(currentItem, undefined, targetTab.id)
+      getLineStockQuantity({ ...currentLine, quantity: nextQuantity }) > getAvailableStock(currentItem, undefined, targetTab.id)
     ) {
-      window.alert(`Only ${getAvailableStock(currentItem, undefined, targetTab.id)} available for ${currentItem.name}.`);
+      const availableSaleUnits = Math.floor(getAvailableStock(currentItem, undefined, targetTab.id) / getStockUnitsPerSale(currentLine));
+      window.alert(`Only ${availableSaleUnits} available for ${currentLine.name}.`);
       return;
     }
     void commitAppDataChange("Updating item quantity...", (draft) => {
@@ -2092,7 +2154,7 @@ export default function App() {
     const hoppedSession = checkoutState?.sessionId ? getSessionById(checkoutState.sessionId) : null;
     setCheckoutState(null);
     setIsHopMode(false);
-    setReplacementItemForm({ itemId: "", quantity: 1 });
+    setReplacementItemForm({ sellableOptionId: "", quantity: 1 });
     if (hoppedSession?.closeDisposition === "hopped") {
       setLastHoppedSessionId(hoppedSession.id);
       setPostHopContinuationMode("gaming");
@@ -2158,7 +2220,7 @@ export default function App() {
         };
       }
     }
-    setReplacementItemForm({ itemId: "", quantity: 1 });
+    setReplacementItemForm({ sellableOptionId: "", quantity: 1 });
     setCheckoutState({
       mode: "bill_replacement",
       replacementBillId: billId,
@@ -2185,18 +2247,19 @@ export default function App() {
   }
 
   function addItemToReplacementBill() {
-    if (!checkoutState || checkoutState.mode !== "bill_replacement" || !replacementItemForm.itemId) {
+    if (!checkoutState || checkoutState.mode !== "bill_replacement" || !replacementItemForm.sellableOptionId) {
       return;
     }
-    const item = appData.inventoryItems.find((entry) => entry.id === replacementItemForm.itemId && entry.active);
-    if (!item) {
+    const option = sellableOptionById.get(replacementItemForm.sellableOptionId);
+    const item = option?.item;
+    if (!option || !item) {
       return;
     }
     const originalBill = checkoutState.replacementBillId ? getBillById(checkoutState.replacementBillId) : undefined;
     const originalQuantities = getInventoryQuantityMap(originalBill?.lines ?? []);
     const currentQuantities = getInventoryQuantityMap(checkoutState.replacementLines ?? []);
-    const nextQuantity = (currentQuantities[item.id] ?? 0) + clampNumber(replacementItemForm.quantity, 1);
-    const requiredDelta = nextQuantity - (originalQuantities[item.id] ?? 0);
+    const nextStockQuantity = (currentQuantities[item.id] ?? 0) + clampNumber(replacementItemForm.quantity, 1) * option.stockUnitsPerSale;
+    const requiredDelta = nextStockQuantity - (originalQuantities[item.id] ?? 0);
     if (!item.isReusable && requiredDelta > item.stockQty) {
       window.alert(`Only ${item.stockQty} additional ${item.name} available for replacement.`);
       return;
@@ -2214,16 +2277,18 @@ export default function App() {
               {
                 id: createId("replacement-line"),
                 type: "inventory_item",
-                description: item.name,
+                description: option.name,
                 quantity: clampNumber(replacementItemForm.quantity, 1),
-                unitPrice: item.price,
-                inventoryItemId: item.id
+                unitPrice: option.price,
+                inventoryItemId: item.id,
+                saleVariantId: option.saleVariantId,
+                stockUnitsPerSale: option.saleVariantId ? option.stockUnitsPerSale : undefined
               }
             ]
           }
         : previous
     );
-    setReplacementItemForm({ itemId: replacementItemForm.itemId, quantity: 1 });
+    setReplacementItemForm({ sellableOptionId: replacementItemForm.sellableOptionId, quantity: 1 });
   }
 
   function updateReplacementLineQuantity(lineId: string, quantity: number) {
@@ -2244,7 +2309,7 @@ export default function App() {
     const originalQuantities = getInventoryQuantityMap(originalBill?.lines ?? []);
     const otherReplacementLines = replacementLines.filter((line) => line.id !== lineId);
     const currentQuantities = getInventoryQuantityMap(otherReplacementLines);
-    const totalAfterChange = (currentQuantities[item.id] ?? 0) + nextQuantity;
+    const totalAfterChange = (currentQuantities[item.id] ?? 0) + nextQuantity * getStockUnitsPerSale(targetLine);
     const requiredDelta = totalAfterChange - (originalQuantities[item.id] ?? 0);
     if (!item.isReusable && requiredDelta > item.stockQty) {
       window.alert(`Only ${item.stockQty} additional ${item.name} available for replacement.`);
@@ -2360,11 +2425,11 @@ export default function App() {
     ) {
       const sessionReserved = sumBy(
         data.sessions.filter((entry) => entry.status !== "closed" && entry.id !== ignoreSessionId),
-        (entry) => sumBy(entry.items.filter((line) => line.inventoryItemId === item.id), (line) => line.soldAsPackOf ? line.quantity * line.soldAsPackOf : line.quantity)
+        (entry) => sumBy(entry.items.filter((line) => line.inventoryItemId === item.id), (line) => getLineStockQuantity(line))
       );
       const tabReserved = sumBy(
         data.customerTabs.filter((entry) => entry.status === "open" && entry.id !== ignoreCustomerTabId),
-        (entry) => sumBy(entry.items.filter((line) => line.inventoryItemId === item.id), (line) => line.soldAsPackOf ? line.quantity * line.soldAsPackOf : line.quantity)
+        (entry) => sumBy(entry.items.filter((line) => line.inventoryItemId === item.id), (line) => getLineStockQuantity(line))
       );
       return Math.max(0, item.stockQty - sessionReserved - tabReserved);
     }
@@ -2418,7 +2483,7 @@ export default function App() {
           return false;
         }
         const inventoryItem = baseAppData.inventoryItems.find((item) => item.id === line.inventoryItemId);
-        return !inventoryItem || getAvailableStockFromData(baseAppData, inventoryItem, undefined, customerTab.id) < line.quantity;
+        return !inventoryItem || getAvailableStockFromData(baseAppData, inventoryItem, undefined, customerTab.id) < getLineStockQuantity(line);
       });
       if (unavailableLine) {
         window.alert(`Not enough stock available for ${unavailableLine.description}. Update the tab before billing.`);
@@ -2637,14 +2702,14 @@ export default function App() {
           if (!item || item.isReusable) {
             continue;
           }
-          const stockDelta = line.soldAsPackOf ? line.quantity * line.soldAsPackOf : line.quantity;
+          const stockDelta = getLineStockQuantity(line);
           item.stockQty -= stockDelta;
           draft.stockMovements.unshift({
             id: createId("stock"),
             itemId: item.id,
             type: "sale",
             quantity: -stockDelta,
-            reason: `Sold in ${billNumber}${line.soldAsPackOf ? ` (${line.quantity} pack${line.quantity !== 1 ? "s" : ""} of ${line.soldAsPackOf})` : ""}`,
+            reason: `Sold ${line.description} in ${billNumber}${line.soldAsPackOf ? ` (${line.quantity} pack${line.quantity !== 1 ? "s" : ""} of ${line.soldAsPackOf})` : line.saleVariantId ? ` (${stockDelta} ${item.name} unit${stockDelta !== 1 ? "s" : ""})` : ""}`,
             createdAt: issuedAt,
             userId: activeUser.id,
             relatedBillId: billId
@@ -2747,7 +2812,7 @@ export default function App() {
     setManageSessionId(null);
     setSelectedCustomerTabId(null);
     setCustomerTabDraft({ customerId: undefined, customerName: "", customerPhone: "" });
-    setReplacementItemForm({ itemId: "", quantity: 1 });
+    setReplacementItemForm({ sellableOptionId: "", quantity: 1 });
     setLastHoppedSessionId(null);
     openReceiptWindow(nextAppData.businessProfile, issuedBill, nextAppData.bills, nextAppData.payments);
     downloadReceiptPdf(nextAppData.businessProfile, issuedBill, nextAppData.bills, nextAppData.payments);
@@ -2843,6 +2908,8 @@ export default function App() {
       window.alert("Category is required.");
       return;
     }
+    const saleVariants = sanitizeSaleVariants(itemForm, resolvedCategory);
+    const sellBaseItem = itemForm.isReusable || resolvedCategory === "Cigarettes" ? true : itemForm.sellBaseItem ?? true;
     void commitAppDataChange(itemForm.id ? "Updating inventory item..." : "Saving inventory item...", (draft) => {
       if (itemForm.id) {
         const existing = draft.inventoryItems.find((item) => item.id === itemForm.id);
@@ -2855,7 +2922,9 @@ export default function App() {
           category: resolvedCategory,
           unit: "piece",
           barcode: itemForm.barcode?.trim() || undefined,
-          cigarettePack: resolvedCategory === "Cigarettes" ? itemForm.cigarettePack : undefined
+          cigarettePack: resolvedCategory === "Cigarettes" ? itemForm.cigarettePack : undefined,
+          sellBaseItem,
+          saleVariants
         });
         addAuditLog(draft, activeUser.id, "inventory_updated", "inventory_item", existing.id, `Updated ${existing.name}.`);
       } else {
@@ -2867,7 +2936,9 @@ export default function App() {
           category: resolvedCategory,
           unit: "piece",
           barcode: itemForm.barcode?.trim() || undefined,
-          cigarettePack: resolvedCategory === "Cigarettes" ? itemForm.cigarettePack : undefined
+          cigarettePack: resolvedCategory === "Cigarettes" ? itemForm.cigarettePack : undefined,
+          sellBaseItem,
+          saleVariants
         });
         addAuditLog(draft, activeUser.id, "inventory_created", "inventory_item", newId, `Created ${itemForm.name.trim()}.`);
       }
@@ -2887,6 +2958,8 @@ export default function App() {
       window.alert("Category is required.");
       return;
     }
+    const saleVariants = sanitizeSaleVariants(editItemForm, resolvedCategory);
+    const sellBaseItem = editItemForm.isReusable || resolvedCategory === "Cigarettes" ? true : editItemForm.sellBaseItem ?? true;
     void commitAppDataChange("Updating inventory item...", (draft) => {
       const existing = draft.inventoryItems.find((item) => item.id === editItemForm.id);
       if (!existing) {
@@ -2898,7 +2971,9 @@ export default function App() {
         category: resolvedCategory,
         unit: "piece",
         barcode: editItemForm.barcode?.trim() || undefined,
-        cigarettePack: resolvedCategory === "Cigarettes" ? editItemForm.cigarettePack : undefined
+        cigarettePack: resolvedCategory === "Cigarettes" ? editItemForm.cigarettePack : undefined,
+        sellBaseItem,
+        saleVariants
       });
       if (!draft.inventoryCategories.includes(resolvedCategory)) {
         draft.inventoryCategories.push(resolvedCategory);
@@ -3557,7 +3632,7 @@ export default function App() {
         if (!item || item.isReusable) {
           continue;
         }
-        const reverseDelta = line.soldAsPackOf ? line.quantity * line.soldAsPackOf : line.quantity;
+        const reverseDelta = getLineStockQuantity(line);
         item.stockQty += reverseDelta;
         draft.stockMovements.unshift({
           id: createId("stock"),
@@ -4014,6 +4089,7 @@ export default function App() {
         {activeTab === "sale" && (
           <SalePanel
             inventoryItems={appData.inventoryItems}
+            sellableOptions={sellableInventoryOptions}
             customers={appData.customers}
             customerTabSearch={customerTabSearch}
             customerTabDraft={customerTabDraft}
@@ -4022,7 +4098,7 @@ export default function App() {
             selectedCustomerTabPreviousHops={selectedCustomerTabPreviousHops}
             editCustomerTabDraft={editCustomerTabDraft}
             canEditCustomerTabDetails={canEditSessionCustomerDetails}
-            getInventoryPickerDetail={getInventoryPickerDetail}
+            getSellableOptionPickerDetail={getSellableOptionPickerDetail}
             getCustomerTabTotal={getCustomerTabTotal}
             getSessionLiveTotal={getSessionLiveTotal}
             getSessionBilledMinutes={(session) => getSessionChargeSummary(session, session.endedAt).billedMinutes}
@@ -4030,7 +4106,7 @@ export default function App() {
             onCustomerTabDraftChange={setCustomerTabDraft}
             onSelectCustomerTab={setSelectedCustomerTabId}
             onEditCustomerTabDraftChange={setEditCustomerTabDraft}
-            onAddItemToCustomerTab={(customerTabId, item, sellAsPackOf) => addItemToCustomerTab(customerTabId, item, sellAsPackOf)}
+            onAddItemToCustomerTab={(customerTabId, option, sellAsPackOf) => addItemToCustomerTab(customerTabId, option, sellAsPackOf)}
             onCreateOrSelectCustomerTab={createOrSelectCustomerTab}
             onUpdateCustomerTabItemQuantity={updateCustomerTabItemQuantity}
             onRemoveItemFromCustomerTab={removeItemFromCustomerTab}
@@ -4505,28 +4581,29 @@ export default function App() {
             </div>
           </div>
           <div className="session-item-adder">
-            <select value={sessionItemForm[managedSession.id]?.itemId ?? ""} onChange={(event) => setSessionItemForm((p) => ({ ...p, [managedSession.id]: { itemId: event.target.value, quantity: p[managedSession.id]?.quantity ?? 1, sellAsPackOf: undefined } }))}>
+            <select value={sessionItemForm[managedSession.id]?.sellableOptionId ?? ""} onChange={(event) => setSessionItemForm((p) => ({ ...p, [managedSession.id]: { sellableOptionId: event.target.value, quantity: p[managedSession.id]?.quantity ?? 1, sellAsPackOf: undefined } }))}>
               <option value="">Select item</option>
-              {appData.inventoryItems.filter((item) => item.active).map((item) => <option key={item.id} value={item.id}>{item.name} · {currency(item.price)} · {getInventoryPickerDetail(item, managedSession.id)}</option>)}
+              {sellableInventoryOptions.map((option) => <option key={option.id} value={option.id}>{option.name} · {currency(option.price)} · {getSellableOptionPickerDetail(option, managedSession.id)}</option>)}
             </select>
             {(() => {
-              const selectedItem = appData.inventoryItems.find((i) => i.id === sessionItemForm[managedSession.id]?.itemId);
-              if (!selectedItem?.cigarettePack) return null;
+              const selectedOption = sellableOptionById.get(sessionItemForm[managedSession.id]?.sellableOptionId ?? "");
+              const selectedItem = selectedOption?.item;
+              if (!selectedOption?.isBaseItem || !selectedItem?.cigarettePack) return null;
               const packOf = selectedItem.cigarettePack;
               const selling = sessionItemForm[managedSession.id]?.sellAsPackOf;
               return (
-                <select value={selling ? "pack" : "single"} onChange={(e) => setSessionItemForm((p) => ({ ...p, [managedSession.id]: { ...p[managedSession.id], itemId: p[managedSession.id]?.itemId ?? "", quantity: p[managedSession.id]?.quantity ?? 1, sellAsPackOf: e.target.value === "pack" ? packOf.size : undefined } }))}>
+                <select value={selling ? "pack" : "single"} onChange={(e) => setSessionItemForm((p) => ({ ...p, [managedSession.id]: { ...p[managedSession.id], sellableOptionId: p[managedSession.id]?.sellableOptionId ?? "", quantity: p[managedSession.id]?.quantity ?? 1, sellAsPackOf: e.target.value === "pack" ? packOf.size : undefined } }))}>
                   <option value="single">Single — {currency(selectedItem.price)}</option>
                   <option value="pack">Pack of {packOf.size} — {currency(packOf.packPrice)}</option>
                 </select>
               );
             })()}
-            <NumericInput min={1} defaultValue={1} value={sessionItemForm[managedSession.id]?.quantity ?? 1} onValueChange={(value) => setSessionItemForm((p) => ({ ...p, [managedSession.id]: { ...p[managedSession.id], itemId: p[managedSession.id]?.itemId ?? "", quantity: value } }))} />
+            <NumericInput min={1} defaultValue={1} value={sessionItemForm[managedSession.id]?.quantity ?? 1} onValueChange={(value) => setSessionItemForm((p) => ({ ...p, [managedSession.id]: { ...p[managedSession.id], sellableOptionId: p[managedSession.id]?.sellableOptionId ?? "", quantity: value } }))} />
             <button className="secondary-button" type="button" onClick={() => addItemToSession(managedSession.id)}>Add Item</button>
           </div>
           {(() => {
-            const selectedItem = appData.inventoryItems.find((i) => i.id === sessionItemForm[managedSession.id]?.itemId);
-            if (!selectedItem || selectedItem.price > 0) return null;
+            const selectedOption = sellableOptionById.get(sessionItemForm[managedSession.id]?.sellableOptionId ?? "");
+            if (!selectedOption || selectedOption.price > 0) return null;
             return <div className="warning-banner">⚠ This item has a ₹0 price — confirm or update it in Inventory before adding.</div>;
           })()}
           <div className="line-items">
@@ -4713,7 +4790,7 @@ export default function App() {
             } else {
               setCheckoutState(null);
               setIsHopMode(false);
-              setReplacementItemForm({ itemId: "", quantity: 1 });
+              setReplacementItemForm({ sellableOptionId: "", quantity: 1 });
             }
           }}
           wide
@@ -4881,15 +4958,14 @@ export default function App() {
               </div>
               <div className="session-item-adder">
                 <select
-                  value={replacementItemForm.itemId}
-                  onChange={(event) => setReplacementItemForm((previous) => ({ ...previous, itemId: event.target.value }))}
+                  value={replacementItemForm.sellableOptionId}
+                  onChange={(event) => setReplacementItemForm((previous) => ({ ...previous, sellableOptionId: event.target.value }))}
                 >
                   <option value="">Select item</option>
-                  {appData.inventoryItems
-                    .filter((item) => item.active)
-                    .map((item) => (
-                      <option key={item.id} value={item.id}>
-                        {item.name} · {currency(item.price)} · {getInventoryPickerDetail(item)}
+                  {sellableInventoryOptions
+                    .map((option) => (
+                      <option key={option.id} value={option.id}>
+                        {option.name} · {currency(option.price)} · {getSellableOptionPickerDetail(option)}
                       </option>
                     ))}
                 </select>
@@ -4937,13 +5013,13 @@ export default function App() {
               </div>
               <div className="session-item-adder">
                 <select
-                  value={sessionItemForm[checkoutSession.id]?.itemId ?? ""}
+                  value={sessionItemForm[checkoutSession.id]?.sellableOptionId ?? ""}
                   onChange={(event) =>
                     setSessionItemForm((p) => ({
                       ...p,
                       [checkoutSession.id]: {
                         ...p[checkoutSession.id],
-                        itemId: event.target.value,
+                        sellableOptionId: event.target.value,
                         quantity: p[checkoutSession.id]?.quantity ?? 1,
                         sellAsPackOf: undefined
                       }
@@ -4951,17 +5027,17 @@ export default function App() {
                   }
                 >
                   <option value="">Select item</option>
-                  {appData.inventoryItems
-                    .filter((item) => item.active)
-                    .map((item) => (
-                      <option key={item.id} value={item.id}>
-                        {item.name} · {currency(item.price)} · {getInventoryPickerDetail(item, checkoutSession.id)}
+                  {sellableInventoryOptions
+                    .map((option) => (
+                      <option key={option.id} value={option.id}>
+                        {option.name} · {currency(option.price)} · {getSellableOptionPickerDetail(option, checkoutSession.id)}
                       </option>
                     ))}
                 </select>
                 {(() => {
-                  const selectedItem = appData.inventoryItems.find((i) => i.id === sessionItemForm[checkoutSession.id]?.itemId);
-                  if (!selectedItem?.cigarettePack) return null;
+                  const selectedOption = sellableOptionById.get(sessionItemForm[checkoutSession.id]?.sellableOptionId ?? "");
+                  const selectedItem = selectedOption?.item;
+                  if (!selectedOption?.isBaseItem || !selectedItem?.cigarettePack) return null;
                   const packOf = selectedItem.cigarettePack;
                   const selling = sessionItemForm[checkoutSession.id]?.sellAsPackOf;
                   return (
@@ -4972,7 +5048,7 @@ export default function App() {
                           ...p,
                           [checkoutSession.id]: {
                             ...p[checkoutSession.id],
-                            itemId: p[checkoutSession.id]?.itemId ?? "",
+                            sellableOptionId: p[checkoutSession.id]?.sellableOptionId ?? "",
                             quantity: p[checkoutSession.id]?.quantity ?? 1,
                             sellAsPackOf: e.target.value === "pack" ? packOf.size : undefined
                           }
@@ -4993,7 +5069,7 @@ export default function App() {
                       ...p,
                       [checkoutSession.id]: {
                         ...p[checkoutSession.id],
-                        itemId: p[checkoutSession.id]?.itemId ?? "",
+                        sellableOptionId: p[checkoutSession.id]?.sellableOptionId ?? "",
                         quantity: value
                       }
                     }))
@@ -5163,7 +5239,7 @@ export default function App() {
               } else {
                 setCheckoutState(null);
                 setIsHopMode(false);
-                setReplacementItemForm({ itemId: "", quantity: 1 });
+                setReplacementItemForm({ sellableOptionId: "", quantity: 1 });
               }
             }}>
               {checkoutSession?.closeDisposition === "hopped" ? "Start New Game Instead" : "Cancel"}

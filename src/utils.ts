@@ -10,8 +10,10 @@ import type {
   DraftLineDiscountMap,
   ExpenseTemplate,
   ExpenseTemplateOverride,
+  InventoryItem,
   Payment,
   ReportFilterState,
+  SellableInventoryOption,
   Session,
   SessionChargeSummary
 } from "./types";
@@ -95,6 +97,63 @@ export function sumBy<T>(values: T[], getter: (value: T) => number): number {
   return values.reduce((total, value) => total + getter(value), 0);
 }
 
+export function getStockUnitsPerSale(line: { soldAsPackOf?: number; stockUnitsPerSale?: number }) {
+  return line.stockUnitsPerSale ?? line.soldAsPackOf ?? 1;
+}
+
+export function getLineStockQuantity(line: { quantity: number; soldAsPackOf?: number; stockUnitsPerSale?: number }) {
+  return line.quantity * getStockUnitsPerSale(line);
+}
+
+export function getSellableInventoryOptions(inventoryItems: InventoryItem[]): SellableInventoryOption[] {
+  return inventoryItems.flatMap((item) => {
+    if (!item.active) {
+      return [];
+    }
+
+    const options: SellableInventoryOption[] = [];
+    if (item.sellBaseItem ?? true) {
+      options.push({
+        id: item.id,
+        inventoryItemId: item.id,
+        name: item.name,
+        sourceName: item.name,
+        category: item.category,
+        price: item.price,
+        barcode: item.barcode,
+        sourceBarcode: item.barcode,
+        isBaseItem: true,
+        stockUnitsPerSale: 1,
+        item
+      });
+    }
+
+    if (!item.isReusable && item.category !== "Cigarettes") {
+      for (const variant of item.saleVariants ?? []) {
+        if (!variant.active) {
+          continue;
+        }
+        options.push({
+          id: `${item.id}::variant::${variant.id}`,
+          inventoryItemId: item.id,
+          saleVariantId: variant.id,
+          name: variant.name,
+          sourceName: item.name,
+          category: item.category,
+          price: variant.price,
+          barcode: variant.barcode,
+          sourceBarcode: item.barcode,
+          isBaseItem: false,
+          stockUnitsPerSale: variant.stockUnitsPerSale,
+          item
+        });
+      }
+    }
+
+    return options;
+  });
+}
+
 export function resolveCustomerTabWorkspaceSelection(
   openTabs: CustomerTab[],
   selectedTabId: string | null
@@ -173,7 +232,9 @@ export function getSessionCheckoutLines(session: Session, chargeSummary: Session
       quantity: item.quantity,
       unitPrice: item.unitPrice,
       inventoryItemId: item.inventoryItemId,
-      soldAsPackOf: item.soldAsPackOf
+      soldAsPackOf: item.soldAsPackOf,
+      saleVariantId: item.saleVariantId,
+      stockUnitsPerSale: item.stockUnitsPerSale
     });
   }
   return lines;
@@ -187,7 +248,9 @@ export function getCustomerTabCheckoutLines(items: CustomerTabItem[]): DraftBill
     quantity: item.quantity,
     unitPrice: item.unitPrice,
     inventoryItemId: item.inventoryItemId,
-    soldAsPackOf: item.soldAsPackOf
+    soldAsPackOf: item.soldAsPackOf,
+    saleVariantId: item.saleVariantId,
+    stockUnitsPerSale: item.stockUnitsPerSale
   }));
 }
 
@@ -200,16 +263,18 @@ export function cloneBillLinesForReplacement(bill: AppData["bills"][number]): Dr
     unitPrice: line.unitPrice,
     linkedSessionId: line.linkedSessionId,
     inventoryItemId: line.inventoryItemId,
-    soldAsPackOf: line.soldAsPackOf
+    soldAsPackOf: line.soldAsPackOf,
+    saleVariantId: line.saleVariantId,
+    stockUnitsPerSale: line.stockUnitsPerSale
   }));
 }
 
-export function getInventoryQuantityMap(lines: Array<{ inventoryItemId?: string; quantity: number }>) {
+export function getInventoryQuantityMap(lines: Array<{ inventoryItemId?: string; quantity: number; soldAsPackOf?: number; stockUnitsPerSale?: number }>) {
   return lines.reduce<Record<string, number>>((totals, line) => {
     if (!line.inventoryItemId) {
       return totals;
     }
-    totals[line.inventoryItemId] = (totals[line.inventoryItemId] ?? 0) + line.quantity;
+    totals[line.inventoryItemId] = (totals[line.inventoryItemId] ?? 0) + getLineStockQuantity(line);
     return totals;
   }, {});
 }
@@ -234,7 +299,9 @@ export function buildBillPreview(
       total: subtotal - discountAmount,
       linkedSessionId: line.linkedSessionId,
       inventoryItemId: line.inventoryItemId,
-      soldAsPackOf: line.soldAsPackOf
+      soldAsPackOf: line.soldAsPackOf,
+      saleVariantId: line.saleVariantId,
+      stockUnitsPerSale: line.stockUnitsPerSale
     } satisfies BillLine;
   });
   const subtotal = sumBy(processedLines, (line) => line.subtotal);

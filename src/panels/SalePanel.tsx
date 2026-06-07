@@ -1,5 +1,5 @@
 import { type FormEvent, useState } from "react";
-import type { Customer, CustomerTab, CustomerTabDraft, CustomerTabEditDraft, CustomerTabItem, InventoryItem, Session } from "../types";
+import type { Customer, CustomerTab, CustomerTabDraft, CustomerTabEditDraft, CustomerTabItem, InventoryItem, SellableInventoryOption, Session } from "../types";
 import { currency, formatMinutes } from "../utils";
 import { getCategoryIcon } from "../constants";
 import { Modal } from "../components/Modal";
@@ -11,6 +11,7 @@ import { CustomerAutocompleteFields } from "../components/CustomerAutocompleteFi
 
 export function SalePanel(props: {
   inventoryItems: InventoryItem[];
+  sellableOptions: SellableInventoryOption[];
   customers: Customer[];
   customerTabSearch: string;
   customerTabDraft: CustomerTabDraft;
@@ -19,7 +20,7 @@ export function SalePanel(props: {
   selectedCustomerTabPreviousHops: Session[];
   editCustomerTabDraft: CustomerTabEditDraft | null;
   canEditCustomerTabDetails: boolean;
-  getInventoryPickerDetail: (item: InventoryItem, ignoreSessionId?: string, ignoreCustomerTabId?: string) => string;
+  getSellableOptionPickerDetail: (option: SellableInventoryOption, ignoreSessionId?: string, ignoreCustomerTabId?: string) => string;
   getCustomerTabTotal: (tab: CustomerTab) => number;
   getSessionLiveTotal: (session: Session, effectiveEndAt?: string) => number;
   getSessionBilledMinutes: (session: Session) => number;
@@ -27,7 +28,7 @@ export function SalePanel(props: {
   onCustomerTabDraftChange: (next: CustomerTabDraft) => void;
   onSelectCustomerTab: (tabId: string) => void;
   onEditCustomerTabDraftChange: (next: CustomerTabEditDraft | null) => void;
-  onAddItemToCustomerTab: (customerTabId: string, item: InventoryItem, sellAsPackOf?: number) => void;
+  onAddItemToCustomerTab: (customerTabId: string, option: SellableInventoryOption, sellAsPackOf?: number) => void;
   onCreateOrSelectCustomerTab: (event: FormEvent<HTMLFormElement>) => void;
   onUpdateCustomerTabItemQuantity: (customerTabId: string, lineId: string, quantity: number) => void;
   onRemoveItemFromCustomerTab: (customerTabId: string, lineId: string) => void;
@@ -44,7 +45,7 @@ export function SalePanel(props: {
     editCustomerTabDraft,
     canEditCustomerTabDetails
   } = props;
-  const [cigPackModal, setCigPackModal] = useState<{ item: InventoryItem } | null>(null);
+  const [cigPackModal, setCigPackModal] = useState<{ option: SellableInventoryOption } | null>(null);
   const [showInlineTabSwitcher, setShowInlineTabSwitcher] = useState(false);
   const previousHopTotal = selectedCustomerTabPreviousHops.reduce(
     (total, session) => total + props.getSessionLiveTotal(session, session.endedAt),
@@ -125,14 +126,13 @@ export function SalePanel(props: {
             placeholder="Search items..."
           />
           <div className="catalog-grid">
-            {props.inventoryItems
-              .filter((item) => item.active)
-              .filter((item) =>
-                `${item.name} ${item.category} ${item.barcode ?? ""}`.toLowerCase().includes(props.customerTabSearch.toLowerCase())
+            {props.sellableOptions
+              .filter((option) =>
+                `${option.name} ${option.sourceName} ${option.category} ${option.barcode ?? ""} ${option.sourceBarcode ?? ""}`.toLowerCase().includes(props.customerTabSearch.toLowerCase())
               )
-              .map((item) => (
+              .map((option) => (
                 <button
-                  key={item.id}
+                  key={option.id}
                   type="button"
                   className="catalog-card"
                   disabled={!hasSelectedTab}
@@ -140,28 +140,30 @@ export function SalePanel(props: {
                     if (!selectedCustomerTab) {
                       return;
                     }
-                    if (item.cigarettePack) {
-                      setCigPackModal({ item });
+                    if (option.isBaseItem && option.item.cigarettePack) {
+                      setCigPackModal({ option });
                     } else {
-                      props.onAddItemToCustomerTab(selectedCustomerTab.id, item);
+                      props.onAddItemToCustomerTab(selectedCustomerTab.id, option);
                     }
                   }}
                 >
                   <div className="catalog-card-info">
-                    <strong>{item.name}</strong>
-                    <span className={item.category === "Cigarettes" ? "category-icon--cigarettes" : ""}>{item.category}</span>
-                    <span>{currency(item.price)}</span>
-                    <span className="muted">{props.getInventoryPickerDetail(item, undefined, selectedCustomerTab?.id)}</span>
+                    <strong>{option.name}</strong>
+                    <span className={option.category === "Cigarettes" ? "category-icon--cigarettes" : ""}>
+                      {option.category}{option.isBaseItem ? "" : ` · from ${option.sourceName}`}
+                    </span>
+                    <span>{currency(option.price)}</span>
+                    <span className="muted">{props.getSellableOptionPickerDetail(option, undefined, selectedCustomerTab?.id)}</span>
                   </div>
-                  {CATEGORY_IMAGES[item.category] ? (
+                  {CATEGORY_IMAGES[option.category] ? (
                     <img
-                      src={CATEGORY_IMAGES[item.category]}
+                      src={CATEGORY_IMAGES[option.category]}
                       alt=""
-                      className={`catalog-card-icon-large${LARGE_ICON_CATEGORIES.has(item.category) ? " catalog-card-icon-large--xl" : ""}`}
+                      className={`catalog-card-icon-large${LARGE_ICON_CATEGORIES.has(option.category) ? " catalog-card-icon-large--xl" : ""}`}
                       aria-hidden="true"
                     />
                   ) : (
-                    <span className="catalog-card-icon-large" aria-hidden="true">{getCategoryIcon(item.category)}</span>
+                    <span className="catalog-card-icon-large" aria-hidden="true">{getCategoryIcon(option.category)}</span>
                   )}
                 </button>
               ))}
@@ -304,7 +306,7 @@ export function SalePanel(props: {
       </section>
 
       {cigPackModal && (
-        <Modal title={`Add ${cigPackModal.item.name}`} onClose={() => setCigPackModal(null)}>
+        <Modal title={`Add ${cigPackModal.option.name}`} onClose={() => setCigPackModal(null)}>
           <div className="form-grid">
             <p>Choose how to sell this cigarette item:</p>
             <div className="button-row field-span-full">
@@ -313,24 +315,24 @@ export function SalePanel(props: {
                 type="button"
                 onClick={() => {
                   if (selectedCustomerTab) {
-                    props.onAddItemToCustomerTab(selectedCustomerTab.id, cigPackModal.item, undefined);
+                    props.onAddItemToCustomerTab(selectedCustomerTab.id, cigPackModal.option, undefined);
                   }
                   setCigPackModal(null);
                 }}
               >
-                Single — {currency(cigPackModal.item.price)}
+                Single — {currency(cigPackModal.option.price)}
               </button>
               <button
                 className="primary-button"
                 type="button"
                 onClick={() => {
                   if (selectedCustomerTab) {
-                    props.onAddItemToCustomerTab(selectedCustomerTab.id, cigPackModal.item, cigPackModal.item.cigarettePack!.size);
+                    props.onAddItemToCustomerTab(selectedCustomerTab.id, cigPackModal.option, cigPackModal.option.item.cigarettePack!.size);
                   }
                   setCigPackModal(null);
                 }}
               >
-                Pack of {cigPackModal.item.cigarettePack!.size} — {currency(cigPackModal.item.cigarettePack!.packPrice)}
+                Pack of {cigPackModal.option.item.cigarettePack!.size} — {currency(cigPackModal.option.item.cigarettePack!.packPrice)}
               </button>
             </div>
           </div>

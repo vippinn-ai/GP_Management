@@ -1,6 +1,6 @@
 import { type FormEvent } from "react";
-import type { InventoryItem, InventoryState, StockMovement, StockMovementType } from "../types";
-import { currency } from "../utils";
+import type { InventoryItem, InventoryState, SaleVariant, StockMovement, StockMovementType } from "../types";
+import { createId, currency } from "../utils";
 import { getCategoryIcon } from "../constants";
 import { getCategoryImage } from "../categoryImages";
 import { Modal } from "../components/Modal";
@@ -10,6 +10,121 @@ interface InventoryAction {
   itemId: string;
   quantity: number;
   reason: string;
+}
+
+function createBlankSaleVariant(defaultPrice: number): SaleVariant {
+  return {
+    id: createId("variant"),
+    name: "",
+    price: defaultPrice,
+    stockUnitsPerSale: 1,
+    barcode: "",
+    active: true
+  };
+}
+
+function SaleVariantsEditor(props: {
+  item: InventoryItem;
+  heading: string;
+  onChange: (next: InventoryItem) => void;
+}) {
+  const { item, heading } = props;
+  if (item.isReusable || item.category === "Cigarettes") {
+    return null;
+  }
+
+  const variants = item.saleVariants ?? [];
+
+  function updateVariant(variantId: string, nextPatch: Partial<SaleVariant>) {
+    props.onChange({
+      ...item,
+      saleVariants: variants.map((variant) =>
+        variant.id === variantId ? { ...variant, ...nextPatch } : variant
+      )
+    });
+  }
+
+  return (
+    <div className="field-span-full sale-variants-editor">
+      <div className="section-block-header compact">
+        <h3>{heading}</h3>
+        <p>Sell this source item as different products while deducting from the same stock.</p>
+      </div>
+      <label className="checkbox-field">
+        <input
+          type="checkbox"
+          checked={item.sellBaseItem ?? true}
+          onChange={(event) => props.onChange({ ...item, sellBaseItem: event.target.checked })}
+        />
+        <span>Sell base item directly</span>
+      </label>
+      <div className="variant-list">
+        {variants.map((variant) => (
+          <div key={variant.id} className="variant-row">
+            <label>
+              <span>Variant Name</span>
+              <input
+                required
+                value={variant.name}
+                onChange={(event) => updateVariant(variant.id, { name: event.target.value })}
+                placeholder="Momo Plate"
+              />
+            </label>
+            <label>
+              <span>Sell Price</span>
+              <NumericInput
+                required
+                mode="decimal"
+                min={0}
+                value={variant.price}
+                onValueChange={(value) => updateVariant(variant.id, { price: value })}
+              />
+            </label>
+            <label>
+              <span>Stock Units / Sale</span>
+              <NumericInput
+                required
+                min={1}
+                value={variant.stockUnitsPerSale}
+                onValueChange={(value) => updateVariant(variant.id, { stockUnitsPerSale: value })}
+              />
+            </label>
+            <label>
+              <span>Variant Barcode</span>
+              <input
+                value={variant.barcode ?? ""}
+                onChange={(event) => updateVariant(variant.id, { barcode: event.target.value })}
+                placeholder="Optional"
+              />
+            </label>
+            <label className="checkbox-field variant-active-toggle">
+              <input
+                type="checkbox"
+                checked={variant.active}
+                onChange={(event) => updateVariant(variant.id, { active: event.target.checked })}
+              />
+              <span>Active</span>
+            </label>
+            <button
+              className="ghost-button danger"
+              type="button"
+              onClick={() => props.onChange({ ...item, saleVariants: variants.filter((entry) => entry.id !== variant.id) })}
+            >
+              Remove
+            </button>
+          </div>
+        ))}
+        {variants.length === 0 && <div className="empty-state">No sale variants configured.</div>}
+      </div>
+      <button
+        className="secondary-button"
+        type="button"
+        onClick={() => props.onChange({ ...item, saleVariants: [...variants, createBlankSaleVariant(item.price)] })}
+      >
+        Add Sale Variant
+      </button>
+    </div>
+  );
 }
 
 export function InventoryPanel(props: {
@@ -159,6 +274,11 @@ export function InventoryPanel(props: {
                   <input type="checkbox" checked={itemForm.active} onChange={(event) => props.onItemFormChange({ ...itemForm, active: event.target.checked })} />
                   <span>Item active</span>
                 </label>
+                <SaleVariantsEditor
+                  item={itemForm}
+                  heading="Sale Variants"
+                  onChange={props.onItemFormChange}
+                />
                 <div className="button-row">
                   <button className="primary-button" type="submit">Create Item</button>
                 </div>
@@ -202,7 +322,7 @@ export function InventoryPanel(props: {
                           )}
                           {item.category}
                         </td>
-                        <td>{item.isReusable ? "Reusable" : "Consumable"}</td>
+                        <td>{item.isReusable ? "Reusable" : `Consumable${(item.saleVariants ?? []).length > 0 ? ` · ${(item.saleVariants ?? []).length} variant${(item.saleVariants ?? []).length !== 1 ? "s" : ""}` : ""}`}</td>
                         <td>{currency(item.price)}</td>
                         <td>
                           {props.getAvailableStock(item)}
@@ -255,7 +375,7 @@ export function InventoryPanel(props: {
                       <span className={`inventory-badge is-${state}`}>{props.getInventoryStateLabel(state)}</span>
                     </div>
                     <div className="inventory-mobile-details">
-                      <div><span className="muted">Type</span><strong>{item.isReusable ? "Reusable" : "Consumable"}</strong></div>
+                      <div><span className="muted">Type</span><strong>{item.isReusable ? "Reusable" : `Consumable${(item.saleVariants ?? []).length > 0 ? ` · ${(item.saleVariants ?? []).length} variant${(item.saleVariants ?? []).length !== 1 ? "s" : ""}` : ""}`}</strong></div>
                       <div><span className="muted">Price</span><strong>{currency(item.price)}</strong></div>
                       <div>
                         <span className="muted">Stock</span>
@@ -469,6 +589,11 @@ export function InventoryPanel(props: {
               />
               <span>Item active</span>
             </label>
+            <SaleVariantsEditor
+              item={editItemForm}
+              heading="Sale Variants"
+              onChange={props.onEditItemFormChange}
+            />
             <div className="button-row field-span-full">
               <button className="secondary-button" type="button" onClick={props.onCloseEditInventoryModal}>
                 Cancel
