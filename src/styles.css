@@ -504,6 +504,40 @@ td {
   flex-wrap: wrap;
 }
 
+.button-row.compact-actions {
+  gap: 0.45rem;
+  align-items: center;
+}
+
+.segmented-control {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  padding: 0.3rem;
+  border: 1px solid #dce5de;
+  border-radius: 0.75rem;
+  background: #f8faf8;
+}
+
+.segmented-control button {
+  border: 0;
+  border-radius: 0.55rem;
+  background: transparent;
+  color: #52615a;
+  font-weight: 700;
+  padding: 0.55rem 0.8rem;
+  cursor: pointer;
+}
+
+.segmented-control button.is-active {
+  background: #1f5f46;
+  color: #ffffff;
+}
+
+.inventory-archive-tabs {
+  margin-bottom: 0.8rem;
+}
+
 .section-grid {
   display: grid;
   gap: 1.2rem;
@@ -1292,6 +1326,11 @@ span.catalog-card-icon-large {
 .inventory-badge.is-out {
   background: #ffc9c9;
   color: #922f2f;
+}
+
+.inventory-badge.is-archived {
+  background: #e5e7eb;
+  color: #4b5563;
 }
 
 .insight-grid {

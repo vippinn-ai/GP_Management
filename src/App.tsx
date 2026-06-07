@@ -97,6 +97,9 @@ import {
   formatTime,
   getCustomerTabCheckoutLines,
   getDiscountAmount,
+  getActiveInventoryItems,
+  getArchivedInventoryItems,
+  getInventoryItemOpenUsage,
   getInventoryQuantityMap,
   getLineStockQuantity,
   getMonthKeysInRange,
@@ -133,6 +136,13 @@ import {
 
 type PostHopContinuationMode = "gaming" | "consumables";
 type SessionItemFormState = Record<string, { sellableOptionId: string; quantity: number; sellAsPackOf?: number }>;
+type InventoryArchiveView = "active" | "archived";
+
+interface InventoryArchiveDraft {
+  itemId: string;
+  reason: string;
+  remainingStock: number;
+}
 
 async function hashPassword(password: string): Promise<string> {
   const salt = crypto.getRandomValues(new Uint8Array(16));
@@ -190,6 +200,8 @@ export default function App() {
   const [customerProfileSearch, setCustomerProfileSearch] = useState("");
   const [customerProfileSort, setCustomerProfileSort] = useState<"last_visit" | "total_spend" | "visit_count">("last_visit");
   const [inventoryItemSearch, setInventoryItemSearch] = useState("");
+  const [inventoryArchiveView, setInventoryArchiveView] = useState<InventoryArchiveView>("active");
+  const [inventoryArchiveDraft, setInventoryArchiveDraft] = useState<InventoryArchiveDraft | null>(null);
   const [selectedCustomerTabId, setSelectedCustomerTabId] = useState<string | null>(null);
   const [selectedCustomerProfileId, setSelectedCustomerProfileId] = useState<string | null>(null);
   const [editSessionDraft, setEditSessionDraft] = useState<SessionEditDraft | null>(null);
@@ -299,7 +311,10 @@ export default function App() {
   const [pauseLogEditDraft, setPauseLogEditDraft] = useState<{ pausedAt: string; resumedAt: string }>({ pausedAt: "", resumedAt: "" });
   const [pauseLogDeleteConfirmId, setPauseLogDeleteConfirmId] = useState<string | null>(null);
   const [pendingRetryData, setPendingRetryData] = useState<AppData | null>(null);
-  const filteredInventoryItems = appData.inventoryItems.filter((item) =>
+  const activeInventoryItems = getActiveInventoryItems(appData.inventoryItems);
+  const archivedInventoryItems = getArchivedInventoryItems(appData.inventoryItems);
+  const visibleInventoryItems = inventoryArchiveView === "archived" ? archivedInventoryItems : activeInventoryItems;
+  const filteredInventoryItems = visibleInventoryItems.filter((item) =>
     `${item.name} ${item.category}`.toLowerCase().includes(inventoryItemSearch.trim().toLowerCase())
   );
 
@@ -951,6 +966,10 @@ export default function App() {
   }
 
   function beginEditInventoryItem(item: InventoryItem) {
+    if (!item.active) {
+      window.alert("Restore archived inventory items before editing them.");
+      return;
+    }
     setEditItemForm({
       ...item,
       barcode: item.barcode ?? ""
@@ -958,6 +977,97 @@ export default function App() {
     const isKnownCategory = inventoryCategoryOptions.includes(item.category);
     setUseCustomEditItemCategory(!isKnownCategory);
     setCustomEditItemCategory(isKnownCategory ? "" : item.category);
+  }
+
+  function getInventoryOpenUsage(itemId: string) {
+    return getInventoryItemOpenUsage(itemId, appData.sessions, appData.customerTabs);
+  }
+
+  function formatInventoryOpenUsageMessage(item: InventoryItem) {
+    const usage = getInventoryOpenUsage(item.id);
+    if (usage.totalQuantity <= 0) {
+      return "";
+    }
+    const contexts = [
+      ...usage.sessionMatches.map((entry) => `${entry.label} session (${entry.quantity})`),
+      ...usage.tabMatches.map((entry) => `${entry.label} tab (${entry.quantity})`)
+    ];
+    const preview = contexts.slice(0, 4).join(", ");
+    const remaining = contexts.length > 4 ? `, and ${contexts.length - 4} more` : "";
+    return `${item.name} is currently used in open work: ${preview}${remaining}. Remove or bill those lines before archiving.`;
+  }
+
+  function beginArchiveInventoryItem(item: InventoryItem) {
+    if (!activeUser || !canEditInventory) {
+      return;
+    }
+    if (!item.active) {
+      window.alert("This item is already archived.");
+      return;
+    }
+    const usageMessage = formatInventoryOpenUsageMessage(item);
+    if (usageMessage) {
+      window.alert(usageMessage);
+      return;
+    }
+    setInventoryArchiveDraft({
+      itemId: item.id,
+      reason: "",
+      remainingStock: item.stockQty
+    });
+  }
+
+  function archiveInventoryItem(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!activeUser || !canEditInventory || !inventoryArchiveDraft) {
+      return;
+    }
+    const archiveReason = inventoryArchiveDraft.reason.trim();
+    void commitAppDataChange("Archiving inventory item...", (draft) => {
+      const item = draft.inventoryItems.find((entry) => entry.id === inventoryArchiveDraft.itemId);
+      if (!item || !item.active) {
+        return false;
+      }
+      const usageMessage = formatInventoryOpenUsageMessage(item);
+      if (usageMessage) {
+        window.alert(usageMessage);
+        return false;
+      }
+      item.active = false;
+      item.archivedAt = new Date().toISOString();
+      item.archivedByUserId = activeUser.id;
+      item.archiveReason = archiveReason || undefined;
+      addAuditLog(
+        draft,
+        activeUser.id,
+        "inventory_archived",
+        "inventory_item",
+        item.id,
+        `Archived ${item.name}${archiveReason ? `. Reason: ${archiveReason}` : ""}.`
+      );
+    }, () => {
+      setInventoryArchiveDraft(null);
+      if (inventoryAction.itemId === inventoryArchiveDraft.itemId) {
+        setInventoryAction({ itemId: "", quantity: 1, reason: "" });
+      }
+    });
+  }
+
+  function restoreInventoryItem(itemId: string) {
+    if (!activeUser || !canEditInventory) {
+      return;
+    }
+    void commitAppDataChange("Restoring inventory item...", (draft) => {
+      const item = draft.inventoryItems.find((entry) => entry.id === itemId);
+      if (!item || item.active) {
+        return false;
+      }
+      item.active = true;
+      item.archivedAt = undefined;
+      item.archivedByUserId = undefined;
+      item.archiveReason = undefined;
+      addAuditLog(draft, activeUser.id, "inventory_restored", "inventory_item", item.id, `Restored ${item.name}.`);
+    });
   }
 
   function getInventoryState(item: InventoryItem): InventoryState {
@@ -2987,6 +3097,10 @@ export default function App() {
       if (!item) {
         return false;
       }
+      if (!item.active) {
+        window.alert("Restore archived inventory items before recording stock movements.");
+        return false;
+      }
       const signedQuantity = type === "restock" ? effectiveQty : -effectiveQty;
       if (item.stockQty + signedQuantity < 0) {
         return false;
@@ -4124,6 +4238,10 @@ export default function App() {
             customEditItemCategory={customEditItemCategory}
             inventoryAction={inventoryAction}
             inventoryItemSearch={inventoryItemSearch}
+            inventoryArchiveView={inventoryArchiveView}
+            activeInventoryCount={activeInventoryItems.length}
+            archivedInventoryCount={archivedInventoryItems.length}
+            inventoryArchiveDraft={inventoryArchiveDraft}
             filteredInventoryItems={filteredInventoryItems}
             inventoryCategoryOptions={inventoryCategoryOptions}
             canEditInventory={canEditInventory}
@@ -4139,10 +4257,18 @@ export default function App() {
             onCustomEditItemCategoryChange={setCustomEditItemCategory}
             onInventoryActionChange={setInventoryAction}
             onInventoryItemSearchChange={setInventoryItemSearch}
+            onInventoryArchiveViewChange={setInventoryArchiveView}
+            onArchiveDraftReasonChange={(reason) => {
+              setInventoryArchiveDraft((draft) => draft ? { ...draft, reason } : draft);
+            }}
             onUpsertInventoryItem={upsertInventoryItem}
             onSaveEditedInventoryItem={saveEditedInventoryItem}
             onCloseEditInventoryModal={closeEditInventoryModal}
             onBeginEditInventoryItem={beginEditInventoryItem}
+            onBeginArchiveInventoryItem={beginArchiveInventoryItem}
+            onCloseArchiveInventoryModal={() => setInventoryArchiveDraft(null)}
+            onArchiveInventoryItem={archiveInventoryItem}
+            onRestoreInventoryItem={restoreInventoryItem}
             onRecordStockMovement={recordStockMovement}
           />
         )}

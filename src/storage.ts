@@ -92,22 +92,29 @@ export function hydrateAppData(parsed: Partial<AppData>): AppData {
       closeDisposition: tab.closeDisposition ?? (tab.closedBillId ? "billed" : undefined),
       closeReason: tab.closeReason ?? undefined
     })),
-    inventoryItems: (parsed.inventoryItems ?? cloneValue(emptyAppData.inventoryItems)).map((item) => ({
-      ...item,
-      lowStockThreshold: item.lowStockThreshold ?? 5,
-      unit: "piece",
-      isReusable: item.isReusable ?? false,
-      sellBaseItem: item.sellBaseItem ?? true,
-      saleVariants: (item.saleVariants ?? []).map((variant, index) => ({
-        ...variant,
-        id: variant.id ?? `${item.id}-variant-${index + 1}`,
-        name: variant.name ?? "",
-        price: variant.price ?? 0,
-        stockUnitsPerSale: Math.max(1, Math.trunc(variant.stockUnitsPerSale ?? 1)),
-        barcode: variant.barcode?.trim() || undefined,
-        active: variant.active ?? true
-      }))
-    })),
+    inventoryItems: (parsed.inventoryItems ?? cloneValue(emptyAppData.inventoryItems)).map((item) => {
+      const active = item.active ?? true;
+      return {
+        ...item,
+        active,
+        archivedAt: active ? undefined : item.archivedAt,
+        archivedByUserId: active ? undefined : item.archivedByUserId,
+        archiveReason: active ? undefined : item.archiveReason?.trim() || undefined,
+        lowStockThreshold: item.lowStockThreshold ?? 5,
+        unit: "piece",
+        isReusable: item.isReusable ?? false,
+        sellBaseItem: item.sellBaseItem ?? true,
+        saleVariants: (item.saleVariants ?? []).map((variant, index) => ({
+          ...variant,
+          id: variant.id ?? `${item.id}-variant-${index + 1}`,
+          name: variant.name ?? "",
+          price: variant.price ?? 0,
+          stockUnitsPerSale: Math.max(1, Math.trunc(variant.stockUnitsPerSale ?? 1)),
+          barcode: variant.barcode?.trim() || undefined,
+          active: variant.active ?? true
+        }))
+      };
+    }),
     expenses: parsed.expenses ?? cloneValue(emptyAppData.expenses),
     expenseTemplates: parsed.expenseTemplates ?? cloneValue(emptyAppData.expenseTemplates),
     expenseTemplateOverrides: parsed.expenseTemplateOverrides ?? cloneValue(emptyAppData.expenseTemplateOverrides)

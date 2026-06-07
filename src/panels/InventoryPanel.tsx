@@ -12,6 +12,14 @@ interface InventoryAction {
   reason: string;
 }
 
+type InventoryArchiveView = "active" | "archived";
+
+interface InventoryArchiveDraft {
+  itemId: string;
+  reason: string;
+  remainingStock: number;
+}
+
 function createBlankSaleVariant(defaultPrice: number): SaleVariant {
   return {
     id: createId("variant"),
@@ -138,6 +146,10 @@ export function InventoryPanel(props: {
   customEditItemCategory: string;
   inventoryAction: InventoryAction;
   inventoryItemSearch: string;
+  inventoryArchiveView: InventoryArchiveView;
+  activeInventoryCount: number;
+  archivedInventoryCount: number;
+  inventoryArchiveDraft: InventoryArchiveDraft | null;
   filteredInventoryItems: InventoryItem[];
   inventoryCategoryOptions: string[];
   canEditInventory: boolean;
@@ -153,20 +165,35 @@ export function InventoryPanel(props: {
   onCustomEditItemCategoryChange: (value: string) => void;
   onInventoryActionChange: (next: InventoryAction) => void;
   onInventoryItemSearchChange: (value: string) => void;
+  onInventoryArchiveViewChange: (value: InventoryArchiveView) => void;
+  onArchiveDraftReasonChange: (value: string) => void;
   onUpsertInventoryItem: (event: FormEvent<HTMLFormElement>) => void;
   onSaveEditedInventoryItem: (event: FormEvent<HTMLFormElement>) => void;
   onCloseEditInventoryModal: () => void;
   onBeginEditInventoryItem: (item: InventoryItem) => void;
+  onBeginArchiveInventoryItem: (item: InventoryItem) => void;
+  onCloseArchiveInventoryModal: () => void;
+  onArchiveInventoryItem: (event: FormEvent<HTMLFormElement>) => void;
+  onRestoreInventoryItem: (itemId: string) => void;
   onRecordStockMovement: (type: StockMovementType, quantityOverride?: number) => void;
 }) {
   const {
     itemForm, editItemForm, useCustomItemCategory, customItemCategory,
     useCustomEditItemCategory, customEditItemCategory, inventoryAction,
-    inventoryItemSearch, filteredInventoryItems, inventoryCategoryOptions,
+    inventoryItemSearch, inventoryArchiveView, filteredInventoryItems, inventoryCategoryOptions,
     canEditInventory, isManagerReadOnly
   } = props;
   const isItemFormCigarette = itemForm.category === "Cigarettes";
   const isEditItemFormCigarette = editItemForm?.category === "Cigarettes";
+  const isArchivedView = inventoryArchiveView === "archived";
+  const activeMovementItems = props.inventoryItems.filter((item) => item.active);
+  const archiveDraftItem = props.inventoryArchiveDraft
+    ? props.inventoryItems.find((item) => item.id === props.inventoryArchiveDraft?.itemId) ?? null
+    : null;
+
+  function formatArchivedAt(item: InventoryItem) {
+    return item.archivedAt ? new Date(item.archivedAt).toLocaleString() : "Archived";
+  }
 
   return (
     <>
@@ -270,10 +297,6 @@ export function InventoryPanel(props: {
                   <input type="checkbox" checked={itemForm.isReusable} onChange={(event) => props.onItemFormChange({ ...itemForm, isReusable: event.target.checked })} />
                   <span>Reusable item</span>
                 </label>
-                <label className="checkbox-field">
-                  <input type="checkbox" checked={itemForm.active} onChange={(event) => props.onItemFormChange({ ...itemForm, active: event.target.checked })} />
-                  <span>Item active</span>
-                </label>
                 <SaleVariantsEditor
                   item={itemForm}
                   heading="Sale Variants"
@@ -287,25 +310,41 @@ export function InventoryPanel(props: {
           )}
           <div className="section-block section-block-muted">
             <div className="section-block-header">
-              <h3>Current Items</h3>
-              <p>{canEditInventory ? "Review stock position, barcode setup, and quick edit access." : "Review stock position, barcode setup, and alert status."}</p>
+              <h3>{isArchivedView ? "Archived Items" : "Active Items"}</h3>
+              <p>{canEditInventory ? "Review stock position, barcode setup, and lifecycle actions." : "Review stock position, barcode setup, and alert status."}</p>
+            </div>
+            <div className="segmented-control inventory-archive-tabs" role="tablist" aria-label="Inventory item status">
+              <button
+                type="button"
+                className={inventoryArchiveView === "active" ? "is-active" : ""}
+                onClick={() => props.onInventoryArchiveViewChange("active")}
+              >
+                Active Items ({props.activeInventoryCount})
+              </button>
+              <button
+                type="button"
+                className={inventoryArchiveView === "archived" ? "is-active" : ""}
+                onClick={() => props.onInventoryArchiveViewChange("archived")}
+              >
+                Archived ({props.archivedInventoryCount})
+              </button>
             </div>
             <input
               className="search-input"
               value={inventoryItemSearch}
               onChange={(event) => props.onInventoryItemSearchChange(event.target.value)}
-              placeholder="Search by item name or category"
+              placeholder={`Search ${isArchivedView ? "archived" : "active"} items by name or category`}
             />
             <div className="table-wrap inventory-table-wrap">
               <table>
                 <thead>
-                  <tr><th>Item</th><th>Category</th><th>Type</th><th>Price</th><th>Stock</th><th>Threshold</th><th>Status</th><th>Barcode</th>{canEditInventory && <th />}</tr>
+                  <tr><th>Item</th><th>Category</th><th>Type</th><th>Price</th><th>Stock</th><th>Threshold</th><th>Status</th><th>{isArchivedView ? "Archived" : "Barcode"}</th>{canEditInventory && <th />}</tr>
                 </thead>
                 <tbody>
                   {filteredInventoryItems.length === 0 && (
                     <tr>
                       <td colSpan={canEditInventory ? 9 : 8}>
-                        <div className="empty-state">No inventory items match this search.</div>
+                        <div className="empty-state">No {isArchivedView ? "archived" : "active"} inventory items match this search.</div>
                       </td>
                     </tr>
                   )}
@@ -338,10 +377,32 @@ export function InventoryPanel(props: {
                           )}
                         </td>
                         <td>{item.lowStockThreshold}</td>
-                        <td><span className={`inventory-badge is-${state}`}>{props.getInventoryStateLabel(state)}</span></td>
-                        <td>{item.barcode || "—"}</td>
+                        <td>
+                          {isArchivedView
+                            ? <span className="inventory-badge is-archived">Archived</span>
+                            : <span className={`inventory-badge is-${state}`}>{props.getInventoryStateLabel(state)}</span>}
+                        </td>
+                        <td>
+                          {isArchivedView ? (
+                            <span className="muted">
+                              {formatArchivedAt(item)}
+                              {item.archiveReason ? ` - ${item.archiveReason}` : ""}
+                            </span>
+                          ) : item.barcode || "None"}
+                        </td>
                         {canEditInventory && (
-                          <td><button className="ghost-button" type="button" onClick={() => props.onBeginEditInventoryItem(item)}>Edit</button></td>
+                          <td>
+                            {isArchivedView ? (
+                              <button className="secondary-button" type="button" onClick={() => props.onRestoreInventoryItem(item.id)}>
+                                Restore
+                              </button>
+                            ) : (
+                              <div className="button-row compact-actions">
+                                <button className="ghost-button" type="button" onClick={() => props.onBeginEditInventoryItem(item)}>Edit</button>
+                                <button className="ghost-button danger" type="button" onClick={() => props.onBeginArchiveInventoryItem(item)}>Archive</button>
+                              </div>
+                            )}
+                          </td>
                         )}
                       </tr>
                     );
@@ -351,7 +412,7 @@ export function InventoryPanel(props: {
             </div>
             <div className="inventory-mobile-list">
               {filteredInventoryItems.length === 0 && (
-                <div className="empty-state">No inventory items match this search.</div>
+                <div className="empty-state">No {isArchivedView ? "archived" : "active"} inventory items match this search.</div>
               )}
               {filteredInventoryItems.map((item) => {
                 const state = props.getInventoryState(item);
@@ -372,7 +433,9 @@ export function InventoryPanel(props: {
                           <span>{item.category}</span>
                         </div>
                       </div>
-                      <span className={`inventory-badge is-${state}`}>{props.getInventoryStateLabel(state)}</span>
+                      {isArchivedView
+                        ? <span className="inventory-badge is-archived">Archived</span>
+                        : <span className={`inventory-badge is-${state}`}>{props.getInventoryStateLabel(state)}</span>}
                     </div>
                     <div className="inventory-mobile-details">
                       <div><span className="muted">Type</span><strong>{item.isReusable ? "Reusable" : `Consumable${(item.saleVariants ?? []).length > 0 ? ` · ${(item.saleVariants ?? []).length} variant${(item.saleVariants ?? []).length !== 1 ? "s" : ""}` : ""}`}</strong></div>
@@ -388,12 +451,30 @@ export function InventoryPanel(props: {
                         )}
                       </div>
                       <div><span className="muted">Threshold</span><strong>{item.lowStockThreshold}</strong></div>
-                      <div><span className="muted">Barcode</span><strong>{item.barcode || "None"}</strong></div>
+                      {isArchivedView ? (
+                        <>
+                          <div><span className="muted">Archived</span><strong>{formatArchivedAt(item)}</strong></div>
+                          <div><span className="muted">Reason</span><strong>{item.archiveReason || "None"}</strong></div>
+                        </>
+                      ) : (
+                        <div><span className="muted">Barcode</span><strong>{item.barcode || "None"}</strong></div>
+                      )}
                     </div>
                     {canEditInventory && (
-                      <button className="secondary-button" type="button" onClick={() => props.onBeginEditInventoryItem(item)}>
-                        Edit Item
-                      </button>
+                      isArchivedView ? (
+                        <button className="secondary-button" type="button" onClick={() => props.onRestoreInventoryItem(item.id)}>
+                          Restore Item
+                        </button>
+                      ) : (
+                        <div className="button-row compact-actions">
+                          <button className="secondary-button" type="button" onClick={() => props.onBeginEditInventoryItem(item)}>
+                            Edit Item
+                          </button>
+                          <button className="ghost-button danger" type="button" onClick={() => props.onBeginArchiveInventoryItem(item)}>
+                            Archive
+                          </button>
+                        </div>
+                      )
                     )}
                   </article>
                 );
@@ -416,7 +497,7 @@ export function InventoryPanel(props: {
                 <p>Capture restock and adjustment entries with a clear reason.</p>
               </div>
               {(() => {
-                const selectedMovementItem = props.inventoryItems.find((i) => i.id === inventoryAction.itemId);
+                const selectedMovementItem = activeMovementItems.find((i) => i.id === inventoryAction.itemId);
                 const isCigarette = !!selectedMovementItem?.cigarettePack;
                 const packSize = selectedMovementItem?.cigarettePack?.size ?? 1;
                 return (
@@ -425,7 +506,7 @@ export function InventoryPanel(props: {
                       <span>Item</span>
                       <select value={inventoryAction.itemId} onChange={(event) => props.onInventoryActionChange({ ...inventoryAction, itemId: event.target.value })}>
                         <option value="">Select item</option>
-                        {props.inventoryItems.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+                        {activeMovementItems.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
                       </select>
                     </label>
                     <label>
@@ -581,14 +662,6 @@ export function InventoryPanel(props: {
               />
               <span>Reusable item</span>
             </label>
-            <label className="checkbox-field">
-              <input
-                type="checkbox"
-                checked={editItemForm.active}
-                onChange={(event) => props.onEditItemFormChange({ ...editItemForm, active: event.target.checked })}
-              />
-              <span>Item active</span>
-            </label>
             <SaleVariantsEditor
               item={editItemForm}
               heading="Sale Variants"
@@ -600,6 +673,33 @@ export function InventoryPanel(props: {
               </button>
               <button className="primary-button" type="submit">
                 Update Item
+              </button>
+            </div>
+          </form>
+        </Modal>
+      )}
+      {archiveDraftItem && props.inventoryArchiveDraft && (
+        <Modal title={`Archive Inventory Item - ${archiveDraftItem.name}`} onClose={props.onCloseArchiveInventoryModal}>
+          <form className="form-grid" onSubmit={props.onArchiveInventoryItem}>
+            <div className="field-span-full warning-banner">
+              {props.inventoryArchiveDraft.remainingStock > 0
+                ? `${archiveDraftItem.name} still has ${props.inventoryArchiveDraft.remainingStock} ${archiveDraftItem.unit || "unit"} in stock. Archiving will hide it from sales and stock alerts, but the stock quantity will be preserved.`
+                : `${archiveDraftItem.name} will be hidden from sales and inventory alerts. Historical bills and stock movements will stay available.`}
+            </div>
+            <label className="field-span-full">
+              <span>Archive Reason (optional)</span>
+              <input
+                value={props.inventoryArchiveDraft.reason}
+                onChange={(event) => props.onArchiveDraftReasonChange(event.target.value)}
+                placeholder="Not restocking, duplicate item, incorrect setup..."
+              />
+            </label>
+            <div className="button-row field-span-full">
+              <button className="secondary-button" type="button" onClick={props.onCloseArchiveInventoryModal}>
+                Cancel
+              </button>
+              <button className="ghost-button danger" type="submit">
+                Archive Item
               </button>
             </div>
           </form>

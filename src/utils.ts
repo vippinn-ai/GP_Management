@@ -105,6 +105,47 @@ export function getLineStockQuantity(line: { quantity: number; soldAsPackOf?: nu
   return line.quantity * getStockUnitsPerSale(line);
 }
 
+export function getActiveInventoryItems(inventoryItems: InventoryItem[]): InventoryItem[] {
+  return inventoryItems.filter((item) => item.active);
+}
+
+export function getArchivedInventoryItems(inventoryItems: InventoryItem[]): InventoryItem[] {
+  return inventoryItems.filter((item) => !item.active);
+}
+
+export function getInventoryItemOpenUsage(
+  itemId: string,
+  sessions: Session[],
+  customerTabs: CustomerTab[]
+) {
+  const sessionMatches = sessions
+    .filter((session) => session.status !== "closed")
+    .map((session) => ({
+      label: session.stationNameSnapshot,
+      quantity: sumBy(
+        session.items.filter((item) => item.inventoryItemId === itemId),
+        (item) => getLineStockQuantity(item)
+      )
+    }))
+    .filter((entry) => entry.quantity > 0);
+  const tabMatches = customerTabs
+    .filter((tab) => tab.status === "open")
+    .map((tab) => ({
+      label: tab.customerName,
+      quantity: sumBy(
+        tab.items.filter((item) => item.inventoryItemId === itemId),
+        (item) => getLineStockQuantity(item)
+      )
+    }))
+    .filter((entry) => entry.quantity > 0);
+
+  return {
+    sessionMatches,
+    tabMatches,
+    totalQuantity: sumBy(sessionMatches, (entry) => entry.quantity) + sumBy(tabMatches, (entry) => entry.quantity)
+  };
+}
+
 export function getSellableInventoryOptions(inventoryItems: InventoryItem[]): SellableInventoryOption[] {
   return inventoryItems.flatMap((item) => {
     if (!item.active) {

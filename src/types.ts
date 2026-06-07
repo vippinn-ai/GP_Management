@@ -157,6 +157,9 @@ export interface InventoryItem {
   isReusable: boolean;
   barcode?: string;
   active: boolean;
+  archivedAt?: string;
+  archivedByUserId?: string;
+  archiveReason?: string;
   cigarettePack?: CigarettePack;
   sellBaseItem?: boolean;
   saleVariants?: SaleVariant[];
