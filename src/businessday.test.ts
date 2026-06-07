@@ -47,17 +47,16 @@ describe("toBusinessDayKey", () => {
 
 describe("isToday — business-day aware", () => {
   it("returns true for a timestamp in the current business day", () => {
-    // Use a time well within today's business hours
-    const midday = new Date();
-    midday.setHours(14, 0, 0, 0);
-    expect(isToday(midday.toISOString())).toBe(true);
+    const [year, month, day] = toBusinessDayKey(new Date()).split("-").map(Number);
+    const currentBusinessDay = new Date(year, month - 1, day, BUSINESS_DAY_START_HOUR + 1, 0, 0);
+    expect(isToday(currentBusinessDay.toISOString())).toBe(true);
   });
 
   it("returns false for a timestamp clearly in a past business day", () => {
-    const yesterday = new Date();
-    yesterday.setDate(yesterday.getDate() - 1);
-    yesterday.setHours(14, 0, 0, 0);
-    expect(isToday(yesterday.toISOString())).toBe(false);
+    const [year, month, day] = toBusinessDayKey(new Date()).split("-").map(Number);
+    const pastBusinessDay = new Date(year, month - 1, day, BUSINESS_DAY_START_HOUR + 1, 0, 0);
+    pastBusinessDay.setDate(pastBusinessDay.getDate() - 1);
+    expect(isToday(pastBusinessDay.toISOString())).toBe(false);
   });
 });
 
