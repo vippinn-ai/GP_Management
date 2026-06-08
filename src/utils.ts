@@ -8,6 +8,9 @@ import type {
   DraftBillLine,
   DraftDiscountInput,
   DraftLineDiscountMap,
+  ComboAppliedChoice,
+  ComboInventorySelection,
+  ComboPackage,
   ExpenseTemplate,
   ExpenseTemplateOverride,
   InventoryReportFilterState,
@@ -346,6 +349,152 @@ export function getSellableInventoryOptions(inventoryItems: InventoryItem[]): Se
   });
 }
 
+export function getCombosForStation(combos: ComboPackage[], stationId?: string): ComboPackage[] {
+  if (!stationId) {
+    return [];
+  }
+  return combos.filter((combo) => combo.active && combo.stationIds.includes(stationId));
+}
+
+export function getComboIncludedMinutes(session: Session): number {
+  return sumBy(session.comboApplications ?? [], (combo) => combo.includedMinutes);
+}
+
+export function getComboApplicationsTotal(session: Session): number {
+  return sumBy(session.comboApplications ?? [], (combo) => combo.price);
+}
+
+export function resolveComboInventorySelection(
+  sellableOptions: SellableInventoryOption[],
+  sellableOptionId: string,
+  quantity: number
+): ComboInventorySelection | null {
+  const option = sellableOptions.find((entry) => entry.id === sellableOptionId);
+  if (!option) {
+    return null;
+  }
+  return {
+    inventoryItemId: option.inventoryItemId,
+    saleVariantId: option.saleVariantId,
+    name: option.name,
+    sourceName: option.sourceName,
+    quantity: Math.max(1, Math.trunc(quantity)),
+    unitPrice: option.price,
+    stockUnitsPerSale: option.stockUnitsPerSale
+  };
+}
+
+export function resolveComboFixedSelections(
+  combo: ComboPackage,
+  sellableOptions: SellableInventoryOption[]
+): ComboInventorySelection[] | null {
+  const selections: ComboInventorySelection[] = [];
+  for (const item of combo.fixedItems) {
+    const selection = resolveComboInventorySelection(sellableOptions, item.sellableOptionId, item.quantity);
+    if (!selection) {
+      return null;
+    }
+    selections.push(selection);
+  }
+  return selections;
+}
+
+export function resolveComboChoiceSelections(
+  combo: ComboPackage,
+  sellableOptions: SellableInventoryOption[],
+  choices: Record<string, string | string[]> = {}
+): ComboAppliedChoice[] | null {
+  const selections: ComboAppliedChoice[] = [];
+  for (const group of combo.choiceGroups) {
+    const requiredQuantity = Math.max(1, Math.trunc(group.requiredQuantity));
+    const rawSelectedOptionIds = choices[group.id];
+    const selectedOptionIds = Array.isArray(rawSelectedOptionIds)
+      ? rawSelectedOptionIds
+      : rawSelectedOptionIds
+        ? [rawSelectedOptionIds]
+        : [];
+    if (selectedOptionIds.length < requiredQuantity) {
+      return null;
+    }
+    const aggregatedSelections = new Map<string, ComboInventorySelection>();
+    for (const selectedOptionId of selectedOptionIds.slice(0, requiredQuantity)) {
+      if (!selectedOptionId || !group.optionIds.includes(selectedOptionId)) {
+        return null;
+      }
+      const selection = resolveComboInventorySelection(sellableOptions, selectedOptionId, 1);
+      if (!selection) {
+        return null;
+      }
+      const key = [
+        selection.inventoryItemId,
+        selection.saleVariantId ?? "",
+        selection.name,
+        selection.stockUnitsPerSale
+      ].join("::");
+      const existing = aggregatedSelections.get(key);
+      if (existing) {
+        existing.quantity += selection.quantity;
+      } else {
+        aggregatedSelections.set(key, { ...selection });
+      }
+    }
+    selections.push({
+      groupId: group.id,
+      groupLabel: group.label,
+      selections: Array.from(aggregatedSelections.values())
+    });
+  }
+  return selections;
+}
+
+export function getComboInventorySelections(combo: { fixedItems: ComboInventorySelection[]; choices: ComboAppliedChoice[] }) {
+  return [
+    ...combo.fixedItems,
+    ...combo.choices.flatMap((choice) => choice.selections ?? (choice.selection ? [choice.selection] : []))
+  ];
+}
+
+export function getSessionComboCheckoutLines(session: Session): DraftBillLine[] {
+  return (session.comboApplications ?? []).flatMap((combo, index) => {
+    const packageLine: DraftBillLine = {
+      id: `line-combo-${combo.id}`,
+      type: "combo_package",
+      description: combo.comboName,
+      quantity: 1,
+      unitPrice: combo.price,
+      linkedSessionId: session.id,
+      comboApplicationId: combo.id,
+      comboId: combo.comboId
+    };
+    const detailLines: DraftBillLine[] = [
+      {
+        id: `line-combo-${combo.id}-game`,
+        type: "combo_detail",
+        description: `${formatMinutes(combo.includedMinutes)} ${session.stationNameSnapshot} play included`,
+        quantity: 1,
+        unitPrice: 0,
+        linkedSessionId: session.id,
+        comboApplicationId: combo.id,
+        comboId: combo.comboId
+      },
+      ...getComboInventorySelections(combo).map((item, itemIndex) => ({
+        id: `line-combo-${combo.id}-item-${itemIndex}`,
+        type: "inventory_item" as const,
+        description: `${item.name} (included in ${combo.comboName})`,
+        quantity: item.quantity,
+        unitPrice: 0,
+        linkedSessionId: session.id,
+        inventoryItemId: item.inventoryItemId,
+        saleVariantId: item.saleVariantId,
+        stockUnitsPerSale: item.stockUnitsPerSale,
+        comboApplicationId: combo.id,
+        comboId: combo.comboId
+      }))
+    ];
+    return index === 0 ? [packageLine, ...detailLines] : [packageLine, ...detailLines];
+  });
+}
+
 export function resolveCustomerTabWorkspaceSelection(
   openTabs: CustomerTab[],
   selectedTabId: string | null
@@ -405,18 +554,27 @@ export function getDiscountAmount(subtotal: number, discount?: DraftDiscountInpu
 }
 
 export function getSessionCheckoutLines(session: Session, chargeSummary: SessionChargeSummary): DraftBillLine[] {
-  const lines: DraftBillLine[] = [];
+  const comboLines = getSessionComboCheckoutLines(session);
+  const includedComboMinutes = getComboIncludedMinutes(session);
+  const extraMinutes = Math.max(0, chargeSummary.billedMinutes - includedComboMinutes);
+  const lines: DraftBillLine[] = [...comboLines];
   if (session.mode === "timed") {
-    lines.push({
-      id: `line-session-${session.id}`,
-      type: "session_charge",
-      description: `${session.stationNameSnapshot} session (${formatMinutes(chargeSummary.billedMinutes)})`,
-      quantity: 1,
-      unitPrice: chargeSummary.subtotal,
-      linkedSessionId: session.id
-    });
+    if (comboLines.length === 0 || extraMinutes > 0) {
+      const hourlyRate = chargeSummary.segments[0]?.hourlyRate ?? 0;
+      const subtotal = comboLines.length > 0 ? (extraMinutes / 60) * hourlyRate : chargeSummary.subtotal;
+      lines.push({
+        id: `line-session-${session.id}`,
+        type: "session_charge",
+        description: comboLines.length > 0
+          ? `${session.stationNameSnapshot} extra time (${formatMinutes(extraMinutes)})`
+          : `${session.stationNameSnapshot} session (${formatMinutes(chargeSummary.billedMinutes)})`,
+        quantity: 1,
+        unitPrice: subtotal,
+        linkedSessionId: session.id
+      });
+    }
   }
-  for (const item of session.items) {
+  for (const item of session.items.filter((entry) => !entry.comboApplicationId)) {
     lines.push({
       id: `line-item-${item.id}`,
       type: "inventory_item",
@@ -426,7 +584,9 @@ export function getSessionCheckoutLines(session: Session, chargeSummary: Session
       inventoryItemId: item.inventoryItemId,
       soldAsPackOf: item.soldAsPackOf,
       saleVariantId: item.saleVariantId,
-      stockUnitsPerSale: item.stockUnitsPerSale
+      stockUnitsPerSale: item.stockUnitsPerSale,
+      comboApplicationId: item.comboApplicationId,
+      comboId: item.comboId
     });
   }
   return lines;
@@ -439,10 +599,12 @@ export function getCustomerTabCheckoutLines(items: CustomerTabItem[]): DraftBill
     description: item.soldAsPackOf ? `${item.name} (Pack of ${item.soldAsPackOf})` : item.name,
     quantity: item.quantity,
     unitPrice: item.unitPrice,
-    inventoryItemId: item.inventoryItemId,
-    soldAsPackOf: item.soldAsPackOf,
-    saleVariantId: item.saleVariantId,
-    stockUnitsPerSale: item.stockUnitsPerSale
+      inventoryItemId: item.inventoryItemId,
+      soldAsPackOf: item.soldAsPackOf,
+      saleVariantId: item.saleVariantId,
+      stockUnitsPerSale: item.stockUnitsPerSale,
+      comboApplicationId: item.comboApplicationId,
+      comboId: item.comboId
   }));
 }
 
@@ -457,7 +619,9 @@ export function cloneBillLinesForReplacement(bill: AppData["bills"][number]): Dr
     inventoryItemId: line.inventoryItemId,
     soldAsPackOf: line.soldAsPackOf,
     saleVariantId: line.saleVariantId,
-    stockUnitsPerSale: line.stockUnitsPerSale
+    stockUnitsPerSale: line.stockUnitsPerSale,
+    comboApplicationId: line.comboApplicationId,
+    comboId: line.comboId
   }));
 }
 
@@ -493,7 +657,9 @@ export function buildBillPreview(
       inventoryItemId: line.inventoryItemId,
       soldAsPackOf: line.soldAsPackOf,
       saleVariantId: line.saleVariantId,
-      stockUnitsPerSale: line.stockUnitsPerSale
+      stockUnitsPerSale: line.stockUnitsPerSale,
+      comboApplicationId: line.comboApplicationId,
+      comboId: line.comboId
     } satisfies BillLine;
   });
   const subtotal = sumBy(processedLines, (line) => line.subtotal);
@@ -599,7 +765,7 @@ export function allocatePaymentRevenueToBill(bill: Bill, paymentAmount: number):
   }
   const ratio = paymentAmount / bill.total;
   return {
-    sessionRevenue: sumBy(bill.lines.filter((line) => line.type === "session_charge"), (line) => line.total * ratio),
+    sessionRevenue: sumBy(bill.lines.filter((line) => line.type === "session_charge" || line.type === "combo_package"), (line) => line.total * ratio),
     itemRevenue: sumBy(bill.lines.filter((line) => line.type === "inventory_item"), (line) => line.total * ratio),
     totalDiscounts: bill.totalDiscountAmount * ratio
   };

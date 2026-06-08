@@ -5,9 +5,11 @@ import type {
   Customer,
   CustomerTab,
   CustomerTabDraft,
+  ComboPackage,
   InventoryItem,
   InventoryState,
   PlayMode,
+  SellableInventoryOption,
   Session,
   SessionPauseLog,
   StartSessionDraft,
@@ -49,6 +51,8 @@ export function DashboardPanel(props: {
   auditLogs: AuditLog[];
   customers: Customer[];
   inventoryItems: InventoryItem[];
+  combos: ComboPackage[];
+  sellableOptions: SellableInventoryOption[];
   checkoutState: CheckoutState | null;
   startSessionDraft: StartSessionDraft;
   selectedStartStation: Station | null;
@@ -96,6 +100,13 @@ export function DashboardPanel(props: {
   } = props;
 
   const nowMs = usePauseClock();
+  const availableCombos = selectedStartStation
+    ? props.combos.filter((combo) => combo.active && combo.stationIds.includes(selectedStartStation.id))
+    : [];
+  const selectedCombo = startSessionDraft.comboId
+    ? availableCombos.find((combo) => combo.id === startSessionDraft.comboId) ?? null
+    : null;
+  const sellableOptionById = new Map(props.sellableOptions.map((option) => [option.id, option]));
 
   return (
     <section className="section-grid dashboard-grid">
@@ -294,7 +305,9 @@ export function DashboardPanel(props: {
                       stationId: event.target.value,
                       playMode: nextStation?.ltpEnabled ? previous.playMode : "group",
                       arcadeItemId: nextStation?.mode === "unit_sale" ? (props.arcadeInventoryItems[0]?.id ?? "") : "",
-                      arcadeQuantity: 1
+                      arcadeQuantity: 1,
+                      comboId: "",
+                      comboChoices: {}
                     }));
                   }}
                 >
@@ -317,6 +330,60 @@ export function DashboardPanel(props: {
                 phonePlaceholder="Optional"
                 onChange={(next) => props.onStartSessionDraftChange((previous) => ({ ...previous, ...next }))}
               />
+              {selectedStartStation?.mode === "timed" && availableCombos.length > 0 && (
+                <>
+                  <label className="field-span-full">
+                    <span>Combo</span>
+                    <select
+                      value={startSessionDraft.comboId ?? ""}
+                      onChange={(event) =>
+                        props.onStartSessionDraftChange((previous) => ({
+                          ...previous,
+                          comboId: event.target.value,
+                          comboChoices: {}
+                        }))
+                      }
+                    >
+                      <option value="">Normal Session</option>
+                      {availableCombos.map((combo) => (
+                        <option key={combo.id} value={combo.id}>
+                          {combo.name} - {currency(combo.price)} - {combo.includedMinutes} min
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  {selectedCombo?.choiceGroups.flatMap((group) =>
+                    Array.from({ length: Math.max(1, Math.trunc(group.requiredQuantity)) }, (_, index) => (
+                      <label key={`${group.id}-${index}`}>
+                        <span>{group.requiredQuantity > 1 ? `${group.label} ${index + 1}` : group.label}</span>
+                        <select
+                          required
+                          value={startSessionDraft.comboChoices?.[group.id]?.[index] ?? ""}
+                          onChange={(event) =>
+                            props.onStartSessionDraftChange((previous) => {
+                              const nextChoices = [...(previous.comboChoices?.[group.id] ?? [])];
+                              nextChoices[index] = event.target.value;
+                              return {
+                                ...previous,
+                                comboChoices: {
+                                  ...(previous.comboChoices ?? {}),
+                                  [group.id]: nextChoices
+                                }
+                              };
+                            })
+                          }
+                        >
+                          <option value="">Select option</option>
+                          {group.optionIds.map((optionId) => {
+                            const option = sellableOptionById.get(optionId);
+                            return option ? <option key={optionId} value={optionId}>{option.name}</option> : null;
+                          })}
+                        </select>
+                      </label>
+                    ))
+                  )}
+                </>
+              )}
               {selectedStartStation?.ltpEnabled && (
                 <label>
                   <span>Play Mode</span>

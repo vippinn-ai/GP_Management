@@ -50,6 +50,7 @@ import type {
   CustomerTabDraft,
   CustomerTabEditDraft,
   CustomerProfileEditDraft,
+  ComboPackage,
   DiscountType,
   DraftLineDiscountMap,
   InventoryReportFilterState,
@@ -66,6 +67,7 @@ import type {
   ReportFilterState,
   Role,
   Session,
+  SessionComboApplication,
   SessionEditDraft,
   SessionItem,
   SessionPauseLog,
@@ -106,10 +108,16 @@ import {
   getInventoryReportRange,
   getInventoryQuantityMap,
   getLineStockQuantity,
+  getCombosForStation,
+  getComboInventorySelections,
+  getComboApplicationsTotal,
+  getComboIncludedMinutes,
   getMonthKeysInRange,
   getPreviousRange,
   prorateFactor,
   getReportRange,
+  resolveComboChoiceSelections,
+  resolveComboFixedSelections,
   getSellableInventoryOptions,
   getStockUnitsPerSale,
   getSessionCheckoutLines,
@@ -149,6 +157,22 @@ interface InventoryArchiveDraft {
   itemId: string;
   reason: string;
   remainingStock: number;
+}
+
+function createComboDraft(): ComboPackage {
+  const now = new Date().toISOString();
+  return {
+    id: "",
+    name: "",
+    active: true,
+    stationIds: [],
+    price: 0,
+    includedMinutes: 60,
+    fixedItems: [],
+    choiceGroups: [],
+    createdAt: now,
+    updatedAt: now
+  };
 }
 
 async function hashPassword(password: string): Promise<string> {
@@ -194,7 +218,9 @@ export default function App() {
     customerPhone: "",
     playMode: "group",
     arcadeItemId: "",
-    arcadeQuantity: 1
+    arcadeQuantity: 1,
+    comboId: "",
+    comboChoices: {}
   });
   const [showStartSessionModal, setShowStartSessionModal] = useState(false);
   const [manageSessionId, setManageSessionId] = useState<string | null>(null);
@@ -209,6 +235,7 @@ export default function App() {
   const [inventoryItemSearch, setInventoryItemSearch] = useState("");
   const [inventoryArchiveView, setInventoryArchiveView] = useState<InventoryArchiveView>("active");
   const [inventoryArchiveDraft, setInventoryArchiveDraft] = useState<InventoryArchiveDraft | null>(null);
+  const [comboDraft, setComboDraft] = useState<ComboPackage>(() => createComboDraft());
   const [selectedCustomerTabId, setSelectedCustomerTabId] = useState<string | null>(null);
   const [selectedCustomerProfileId, setSelectedCustomerProfileId] = useState<string | null>(null);
   const [editSessionDraft, setEditSessionDraft] = useState<SessionEditDraft | null>(null);
@@ -834,7 +861,15 @@ export default function App() {
   }
 
   function getSessionLiveTotal(session: Session, effectiveEndAt = now) {
-    return getSessionItemsSubtotal(session) + getSessionChargeSummary(session, effectiveEndAt).subtotal;
+    const charge = getSessionChargeSummary(session, effectiveEndAt);
+    const comboApplications = session.comboApplications ?? [];
+    if (comboApplications.length === 0 || session.mode !== "timed") {
+      return getSessionItemsSubtotal(session) + charge.subtotal;
+    }
+    const extraMinutes = Math.max(0, charge.billedMinutes - getComboIncludedMinutes(session));
+    const hourlyRate = charge.segments[0]?.hourlyRate ?? 0;
+    const extraCharge = (extraMinutes / 60) * hourlyRate;
+    return getSessionItemsSubtotal(session) + getComboApplicationsTotal(session) + extraCharge;
   }
 
   function createStartSessionDraft(station?: Station | null): StartSessionDraft {
@@ -845,8 +880,61 @@ export default function App() {
       customerPhone: "",
       playMode: "group",
       arcadeItemId: station?.mode === "unit_sale" ? defaultArcadeInventoryItem?.id ?? "" : "",
-      arcadeQuantity: 1
+      arcadeQuantity: 1,
+      comboId: "",
+      comboChoices: {}
     };
+  }
+
+  function getAvailableCombosForStation(stationId?: string) {
+    return getCombosForStation(appData.combos, stationId);
+  }
+
+  function buildComboApplication(
+    combo: ComboPackage,
+    choices: Record<string, string[]> = {}
+  ): SessionComboApplication | null {
+    const fixedItems = resolveComboFixedSelections(combo, sellableInventoryOptions);
+    const choiceSelections = resolveComboChoiceSelections(combo, sellableInventoryOptions, choices);
+    if (!fixedItems || !choiceSelections) {
+      return null;
+    }
+    return {
+      id: createId("combo-app"),
+      comboId: combo.id,
+      comboName: combo.name,
+      price: combo.price,
+      includedMinutes: combo.includedMinutes,
+      appliedAt: new Date().toISOString(),
+      fixedItems,
+      choices: choiceSelections
+    };
+  }
+
+  function getComboSessionItems(application: SessionComboApplication): SessionItem[] {
+    return getComboInventorySelections(application).map((selection) => ({
+      id: createId("session-item"),
+      inventoryItemId: selection.inventoryItemId,
+      name: selection.name,
+      quantity: selection.quantity,
+      unitPrice: 0,
+      saleVariantId: selection.saleVariantId,
+      stockUnitsPerSale: selection.stockUnitsPerSale,
+      comboApplicationId: application.id,
+      comboId: application.comboId,
+      addedAt: application.appliedAt
+    }));
+  }
+
+  function findUnavailableComboSelection(selections: ReturnType<typeof getComboInventorySelections>, ignoreSessionId?: string) {
+    const requiredByItemId = selections.reduce<Record<string, number>>((totals, selection) => {
+      totals[selection.inventoryItemId] = (totals[selection.inventoryItemId] ?? 0) + selection.quantity * selection.stockUnitsPerSale;
+      return totals;
+    }, {});
+    return Object.entries(requiredByItemId).find(([itemId, required]) => {
+      const item = appData.inventoryItems.find((entry) => entry.id === itemId);
+      return !item || getAvailableStock(item, ignoreSessionId) < required;
+    });
   }
 
   function getFrozenEndAtForSession(sessionId: string) {
@@ -1307,6 +1395,23 @@ export default function App() {
     const pricingSnapshot = appData.pricingRules.filter((rule) => rule.stationId === station.id);
     const sessionPlayMode = station.ltpEnabled ? startSessionDraft.playMode : "group";
     const initialItems: SessionItem[] = [];
+    const combo = startSessionDraft.comboId
+      ? appData.combos.find((entry) => entry.id === startSessionDraft.comboId && entry.active && entry.stationIds.includes(station.id))
+      : undefined;
+    const comboApplication = combo ? buildComboApplication(combo, startSessionDraft.comboChoices) : null;
+    if (combo && !comboApplication) {
+      window.alert("Select all required combo choices before starting this session.");
+      return;
+    }
+    if (comboApplication) {
+      const unavailable = findUnavailableComboSelection(getComboInventorySelections(comboApplication));
+      if (unavailable) {
+        const item = appData.inventoryItems.find((entry) => entry.id === unavailable[0]);
+        window.alert(`Not enough stock available for ${item?.name ?? "one combo item"}.`);
+        return;
+      }
+      initialItems.push(...getComboSessionItems(comboApplication));
+    }
     if (station.mode === "unit_sale") {
       const arcadeItem = appData.inventoryItems.find(
         (entry) => entry.id === startSessionDraft.arcadeItemId && entry.active
@@ -1354,9 +1459,27 @@ export default function App() {
         ltpEligible: station.ltpEnabled,
         pricingSnapshot,
         items: initialItems,
+        comboApplications: comboApplication ? [comboApplication] : [],
         pauseLogIds: [],
         continuedFromSessionIds
       });
+      if (comboApplication) {
+        for (const sessionItem of initialItems.filter((item) => item.comboApplicationId === comboApplication.id)) {
+          const inventoryEntry = draft.inventoryItems.find((entry) => entry.id === sessionItem.inventoryItemId);
+          if (inventoryEntry && !inventoryEntry.isReusable) {
+            const stockNeeded = getLineStockQuantity(sessionItem);
+            draft.stockMovements.unshift({
+              id: createId("stock"),
+              itemId: sessionItem.inventoryItemId,
+              type: "session_reservation",
+              quantity: -stockNeeded,
+              reason: `Reserved ${sessionItem.name} for combo ${comboApplication.comboName} on ${station.name}`,
+              createdAt: new Date().toISOString(),
+              userId: activeUser.id
+            });
+          }
+        }
+      }
       addAuditLog(
         draft,
         activeUser.id,
@@ -1365,7 +1488,9 @@ export default function App() {
         sessionId,
         continuedFromSession
           ? `Started ${sessionPlayMode} session on ${station.name}, continuing hopped session from ${continuedFromSession.stationNameSnapshot}.`
-          : `Started ${sessionPlayMode} session on ${station.name}${station.mode === "unit_sale" ? ` with ${initialItems[0]?.quantity ?? 0} ${initialItems[0]?.name ?? "coin pack(s)"}.` : station.ltpEnabled ? " with LTP enabled." : "."}`
+          : comboApplication
+            ? `Started ${sessionPlayMode} session on ${station.name} with combo ${comboApplication.comboName}.`
+            : `Started ${sessionPlayMode} session on ${station.name}${station.mode === "unit_sale" ? ` with ${initialItems[0]?.quantity ?? 0} ${initialItems[0]?.name ?? "coin pack(s)"}.` : station.ltpEnabled ? " with LTP enabled." : "."}`
       );
     }, () => {
       setStartSessionDraft(createStartSessionDraft());
@@ -1538,6 +1663,58 @@ export default function App() {
         ...previous,
         [sessionId]: { sellableOptionId: form.sellableOptionId, quantity: 1, sellAsPackOf: packOf }
       }));
+    });
+  }
+
+  function repeatSessionCombo(sessionId: string) {
+    if (!activeUser) {
+      return;
+    }
+    const session = appData.sessions.find((entry) => entry.id === sessionId && entry.status !== "closed");
+    const previousApplication = session?.comboApplications?.at(-1);
+    if (!session || !previousApplication) {
+      return;
+    }
+    const repeatedApplication: SessionComboApplication = {
+      ...previousApplication,
+      id: createId("combo-app"),
+      appliedAt: new Date().toISOString(),
+      fixedItems: previousApplication.fixedItems.map((item) => ({ ...item })),
+      choices: previousApplication.choices.map((choice) => ({
+        groupId: choice.groupId,
+        groupLabel: choice.groupLabel,
+        selections: (choice.selections ?? (choice.selection ? [choice.selection] : [])).map((selection) => ({ ...selection }))
+      }))
+    };
+    const selections = getComboInventorySelections(repeatedApplication);
+    const unavailable = findUnavailableComboSelection(selections, session.id);
+    if (unavailable) {
+      const item = appData.inventoryItems.find((entry) => entry.id === unavailable[0]);
+      window.alert(`Not enough stock available to repeat combo item ${item?.name ?? ""}.`);
+      return;
+    }
+    const repeatedItems = getComboSessionItems(repeatedApplication);
+    void commitAppDataChange("Repeating combo...", (draft) => {
+      const draftSession = draft.sessions.find((entry) => entry.id === sessionId && entry.status !== "closed");
+      if (!draftSession) return false;
+      draftSession.comboApplications = [...(draftSession.comboApplications ?? []), repeatedApplication];
+      draftSession.items.push(...repeatedItems);
+      for (const sessionItem of repeatedItems) {
+        const inventoryEntry = draft.inventoryItems.find((entry) => entry.id === sessionItem.inventoryItemId);
+        if (inventoryEntry && !inventoryEntry.isReusable) {
+          const stockNeeded = getLineStockQuantity(sessionItem);
+          draft.stockMovements.unshift({
+            id: createId("stock"),
+            itemId: sessionItem.inventoryItemId,
+            type: "session_reservation",
+            quantity: -stockNeeded,
+            reason: `Reserved ${sessionItem.name} for repeated combo ${repeatedApplication.comboName} on ${draftSession.stationNameSnapshot}`,
+            createdAt: repeatedApplication.appliedAt,
+            userId: activeUser.id
+          });
+        }
+      }
+      addAuditLog(draft, activeUser.id, "combo_repeated", "session", sessionId, `Repeated combo ${repeatedApplication.comboName} on ${draftSession.stationNameSnapshot}.`);
     });
   }
 
@@ -3259,6 +3436,68 @@ export default function App() {
     }, () => setInventoryAction({ itemId: "", quantity: 1, reason: "" }));
   }
 
+  function saveComboDraft(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!activeUser || !canEditInventory) {
+      return;
+    }
+    const name = comboDraft.name.trim();
+    if (!name || comboDraft.stationIds.length === 0 || comboDraft.price < 0 || comboDraft.includedMinutes <= 0) {
+      window.alert("Combo name, station, price, and included minutes are required.");
+      return;
+    }
+    const sanitizedCombo: ComboPackage = {
+      ...comboDraft,
+      id: comboDraft.id || createId("combo"),
+      name,
+      price: Math.max(0, comboDraft.price),
+      includedMinutes: Math.max(1, Math.trunc(comboDraft.includedMinutes)),
+      fixedItems: comboDraft.fixedItems
+        .filter((item) => item.sellableOptionId && item.quantity > 0)
+        .map((item) => ({ ...item, quantity: Math.max(1, Math.trunc(item.quantity)) })),
+      choiceGroups: comboDraft.choiceGroups
+        .filter((group) => group.label.trim() && group.optionIds.length > 0)
+        .map((group) => ({
+          ...group,
+          label: group.label.trim(),
+          requiredQuantity: Math.max(1, Math.trunc(group.requiredQuantity)),
+          optionIds: Array.from(new Set(group.optionIds))
+        })),
+      createdAt: comboDraft.createdAt || new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    void commitAppDataChange(comboDraft.id ? "Updating combo..." : "Creating combo...", (draft) => {
+      const existing = draft.combos.find((entry) => entry.id === sanitizedCombo.id);
+      if (existing) {
+        Object.assign(existing, sanitizedCombo);
+      } else {
+        draft.combos.unshift(sanitizedCombo);
+      }
+      addAuditLog(draft, activeUser.id, comboDraft.id ? "combo_updated" : "combo_created", "combo", sanitizedCombo.id, `${comboDraft.id ? "Updated" : "Created"} combo ${sanitizedCombo.name}.`);
+    }, () => setComboDraft(createComboDraft()));
+  }
+
+  function editCombo(combo: ComboPackage) {
+    if (!canEditInventory) {
+      return;
+    }
+    setComboDraft(cloneValue(combo));
+    setActiveTab("inventory");
+  }
+
+  function toggleComboActive(comboId: string) {
+    if (!activeUser || !canEditInventory) {
+      return;
+    }
+    void commitAppDataChange("Updating combo status...", (draft) => {
+      const combo = draft.combos.find((entry) => entry.id === comboId);
+      if (!combo) return false;
+      combo.active = !combo.active;
+      combo.updatedAt = new Date().toISOString();
+      addAuditLog(draft, activeUser.id, combo.active ? "combo_restored" : "combo_archived", "combo", combo.id, `${combo.active ? "Restored" : "Archived"} combo ${combo.name}.`);
+    });
+  }
+
   function upsertStation(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!activeUser || !canEditSettings) {
@@ -3924,6 +4163,10 @@ export default function App() {
     startSessionDraft.arcadeItemId
       ? arcadeInventoryItems.find((item) => item.id === startSessionDraft.arcadeItemId) ?? null
       : defaultArcadeInventoryItem;
+  const selectedStationCombos = selectedStartStation ? getAvailableCombosForStation(selectedStartStation.id) : [];
+  const selectedStartCombo = startSessionDraft.comboId
+    ? selectedStationCombos.find((combo) => combo.id === startSessionDraft.comboId) ?? null
+    : null;
   const postHopSession = lastHoppedSessionId ? getSessionById(lastHoppedSessionId) ?? null : null;
   const postHopSessionCharge = postHopSession ? getSessionChargeSummary(postHopSession, postHopSession.endedAt) : null;
 
@@ -4313,6 +4556,8 @@ export default function App() {
             auditLogs={appData.auditLogs}
             customers={appData.customers}
             inventoryItems={appData.inventoryItems}
+            combos={appData.combos}
+            sellableOptions={sellableInventoryOptions}
             checkoutState={checkoutState}
             startSessionDraft={startSessionDraft}
             selectedStartStation={selectedStartStation}
@@ -4427,6 +4672,10 @@ export default function App() {
             inventoryReportFromDate={inventoryReportFromDate}
             inventoryReportToDate={inventoryReportToDate}
             inventoryReportRangeLabel={resolvedInventoryReportRange.label}
+            combos={appData.combos}
+            comboDraft={comboDraft}
+            stations={appData.stations}
+            sellableOptions={sellableInventoryOptions}
             filteredInventoryItems={filteredInventoryItems}
             inventoryCategoryOptions={inventoryCategoryOptions}
             canEditInventory={canEditInventory}
@@ -4444,6 +4693,10 @@ export default function App() {
             onInventoryItemSearchChange={setInventoryItemSearch}
             onInventoryArchiveViewChange={setInventoryArchiveView}
             onInventoryReportFilterChange={setInventoryReportFilter}
+            onComboDraftChange={setComboDraft}
+            onSaveCombo={saveComboDraft}
+            onEditCombo={editCombo}
+            onToggleComboActive={toggleComboActive}
             onArchiveDraftReasonChange={(reason) => {
               setInventoryArchiveDraft((draft) => draft ? { ...draft, reason } : draft);
             }}
@@ -4668,7 +4921,9 @@ export default function App() {
                         stationId: event.target.value,
                         playMode: nextStation?.ltpEnabled ? previous.playMode : "group",
                         arcadeItemId: nextStation?.mode === "unit_sale" ? defaultArcadeInventoryItem?.id ?? "" : "",
-                        arcadeQuantity: 1
+                        arcadeQuantity: 1,
+                        comboId: "",
+                        comboChoices: {}
                       };
                     })
                   }
@@ -4695,6 +4950,60 @@ export default function App() {
               disabled={Boolean(lastHoppedSessionId && postHopCustomerLocked)}
               onChange={(next) => setStartSessionDraft((previous) => ({ ...previous, ...next }))}
             />
+            {(!lastHoppedSessionId || postHopContinuationMode === "gaming") && selectedStartStation?.mode === "timed" && selectedStationCombos.length > 0 && (
+              <>
+                <label className="field-span-full">
+                  <span>Combo</span>
+                  <select
+                    value={startSessionDraft.comboId ?? ""}
+                    onChange={(event) =>
+                      setStartSessionDraft((previous) => ({
+                        ...previous,
+                        comboId: event.target.value,
+                        comboChoices: {}
+                      }))
+                    }
+                  >
+                    <option value="">Normal Session</option>
+                    {selectedStationCombos.map((combo) => (
+                      <option key={combo.id} value={combo.id}>
+                        {combo.name} - {currency(combo.price)} - {combo.includedMinutes} min
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                {selectedStartCombo?.choiceGroups.flatMap((group) =>
+                  Array.from({ length: Math.max(1, Math.trunc(group.requiredQuantity)) }, (_, index) => (
+                    <label key={`${group.id}-${index}`}>
+                      <span>{group.requiredQuantity > 1 ? `${group.label} ${index + 1}` : group.label}</span>
+                      <select
+                        required
+                        value={startSessionDraft.comboChoices?.[group.id]?.[index] ?? ""}
+                        onChange={(event) =>
+                          setStartSessionDraft((previous) => {
+                            const nextChoices = [...(previous.comboChoices?.[group.id] ?? [])];
+                            nextChoices[index] = event.target.value;
+                            return {
+                              ...previous,
+                              comboChoices: {
+                                ...(previous.comboChoices ?? {}),
+                                [group.id]: nextChoices
+                              }
+                            };
+                          })
+                        }
+                      >
+                        <option value="">Select option</option>
+                        {group.optionIds.map((optionId) => {
+                          const option = sellableOptionById.get(optionId);
+                          return option ? <option key={optionId} value={optionId}>{option.name}</option> : null;
+                        })}
+                      </select>
+                    </label>
+                  ))
+                )}
+              </>
+            )}
             {(!lastHoppedSessionId || postHopContinuationMode === "gaming") && selectedStartStation?.ltpEnabled && (
               <label className="field-span-full">
                 <span>Play Mode</span>
@@ -4967,7 +5276,7 @@ export default function App() {
                     </div>
                     <div className="session-item-actions">
                       <span>{item.quantity} x {currency(item.unitPrice)}</span>
-                      <button className="ghost-button danger" type="button" onClick={() => removeItemFromSession(hSession.id, item.id)}>Remove</button>
+                      {item.comboApplicationId ? <span className="muted">Combo included</span> : <button className="ghost-button danger" type="button" onClick={() => removeItemFromSession(hSession.id, item.id)}>Remove</button>}
                     </div>
                   </div>
                 );
@@ -4990,7 +5299,7 @@ export default function App() {
                 </div>
                 <div className="session-item-actions">
                   <span>{item.quantity} x {currency(item.unitPrice)}</span>
-                  <button className="ghost-button danger" type="button" onClick={() => removeItemFromSession(managedSession.id, item.id)}>Remove</button>
+                  {item.comboApplicationId ? <span className="muted">Combo included</span> : <button className="ghost-button danger" type="button" onClick={() => removeItemFromSession(managedSession.id, item.id)}>Remove</button>}
                 </div>
               </div>
             );
@@ -5107,6 +5416,11 @@ export default function App() {
                 }
               >
                 {editSessionDraft?.sessionId === managedSession.id ? "Hide Details" : "Edit Customer Details"}
+              </button>
+            )}
+            {(managedSession.comboApplications ?? []).length > 0 && managedSession.status !== "closed" && (
+              <button className="secondary-button" type="button" onClick={() => repeatSessionCombo(managedSession.id)}>
+                Repeat Combo
               </button>
             )}
             {managedSession.mode === "timed" && (managedSession.status === "active" ? <button className="secondary-button session-action-button is-pause" type="button" onClick={() => toggleSessionPause(managedSession.id, true)}>|| Pause Session</button> : <button className="secondary-button session-action-button is-resume" type="button" onClick={() => toggleSessionPause(managedSession.id, false)}>&gt; Resume Session</button>)}
@@ -5554,7 +5868,7 @@ export default function App() {
                     <tr key={line.id}>
                       <td>{line.description}</td>
                       <td>
-                        {checkoutState.mode === "bill_replacement" && line.type === "inventory_item" ? (
+                        {checkoutState.mode === "bill_replacement" && line.type === "inventory_item" && !line.comboApplicationId ? (
                           <NumericInput
                             value={line.quantity}
                             min={1}
@@ -5649,7 +5963,7 @@ export default function App() {
                       <td><strong>{currency(subtotal - lineDiscount)}</strong></td>
                       {checkoutState.mode === "bill_replacement" && (
                         <td>
-                          {line.type === "inventory_item" ? (
+                          {line.type === "inventory_item" && !line.comboApplicationId ? (
                             <button className="ghost-button danger" type="button" onClick={() => removeReplacementLine(line.id)}>
                               Remove
                             </button>

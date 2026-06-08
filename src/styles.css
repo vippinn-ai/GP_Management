@@ -1378,6 +1378,44 @@ span.catalog-card-icon-large {
   min-width: 58rem;
 }
 
+.combo-station-grid,
+.combo-option-grid {
+  display: grid;
+  gap: 0.55rem;
+  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+}
+
+.field-label {
+  grid-column: 1 / -1;
+  color: #4c6559;
+  font-weight: 700;
+  font-size: 0.9rem;
+}
+
+.combo-config-row {
+  display: grid;
+  grid-template-columns: minmax(12rem, 1fr) minmax(6rem, 0.35fr) auto;
+  gap: 0.7rem;
+  align-items: end;
+  padding: 0.75rem;
+  border: 1px solid #d7e3db;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.combo-choice-config {
+  display: grid;
+  gap: 0.7rem;
+  padding: 0.75rem;
+  border: 1px solid #d7e3db;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.combo-list-row {
+  align-items: flex-start;
+}
+
 .insight-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

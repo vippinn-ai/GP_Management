@@ -5,7 +5,10 @@ import type {
   InventoryReportModel,
   InventoryReportPreset,
   InventoryState,
+  ComboPackage,
   SaleVariant,
+  SellableInventoryOption,
+  Station,
   StockMovement,
   StockMovementType
 } from "../types";
@@ -22,7 +25,7 @@ interface InventoryAction {
 }
 
 type InventoryArchiveView = "active" | "archived";
-type InventoryPanelView = "catalog" | "report";
+type InventoryPanelView = "catalog" | "report" | "combos";
 
 interface InventoryArchiveDraft {
   itemId: string;
@@ -165,6 +168,10 @@ export function InventoryPanel(props: {
   inventoryReportFromDate: string;
   inventoryReportToDate: string;
   inventoryReportRangeLabel: string;
+  combos: ComboPackage[];
+  comboDraft: ComboPackage;
+  stations: Station[];
+  sellableOptions: SellableInventoryOption[];
   filteredInventoryItems: InventoryItem[];
   inventoryCategoryOptions: string[];
   canEditInventory: boolean;
@@ -182,6 +189,10 @@ export function InventoryPanel(props: {
   onInventoryItemSearchChange: (value: string) => void;
   onInventoryArchiveViewChange: (value: InventoryArchiveView) => void;
   onInventoryReportFilterChange: (next: InventoryReportFilterState) => void;
+  onComboDraftChange: (next: ComboPackage) => void;
+  onSaveCombo: (event: FormEvent<HTMLFormElement>) => void;
+  onEditCombo: (combo: ComboPackage) => void;
+  onToggleComboActive: (comboId: string) => void;
   onArchiveDraftReasonChange: (value: string) => void;
   onUpsertInventoryItem: (event: FormEvent<HTMLFormElement>) => void;
   onSaveEditedInventoryItem: (event: FormEvent<HTMLFormElement>) => void;
@@ -197,13 +208,14 @@ export function InventoryPanel(props: {
     itemForm, editItemForm, useCustomItemCategory, customItemCategory,
     useCustomEditItemCategory, customEditItemCategory, inventoryAction,
     inventoryItemSearch, inventoryArchiveView, filteredInventoryItems, inventoryCategoryOptions,
-    canEditInventory, isManagerReadOnly, inventoryReport, inventoryReportFilter
+    canEditInventory, isManagerReadOnly, inventoryReport, inventoryReportFilter, comboDraft
   } = props;
   const [inventoryPanelView, setInventoryPanelView] = useState<InventoryPanelView>("catalog");
   const isItemFormCigarette = itemForm.category === "Cigarettes";
   const isEditItemFormCigarette = editItemForm?.category === "Cigarettes";
   const isArchivedView = inventoryArchiveView === "archived";
   const activeMovementItems = props.inventoryItems.filter((item) => item.active);
+  const comboSellableOptions = props.sellableOptions;
   const archiveDraftItem = props.inventoryArchiveDraft
     ? props.inventoryItems.find((item) => item.id === props.inventoryArchiveDraft?.itemId) ?? null
     : null;
@@ -248,6 +260,10 @@ export function InventoryPanel(props: {
     { label: "Custom Range", value: "custom" }
   ];
 
+  function updateComboDraft(patch: Partial<ComboPackage>) {
+    props.onComboDraftChange({ ...comboDraft, ...patch });
+  }
+
   return (
     <>
       <div className="segmented-control inventory-section-tabs" role="tablist" aria-label="Inventory section">
@@ -265,9 +281,173 @@ export function InventoryPanel(props: {
         >
           Inventory Report
         </button>
+        <button
+          type="button"
+          className={inventoryPanelView === "combos" ? "is-active" : ""}
+          onClick={() => setInventoryPanelView("combos")}
+        >
+          Combos
+        </button>
       </div>
 
-      {inventoryPanelView === "report" ? (
+      {inventoryPanelView === "combos" ? (
+        <section className="section-grid">
+          <div className="panel">
+            <div className="panel-header">
+              <div>
+                <h2>Combo Designer</h2>
+                <p>Create fixed-time game packages with included inventory and required choices.</p>
+              </div>
+            </div>
+            {isManagerReadOnly && <div className="read-only-banner">Manager view: read-only access on this page.</div>}
+            {canEditInventory && (
+              <form className="form-grid" onSubmit={props.onSaveCombo}>
+                <label>
+                  <span>Combo Name</span>
+                  <input required value={comboDraft.name} onChange={(event) => updateComboDraft({ name: event.target.value })} placeholder="Pool Pot Combo" />
+                </label>
+                <label>
+                  <span>Combo Price</span>
+                  <NumericInput required mode="decimal" min={0} value={comboDraft.price} onValueChange={(value) => updateComboDraft({ price: value })} />
+                </label>
+                <label>
+                  <span>Included Game Minutes</span>
+                  <NumericInput required min={1} value={comboDraft.includedMinutes} onValueChange={(value) => updateComboDraft({ includedMinutes: value })} />
+                </label>
+                <label className="checkbox-field">
+                  <input type="checkbox" checked={comboDraft.active} onChange={(event) => updateComboDraft({ active: event.target.checked })} />
+                  <span>Active combo</span>
+                </label>
+                <div className="field-span-full combo-station-grid">
+                  <span className="field-label">Available Stations</span>
+                  {props.stations.filter((station) => station.mode === "timed").map((station) => (
+                    <label key={station.id} className="checkbox-field">
+                      <input
+                        type="checkbox"
+                        checked={comboDraft.stationIds.includes(station.id)}
+                        onChange={(event) => updateComboDraft({
+                          stationIds: event.target.checked
+                            ? Array.from(new Set([...comboDraft.stationIds, station.id]))
+                            : comboDraft.stationIds.filter((id) => id !== station.id)
+                        })}
+                      />
+                      <span>{station.name}</span>
+                    </label>
+                  ))}
+                </div>
+                <div className="field-span-full sale-variants-editor">
+                  <div className="section-block-header compact">
+                    <h3>Fixed Included Items</h3>
+                    <p>These items are always included and stock is reserved when the combo starts.</p>
+                  </div>
+                  <div className="variant-list">
+                    {comboDraft.fixedItems.map((item) => (
+                      <div key={item.id} className="combo-config-row">
+                        <label>
+                          <span>Item</span>
+                          <select value={item.sellableOptionId} onChange={(event) => updateComboDraft({ fixedItems: comboDraft.fixedItems.map((entry) => entry.id === item.id ? { ...entry, sellableOptionId: event.target.value } : entry) })}>
+                            <option value="">Select item</option>
+                            {comboSellableOptions.map((option) => <option key={option.id} value={option.id}>{option.name}</option>)}
+                          </select>
+                        </label>
+                        <label>
+                          <span>Qty</span>
+                          <NumericInput min={1} value={item.quantity} onValueChange={(value) => updateComboDraft({ fixedItems: comboDraft.fixedItems.map((entry) => entry.id === item.id ? { ...entry, quantity: value } : entry) })} />
+                        </label>
+                        <button className="ghost-button danger" type="button" onClick={() => updateComboDraft({ fixedItems: comboDraft.fixedItems.filter((entry) => entry.id !== item.id) })}>Remove</button>
+                      </div>
+                    ))}
+                    {comboDraft.fixedItems.length === 0 && <div className="empty-state">No fixed included items.</div>}
+                  </div>
+                  <button className="secondary-button" type="button" onClick={() => updateComboDraft({ fixedItems: [...comboDraft.fixedItems, { id: createId("combo-fixed"), sellableOptionId: "", quantity: 1 }] })}>
+                    Add Fixed Item
+                  </button>
+                </div>
+                <div className="field-span-full sale-variants-editor">
+                  <div className="section-block-header compact">
+                    <h3>Choice Groups</h3>
+                    <p>Use for options like fries flavor where staff must pick one item at session start.</p>
+                  </div>
+                  <div className="variant-list">
+                    {comboDraft.choiceGroups.map((group) => (
+                      <div key={group.id} className="combo-choice-config">
+                        <div className="combo-config-row">
+                          <label>
+                            <span>Choice Label</span>
+                            <input value={group.label} onChange={(event) => updateComboDraft({ choiceGroups: comboDraft.choiceGroups.map((entry) => entry.id === group.id ? { ...entry, label: event.target.value } : entry) })} placeholder="Fries choice" />
+                          </label>
+                          <label>
+                            <span>Qty</span>
+                            <NumericInput min={1} value={group.requiredQuantity} onValueChange={(value) => updateComboDraft({ choiceGroups: comboDraft.choiceGroups.map((entry) => entry.id === group.id ? { ...entry, requiredQuantity: value } : entry) })} />
+                          </label>
+                          <button className="ghost-button danger" type="button" onClick={() => updateComboDraft({ choiceGroups: comboDraft.choiceGroups.filter((entry) => entry.id !== group.id) })}>Remove</button>
+                        </div>
+                        <div className="combo-option-grid">
+                          {comboSellableOptions.map((option) => (
+                            <label key={option.id} className="checkbox-field">
+                              <input
+                                type="checkbox"
+                                checked={group.optionIds.includes(option.id)}
+                                onChange={(event) => updateComboDraft({
+                                  choiceGroups: comboDraft.choiceGroups.map((entry) =>
+                                    entry.id === group.id
+                                      ? {
+                                          ...entry,
+                                          optionIds: event.target.checked
+                                            ? Array.from(new Set([...entry.optionIds, option.id]))
+                                            : entry.optionIds.filter((id) => id !== option.id)
+                                        }
+                                      : entry
+                                  )
+                                })}
+                              />
+                              <span>{option.name}</span>
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                    {comboDraft.choiceGroups.length === 0 && <div className="empty-state">No choice groups configured.</div>}
+                  </div>
+                  <button className="secondary-button" type="button" onClick={() => updateComboDraft({ choiceGroups: [...comboDraft.choiceGroups, { id: createId("combo-choice"), label: "", requiredQuantity: 1, optionIds: [] }] })}>
+                    Add Choice Group
+                  </button>
+                </div>
+                <div className="button-row field-span-full">
+                  <button className="secondary-button" type="button" onClick={() => props.onComboDraftChange({ id: "", name: "", active: true, stationIds: [], price: 0, includedMinutes: 60, fixedItems: [], choiceGroups: [], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() })}>Reset</button>
+                  <button className="primary-button" type="submit">{comboDraft.id ? "Update Combo" : "Create Combo"}</button>
+                </div>
+              </form>
+            )}
+          </div>
+          <div className="panel">
+            <div className="panel-header">
+              <div>
+                <h2>Configured Combos</h2>
+                <p>Active combos appear while starting sessions on their selected stations.</p>
+              </div>
+            </div>
+            <div className="activity-list">
+              {props.combos.length === 0 && <div className="empty-state">No combos configured.</div>}
+              {props.combos.map((combo) => (
+                <div key={combo.id} className="activity-row combo-list-row">
+                  <div>
+                    <strong>{combo.name}</strong>
+                    <span className="muted">
+                      {currency(combo.price)} - {combo.includedMinutes} min - {combo.stationIds.map((id) => props.stations.find((station) => station.id === id)?.name ?? "Station").join(", ") || "No stations"}
+                    </span>
+                  </div>
+                  <div className="button-row compact-actions">
+                    <span className={`inventory-badge ${combo.active ? "is-available" : "is-archived"}`}>{combo.active ? "Active" : "Archived"}</span>
+                    {canEditInventory && <button className="ghost-button" type="button" onClick={() => props.onEditCombo(combo)}>Edit</button>}
+                    {canEditInventory && <button className="ghost-button danger" type="button" onClick={() => props.onToggleComboActive(combo.id)}>{combo.active ? "Archive" : "Restore"}</button>}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </section>
+      ) : inventoryPanelView === "report" ? (
         <section className="inventory-report-layout">
           <div className="panel">
             <div className="reports-toolbar inventory-report-toolbar">

@@ -4,7 +4,7 @@ export type BillPaymentMode = "cash" | "upi" | "split" | "deferred";
 export type StationMode = "timed" | "unit_sale";
 export type SessionStatus = "active" | "paused" | "closed";
 export type BillStatus = "issued" | "pending" | "voided" | "refunded" | "replaced";
-export type LineType = "session_charge" | "inventory_item" | "manual_charge";
+export type LineType = "session_charge" | "inventory_item" | "manual_charge" | "combo_package" | "combo_detail";
 export type DiscountType = "amount" | "percentage";
 export type PlayMode = "group" | "solo";
 export type LtpOutcome = "won" | "lost";
@@ -70,6 +70,62 @@ export interface SessionItem {
   soldAsPackOf?: number;
   saleVariantId?: string;
   stockUnitsPerSale?: number;
+  comboApplicationId?: string;
+  comboId?: string;
+}
+
+export interface ComboInventorySelection {
+  inventoryItemId: string;
+  saleVariantId?: string;
+  name: string;
+  sourceName: string;
+  quantity: number;
+  unitPrice: number;
+  stockUnitsPerSale: number;
+}
+
+export interface ComboFixedItem {
+  id: string;
+  sellableOptionId: string;
+  quantity: number;
+}
+
+export interface ComboChoiceGroup {
+  id: string;
+  label: string;
+  requiredQuantity: number;
+  optionIds: string[];
+}
+
+export interface ComboPackage {
+  id: string;
+  name: string;
+  active: boolean;
+  stationIds: string[];
+  price: number;
+  includedMinutes: number;
+  fixedItems: ComboFixedItem[];
+  choiceGroups: ComboChoiceGroup[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ComboAppliedChoice {
+  groupId: string;
+  groupLabel: string;
+  selections: ComboInventorySelection[];
+  selection?: ComboInventorySelection;
+}
+
+export interface SessionComboApplication {
+  id: string;
+  comboId: string;
+  comboName: string;
+  price: number;
+  includedMinutes: number;
+  appliedAt: string;
+  fixedItems: ComboInventorySelection[];
+  choices: ComboAppliedChoice[];
 }
 
 export interface Session {
@@ -89,6 +145,7 @@ export interface Session {
   ltpDiscountApplied?: boolean;
   pricingSnapshot: PricingRule[];
   items: SessionItem[];
+  comboApplications?: SessionComboApplication[];
   pauseLogIds: string[];
   continuedFromSessionIds?: string[];
   closedBillId?: string;
@@ -106,6 +163,8 @@ export interface CustomerTabItem {
   soldAsPackOf?: number;
   saleVariantId?: string;
   stockUnitsPerSale?: number;
+  comboApplicationId?: string;
+  comboId?: string;
 }
 
 export interface CustomerTab {
@@ -217,6 +276,8 @@ export interface BillLine {
   soldAsPackOf?: number;
   saleVariantId?: string;
   stockUnitsPerSale?: number;
+  comboApplicationId?: string;
+  comboId?: string;
 }
 
 export interface Bill {
@@ -321,6 +382,7 @@ export interface AppData {
   customers: Customer[];
   customerTabs: CustomerTab[];
   inventoryItems: InventoryItem[];
+  combos: ComboPackage[];
   stockMovements: StockMovement[];
   bills: Bill[];
   payments: Payment[];
@@ -361,6 +423,8 @@ export interface DraftBillLine {
   soldAsPackOf?: number;
   saleVariantId?: string;
   stockUnitsPerSale?: number;
+  comboApplicationId?: string;
+  comboId?: string;
 }
 
 export type TabId = "dashboard" | "sale" | "inventory" | "bills" | "reports" | "customers" | "settings" | "users";
@@ -377,6 +441,8 @@ export interface StartSessionDraft {
   playMode: PlayMode;
   arcadeItemId: string;
   arcadeQuantity: number;
+  comboId?: string;
+  comboChoices?: Record<string, string[]>;
 }
 
 export interface DraftLineDiscountMap {

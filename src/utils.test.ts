@@ -18,9 +18,13 @@ import {
   getPendingBillsForCustomer,
   getPendingReceivableGroups,
   getInventoryReportRange,
-  buildInventoryReportModel
+  buildInventoryReportModel,
+  getCombosForStation,
+  resolveComboFixedSelections,
+  resolveComboChoiceSelections,
+  getSessionCheckoutLines
 } from "./utils";
-import type { AppData, Bill, CustomerTab, CustomerTabItem, DraftBillLine, ExpenseTemplate, ExpenseTemplateOverride, InventoryItem, Payment, Session, StockMovement } from "./types";
+import type { AppData, Bill, ComboPackage, CustomerTab, CustomerTabItem, DraftBillLine, ExpenseTemplate, ExpenseTemplateOverride, InventoryItem, Payment, PricingRule, SellableInventoryOption, Session, StockMovement } from "./types";
 
 // ─── toLocalDateKey ─────────────────────────────────────────────────────────
 
@@ -470,6 +474,160 @@ describe("pending receivable customer helpers", () => {
     expect(customerGroup?.totalDue).toBe(250);
     expect(customerGroup?.bills.map((bill) => bill.id)).toEqual(["b1", "b2"]);
     expect(groups.filter((group) => group.isUngrouped).map((group) => group.bills[0].id).sort()).toEqual(["b3", "b4"]);
+  });
+});
+
+describe("session combo helpers", () => {
+  const combo: ComboPackage = {
+    id: "combo-pool",
+    name: "Pool Pot Combo",
+    active: true,
+    stationIds: ["pool-1"],
+    price: 799,
+    includedMinutes: 60,
+    fixedItems: [{ id: "fixed-maggi", sellableOptionId: "maggi", quantity: 2 }],
+    choiceGroups: [{ id: "fries-choice", label: "Fries", requiredQuantity: 1, optionIds: ["peri-fries", "salted-fries"] }],
+    createdAt: "2026-06-08T10:00:00.000Z",
+    updatedAt: "2026-06-08T10:00:00.000Z"
+  };
+
+  const option = (id: string, inventoryItemId: string, name: string, stockUnitsPerSale = 1): SellableInventoryOption => ({
+    id,
+    inventoryItemId,
+    name,
+    sourceName: name,
+    category: "Food",
+    price: 100,
+    isBaseItem: !id.includes("variant"),
+    stockUnitsPerSale,
+    item: {
+      id: inventoryItemId,
+      name,
+      category: "Food",
+      price: 100,
+      stockQty: 20,
+      lowStockThreshold: 2,
+      unit: "piece",
+      isReusable: false,
+      active: true
+    }
+  });
+
+  it("filters active combos by station", () => {
+    expect(getCombosForStation([combo], "pool-1").map((entry) => entry.id)).toEqual(["combo-pool"]);
+    expect(getCombosForStation([combo], "s2")).toEqual([]);
+    expect(getCombosForStation([{ ...combo, active: false }], "pool-1")).toEqual([]);
+  });
+
+  it("resolves fixed selections with stock units", () => {
+    const options = [
+      option("maggi", "maggi-item", "Maggi"),
+      option("peri-fries", "fries-item", "Peri Fries", 2),
+      option("salted-fries", "fries-item", "Salted Fries", 2)
+    ];
+
+    expect(resolveComboFixedSelections(combo, options)?.[0]).toMatchObject({
+      inventoryItemId: "maggi-item",
+      quantity: 2,
+      stockUnitsPerSale: 1
+    });
+  });
+
+  it("allows separate selections for each required choice quantity", () => {
+    const drinkCombo = {
+      ...combo,
+      choiceGroups: [{ id: "drink-choice", label: "Drinks", requiredQuantity: 2, optionIds: ["coke", "shake"] }]
+    };
+    const options = [
+      option("coke", "coke-item", "Coke"),
+      option("shake", "shake-item", "Shake")
+    ];
+
+    const resolved = resolveComboChoiceSelections(drinkCombo, options, { "drink-choice": ["coke", "shake"] });
+
+    expect(resolved?.[0].selections).toEqual([
+      expect.objectContaining({ inventoryItemId: "coke-item", name: "Coke", quantity: 1 }),
+      expect.objectContaining({ inventoryItemId: "shake-item", name: "Shake", quantity: 1 })
+    ]);
+  });
+
+  it("aggregates repeated selections in the same choice group", () => {
+    const drinkCombo = {
+      ...combo,
+      choiceGroups: [{ id: "drink-choice", label: "Drinks", requiredQuantity: 2, optionIds: ["coke", "shake"] }]
+    };
+    const options = [
+      option("coke", "coke-item", "Coke"),
+      option("shake", "shake-item", "Shake")
+    ];
+
+    const resolved = resolveComboChoiceSelections(drinkCombo, options, { "drink-choice": ["coke", "coke"] });
+
+    expect(resolved?.[0].selections).toEqual([
+      expect.objectContaining({ inventoryItemId: "coke-item", name: "Coke", quantity: 2 })
+    ]);
+  });
+
+  it("keeps legacy single choice values supported", () => {
+    const options = [
+      option("maggi", "maggi-item", "Maggi"),
+      option("peri-fries", "fries-item", "Peri Fries", 2)
+    ];
+
+    expect(resolveComboChoiceSelections(combo, options, { "fries-choice": "peri-fries" })?.[0].selections[0]).toMatchObject({
+      inventoryItemId: "fries-item",
+      quantity: 1,
+      stockUnitsPerSale: 2
+    });
+  });
+
+  it("creates combo package lines and only bills extra game time", () => {
+    const pricingRule: PricingRule = {
+      id: "rate-1",
+      stationId: "pool-1",
+      label: "Standard",
+      startMinute: 0,
+      endMinute: 0,
+      hourlyRate: 300
+    };
+    const session: Session = {
+      id: "session-1",
+      stationId: "pool-1",
+      stationNameSnapshot: "Pool",
+      mode: "timed",
+      startedAt: "2026-06-08T10:00:00.000Z",
+      status: "active",
+      playMode: "group",
+      ltpEligible: false,
+      pricingSnapshot: [pricingRule],
+      items: [],
+      comboApplications: [{
+        id: "combo-app-1",
+        comboId: combo.id,
+        comboName: combo.name,
+        price: 799,
+        includedMinutes: 60,
+        appliedAt: "2026-06-08T10:00:00.000Z",
+        fixedItems: [{ inventoryItemId: "maggi-item", name: "Maggi", sourceName: "Maggi", quantity: 2, unitPrice: 100, stockUnitsPerSale: 1 }],
+        choices: []
+      }],
+      pauseLogIds: []
+    };
+
+    const lines = getSessionCheckoutLines(session, {
+      subtotal: 450,
+      billedHours: 1.5,
+      billedMinutes: 90,
+      pauseMinutes: 0,
+      segments: [{ label: "Standard", hourlyRate: 300, minutes: 90, subtotal: 450 }]
+    });
+
+    expect(lines.map((line) => [line.type, line.description, line.unitPrice])).toEqual([
+      ["combo_package", "Pool Pot Combo", 799],
+      ["combo_detail", "1 hr Pool play included", 0],
+      ["inventory_item", "Maggi (included in Pool Pot Combo)", 0],
+      ["session_charge", "Pool extra time (30 min)", 150]
+    ]);
   });
 });
 

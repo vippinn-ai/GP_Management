@@ -14,6 +14,7 @@ const emptyAppData: AppData = {
   customers: [],
   customerTabs: [],
   inventoryItems: [],
+  combos: [],
   stockMovements: [],
   bills: [],
   payments: [],
@@ -69,6 +70,7 @@ export function hydrateAppData(parsed: Partial<AppData>): AppData {
       ...session,
       playMode: session.playMode ?? "group",
       ltpEligible: session.ltpEligible ?? false,
+      comboApplications: session.comboApplications ?? [],
       continuedFromSessionIds: session.continuedFromSessionIds ?? undefined,
       closeDisposition: session.closeDisposition ?? (session.closedBillId ? "billed" : undefined),
       closeReason: session.closeReason ?? undefined
@@ -115,6 +117,21 @@ export function hydrateAppData(parsed: Partial<AppData>): AppData {
         }))
       };
     }),
+    combos: (parsed.combos ?? cloneValue(emptyAppData.combos)).map((combo) => ({
+      ...combo,
+      active: combo.active ?? true,
+      stationIds: combo.stationIds ?? [],
+      price: combo.price ?? 0,
+      includedMinutes: Math.max(1, Math.trunc(combo.includedMinutes ?? 60)),
+      fixedItems: combo.fixedItems ?? [],
+      choiceGroups: (combo.choiceGroups ?? []).map((group) => ({
+        ...group,
+        requiredQuantity: Math.max(1, Math.trunc(group.requiredQuantity ?? 1)),
+        optionIds: group.optionIds ?? []
+      })),
+      createdAt: combo.createdAt ?? new Date().toISOString(),
+      updatedAt: combo.updatedAt ?? combo.createdAt ?? new Date().toISOString()
+    })),
     expenses: parsed.expenses ?? cloneValue(emptyAppData.expenses),
     expenseTemplates: parsed.expenseTemplates ?? cloneValue(emptyAppData.expenseTemplates),
     expenseTemplateOverrides: parsed.expenseTemplateOverrides ?? cloneValue(emptyAppData.expenseTemplateOverrides)
