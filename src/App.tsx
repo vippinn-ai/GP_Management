@@ -59,6 +59,7 @@ import type {
   ExpenseTemplateOverride,
   SellableInventoryOption,
   LtpOutcome,
+  PendingSettlementDraft,
   PaymentMode,
   PlayMode,
   ReportFilterState,
@@ -76,7 +77,8 @@ import type {
   UserEditDraft,
   UserPasswordDraft,
   SettlementDraft,
-  VoidPendingDraft
+  VoidPendingDraft,
+  VoidPendingGroupDraft
 } from "./types";
 import { DEFAULT_INVENTORY_CATEGORIES, DEFAULT_EXPENSE_CATEGORIES, tabsByRole, ALL_TABS, getCategoryIcon } from "./constants";
 import { getCategoryImage } from "./categoryImages";
@@ -115,6 +117,8 @@ import {
   filterPaymentsByBusinessDate,
   getRevenueCountedPayments,
   getDirectlyLinkedHoppedSessions,
+  getPendingBillsForCustomer as findPendingBillsForCustomer,
+  getPendingReceivableGroups,
   getUnbilledHoppedSessionsForCustomer,
   normalizeCustomerName,
   normalizeCustomerPhone,
@@ -129,7 +133,7 @@ import {
 } from "./utils";
 import {
   buildCheckoutPaymentResult,
-  computeSettlement,
+  computeReceivableSettlement,
   getSettlementAmount,
   validateCheckoutPayment
 } from "./billing";
@@ -218,6 +222,7 @@ export default function App() {
   const [replacementItemForm, setReplacementItemForm] = useState({ sellableOptionId: "", quantity: 1 });
   const [sessionItemForm, setSessionItemForm] = useState<SessionItemFormState>({});
   const [selectedReceiptBillId, setSelectedReceiptBillId] = useState<string | null>(null);
+  const [billRegisterFocus, setBillRegisterFocus] = useState<{ token: number; search: string } | null>(null);
   const receiptPreviewBlockRef = useRef<HTMLDivElement | null>(null);
   const [, setReceiptPreviewBlockHeight] = useState<number | null>(null);
   const skipRemotePersistRef = useRef(false);
@@ -281,6 +286,7 @@ export default function App() {
   const [ownPasswordError, setOwnPasswordError] = useState("");
   const [settlementDraft, setSettlementDraft] = useState<SettlementDraft | null>(null);
   const [voidPendingDraft, setVoidPendingDraft] = useState<VoidPendingDraft | null>(null);
+  const [voidPendingGroupDraft, setVoidPendingGroupDraft] = useState<VoidPendingGroupDraft | null>(null);
   const [pendingWarningDraft, setPendingWarningDraft] = useState<{
     pendingBills: Bill[];
     customerLabel: string;
@@ -366,7 +372,7 @@ export default function App() {
       } else {
         const message =
           isRetry
-            ? "Could not save — please check the latest data and try again."
+            ? "Could not save - please check the latest data and try again."
             : error instanceof Error
               ? error.message
               : "Remote data changed in another browser. Please retry after the latest data loads.";
@@ -462,7 +468,7 @@ export default function App() {
   const activeSessions = appData.sessions.filter((session) => session.status !== "closed");
   const openCustomerTabs = appData.customerTabs.filter((tab) => tab.status === "open");
   const selectedCustomerTab = resolveCustomerTabWorkspaceSelection(openCustomerTabs, selectedCustomerTabId);
-  // Build O(1) index maps so getBillBusinessDate is O(n) total, not O(n²).
+  // Build O(1) index maps so getBillBusinessDate is O(n) total, not O(n^2).
   const sessionById = new Map(appData.sessions.map((s) => [s.id, s]));
   const tabByBillId = new Map(
     appData.customerTabs.filter((t) => t.closedBillId).map((t) => [t.closedBillId!, t])
@@ -477,7 +483,7 @@ export default function App() {
     if (tab) return toBusinessDayKey(tab.createdAt);
     return toBusinessDayKey(bill.issuedAt);
   }
-  // Precomputed map: billId → business date key. Built once per render so
+  // Precomputed map: billId -> business date key. Built once per render so
   // downstream consumers (BillRegisterPanel, topbar metric) don't re-derive it.
   const billBusinessDates: Record<string, string> = {};
   for (const bill of appData.bills) {
@@ -1103,9 +1109,9 @@ export default function App() {
     if (item.isReusable) {
       const occupied = getOccupiedQuantity(item);
       const available = getAvailableStock(item);
-      return `${occupied} in use · ${available} available`;
+      return `${occupied} in use - ${available} available`;
     }
-    return `${item.stockQty} left · threshold ${item.lowStockThreshold}`;
+    return `${item.stockQty} left - threshold ${item.lowStockThreshold}`;
   }
 
   function getInventoryPickerDetail(
@@ -1116,7 +1122,7 @@ export default function App() {
     const available = getAvailableStock(item, ignoreSessionId, ignoreCustomerTabId);
     if (item.isReusable) {
       const occupied = getOccupiedQuantity(item, { ignoreSessionId, ignoreCustomerTabId });
-      return `${available} available · ${occupied} in use`;
+      return `${available} available - ${occupied} in use`;
     }
     if (item.cigarettePack) {
       const packs = Math.floor(available / item.cigarettePack.size);
@@ -1219,16 +1225,55 @@ export default function App() {
     setActiveUserId(null);
   }
 
-  function getPendingBillsForCustomer(name: string, phone: string): Bill[] {
-    const nameLower = name.trim().toLowerCase();
-    const phoneNorm = phone.trim();
-    if (!nameLower && !phoneNorm) return [];
-    return appData.bills.filter((bill) => {
-      if (bill.status !== "pending") return false;
-      if (phoneNorm && bill.customerPhone?.trim() === phoneNorm) return true;
-      if (nameLower && (bill.customerName ?? "").trim().toLowerCase() === nameLower) return true;
-      return false;
-    });
+  function getPendingBillsForCustomerDetails(customerId?: string, name?: string, phone?: string): Bill[] {
+    return findPendingBillsForCustomer(appData.bills, customerId, name, phone);
+  }
+
+  function applyPendingSettlementAmount(draft: PendingSettlementDraft, amount: number): PendingSettlementDraft {
+    if (draft.paymentMode === "upi") {
+      return { ...draft, cashAmount: 0, upiAmount: amount };
+    }
+    if (draft.paymentMode === "split") {
+      return { ...draft, cashAmount: amount, upiAmount: 0 };
+    }
+    return { ...draft, cashAmount: amount, upiAmount: 0 };
+  }
+
+  function getPendingSettlementDueForIds(billIds: string[]): number {
+    const selected = new Set(billIds);
+    return sumBy(
+      appData.bills.filter((bill) => selected.has(bill.id) && bill.status === "pending" && bill.amountDue > 0),
+      (bill) => bill.amountDue
+    );
+  }
+
+  function createPendingSettlementDraftForCustomer(customerId?: string, name?: string, phone?: string) {
+    const pendingBillsForCustomer = getPendingBillsForCustomerDetails(customerId, name, phone);
+    if (pendingBillsForCustomer.length === 0) return undefined;
+    const billIds = pendingBillsForCustomer.map((bill) => bill.id);
+    const draft: PendingSettlementDraft = {
+      availableBillIds: billIds,
+      billIds,
+      paymentMode: "cash" as const,
+      cashAmount: 0,
+      upiAmount: 0
+    };
+    return applyPendingSettlementAmount(draft, sumBy(pendingBillsForCustomer, (bill) => bill.amountDue));
+  }
+
+  function getPendingBillFocusSearch(pendingBillsForCustomer: Bill[], fallbackLabel: string): string {
+    const first = pendingBillsForCustomer[0];
+    return first?.customerPhone?.trim() || first?.customerName?.trim() || fallbackLabel.trim() || first?.billNumber || "";
+  }
+
+  function viewPendingBillsForWarning() {
+    if (!pendingWarningDraft) return;
+    const search = getPendingBillFocusSearch(pendingWarningDraft.pendingBills, pendingWarningDraft.customerLabel);
+    setPendingWarningDraft(null);
+    setShowStartSessionModal(false);
+    setSelectedReceiptBillId(null);
+    setBillRegisterFocus({ token: Date.now(), search });
+    setActiveTab("bills");
   }
 
   function doStartSessionDirect() {
@@ -1322,7 +1367,7 @@ export default function App() {
     }
     const customerName = startSessionDraft.customerName;
     const customerPhone = startSessionDraft.customerPhone;
-    const pendingForCustomer = getPendingBillsForCustomer(customerName, customerPhone);
+    const pendingForCustomer = getPendingBillsForCustomerDetails(startSessionDraft.customerId, customerName, customerPhone);
     if (pendingForCustomer.length > 0) {
       const label = customerPhone.trim() || customerName.trim();
       setPendingWarningDraft({ pendingBills: pendingForCustomer, customerLabel: label, intent: { type: "session" } });
@@ -1435,7 +1480,7 @@ export default function App() {
     const stockNeeded = form.quantity * stockUnitsPerSale;
     if (!option || !item || getAvailableStock(item, sessionId) < stockNeeded) {
       if (packOf && item && getAvailableStock(item, sessionId) < stockNeeded) {
-        window.alert(`Cannot sell as pack — only ${getAvailableStock(item, sessionId)} cigarettes in stock (need ${stockNeeded} for ${form.quantity} pack${form.quantity !== 1 ? "s" : ""}). Please restock first or sell as singles.`);
+        window.alert(`Cannot sell as pack - only ${getAvailableStock(item, sessionId)} cigarettes in stock (need ${stockNeeded} for ${form.quantity} pack${form.quantity !== 1 ? "s" : ""}). Please restock first or sell as singles.`);
       } else {
         window.alert(item?.isReusable ? `${item.name} is currently occupied.` : `Not enough stock available for ${option?.name ?? "that item"}.`);
       }
@@ -1608,6 +1653,7 @@ export default function App() {
       roundOffEnabled: true,
       lineDiscounts: {},
       hoppedSessionIds: directlyLinkedHops.map((s) => s.id),
+      pendingSettlement: createPendingSettlementDraftForCustomer(session.customerId, session.customerName, session.customerPhone),
       ltpOutcome:
         session.ltpEligible && session.playMode === "solo"
           ? session.ltpOutcome ?? "lost"
@@ -1700,7 +1746,7 @@ export default function App() {
       return;
     }
 
-    const pendingForCustomer = getPendingBillsForCustomer(customerName, customerPhone);
+    const pendingForCustomer = getPendingBillsForCustomerDetails(draftValue.customerId, customerName, customerPhone);
     if (pendingForCustomer.length > 0) {
       const label = customerPhone || customerName;
       setPendingWarningDraft({ pendingBills: pendingForCustomer, customerLabel: label, intent: { type: "tab", draftValue, options } });
@@ -1911,7 +1957,7 @@ export default function App() {
     const stockNeeded = sellAsPackOf ?? option.stockUnitsPerSale;
     if (getAvailableStock(item) < stockNeeded) {
       if (sellAsPackOf) {
-        window.alert(`Cannot sell as pack — only ${getAvailableStock(item)} cigarettes in stock (need ${sellAsPackOf} for 1 pack). Please restock first or sell as singles.`);
+        window.alert(`Cannot sell as pack - only ${getAvailableStock(item)} cigarettes in stock (need ${sellAsPackOf} for 1 pack). Please restock first or sell as singles.`);
       } else {
         window.alert(item.isReusable ? `${item.name} is currently occupied.` : `${option.name} is out of stock.`);
       }
@@ -2011,7 +2057,12 @@ export default function App() {
       collectMode: "cash" as const,
       roundOffEnabled: true,
       lineDiscounts: {},
-      hoppedSessionIds: previousHops.map((session) => session.id)
+      hoppedSessionIds: previousHops.map((session) => session.id),
+      pendingSettlement: createPendingSettlementDraftForCustomer(
+        selectedCustomerTab.customerId,
+        selectedCustomerTab.customerName,
+        selectedCustomerTab.customerPhone
+      )
     });
   }
 
@@ -2055,7 +2106,8 @@ export default function App() {
       collectMode: "cash" as const,
       roundOffEnabled: true,
       lineDiscounts: {},
-      hoppedSessionIds: previousHops.map((session) => session.id)
+      hoppedSessionIds: previousHops.map((session) => session.id),
+      pendingSettlement: createPendingSettlementDraftForCustomer(tab.customerId, tab.customerName, tab.customerPhone)
     });
   }
 
@@ -2192,7 +2244,7 @@ export default function App() {
   function billHoppedSession() {
     if (!lastHoppedSessionId) return;
     const sessionId = lastHoppedSessionId;
-    // Keep lastHoppedSessionId alive — needed to loop back to "Start Next Game" if billing is cancelled
+    // Keep lastHoppedSessionId alive - needed to loop back to "Start Next Game" if billing is cancelled
     setShowStartSessionModal(false);  // bypass handleSetShowStartSessionModal so the ID stays set
     setPostHopContinuationMode("gaming");
     setStartSessionDraft(createStartSessionDraft());
@@ -2646,7 +2698,7 @@ export default function App() {
       checkoutState.roundOffEnabled
     );
     if (preview.isZeroTotal) {
-      window.alert("Bill total is ₹0 — add items or remove any full discounts before issuing.");
+      window.alert("Bill total is Rs 0 - add items or remove any full discounts before issuing.");
       return;
     }
     const discountEntries = Object.values(checkoutState.lineDiscounts).filter(
@@ -2669,6 +2721,22 @@ export default function App() {
     );
     if (paymentValidationError) {
       window.alert(paymentValidationError);
+      return;
+    }
+    const pendingSettlementDraft = checkoutState.pendingSettlement;
+    const pendingSettlementAmount = pendingSettlementDraft ? getSettlementAmount(pendingSettlementDraft) : 0;
+    const pendingSettlementResult =
+      pendingSettlementDraft && pendingSettlementAmount > 0
+        ? computeReceivableSettlement(
+            pendingSettlementDraft.billIds
+              .map((billId) => baseAppData.bills.find((bill) => bill.id === billId))
+              .filter((bill): bill is Bill => Boolean(bill && bill.status === "pending" && bill.amountDue > 0)),
+            pendingSettlementDraft,
+            billBusinessDates
+          )
+        : null;
+    if (pendingSettlementResult?.error) {
+      window.alert(pendingSettlementResult.error);
       return;
     }
     const { amountPaid: billAmountPaid, amountDue: billAmountDue, status: billStatus, paymentRecords: checkoutPaymentRecords } =
@@ -2764,6 +2832,40 @@ export default function App() {
           createdAt: issuedAt,
           receivedByUserId: activeUser.id
         });
+      }
+      if (pendingSettlementResult && pendingSettlementResult.allocations.length > 0) {
+        const settlementGroupId = createId("settlement-group");
+        for (const allocation of pendingSettlementResult.allocations) {
+          const target = draft.bills.find((entry) => entry.id === allocation.billId);
+          if (!target || target.status !== "pending") continue;
+          target.amountPaid = allocation.newAmountPaid;
+          target.amountDue = allocation.newAmountDue;
+          target.status = allocation.newStatus;
+          if (allocation.newStatus === "issued") {
+            target.settledAt = issuedAt;
+            target.settledByUserId = activeUser.id;
+          }
+          for (const record of allocation.paymentRecords) {
+            draft.payments.unshift({
+              id: createId("payment"),
+              billId: allocation.billId,
+              mode: record.mode,
+              amount: record.amount,
+              createdAt: issuedAt,
+              receivedByUserId: activeUser.id,
+              settlementGroupId,
+              relatedCheckoutBillId: billId
+            });
+          }
+          addAuditLog(
+            draft,
+            activeUser.id,
+            "bill_settled",
+            "bill",
+            allocation.billId,
+            `Settled Rs ${allocation.amount.toFixed(2)} on ${target.billNumber} during checkout ${billNumber}. Remaining due: Rs ${allocation.newAmountDue.toFixed(2)}.`
+          );
+        }
       }
       if (replacementBill) {
         const originalBill = draft.bills.find((entry) => entry.id === replacementBill.id);
@@ -2902,7 +3004,7 @@ export default function App() {
         addAuditLog(draft, activeUser.id, "ltp_discount_applied", "session", session.id, `Applied LTP win discount to ${session.stationNameSnapshot}.`);
       }
       if (billStatus === "pending") {
-        addAuditLog(draft, activeUser.id, "bill_pending", "bill", billId, `${billNumber} issued as pending (due ₹${billAmountDue.toFixed(2)}).`);
+        addAuditLog(draft, activeUser.id, "bill_pending", "bill", billId, `${billNumber} issued as pending (due Rs ${billAmountDue.toFixed(2)}).`);
       }
     if (backendConfigured) {
       await saveRemoteSnapshot(nextAppData, baseVersion);
@@ -2927,79 +3029,97 @@ export default function App() {
     if (!activeUser || !canSettlePendingBills) {
       return false;
     }
-    const bill = appData.bills.find((b) => b.id === draft.billId);
-    if (!bill || bill.status !== "pending") {
-      window.alert("Bill is not pending.");
+    const billIds = draft.billIds?.length ? draft.billIds : draft.billId ? [draft.billId] : [];
+    const selectedBills = billIds
+      .map((billId) => appData.bills.find((b) => b.id === billId))
+      .filter((bill): bill is Bill => Boolean(bill && bill.status === "pending" && bill.amountDue > 0));
+    if (selectedBills.length === 0) {
+      window.alert("No selected bills are pending.");
       return false;
     }
-    const result = computeSettlement(bill.amountPaid, bill.amountDue, bill.total, draft);
+    const result = computeReceivableSettlement(selectedBills, draft, billBusinessDates);
     if (result.error) {
       window.alert(result.error);
       return false;
     }
     const settledAt = new Date().toISOString();
-    const settlementAmount = getSettlementAmount(draft);
     return commitAppDataChange("Settling pending bill...", (data) => {
-      const target = data.bills.find((b) => b.id === draft.billId);
-      if (!target || target.status !== "pending") return false;
-      target.amountPaid = result.newAmountPaid;
-      target.amountDue = result.newAmountDue;
-      target.status = result.newStatus;
-      if (result.newStatus === "issued") {
-        target.settledAt = settledAt;
-        target.settledByUserId = activeUser.id;
+      const settlementGroupId = result.allocations.length > 1 ? createId("settlement-group") : undefined;
+      for (const allocation of result.allocations) {
+        const target = data.bills.find((b) => b.id === allocation.billId);
+        if (!target || target.status !== "pending") continue;
+        target.amountPaid = allocation.newAmountPaid;
+        target.amountDue = allocation.newAmountDue;
+        target.status = allocation.newStatus;
+        if (allocation.newStatus === "issued") {
+          target.settledAt = settledAt;
+          target.settledByUserId = activeUser.id;
+        }
+        for (const record of allocation.paymentRecords) {
+          data.payments.unshift({
+            id: createId("payment"),
+            billId: allocation.billId,
+            mode: record.mode,
+            amount: record.amount,
+            createdAt: settledAt,
+            receivedByUserId: activeUser.id,
+            settlementGroupId
+          });
+        }
+        addAuditLog(
+          data,
+          activeUser.id,
+          "bill_settled",
+          "bill",
+          allocation.billId,
+          `Settled Rs ${allocation.amount.toFixed(2)} on ${target.billNumber}. Remaining due: Rs ${allocation.newAmountDue.toFixed(2)}.`
+        );
       }
-      for (const record of result.paymentRecords) {
-        data.payments.unshift({
-          id: createId("payment"),
-          billId: draft.billId,
-          mode: record.mode,
-          amount: record.amount,
-          createdAt: settledAt,
-          receivedByUserId: activeUser.id
-        });
-      }
-      addAuditLog(
-        data,
-        activeUser.id,
-        "bill_settled",
-        "bill",
-        draft.billId,
-        `Settled ₹${settlementAmount.toFixed(2)} on ${target.billNumber}. Remaining due: ₹${result.newAmountDue.toFixed(2)}.`
-      );
     });
   }
 
-  async function voidPendingBill(draft: VoidPendingDraft): Promise<boolean> {
+  async function voidPendingBills(draft: VoidPendingGroupDraft): Promise<boolean> {
     if (!activeUser || activeUser.role !== "admin") {
-      return false;
-    }
-    // Stock is intentionally NOT reversed: goods were consumed/session was played before the debt was written off.
-    const bill = appData.bills.find((b) => b.id === draft.billId);
-    if (!bill || bill.status !== "pending") {
-      window.alert("Bill is not pending.");
       return false;
     }
     if (!draft.reason.trim()) {
       window.alert("Void reason is required.");
       return false;
     }
+    const billIds = Array.from(new Set(draft.billIds));
+    const pendingBillsToVoid = billIds
+      .map((billId) => appData.bills.find((b) => b.id === billId))
+      .filter((bill): bill is Bill => Boolean(bill && bill.status === "pending"));
+    if (pendingBillsToVoid.length === 0) {
+      window.alert("No selected bills are pending.");
+      return false;
+    }
     const voidedAt = new Date().toISOString();
-    return commitAppDataChange("Writing off pending bill...", (data) => {
-      const target = data.bills.find((b) => b.id === draft.billId);
-      if (!target || target.status !== "pending") return false;
-      target.status = "voided";
-      target.voidedAt = voidedAt;
-      target.voidedByUserId = activeUser.id;
-      target.voidReason = draft.reason.trim();
-      addAuditLog(
-        data,
-        activeUser.id,
-        "bill_voided_bad_debt",
-        "bill",
-        draft.billId,
-        `Voided pending bill ${target.billNumber} as bad debt. Reason: ${draft.reason.trim()}.`
-      );
+    return commitAppDataChange("Writing off pending bills...", (data) => {
+      for (const bill of pendingBillsToVoid) {
+        const target = data.bills.find((b) => b.id === bill.id);
+        if (!target || target.status !== "pending") continue;
+        target.status = "voided";
+        target.voidedAt = voidedAt;
+        target.voidedByUserId = activeUser.id;
+        target.voidReason = draft.reason.trim();
+        addAuditLog(
+          data,
+          activeUser.id,
+          "bill_voided_bad_debt",
+          "bill",
+          target.id,
+          `Voided pending bill ${target.billNumber} as bad debt. Reason: ${draft.reason.trim()}.`
+        );
+      }
+    });
+  }
+
+  async function voidPendingBill(draft: VoidPendingDraft): Promise<boolean> {
+    return voidPendingBills({
+      billIds: [draft.billId],
+      reason: draft.reason,
+      customerLabel: "Selected bill"
     });
   }
 
@@ -3767,6 +3887,14 @@ export default function App() {
     ? getUnbilledHoppedSessionsForSession(managedSession)
     : [];
   const managedSessionPreviousHopTotal = sumBy(managedSessionPreviousHops, (s) => getSessionLiveTotal(s, s.endedAt));
+  const managedSessionPendingBills = managedSession
+    ? getPendingBillsForCustomerDetails(managedSession.customerId, managedSession.customerName, managedSession.customerPhone)
+    : [];
+  const managedSessionPendingDue = sumBy(managedSessionPendingBills, (bill) => bill.amountDue);
+  const managedSessionLiveTotal =
+    managedSession && managedSessionCharge
+      ? getSessionLiveTotal(managedSession, getFrozenEndAtForSession(managedSession.id)) + managedSessionPreviousHopTotal + managedSessionPendingDue
+      : 0;
   const selectedCustomerTabPreviousHops = selectedCustomerTab
     ? getUnbilledHoppedSessionsForTab(selectedCustomerTab)
     : [];
@@ -3920,6 +4048,20 @@ export default function App() {
         checkoutState.roundOffEnabled
       )
     : null;
+  const checkoutPendingSettlementBills = checkoutState?.pendingSettlement
+    ? checkoutState.pendingSettlement.billIds
+        .map((billId) => appData.bills.find((bill) => bill.id === billId))
+        .filter((bill): bill is Bill => Boolean(bill && bill.status === "pending" && bill.amountDue > 0))
+    : [];
+  const checkoutAvailablePendingSettlementBills = checkoutState?.pendingSettlement
+    ? (checkoutState.pendingSettlement.availableBillIds ?? checkoutState.pendingSettlement.billIds)
+        .map((billId) => appData.bills.find((bill) => bill.id === billId))
+        .filter((bill): bill is Bill => Boolean(bill && bill.status === "pending" && bill.amountDue > 0))
+    : [];
+  const checkoutPendingSettlementDue = sumBy(checkoutPendingSettlementBills, (bill) => bill.amountDue);
+  const checkoutPendingSettlementAmount = checkoutState?.pendingSettlement
+    ? getSettlementAmount(checkoutState.pendingSettlement)
+    : 0;
   const checkoutSummaryCurrency = (value: number) =>
     checkoutState?.roundOffEnabled
       ? new Intl.NumberFormat("en-IN", {
@@ -4012,6 +4154,7 @@ export default function App() {
   const occupiedItems = appData.inventoryItems.filter((item) => item.active && getInventoryState(item) === "occupied");
   const pendingBills = appData.bills.filter((b) => b.status === "pending");
   const totalAmountDue = pendingBills.reduce((sum, b) => sum + b.amountDue, 0);
+  const pendingReceivableGroups = getPendingReceivableGroups(pendingBills, billBusinessDates, currentBusinessDay);
   const pendingRevenue = sumBy(
     filteredBills.filter((b) => b.status === "pending"),
     (b) => b.amountDue
@@ -4166,8 +4309,17 @@ export default function App() {
             getPreviousHopTotalForSession={(session) => {
               return sumBy(getUnbilledHoppedSessionsForSession(session), (s) => getSessionLiveTotal(s, s.endedAt));
             }}
+            getPendingDueForSession={(session) =>
+              sumBy(
+                getPendingBillsForCustomerDetails(session.customerId, session.customerName, session.customerPhone),
+                (bill) => bill.amountDue
+              )
+            }
             getPreviousHopTotalForCustomerTab={(tab) =>
               sumBy(getUnbilledHoppedSessionsForTab(tab), (session) => getSessionLiveTotal(session, session.endedAt))
+            }
+            getPendingDueForCustomerTab={(tab) =>
+              sumBy(getPendingBillsForCustomerDetails(tab.customerId, tab.customerName, tab.customerPhone), (bill) => bill.amountDue)
             }
             getPreviousHopItemCountForCustomerTab={(tab) =>
               sumBy(getUnbilledHoppedSessionsForTab(tab), (session) => session.items.length)
@@ -4205,10 +4357,18 @@ export default function App() {
             openCustomerTabs={openCustomerTabs}
             selectedCustomerTab={selectedCustomerTab}
             selectedCustomerTabPreviousHops={selectedCustomerTabPreviousHops}
+            selectedCustomerTabPendingBills={
+              selectedCustomerTab
+                ? getPendingBillsForCustomerDetails(selectedCustomerTab.customerId, selectedCustomerTab.customerName, selectedCustomerTab.customerPhone)
+                : []
+            }
             editCustomerTabDraft={editCustomerTabDraft}
             canEditCustomerTabDetails={canEditSessionCustomerDetails}
             getSellableOptionPickerDetail={getSellableOptionPickerDetail}
             getCustomerTabTotal={getCustomerTabTotal}
+            getPendingDueForCustomerTab={(tab) =>
+              sumBy(getPendingBillsForCustomerDetails(tab.customerId, tab.customerName, tab.customerPhone), (bill) => bill.amountDue)
+            }
             getSessionLiveTotal={getSessionLiveTotal}
             getSessionBilledMinutes={(session) => getSessionChargeSummary(session, session.endedAt).billedMinutes}
             onCustomerTabSearchChange={setCustomerTabSearch}
@@ -4285,12 +4445,17 @@ export default function App() {
             receiptPreviewModel={receiptPreviewModel}
             allBills={appData.bills}
             allPayments={appData.payments}
+            receivableGroups={pendingReceivableGroups}
+            receivableFocusToken={billRegisterFocus?.token}
+            receivableFocusSearch={billRegisterFocus?.search}
             canReplaceIssuedBills={canReplaceIssuedBills}
             canVoidRefundBills={canVoidRefundBills}
             canSettlePendingBills={canSettlePendingBills}
             onSelectReceiptBill={setSelectedReceiptBillId}
             onSettlePendingBill={(billId) => setSettlementDraft({ billId, paymentMode: "cash", cashAmount: 0, upiAmount: 0 })}
+            onSettlePendingBills={(billIds) => setSettlementDraft({ billIds, paymentMode: "cash", cashAmount: 0, upiAmount: 0 })}
             onVoidPendingBill={(billId) => setVoidPendingDraft({ billId, reason: "" })}
+            onVoidPendingBills={(billIds, customerLabel) => setVoidPendingGroupDraft({ billIds, customerLabel, reason: "" })}
             onOpenBillReplacement={openBillReplacement}
             onVoidOrRefundBill={voidOrRefundBill}
           />
@@ -4438,10 +4603,10 @@ export default function App() {
             {lastHoppedSessionId && (
               <>
                 <div className="field-span-full frozen-billing-banner">
-                  <strong>Continuing from: {postHopSession?.customerName || "Customer"} · {postHopSession?.stationNameSnapshot ?? "Previous session"}</strong>
+                  <strong>Continuing from: {postHopSession?.customerName || "Customer"} - {postHopSession?.stationNameSnapshot ?? "Previous session"}</strong>
                   <span>
                     {postHopSessionCharge
-                      ? `${formatMinutes(postHopSessionCharge.billedMinutes)} · ${currency(postHopSessionCharge.subtotal)}`
+                      ? `${formatMinutes(postHopSessionCharge.billedMinutes)} - ${currency(postHopSessionCharge.subtotal)}`
                       : "Previous unbilled session will stay directly linked."}
                   </span>
                   {postHopCustomerLocked ? (
@@ -4542,7 +4707,7 @@ export default function App() {
                     <option value="">Select coin pack</option>
                     {arcadeInventoryItems.map((item) => (
                       <option key={item.id} value={item.id}>
-                            {item.name} · {currency(item.price)} · {getInventoryPickerDetail(item)}
+                            {item.name} - {currency(item.price)} - {getInventoryPickerDetail(item)}
                       </option>
                     ))}
                   </select>
@@ -4604,11 +4769,16 @@ export default function App() {
         >
           <div className="metrics-row">
             <MetricCard
-              label={managedSessionPreviousHopTotal > 0
+              label={managedSessionPendingDue > 0
+                ? (managedSession.mode === "timed" ? "Live bill + dues" : "Current total + dues")
+                : managedSessionPreviousHopTotal > 0
                 ? (managedSession.mode === "timed" ? "Live total (all sessions)" : "Current total (all sessions)")
                 : (managedSession.mode === "timed" ? "Live bill" : "Current total")}
-              value={currency(getSessionLiveTotal(managedSession, getFrozenEndAtForSession(managedSession.id)) + managedSessionPreviousHopTotal)}
+              value={currency(managedSessionLiveTotal)}
             />
+            {managedSessionPendingDue > 0 && (
+              <MetricCard label="Previous pending" value={currency(managedSessionPendingDue)} />
+            )}
             {managedSession.mode === "timed" ? (
               <>
                 <MetricCard label="Billed time" value={formatMinutes(managedSessionCharge.billedMinutes)} />
@@ -4626,7 +4796,7 @@ export default function App() {
               <div className="panel-header compact-header">
                 <div>
                   <h2>Previous Game Sessions</h2>
-                  <p>Game charges carried forward — will be included in the combined bill.</p>
+                  <p>Game charges carried forward - will be included in the combined bill.</p>
                 </div>
               </div>
               <div className="line-items">
@@ -4637,7 +4807,7 @@ export default function App() {
                       <div>
                         <strong>{hSession.stationNameSnapshot}</strong>
                         {hSession.mode === "timed" && (
-                          <div className="muted">{formatMinutes(hCharge.billedMinutes)} · {currency(hCharge.subtotal)}/session</div>
+                          <div className="muted">{formatMinutes(hCharge.billedMinutes)} - {currency(hCharge.subtotal)}/session</div>
                         )}
                       </div>
                       <div className="session-item-actions">
@@ -4646,6 +4816,32 @@ export default function App() {
                     </div>
                   );
                 })}
+              </div>
+            </>
+          )}
+          {managedSessionPendingBills.length > 0 && (
+            <>
+              <div className="panel-header compact-header">
+                <div>
+                  <h2>Previous Pending Bills</h2>
+                  <p>Outstanding dues for this customer - will be included during checkout.</p>
+                </div>
+              </div>
+              <div className="line-items previous-pending-lines">
+                {managedSessionPendingBills.map((bill) => (
+                  <div key={bill.id} className="session-item-row previous-due-session-row">
+                    <div>
+                      <strong>Previous due - {bill.billNumber}</strong>
+                      <div className="muted">
+                        {billBusinessDates[bill.id] ?? toBusinessDayKey(bill.issuedAt)}
+                        {bill.customerName ? ` - ${bill.customerName}` : ""}
+                      </div>
+                    </div>
+                    <div className="session-item-actions">
+                      <span className="pending-amount">{currency(bill.amountDue)}</span>
+                    </div>
+                  </div>
+                ))}
               </div>
             </>
           )}
@@ -4704,7 +4900,7 @@ export default function App() {
           <div className="session-item-adder">
             <select value={sessionItemForm[managedSession.id]?.sellableOptionId ?? ""} onChange={(event) => setSessionItemForm((p) => ({ ...p, [managedSession.id]: { sellableOptionId: event.target.value, quantity: p[managedSession.id]?.quantity ?? 1, sellAsPackOf: undefined } }))}>
               <option value="">Select item</option>
-              {sellableInventoryOptions.map((option) => <option key={option.id} value={option.id}>{option.name} · {currency(option.price)} · {getSellableOptionPickerDetail(option, managedSession.id)}</option>)}
+              {sellableInventoryOptions.map((option) => <option key={option.id} value={option.id}>{option.name} - {currency(option.price)} - {getSellableOptionPickerDetail(option, managedSession.id)}</option>)}
             </select>
             {(() => {
               const selectedOption = sellableOptionById.get(sessionItemForm[managedSession.id]?.sellableOptionId ?? "");
@@ -4714,8 +4910,8 @@ export default function App() {
               const selling = sessionItemForm[managedSession.id]?.sellAsPackOf;
               return (
                 <select value={selling ? "pack" : "single"} onChange={(e) => setSessionItemForm((p) => ({ ...p, [managedSession.id]: { ...p[managedSession.id], sellableOptionId: p[managedSession.id]?.sellableOptionId ?? "", quantity: p[managedSession.id]?.quantity ?? 1, sellAsPackOf: e.target.value === "pack" ? packOf.size : undefined } }))}>
-                  <option value="single">Single — {currency(selectedItem.price)}</option>
-                  <option value="pack">Pack of {packOf.size} — {currency(packOf.packPrice)}</option>
+                  <option value="single">Single - {currency(selectedItem.price)}</option>
+                  <option value="pack">Pack of {packOf.size} - {currency(packOf.packPrice)}</option>
                 </select>
               );
             })()}
@@ -4725,7 +4921,7 @@ export default function App() {
           {(() => {
             const selectedOption = sellableOptionById.get(sessionItemForm[managedSession.id]?.sellableOptionId ?? "");
             if (!selectedOption || selectedOption.price > 0) return null;
-            return <div className="warning-banner">⚠ This item has a ₹0 price — confirm or update it in Inventory before adding.</div>;
+            return <div className="warning-banner">Warning: This item has a Rs 0 price - confirm or update it in Inventory before adding.</div>;
           })()}
           <div className="line-items">
             {managedSessionPreviousHops.flatMap((hSession) =>
@@ -4744,7 +4940,7 @@ export default function App() {
                       <div className="muted">From: {hSession.stationNameSnapshot}</div>
                     </div>
                     <div className="session-item-actions">
-                      <span>{item.quantity} × {currency(item.unitPrice)}</span>
+                      <span>{item.quantity} x {currency(item.unitPrice)}</span>
                       <button className="ghost-button danger" type="button" onClick={() => removeItemFromSession(hSession.id, item.id)}>Remove</button>
                     </div>
                   </div>
@@ -4767,7 +4963,7 @@ export default function App() {
                   <div className="muted">{formatTime(item.addedAt)}</div>
                 </div>
                 <div className="session-item-actions">
-                  <span>{item.quantity} × {currency(item.unitPrice)}</span>
+                  <span>{item.quantity} x {currency(item.unitPrice)}</span>
                   <button className="ghost-button danger" type="button" onClick={() => removeItemFromSession(managedSession.id, item.id)}>Remove</button>
                 </div>
               </div>
@@ -4784,7 +4980,7 @@ export default function App() {
                 </div>
               </div>
               <div className="segments-list">
-                {managedSessionCharge.segments.map((segment, index) => <div key={`${segment.label}-${index}`} className="activity-row"><strong>Game Type · {currency(segment.hourlyRate)}/hr</strong><span className="muted">{formatMinutes(segment.minutes)} · {currency(segment.subtotal)}</span></div>)}
+                {managedSessionCharge.segments.map((segment, index) => <div key={`${segment.label}-${index}`} className="activity-row"><strong>Game Type - {currency(segment.hourlyRate)}/hr</strong><span className="muted">{formatMinutes(segment.minutes)} - {currency(segment.subtotal)}</span></div>)}
               </div>
             </>
           )}
@@ -4849,7 +5045,7 @@ export default function App() {
                         <>
                           <div>
                             <strong>{formatDateTime(log.pausedAt)}</strong>
-                            <div className="muted">→ {log.resumedAt ? formatDateTime(log.resumedAt) : "Active"}</div>
+                            <div className="muted">-&gt; {log.resumedAt ? formatDateTime(log.resumedAt) : "Active"}</div>
                           </div>
                           <div className="session-item-actions">
                             <button
@@ -4935,13 +5131,13 @@ export default function App() {
                   checked={isHopMode}
                   onChange={(event) => setIsHopMode(event.target.checked)}
                 />
-                <span>Game hop — close station without billing (customer will pay with their next game)</span>
+                <span>Game hop - close station without billing (customer will pay with their next game)</span>
               </label>
             </div>
           )}
           {isHopMode && (
             <div className="frozen-billing-banner">
-              Game hop mode — the station will be released immediately. No bill will be issued. This session's charges will be included when the customer checks out their next game.
+              Game hop mode - the station will be released immediately. No bill will be issued. This session's charges will be included when the customer checks out their next game.
             </div>
           )}
           {!isHopMode && (checkoutState.mode === "session" || checkoutState.mode === "customer_tab") && checkoutHoppedSessionCandidates.length > 0 && (
@@ -4977,7 +5173,7 @@ export default function App() {
                         );
                       }}
                     />
-                    <span>{hSession.stationNameSnapshot} — {formatMinutes(hCharge.billedMinutes)} — {currency(hCharge.subtotal)}{isDirectlyLinked ? " — linked continuation" : " — possible match"}</span>
+                    <span>{hSession.stationNameSnapshot} - {formatMinutes(hCharge.billedMinutes)} - {currency(hCharge.subtotal)}{isDirectlyLinked ? " - linked continuation" : " - possible match"}</span>
                   </label>
                 );
               })}
@@ -5005,6 +5201,119 @@ export default function App() {
                 <span>Upfront Mode</span>
                 <select value={checkoutState.collectMode} onChange={(event) => setCheckoutState((p) => p ? { ...p, collectMode: event.target.value as PaymentMode } : p)} disabled={checkoutState.collectAmount === 0}><option value="cash">Cash</option><option value="upi">UPI</option></select>
               </label>
+            </div>
+          )}
+          {!isHopMode && checkoutState.mode !== "bill_replacement" && checkoutState.pendingSettlement && checkoutAvailablePendingSettlementBills.length > 0 && (
+            <div className="section-block previous-dues-panel">
+              <div className="section-block-header">
+                <h3>Previous Dues</h3>
+                <p>
+                  {checkoutAvailablePendingSettlementBills.length} pending bill{checkoutAvailablePendingSettlementBills.length !== 1 ? "s" : ""} found for this customer.
+                  Selected due: <strong className="pending-amount">{currency(checkoutPendingSettlementDue)}</strong>
+                </p>
+              </div>
+              <div className="activity-list compact-list">
+                {checkoutAvailablePendingSettlementBills.map((bill) => {
+                  const isSelected = checkoutState.pendingSettlement?.billIds.includes(bill.id) ?? false;
+                  return (
+                    <label key={bill.id} className="checkbox-field receivable-check-row">
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        onChange={(event) =>
+                          setCheckoutState((previous) => {
+                            if (!previous?.pendingSettlement) return previous;
+                            const nextBillIds = event.target.checked
+                              ? Array.from(new Set([...previous.pendingSettlement.billIds, bill.id]))
+                              : previous.pendingSettlement.billIds.filter((billId) => billId !== bill.id);
+                            const nextDue = getPendingSettlementDueForIds(nextBillIds);
+                            return {
+                              ...previous,
+                              pendingSettlement: {
+                                ...applyPendingSettlementAmount(previous.pendingSettlement, nextDue),
+                                billIds: nextBillIds
+                              }
+                            };
+                          })
+                        }
+                      />
+                      <span>
+                        <strong>{bill.billNumber}</strong> - {currency(bill.amountDue)} due
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+              <div className="form-grid">
+                <label>
+                  <span>Previous Dues Payment</span>
+                  <select
+                    value={checkoutState.pendingSettlement.paymentMode}
+                    onChange={(event) =>
+                      setCheckoutState((previous) =>
+                        previous?.pendingSettlement
+                          ? {
+                              ...previous,
+                              pendingSettlement: {
+                                ...previous.pendingSettlement,
+                                paymentMode: event.target.value as PaymentMode | "split",
+                                cashAmount: event.target.value === "upi" ? 0 : checkoutPendingSettlementDue,
+                                upiAmount: event.target.value === "upi" ? checkoutPendingSettlementDue : 0
+                              }
+                            }
+                          : previous
+                      )
+                    }
+                  >
+                    <option value="cash">Cash</option>
+                    <option value="upi">UPI</option>
+                    <option value="split">Split</option>
+                  </select>
+                </label>
+                {checkoutState.pendingSettlement.paymentMode === "split" ? (
+                  <>
+                    <label>
+                      <span>Previous Cash</span>
+                      <NumericInput mode="decimal" min={0} value={checkoutState.pendingSettlement.cashAmount} onValueChange={(value) => setCheckoutState((previous) => previous?.pendingSettlement ? { ...previous, pendingSettlement: { ...previous.pendingSettlement, cashAmount: value } } : previous)} />
+                    </label>
+                    <label>
+                      <span>Previous UPI</span>
+                      <NumericInput mode="decimal" min={0} value={checkoutState.pendingSettlement.upiAmount} onValueChange={(value) => setCheckoutState((previous) => previous?.pendingSettlement ? { ...previous, pendingSettlement: { ...previous.pendingSettlement, upiAmount: value } } : previous)} />
+                    </label>
+                  </>
+                ) : checkoutState.pendingSettlement.paymentMode === "cash" ? (
+                  <label>
+                    <span>Previous Cash Amount</span>
+                    <NumericInput mode="decimal" min={0} value={checkoutState.pendingSettlement.cashAmount} onValueChange={(value) => setCheckoutState((previous) => previous?.pendingSettlement ? { ...previous, pendingSettlement: { ...previous.pendingSettlement, cashAmount: value } } : previous)} />
+                  </label>
+                ) : (
+                  <label>
+                    <span>Previous UPI Amount</span>
+                    <NumericInput mode="decimal" min={0} value={checkoutState.pendingSettlement.upiAmount} onValueChange={(value) => setCheckoutState((previous) => previous?.pendingSettlement ? { ...previous, pendingSettlement: { ...previous.pendingSettlement, upiAmount: value } } : previous)} />
+                  </label>
+                )}
+                <div className="field-span-full button-row">
+                  <button
+                    className="ghost-button"
+                    type="button"
+                    disabled={checkoutPendingSettlementDue <= 0}
+                    onClick={() =>
+                      setCheckoutState((previous) => {
+                        if (!previous?.pendingSettlement) return previous;
+                        return {
+                          ...previous,
+                          pendingSettlement: applyPendingSettlementAmount(previous.pendingSettlement, checkoutPendingSettlementDue)
+                        };
+                      })
+                    }
+                  >
+                    Collect Selected Due ({currency(checkoutPendingSettlementDue)})
+                  </button>
+                  {checkoutPendingSettlementAmount > checkoutPendingSettlementDue && (
+                    <span className="pending-amount">Previous dues payment exceeds selected due.</span>
+                  )}
+                </div>
+              </div>
             </div>
           )}
           {checkoutState && checkoutSession && checkoutSession.mode === "timed" && canEditSessionTiming && (
@@ -5086,7 +5395,7 @@ export default function App() {
                   {sellableInventoryOptions
                     .map((option) => (
                       <option key={option.id} value={option.id}>
-                        {option.name} · {currency(option.price)} · {getSellableOptionPickerDetail(option)}
+                        {option.name} - {currency(option.price)} - {getSellableOptionPickerDetail(option)}
                       </option>
                     ))}
                 </select>
@@ -5151,7 +5460,7 @@ export default function App() {
                   {sellableInventoryOptions
                     .map((option) => (
                       <option key={option.id} value={option.id}>
-                        {option.name} · {currency(option.price)} · {getSellableOptionPickerDetail(option, checkoutSession.id)}
+                        {option.name} - {currency(option.price)} - {getSellableOptionPickerDetail(option, checkoutSession.id)}
                       </option>
                     ))}
                 </select>
@@ -5176,8 +5485,8 @@ export default function App() {
                         }))
                       }
                     >
-                      <option value="single">Single — {currency(selectedItem.price)}</option>
-                      <option value="pack">Pack of {packOf.size} — {currency(packOf.packPrice)}</option>
+                      <option value="single">Single - {currency(selectedItem.price)}</option>
+                      <option value="pack">Pack of {packOf.size} - {currency(packOf.packPrice)}</option>
                     </select>
                   );
                 })()}
@@ -5326,6 +5635,20 @@ export default function App() {
                     </tr>
                   );
                 })}
+                {checkoutPendingSettlementBills.map((bill) => (
+                  <tr key={`previous-due-${bill.id}`} className="previous-due-line">
+                    <td>
+                      Previous due - {bill.billNumber}
+                      {bill.customerName && <div className="muted">{bill.customerName}</div>}
+                    </td>
+                    <td>1</td>
+                    <td>{currency(bill.amountDue)}</td>
+                    <td><span className="muted">-</span></td>
+                    <td><span className="muted">Old pending bill</span></td>
+                    <td><strong className="pending-amount">{currency(bill.amountDue)}</strong></td>
+                    {checkoutState.mode === "bill_replacement" && <td><span className="muted">Fixed</span></td>}
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>
@@ -5351,6 +5674,18 @@ export default function App() {
                 <div><span className="muted">Collecting Now</span><strong>{checkoutSummaryCurrency(checkoutState.collectAmount)}</strong></div>
                 <div><span className="muted pending-amount">Amount Due Later</span><strong className="pending-amount">{checkoutSummaryCurrency(Math.max(0, checkoutPreview.total - checkoutState.collectAmount))}</strong></div>
               </>
+            )}
+            {checkoutPendingSettlementAmount > 0 && (
+              <div>
+                <span className="muted">Previous Dues Collection</span>
+                <strong className="pending-amount">{currency(checkoutPendingSettlementAmount)}</strong>
+              </div>
+            )}
+            {checkoutPendingSettlementAmount > 0 && (
+              <div>
+                <span className="muted">Total Payable Today</span>
+                <strong>{currency(checkoutPreview.total + checkoutPendingSettlementAmount)}</strong>
+              </div>
             )}
           </div>
           <div className="button-row">
@@ -5385,7 +5720,7 @@ export default function App() {
                   )
                 }
                 disabled={remoteSaving || Boolean(blockingActionLabel) || checkoutPreview.isZeroTotal}
-                title={checkoutPreview.isZeroTotal ? "Bill total is ₹0 — add items or remove discounts" : undefined}
+                title={checkoutPreview.isZeroTotal ? "Bill total is Rs 0 - add items or remove discounts" : undefined}
               >
                 {checkoutState.mode === "bill_replacement" ? "Issue Replacement Bill" : "Issue Bill"}
               </button>
@@ -5427,19 +5762,36 @@ export default function App() {
         </Modal>
       )}
       {settlementDraft && (() => {
-        const pendingBill = appData.bills.find((b) => b.id === settlementDraft.billId);
-        if (!pendingBill) return null;
-        const settlementTotal = settlementDraft.paymentMode === "split"
-          ? settlementDraft.cashAmount + settlementDraft.upiAmount
-          : settlementDraft.paymentMode === "cash" ? settlementDraft.cashAmount : settlementDraft.upiAmount;
+        const settlementBillIds = settlementDraft.billIds?.length ? settlementDraft.billIds : settlementDraft.billId ? [settlementDraft.billId] : [];
+        const pendingBillsToSettle = settlementBillIds
+          .map((billId) => appData.bills.find((b) => b.id === billId))
+          .filter((bill): bill is Bill => Boolean(bill && bill.status === "pending" && bill.amountDue > 0));
+        if (pendingBillsToSettle.length === 0) return null;
+        const settlementDue = sumBy(pendingBillsToSettle, (bill) => bill.amountDue);
+        const settlementPaid = sumBy(pendingBillsToSettle, (bill) => bill.amountPaid);
+        const settlementBillValue = sumBy(pendingBillsToSettle, (bill) => bill.total);
+        const settlementTitle = pendingBillsToSettle.length === 1
+          ? `Settle Bill - ${pendingBillsToSettle[0].billNumber}`
+          : `Settle ${pendingBillsToSettle.length} Pending Bills`;
+        const settlementTotal = getSettlementAmount(settlementDraft);
         return (
-          <Modal title={`Settle Bill — ${pendingBill.billNumber}`} onClose={() => setSettlementDraft(null)}>
+          <Modal title={settlementTitle} onClose={() => setSettlementDraft(null)}>
             <div className="form-grid">
               <div className="field-span-full checkout-summary">
-                <div><span className="muted">Bill Total</span><strong>{currency(pendingBill.total)}</strong></div>
-                <div><span className="muted">Already Paid</span><strong>{currency(pendingBill.amountPaid)}</strong></div>
-                <div><span className="muted pending-amount">Amount Due</span><strong className="pending-amount">{currency(pendingBill.amountDue)}</strong></div>
+                <div><span className="muted">Bill Value</span><strong>{currency(settlementBillValue)}</strong></div>
+                <div><span className="muted">Already Paid</span><strong>{currency(settlementPaid)}</strong></div>
+                <div><span className="muted pending-amount">Selected Due</span><strong className="pending-amount">{currency(settlementDue)}</strong></div>
               </div>
+              {pendingBillsToSettle.length > 1 && (
+                <div className="field-span-full activity-list compact-list">
+                  {pendingBillsToSettle.map((bill) => (
+                    <div key={bill.id} className="activity-row">
+                      <strong>{bill.billNumber}</strong>
+                      <span className="pending-amount">{currency(bill.amountDue)} due</span>
+                    </div>
+                  ))}
+                </div>
+              )}
               <label><span>Payment Mode</span><select value={settlementDraft.paymentMode} onChange={(event) => setSettlementDraft((p) => p ? { ...p, paymentMode: event.target.value as PaymentMode | "split", cashAmount: 0, upiAmount: 0 } : p)}><option value="cash">Cash</option><option value="upi">UPI</option><option value="split">Split</option></select></label>
               {settlementDraft.paymentMode === "split" ? (
                 <>
@@ -5456,12 +5808,13 @@ export default function App() {
                   <button
                     className="ghost-button"
                     type="button"
-                    onClick={() => setSettlementDraft((p) => p ? (p.paymentMode === "cash" ? { ...p, cashAmount: pendingBill.amountDue } : { ...p, upiAmount: pendingBill.amountDue }) : p)}
+                    onClick={() => setSettlementDraft((p) => p ? (p.paymentMode === "cash" ? { ...p, cashAmount: settlementDue } : { ...p, upiAmount: settlementDue }) : p)}
                   >
-                    Pay Full Amount ({currency(pendingBill.amountDue)})
+                    Pay Full Amount ({currency(settlementDue)})
                   </button>
                 </div>
               )}
+              {settlementTotal > settlementDue && <div className="error-text field-span-full">Settlement amount exceeds selected due.</div>}
             </div>
             <div className="button-row">
               <button className="secondary-button" type="button" onClick={() => setSettlementDraft(null)}>Cancel</button>
@@ -5473,7 +5826,7 @@ export default function App() {
                     if (saved) setSettlementDraft(null);
                   });
                 }}
-                disabled={settlementTotal <= 0}
+                disabled={settlementTotal <= 0 || settlementTotal > settlementDue}
               >
                 Confirm Settlement
               </button>
@@ -5485,7 +5838,7 @@ export default function App() {
         const pendingBill = appData.bills.find((b) => b.id === voidPendingDraft.billId);
         if (!pendingBill) return null;
         return (
-          <Modal title={`Write Off Bad Debt — ${pendingBill.billNumber}`} onClose={() => setVoidPendingDraft(null)}>
+          <Modal title={`Write Off Bad Debt - ${pendingBill.billNumber}`} onClose={() => setVoidPendingDraft(null)}>
             <div className="form-grid">
               <div className="field-span-full checkout-summary">
                 <div><span className="muted pending-amount">Amount to Write Off</span><strong className="pending-amount">{currency(pendingBill.amountDue)}</strong></div>
@@ -5517,10 +5870,59 @@ export default function App() {
           </Modal>
         );
       })()}
+      {voidPendingGroupDraft && (() => {
+        const pendingBillsToVoid = voidPendingGroupDraft.billIds
+          .map((billId) => appData.bills.find((b) => b.id === billId))
+          .filter((bill): bill is Bill => Boolean(bill && bill.status === "pending"));
+        if (pendingBillsToVoid.length === 0) return null;
+        const amountToWriteOff = sumBy(pendingBillsToVoid, (bill) => bill.amountDue);
+        return (
+          <Modal title={`Write Off ${pendingBillsToVoid.length} Pending Bill${pendingBillsToVoid.length !== 1 ? "s" : ""}`} onClose={() => setVoidPendingGroupDraft(null)}>
+            <div className="form-grid">
+              <div className="field-span-full checkout-summary">
+                <div><span className="muted">Customer</span><strong>{voidPendingGroupDraft.customerLabel}</strong></div>
+                <div><span className="muted pending-amount">Amount to Write Off</span><strong className="pending-amount">{currency(amountToWriteOff)}</strong></div>
+              </div>
+              <div className="field-span-full activity-list compact-list">
+                {pendingBillsToVoid.map((bill) => (
+                  <div key={bill.id} className="activity-row">
+                    <strong>{bill.billNumber}</strong>
+                    <span className="pending-amount">{currency(bill.amountDue)} due</span>
+                  </div>
+                ))}
+              </div>
+              <label className="field-span-full">
+                <span>Reason</span>
+                <input
+                  value={voidPendingGroupDraft.reason}
+                  placeholder="Reason for writing off this debt"
+                  onChange={(event) => setVoidPendingGroupDraft((p) => p ? { ...p, reason: event.target.value } : p)}
+                />
+              </label>
+            </div>
+            <div className="button-row">
+              <button className="secondary-button" type="button" onClick={() => setVoidPendingGroupDraft(null)}>Cancel</button>
+              <button
+                className="danger-button"
+                type="button"
+                onClick={() => {
+                  void voidPendingBills(voidPendingGroupDraft).then((saved) => {
+                    if (saved) setVoidPendingGroupDraft(null);
+                  });
+                }}
+                disabled={!voidPendingGroupDraft.reason.trim()}
+              >
+                Write Off Selected
+              </button>
+            </div>
+          </Modal>
+        );
+      })()}
       {pendingWarningDraft && (
         <Modal title="Outstanding Pending Bills" onClose={() => setPendingWarningDraft(null)}>
           <p>
-            <strong>{pendingWarningDraft.customerLabel}</strong> has {pendingWarningDraft.pendingBills.length} pending bill{pendingWarningDraft.pendingBills.length !== 1 ? "s" : ""} with an outstanding balance:
+            <strong>{pendingWarningDraft.customerLabel}</strong> has {pendingWarningDraft.pendingBills.length} pending bill{pendingWarningDraft.pendingBills.length !== 1 ? "s" : ""} with an outstanding balance of{" "}
+            <strong className="pending-amount">{currency(sumBy(pendingWarningDraft.pendingBills, (bill) => bill.amountDue))}</strong>:
           </p>
           <div className="activity-list" style={{ marginBottom: "1rem" }}>
             {pendingWarningDraft.pendingBills.map((b) => (
@@ -5534,10 +5936,7 @@ export default function App() {
             <button
               className="secondary-button"
               type="button"
-              onClick={() => {
-                setPendingWarningDraft(null);
-                setActiveTab("bills");
-              }}
+              onClick={viewPendingBillsForWarning}
             >
               View Bills
             </button>

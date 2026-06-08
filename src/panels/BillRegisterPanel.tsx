@@ -1,11 +1,12 @@
-import { useState, useMemo } from "react";
-import type { Bill, BillStatus, BillPaymentMode, Payment, Station } from "../types";
+import { Fragment, useEffect, useState, useMemo } from "react";
+import type { Bill, BillStatus, BillPaymentMode, Payment, PendingReceivableGroup, Station } from "../types";
 import type { ReceiptPreviewModel } from "../exporters";
 import { openReceiptWindow, downloadReceiptPdf } from "../exporters";
 import { currency, formatDateTime, toBusinessDayKey, toLocalDateKey, addDays } from "../utils";
 import brandLogo from "../../Branding/Logo.png";
 
-type QuickFilter = "all" | "pending" | "today" | "this_week" | "issued" | "voided";
+type QuickFilter = "all" | "pending" | "today" | "yesterday" | "this_week" | "issued" | "voided";
+type RegisterView = "bills" | "receivables";
 
 function currentBusinessDayKey(): string {
   return toBusinessDayKey(new Date());
@@ -14,6 +15,11 @@ function currentBusinessDayKey(): string {
 function businessWeekAgoKey(): string {
   const businessToday = new Date(`${currentBusinessDayKey()}T12:00:00`);
   return toLocalDateKey(addDays(businessToday, -6));
+}
+
+function businessYesterdayKey(): string {
+  const businessToday = new Date(`${currentBusinessDayKey()}T12:00:00`);
+  return toLocalDateKey(addDays(businessToday, -1));
 }
 
 function statusLabel(status: BillStatus): string {
@@ -44,15 +50,21 @@ export function BillRegisterPanel(props: {
   receiptPreviewModel: ReceiptPreviewModel | null;
   allBills: Bill[];
   allPayments: Payment[];
+  receivableGroups: PendingReceivableGroup[];
+  receivableFocusToken?: number;
+  receivableFocusSearch?: string;
   canReplaceIssuedBills: boolean;
   canVoidRefundBills: boolean;
   canSettlePendingBills: boolean;
   onSelectReceiptBill: (billId: string | null) => void;
   onSettlePendingBill: (billId: string) => void;
+  onSettlePendingBills: (billIds: string[]) => void;
   onVoidPendingBill: (billId: string) => void;
+  onVoidPendingBills: (billIds: string[], customerLabel: string) => void;
   onOpenBillReplacement: (billId: string) => void;
   onVoidOrRefundBill: (billId: string) => void;
 }) {
+  const [registerView, setRegisterView] = useState<RegisterView>("bills");
   const [quickFilter, setQuickFilter] = useState<QuickFilter>("all");
   const [search, setSearch] = useState("");
   const [filterStatus, setFilterStatus] = useState<BillStatus | "">("");
@@ -60,9 +72,21 @@ export function BillRegisterPanel(props: {
   const [filterStation, setFilterStation] = useState("");
   const [filterFrom, setFilterFrom] = useState("");
   const [filterTo, setFilterTo] = useState("");
+  const [expandedReceivableGroupId, setExpandedReceivableGroupId] = useState<string | null>(null);
+  const [selectedReceivableBillIds, setSelectedReceivableBillIds] = useState<Record<string, string[]>>({});
 
   const today = currentBusinessDayKey();
+  const yesterday = businessYesterdayKey();
   const weekAgo = businessWeekAgoKey();
+
+  useEffect(() => {
+    if (!props.receivableFocusToken) {
+      return;
+    }
+    setRegisterView("receivables");
+    setSearch(props.receivableFocusSearch ?? "");
+    setExpandedReceivableGroupId(null);
+  }, [props.receivableFocusToken, props.receivableFocusSearch]);
 
   const filteredBills = useMemo(() => {
     let list = props.bills;
@@ -84,6 +108,8 @@ export function BillRegisterPanel(props: {
       list = list.filter((b) => b.status === "voided");
     } else if (quickFilter === "today") {
       list = list.filter((b) => hasBillOrPaymentInRange(b, today, today));
+    } else if (quickFilter === "yesterday") {
+      list = list.filter((b) => hasBillOrPaymentInRange(b, yesterday, yesterday));
     } else if (quickFilter === "this_week") {
       list = list.filter((b) => hasBillOrPaymentInRange(b, weekAgo, today));
     }
@@ -111,7 +137,21 @@ export function BillRegisterPanel(props: {
     }
 
     return list;
-  }, [props.bills, props.billBusinessDates, props.billPaymentBusinessDates, quickFilter, search, filterStatus, filterMode, filterStation, filterFrom, filterTo, today, weekAgo]);
+  }, [props.bills, props.billBusinessDates, props.billPaymentBusinessDates, quickFilter, search, filterStatus, filterMode, filterStation, filterFrom, filterTo, today, yesterday, weekAgo]);
+
+  const filteredReceivableGroups = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return props.receivableGroups;
+    return props.receivableGroups.filter((group) =>
+      group.label.toLowerCase().includes(q) ||
+      (group.customerPhone ?? "").toLowerCase().includes(q) ||
+      group.bills.some((bill) =>
+        bill.billNumber.toLowerCase().includes(q) ||
+        (bill.customerName ?? "").toLowerCase().includes(q) ||
+        (bill.customerPhone ?? "").toLowerCase().includes(q)
+      )
+    );
+  }, [props.receivableGroups, search]);
 
   const selected = props.selectedReceiptBill;
   const model = props.receiptPreviewModel;
@@ -131,6 +171,7 @@ export function BillRegisterPanel(props: {
     { id: "all", label: "All" },
     { id: "pending", label: "Pending" },
     { id: "today", label: "Today" },
+    { id: "yesterday", label: "Yesterday" },
     { id: "this_week", label: "Last 7 Days" },
     { id: "issued", label: "Issued" },
     { id: "voided", label: "Voided" },
@@ -141,8 +182,163 @@ export function BillRegisterPanel(props: {
       ? props.stations.find((s) => s.id === bill.stationId)?.name ?? "Station"
       : "Customer Tab";
 
+  const selectedBillIdsForGroup = (group: PendingReceivableGroup) =>
+    selectedReceivableBillIds[group.id] ?? group.bills.map((bill) => bill.id);
+
+  const selectedDueForGroup = (group: PendingReceivableGroup) => {
+    const selectedIds = new Set(selectedBillIdsForGroup(group));
+    return group.bills.reduce((sum, bill) => sum + (selectedIds.has(bill.id) ? bill.amountDue : 0), 0);
+  };
+
+  function toggleReceivableBillSelection(group: PendingReceivableGroup, billId: string, checked: boolean) {
+    setSelectedReceivableBillIds((previous) => {
+      const current = previous[group.id] ?? group.bills.map((bill) => bill.id);
+      return {
+        ...previous,
+        [group.id]: checked
+          ? Array.from(new Set([...current, billId]))
+          : current.filter((entry) => entry !== billId)
+      };
+    });
+  }
+
+  function setReceivableGroupSelection(group: PendingReceivableGroup, checked: boolean) {
+    setSelectedReceivableBillIds((previous) => ({
+      ...previous,
+      [group.id]: checked ? group.bills.map((bill) => bill.id) : []
+    }));
+  }
+
+  if (registerView === "receivables") {
+    return (
+      <div className="bill-register-page">
+        <div className="segmented-control bill-register-view-switch">
+          <button type="button" onClick={() => setRegisterView("bills")}>
+            Bills
+          </button>
+          <button type="button" className="is-active" onClick={() => setRegisterView("receivables")}>
+            Receivables ({props.receivableGroups.length})
+          </button>
+        </div>
+        <div className="bill-register-filter-bar">
+          <input
+            type="search"
+            placeholder="Search customer, phone or pending bill #..."
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            style={{ flex: "2 1 16rem", maxWidth: "28rem" }}
+          />
+          {search && (
+            <button className="ghost-button" type="button" onClick={() => setSearch("")}>
+              Clear
+            </button>
+          )}
+          <span className="muted" style={{ marginLeft: "auto", fontSize: "0.85rem" }}>
+            {filteredReceivableGroups.length} customer group{filteredReceivableGroups.length !== 1 ? "s" : ""}
+          </span>
+        </div>
+        <div className="bill-register-list-pane receivables-pane">
+          <div className="bill-register-list-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Customer</th>
+                  <th>Phone</th>
+                  <th>Bills</th>
+                  <th>Oldest</th>
+                  <th>Overdue</th>
+                  <th>Total Due</th>
+                  <th>Selected Due</th>
+                  <th />
+                </tr>
+              </thead>
+              <tbody>
+                {filteredReceivableGroups.length === 0 && (
+                  <tr><td colSpan={8}><div className="bill-register-empty">{props.receivableGroups.length === 0 ? "No pending receivables outstanding." : "No receivables match the current search."}</div></td></tr>
+                )}
+                {filteredReceivableGroups.map((group) => {
+                  const selectedIds = selectedBillIdsForGroup(group);
+                  const selectedDue = selectedDueForGroup(group);
+                  const expanded = expandedReceivableGroupId === group.id;
+                  return (
+                    <Fragment key={group.id}>
+                      <tr key={group.id} className={group.isUngrouped ? "receivable-row is-ungrouped" : "receivable-row"}>
+                        <td>
+                          <button className="ghost-button inline-toggle" type="button" onClick={() => setExpandedReceivableGroupId(expanded ? null : group.id)}>
+                            {expanded ? "Hide" : "View"}
+                          </button>
+                          <strong>{group.label}</strong>
+                        </td>
+                        <td>{group.customerPhone || <span className="muted">-</span>}</td>
+                        <td>{group.bills.length}</td>
+                        <td>{group.oldestBusinessDate}</td>
+                        <td><span className={group.daysOverdue > 7 ? "pending-amount" : "muted"}>{group.daysOverdue === 0 ? "Today" : `${group.daysOverdue}d`}</span></td>
+                        <td><strong className="pending-amount">{currency(group.totalDue)}</strong></td>
+                        <td><strong>{currency(selectedDue)}</strong></td>
+                        <td>
+                          <div className="button-row dense">
+                            {props.canSettlePendingBills && (
+                              <button className="ghost-button" type="button" disabled={selectedIds.length === 0} onClick={() => props.onSettlePendingBills(selectedIds)}>
+                                Settle
+                              </button>
+                            )}
+                            {props.canVoidRefundBills && (
+                              <button className="ghost-button danger" type="button" disabled={selectedIds.length === 0} onClick={() => props.onVoidPendingBills(selectedIds, group.label)}>
+                                Write Off
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                      {expanded && (
+                        <tr key={`${group.id}-details`} className="receivable-detail-row">
+                          <td colSpan={8}>
+                            <div className="receivable-detail-list">
+                              <label className="checkbox-field">
+                                <input
+                                  type="checkbox"
+                                  checked={selectedIds.length === group.bills.length}
+                                  onChange={(event) => setReceivableGroupSelection(group, event.target.checked)}
+                                />
+                                <span>Select all pending bills</span>
+                              </label>
+                              {group.bills.map((bill) => (
+                                <label key={bill.id} className="checkbox-field receivable-check-row">
+                                  <input
+                                    type="checkbox"
+                                    checked={selectedIds.includes(bill.id)}
+                                    onChange={(event) => toggleReceivableBillSelection(group, bill.id, event.target.checked)}
+                                  />
+                                  <span>
+                                    <strong>{bill.billNumber}</strong> - {props.billBusinessDates[bill.id] ?? ""} - Paid {currency(bill.amountPaid)} - <span className="pending-amount">{currency(bill.amountDue)} due</span>
+                                  </span>
+                                </label>
+                              ))}
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="bill-register-page">
+      <div className="segmented-control bill-register-view-switch">
+        <button type="button" className="is-active" onClick={() => setRegisterView("bills")}>
+          Bills
+        </button>
+        <button type="button" onClick={() => setRegisterView("receivables")}>
+          Receivables ({props.receivableGroups.length})
+        </button>
+      </div>
 
       {/* Quick filters */}
       <div className="bill-register-filters">
@@ -167,7 +363,7 @@ export function BillRegisterPanel(props: {
       <div className="bill-register-filter-bar">
         <input
           type="search"
-          placeholder="Search bill #, customer name or phone…"
+          placeholder="Search bill #, customer name or phone..."
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           style={{ flex: "2 1 16rem", maxWidth: "24rem" }}
@@ -239,7 +435,7 @@ export function BillRegisterPanel(props: {
                     <td>{paymentModeLabel(bill.paymentMode)}</td>
                     <td>{currency(bill.total)}</td>
                     <td>{currency(bill.amountPaid)}</td>
-                    <td>{bill.amountDue > 0 ? <strong className="pending-amount">{currency(bill.amountDue)}</strong> : <span className="muted">—</span>}</td>
+                    <td>{bill.amountDue > 0 ? <strong className="pending-amount">{currency(bill.amountDue)}</strong> : <span className="muted">-</span>}</td>
                     <td><span className={`bill-status-badge ${bill.status}`}>{statusLabel(bill.status)}</span></td>
                     <td>
                       <div className="button-row dense" onClick={(e) => e.stopPropagation()}>
@@ -314,6 +510,16 @@ export function BillRegisterPanel(props: {
                   {model.roundOff && <div><span>Round Off</span><strong>{model.roundOff}</strong></div>}
                   <div className="is-grand-total"><span>Total</span><strong>{model.total}</strong></div>
                 </div>
+                {model.previousDueSummary && (
+                  <>
+                    <div className="thermal-receipt-divider" />
+                    <div className="thermal-receipt-totals previous-dues-summary">
+                      <div><span>Previous Dues Paid</span><strong>{model.previousDueSummary.total}</strong></div>
+                      <div><span>Bills</span><strong>{model.previousDueSummary.billNumbers}</strong></div>
+                      <div><span>Cash / UPI</span><strong>{model.previousDueSummary.cash} / {model.previousDueSummary.upi}</strong></div>
+                    </div>
+                  </>
+                )}
                 {selected.amountDue > 0 && (
                   <>
                     <div className="thermal-receipt-divider" />

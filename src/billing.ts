@@ -1,4 +1,4 @@
-import type { BillPaymentMode, BillStatus, PaymentMode, SettlementDraft } from "./types";
+import type { Bill, BillPaymentMode, BillStatus, PaymentMode, SettlementDraft } from "./types";
 
 export const PAYMENT_TOLERANCE = 0.01;
 
@@ -19,6 +19,21 @@ export interface SettlementResult {
   newAmountDue: number;
   newStatus: BillStatus;
   paymentRecords: PaymentRecord[];
+  error: string | null;
+}
+
+export interface ReceivableSettlementAllocation {
+  billId: string;
+  amount: number;
+  newAmountPaid: number;
+  newAmountDue: number;
+  newStatus: BillStatus;
+  paymentRecords: PaymentRecord[];
+}
+
+export interface ReceivableSettlementResult {
+  allocations: ReceivableSettlementAllocation[];
+  settlementAmount: number;
   error: string | null;
 }
 
@@ -130,4 +145,77 @@ export function computeSettlement(
   }
 
   return { newAmountPaid, newAmountDue, newStatus, paymentRecords, error: null };
+}
+
+export function computeReceivableSettlement(
+  bills: Bill[],
+  draft: SettlementDraft,
+  billBusinessDates: Record<string, string> = {}
+): ReceivableSettlementResult {
+  const settlementAmount = getSettlementAmount(draft);
+  const pendingBills = bills
+    .filter((bill) => bill.status === "pending" && bill.amountDue > PAYMENT_TOLERANCE)
+    .sort((left, right) => {
+      const leftDate = billBusinessDates[left.id] ?? left.issuedAt;
+      const rightDate = billBusinessDates[right.id] ?? right.issuedAt;
+      if (leftDate !== rightDate) return leftDate.localeCompare(rightDate);
+      return left.issuedAt.localeCompare(right.issuedAt);
+    });
+  const totalDue = pendingBills.reduce((sum, bill) => sum + bill.amountDue, 0);
+
+  if (pendingBills.length === 0) {
+    return { allocations: [], settlementAmount, error: "No pending bills were selected." };
+  }
+  if (settlementAmount <= 0) {
+    return { allocations: [], settlementAmount, error: "Settlement amount must be greater than zero." };
+  }
+  if (settlementAmount > totalDue + PAYMENT_TOLERANCE) {
+    return {
+      allocations: [],
+      settlementAmount,
+      error: `Settlement amount (₹${settlementAmount.toFixed(2)}) exceeds selected amount due (₹${totalDue.toFixed(2)}).`
+    };
+  }
+
+  let remaining = settlementAmount;
+  let remainingCash = draft.paymentMode === "cash" || draft.paymentMode === "split" ? draft.cashAmount : 0;
+  let remainingUpi = draft.paymentMode === "upi" || draft.paymentMode === "split" ? draft.upiAmount : 0;
+  const allocations: ReceivableSettlementAllocation[] = [];
+
+  for (const bill of pendingBills) {
+    if (remaining <= PAYMENT_TOLERANCE) break;
+    const amount = Math.min(bill.amountDue, remaining);
+    const paymentRecords: PaymentRecord[] = [];
+
+    if (draft.paymentMode === "cash") {
+      paymentRecords.push({ mode: "cash", amount });
+    } else if (draft.paymentMode === "upi") {
+      paymentRecords.push({ mode: "upi", amount });
+    } else {
+      const cashAmount = Math.min(remainingCash, amount);
+      if (cashAmount > PAYMENT_TOLERANCE) {
+        paymentRecords.push({ mode: "cash", amount: cashAmount });
+        remainingCash -= cashAmount;
+      }
+      const upiAmount = amount - cashAmount;
+      if (upiAmount > PAYMENT_TOLERANCE) {
+        paymentRecords.push({ mode: "upi", amount: upiAmount });
+        remainingUpi -= upiAmount;
+      }
+    }
+
+    const newAmountPaid = bill.amountPaid + amount;
+    const newAmountDue = Math.max(0, bill.total - newAmountPaid);
+    allocations.push({
+      billId: bill.id,
+      amount,
+      newAmountPaid,
+      newAmountDue,
+      newStatus: newAmountDue < PAYMENT_TOLERANCE ? "issued" : "pending",
+      paymentRecords
+    });
+    remaining -= amount;
+  }
+
+  return { allocations, settlementAmount, error: null };
 }

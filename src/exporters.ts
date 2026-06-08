@@ -32,6 +32,12 @@ interface ReceiptPreviewModel {
   discount: string;
   roundOff?: string;
   total: string;
+  previousDueSummary?: {
+    billNumbers: string;
+    total: string;
+    cash: string;
+    upi: string;
+  };
   footer: string;
 }
 
@@ -195,6 +201,21 @@ export async function downloadReceiptPdf(business: BusinessProfile, bill: Bill, 
   pdf.text(receipt.total, pageWidth - horizontalPadding, y, { align: "right" });
   y += 18;
 
+  if (receipt.previousDueSummary) {
+    drawDivider(pdf, horizontalPadding, y, pageWidth);
+    y += 12;
+    y = drawTotalRow(pdf, "Previous Dues Paid", receipt.previousDueSummary.total, horizontalPadding, pageWidth, y);
+    y = drawTotalRow(pdf, "Cash / UPI", `${receipt.previousDueSummary.cash} / ${receipt.previousDueSummary.upi}`, horizontalPadding, pageWidth, y);
+    const billLines = pdf.splitTextToSize(`Bills: ${receipt.previousDueSummary.billNumbers}`, contentWidth);
+    pdf.setFont("helvetica", "normal");
+    pdf.setFontSize(8);
+    for (const line of billLines) {
+      pdf.text(line, horizontalPadding, y);
+      y += 9;
+    }
+    y += 4;
+  }
+
   drawDivider(pdf, horizontalPadding, y, pageWidth);
   y += 14;
   pdf.setFont("helvetica", "normal");
@@ -302,6 +323,25 @@ export function openReceiptWindow(business: BusinessProfile, bill: Bill, allBill
             <span><strong>Total</strong></span>
             <strong>${escapeHtml(receipt.total)}</strong>
           </div>
+          ${
+            receipt.previousDueSummary
+              ? `
+          <div class="receipt-divider"></div>
+          <div class="receipt-total-row">
+            <span>Previous Dues Paid</span>
+            <strong>${escapeHtml(receipt.previousDueSummary.total)}</strong>
+          </div>
+          <div class="receipt-meta-row">
+            <span>Bills</span>
+            <strong>${escapeHtml(receipt.previousDueSummary.billNumbers)}</strong>
+          </div>
+          <div class="receipt-meta-row">
+            <span>Cash / UPI</span>
+            <strong>${escapeHtml(receipt.previousDueSummary.cash)} / ${escapeHtml(receipt.previousDueSummary.upi)}</strong>
+          </div>
+          `
+              : ""
+          }
           <div class="receipt-divider"></div>
           <div class="receipt-footer">${escapeHtml(receipt.footer)}</div>
         </div>
@@ -335,6 +375,20 @@ export function buildReceiptPreviewModel(business: BusinessProfile, bill: Bill, 
             { cash: 0, upi: 0 }
           )
       : null;
+  const previousDuePayments = (allPayments ?? []).filter(
+    (payment) => payment.relatedCheckoutBillId === bill.id && payment.billId !== bill.id
+  );
+  const previousDueSummary = previousDuePayments.length > 0
+    ? {
+        billNumbers: Array.from(new Set(previousDuePayments.map((payment) => {
+          const relatedBill = allBills?.find((entry) => entry.id === payment.billId);
+          return relatedBill?.billNumber ?? payment.billId;
+        }))).join(", "),
+        total: currency(previousDuePayments.reduce((sum, payment) => sum + payment.amount, 0)),
+        cash: currency(previousDuePayments.reduce((sum, payment) => sum + (payment.mode === "cash" ? payment.amount : 0), 0)),
+        upi: currency(previousDuePayments.reduce((sum, payment) => sum + (payment.mode === "upi" ? payment.amount : 0), 0))
+      }
+    : undefined;
   const entries: ReceiptDisplayEntry[] = [
     ...bill.lines.map((line) => ({
       id: line.id,
@@ -382,6 +436,7 @@ export function buildReceiptPreviewModel(business: BusinessProfile, bill: Bill, 
         ? currency(bill.roundOffAmount)
         : undefined,
     total: currency(bill.total),
+    previousDueSummary,
     footer: business.receiptFooter
   };
 }

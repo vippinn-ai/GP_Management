@@ -64,7 +64,9 @@ export function DashboardPanel(props: {
   getActiveSessionForStation: (stationId: string) => Session | undefined;
   getSessionLiveTotal: (session: Session, effectiveEndAt?: string) => number;
   getPreviousHopTotalForSession: (session: Session) => number;
+  getPendingDueForSession: (session: Session) => number;
   getPreviousHopTotalForCustomerTab: (tab: CustomerTab) => number;
+  getPendingDueForCustomerTab: (tab: CustomerTab) => number;
   getPreviousHopItemCountForCustomerTab: (tab: CustomerTab) => number;
   getFrozenEndAtForSession: (sessionId: string) => string | undefined;
   getCustomerTabTotal: (tab: CustomerTab) => number;
@@ -115,8 +117,14 @@ export function DashboardPanel(props: {
                 if ("customerName" in entry) {
                   const tab = entry;
                   const prevHopTotal = props.getPreviousHopTotalForCustomerTab(tab);
-                  const combinedTotal = props.getCustomerTabTotal(tab) + prevHopTotal;
+                  const pendingDue = props.getPendingDueForCustomerTab(tab);
+                  const combinedTotal = props.getCustomerTabTotal(tab) + prevHopTotal + pendingDue;
                   const combinedItems = tab.items.length + props.getPreviousHopItemCountForCustomerTab(tab);
+                  const totalLabel = pendingDue > 0 ? "Live bill + dues" : prevHopTotal > 0 ? "Live total" : "Live bill";
+                  const totalDetail = [
+                    prevHopTotal > 0 ? "prev. sessions" : "",
+                    pendingDue > 0 ? "previous dues" : ""
+                  ].filter(Boolean).join(" + ");
                   return (
                     <article key={tab.id} className="station-card is-active customer-tab-live-card">
                       <div className="station-card-header">
@@ -129,9 +137,9 @@ export function DashboardPanel(props: {
                       <div className="station-metrics">
                         <div><span className="muted">Opened</span><strong>{formatTime(tab.createdAt)}</strong></div>
                         <div>
-                          <span className="muted">{prevHopTotal > 0 ? "Live total" : "Live bill"}</span>
+                          <span className="muted">{totalLabel}</span>
                           <strong>{currency(combinedTotal)}</strong>
-                          {prevHopTotal > 0 && <div className="muted" style={{ fontSize: "0.7em" }}>incl. prev. sessions</div>}
+                          {totalDetail && <div className="muted" style={{ fontSize: "0.7em" }}>incl. {totalDetail}</div>}
                         </div>
                         <div><span className="muted">Items</span><strong>{`${combinedItems}`}</strong></div>
                       </div>
@@ -179,7 +187,13 @@ export function DashboardPanel(props: {
                         {(() => {
                           const liveTotal = props.getSessionLiveTotal(session, props.getFrozenEndAtForSession(session.id));
                           const prevHopTotal = props.getPreviousHopTotalForSession(session);
-                          const combinedTotal = liveTotal + prevHopTotal;
+                          const pendingDue = props.getPendingDueForSession(session);
+                          const combinedTotal = liveTotal + prevHopTotal + pendingDue;
+                          const totalLabel = pendingDue > 0 ? "Live bill + dues" : prevHopTotal > 0 ? "Live total" : "Live bill";
+                          const totalDetail = [
+                            prevHopTotal > 0 ? "prev. sessions" : "",
+                            pendingDue > 0 ? "previous dues" : ""
+                          ].filter(Boolean).join(" + ");
                           return (
                             <div className="station-metrics">
                               <div>
@@ -187,9 +201,9 @@ export function DashboardPanel(props: {
                                 <strong>{formatTime(session.startedAt)}</strong>
                               </div>
                               <div>
-                                <span className="muted">{prevHopTotal > 0 ? "Live total" : "Live bill"}</span>
+                                <span className="muted">{totalLabel}</span>
                                 <strong>{currency(combinedTotal)}</strong>
-                                {prevHopTotal > 0 && <div className="muted" style={{ fontSize: "0.7em" }}>incl. prev. sessions</div>}
+                                {totalDetail && <div className="muted" style={{ fontSize: "0.7em" }}>incl. {totalDetail}</div>}
                               </div>
                               <div>
                                 <span className="muted">Customer</span>

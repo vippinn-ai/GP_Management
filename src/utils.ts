@@ -12,6 +12,7 @@ import type {
   ExpenseTemplateOverride,
   InventoryItem,
   Payment,
+  PendingReceivableGroup,
   ReportFilterState,
   SellableInventoryOption,
   Session,
@@ -653,6 +654,89 @@ export function normalizeCustomerPhone(value?: string) {
 
 export function getCustomerDisplayName(name?: string, phone?: string) {
   return name?.trim() || phone?.trim() || "Walk-in";
+}
+
+export function getReceivableCustomerKey(bill: Bill): string {
+  if (bill.customerId) return `customer:${bill.customerId}`;
+  const phone = normalizeCustomerPhone(bill.customerPhone);
+  if (phone) return `phone:${phone}`;
+  const name = normalizeCustomerName(bill.customerName);
+  if (name) return `name:${name}`;
+  return `bill:${bill.id}`;
+}
+
+export function getPendingBillsForCustomer(bills: Bill[], customerId?: string, customerName?: string, customerPhone?: string): Bill[] {
+  const normalizedPhone = normalizeCustomerPhone(customerPhone);
+  const normalizedName = normalizeCustomerName(customerName);
+  if (!customerId && !normalizedPhone && !normalizedName) return [];
+  return bills.filter((bill) => {
+    if (bill.status !== "pending" || bill.amountDue <= 0) return false;
+    if (customerId && bill.customerId === customerId) return true;
+    if (normalizedPhone && normalizeCustomerPhone(bill.customerPhone) === normalizedPhone) return true;
+    if (normalizedName && normalizeCustomerName(bill.customerName) === normalizedName) return true;
+    return false;
+  });
+}
+
+export function getPendingReceivableGroups(
+  bills: Bill[],
+  billBusinessDates: Record<string, string>,
+  todayBusinessDay: string
+): PendingReceivableGroup[] {
+  const todayMs = new Date(`${todayBusinessDay}T12:00:00`).getTime();
+  const groups = new Map<string, PendingReceivableGroup>();
+
+  for (const bill of bills) {
+    if (bill.status !== "pending" || bill.amountDue <= 0) continue;
+    const id = getReceivableCustomerKey(bill);
+    const businessDate = billBusinessDates[bill.id] ?? toBusinessDayKey(bill.issuedAt);
+    const daysOverdue = Math.max(0, Math.floor((todayMs - new Date(`${businessDate}T12:00:00`).getTime()) / 86400000));
+    const existing = groups.get(id);
+    if (existing) {
+      existing.bills.push(bill);
+      existing.totalDue += bill.amountDue;
+      existing.totalPaid += bill.amountPaid;
+      existing.totalBillValue += bill.total;
+      if (businessDate < existing.oldestBusinessDate) existing.oldestBusinessDate = businessDate;
+      existing.daysOverdue = Math.max(existing.daysOverdue, daysOverdue);
+      if (!existing.customerName && bill.customerName) existing.customerName = bill.customerName;
+      if (!existing.customerPhone && bill.customerPhone) existing.customerPhone = bill.customerPhone;
+      existing.label = getCustomerDisplayName(existing.customerName, existing.customerPhone);
+      continue;
+    }
+
+    const isUngrouped = id.startsWith("bill:");
+    groups.set(id, {
+      id,
+      customerId: bill.customerId,
+      customerName: bill.customerName,
+      customerPhone: bill.customerPhone,
+      label: isUngrouped ? `Ungrouped ${bill.billNumber}` : getCustomerDisplayName(bill.customerName, bill.customerPhone),
+      isUngrouped,
+      bills: [bill],
+      totalDue: bill.amountDue,
+      totalPaid: bill.amountPaid,
+      totalBillValue: bill.total,
+      oldestBusinessDate: businessDate,
+      daysOverdue
+    });
+  }
+
+  return Array.from(groups.values())
+    .map((group) => ({
+      ...group,
+      bills: [...group.bills].sort((left, right) => {
+        const leftDate = billBusinessDates[left.id] ?? toBusinessDayKey(left.issuedAt);
+        const rightDate = billBusinessDates[right.id] ?? toBusinessDayKey(right.issuedAt);
+        if (leftDate !== rightDate) return leftDate.localeCompare(rightDate);
+        return left.issuedAt.localeCompare(right.issuedAt);
+      })
+    }))
+    .sort((left, right) => {
+      if (right.totalDue !== left.totalDue) return right.totalDue - left.totalDue;
+      if (right.daysOverdue !== left.daysOverdue) return right.daysOverdue - left.daysOverdue;
+      return left.label.localeCompare(right.label);
+    });
 }
 
 export function findCustomerProfileMatch(appData: AppData, customerName?: string, customerPhone?: string) {

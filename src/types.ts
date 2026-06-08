@@ -263,6 +263,8 @@ export interface Payment {
   amount: number;
   createdAt: string;
   receivedByUserId: string;
+  settlementGroupId?: string;
+  relatedCheckoutBillId?: string;
 }
 
 export interface AuditLog {
@@ -403,6 +405,7 @@ export interface CheckoutState {
   hoppedSessionIds?: string[];
   replacementLines?: DraftBillLine[];
   replaceReason?: string;
+  pendingSettlement?: PendingSettlementDraft;
 }
 
 export interface CustomerTabDraft {
@@ -461,7 +464,8 @@ export interface ReportFilterState {
 }
 
 export interface SettlementDraft {
-  billId: string;
+  billId?: string;
+  billIds?: string[];
   paymentMode: PaymentMode | "split";
   cashAmount: number;
   upiAmount: number;
@@ -472,8 +476,37 @@ export interface VoidPendingDraft {
   reason: string;
 }
 
+export interface PendingSettlementDraft {
+  availableBillIds?: string[];
+  billIds: string[];
+  paymentMode: PaymentMode | "split";
+  cashAmount: number;
+  upiAmount: number;
+}
+
+export interface VoidPendingGroupDraft {
+  billIds: string[];
+  reason: string;
+  customerLabel: string;
+}
+
 export interface PendingReceivable {
   bill: Bill;
   businessDate: string;
+  daysOverdue: number;
+}
+
+export interface PendingReceivableGroup {
+  id: string;
+  customerId?: string;
+  customerName?: string;
+  customerPhone?: string;
+  label: string;
+  isUngrouped: boolean;
+  bills: Bill[];
+  totalDue: number;
+  totalPaid: number;
+  totalBillValue: number;
+  oldestBusinessDate: string;
   daysOverdue: number;
 }

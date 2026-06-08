@@ -4,9 +4,10 @@ import {
   buildCheckoutPaymentResult,
   getSettlementAmount,
   computeSettlement,
+  computeReceivableSettlement,
   PAYMENT_TOLERANCE
 } from "./billing";
-import type { SettlementDraft } from "./types";
+import type { Bill, SettlementDraft } from "./types";
 
 // ─── validateCheckoutPayment ─────────────────────────────────────────────────
 
@@ -317,5 +318,74 @@ describe("computeSettlement — with prior partial payment", () => {
     const result = computeSettlement(400, 100, 500, makeDraft({ cashAmount: 150 }));
     expect(result.error).toMatch(/exceeds/i);
     expect(result.newAmountPaid).toBe(400);
+  });
+});
+
+function makePendingBill(id: string, amountDue: number, issuedAt: string, overrides: Partial<Bill> = {}): Bill {
+  return {
+    id,
+    billNumber: id,
+    status: "pending",
+    createdAt: issuedAt,
+    issuedAt,
+    issuedByUserId: "u1",
+    paymentMode: "deferred",
+    amountPaid: 0,
+    amountDue,
+    subtotal: amountDue,
+    totalDiscountAmount: 0,
+    billDiscountAmount: 0,
+    roundOffEnabled: false,
+    roundOffAmount: 0,
+    total: amountDue,
+    lineDiscounts: [],
+    lines: [],
+    receiptType: "digital",
+    ...overrides
+  };
+}
+
+describe("computeReceivableSettlement", () => {
+  it("settles selected pending bills oldest first", () => {
+    const newer = makePendingBill("newer", 200, "2026-06-03T10:00:00.000Z");
+    const older = makePendingBill("older", 100, "2026-06-01T10:00:00.000Z");
+    const result = computeReceivableSettlement(
+      [newer, older],
+      { billIds: ["newer", "older"], paymentMode: "cash", cashAmount: 250, upiAmount: 0 },
+      { newer: "2026-06-03", older: "2026-06-01" }
+    );
+
+    expect(result.error).toBeNull();
+    expect(result.allocations.map((entry) => entry.billId)).toEqual(["older", "newer"]);
+    expect(result.allocations[0]).toMatchObject({ amount: 100, newStatus: "issued", newAmountDue: 0 });
+    expect(result.allocations[1]).toMatchObject({ amount: 150, newStatus: "pending", newAmountDue: 50 });
+  });
+
+  it("splits cash then UPI across oldest-first allocations", () => {
+    const first = makePendingBill("b1", 300, "2026-06-01T10:00:00.000Z");
+    const second = makePendingBill("b2", 300, "2026-06-02T10:00:00.000Z");
+    const result = computeReceivableSettlement(
+      [second, first],
+      { billIds: ["b1", "b2"], paymentMode: "split", cashAmount: 400, upiAmount: 100 },
+      { b1: "2026-06-01", b2: "2026-06-02" }
+    );
+
+    expect(result.error).toBeNull();
+    expect(result.allocations[0].paymentRecords).toEqual([{ mode: "cash", amount: 300 }]);
+    expect(result.allocations[1].paymentRecords).toEqual([
+      { mode: "cash", amount: 100 },
+      { mode: "upi", amount: 100 }
+    ]);
+    expect(result.allocations[1].newAmountDue).toBe(100);
+  });
+
+  it("rejects overpayment against selected dues", () => {
+    const result = computeReceivableSettlement(
+      [makePendingBill("b1", 200, "2026-06-01T10:00:00.000Z")],
+      { billIds: ["b1"], paymentMode: "upi", cashAmount: 0, upiAmount: 250 }
+    );
+
+    expect(result.error).toMatch(/exceeds selected amount due/i);
+    expect(result.allocations).toHaveLength(0);
   });
 });

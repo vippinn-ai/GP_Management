@@ -1,5 +1,5 @@
 import { type FormEvent, useState } from "react";
-import type { Customer, CustomerTab, CustomerTabDraft, CustomerTabEditDraft, CustomerTabItem, InventoryItem, SellableInventoryOption, Session } from "../types";
+import type { Bill, Customer, CustomerTab, CustomerTabDraft, CustomerTabEditDraft, CustomerTabItem, InventoryItem, SellableInventoryOption, Session } from "../types";
 import { currency, formatMinutes } from "../utils";
 import { getCategoryIcon } from "../constants";
 import { Modal } from "../components/Modal";
@@ -18,10 +18,12 @@ export function SalePanel(props: {
   openCustomerTabs: CustomerTab[];
   selectedCustomerTab: CustomerTab | null;
   selectedCustomerTabPreviousHops: Session[];
+  selectedCustomerTabPendingBills: Bill[];
   editCustomerTabDraft: CustomerTabEditDraft | null;
   canEditCustomerTabDetails: boolean;
   getSellableOptionPickerDetail: (option: SellableInventoryOption, ignoreSessionId?: string, ignoreCustomerTabId?: string) => string;
   getCustomerTabTotal: (tab: CustomerTab) => number;
+  getPendingDueForCustomerTab: (tab: CustomerTab) => number;
   getSessionLiveTotal: (session: Session, effectiveEndAt?: string) => number;
   getSessionBilledMinutes: (session: Session) => number;
   onCustomerTabSearchChange: (value: string) => void;
@@ -42,6 +44,7 @@ export function SalePanel(props: {
     openCustomerTabs,
     selectedCustomerTab,
     selectedCustomerTabPreviousHops,
+    selectedCustomerTabPendingBills,
     editCustomerTabDraft,
     canEditCustomerTabDetails
   } = props;
@@ -52,10 +55,15 @@ export function SalePanel(props: {
     0
   );
   const currentTabTotal = selectedCustomerTab ? props.getCustomerTabTotal(selectedCustomerTab) : 0;
-  const liveTotal = currentTabTotal + previousHopTotal;
+  const previousPendingDue = selectedCustomerTabPendingBills.reduce((total, bill) => total + bill.amountDue, 0);
+  const liveTotal = currentTabTotal + previousHopTotal + previousPendingDue;
   const selectedTabItemCount =
     (selectedCustomerTab?.items.length ?? 0) +
     selectedCustomerTabPreviousHops.reduce((total, session) => total + session.items.length, 0);
+  const liveTotalDetail = [
+    previousHopTotal > 0 ? "previous sessions" : "",
+    previousPendingDue > 0 ? "previous dues" : ""
+  ].filter(Boolean).join(" + ");
   const hasSelectedTab = Boolean(selectedCustomerTab);
 
   function selectCustomerTab(tab: CustomerTab) {
@@ -84,6 +92,7 @@ export function SalePanel(props: {
                       currency(liveTotal)
                     ].join(" · ")
                   : "Select the correct customer before adding inventory items."}
+                {selectedCustomerTab && liveTotalDetail && <span className="muted"> Includes {liveTotalDetail}.</span>}
               </p>
             </div>
             <button className="secondary-button" type="button" onClick={() => setShowInlineTabSwitcher((value) => !value)}>
@@ -106,6 +115,9 @@ export function SalePanel(props: {
                     >
                       <strong>{tab.customerName}</strong>
                       <span>{tab.customerPhone || "No phone"}</span>
+                      {props.getPendingDueForCustomerTab(tab) > 0 && (
+                        <span className="pending-amount">Previous dues {currency(props.getPendingDueForCustomerTab(tab))}</span>
+                      )}
                       <span>{tab.items.length} item{tab.items.length === 1 ? "" : "s"} · {currency(props.getCustomerTabTotal(tab))}</span>
                     </button>
                   ))}
@@ -211,6 +223,9 @@ export function SalePanel(props: {
                 >
                   <strong>{tab.customerName}</strong>
                   <span>{tab.customerPhone || "No phone"}</span>
+                  {props.getPendingDueForCustomerTab(tab) > 0 && (
+                    <span className="pending-amount">Previous dues {currency(props.getPendingDueForCustomerTab(tab))}</span>
+                  )}
                   <span>{tab.items.length} item{tab.items.length === 1 ? "" : "s"} · {currency(props.getCustomerTabTotal(tab))}</span>
                 </button>
               ))}
@@ -223,7 +238,7 @@ export function SalePanel(props: {
             </div>
             <div className="line-items">
               {!selectedCustomerTab && <div className="empty-state">Open or select a customer tab first.</div>}
-              {selectedCustomerTab && selectedCustomerTab.items.length === 0 && selectedCustomerTabPreviousHops.length === 0 && (
+              {selectedCustomerTab && selectedCustomerTab.items.length === 0 && selectedCustomerTabPreviousHops.length === 0 && selectedCustomerTabPendingBills.length === 0 && (
                 <div className="empty-state">Add items from the left panel.</div>
               )}
               {selectedCustomerTabPreviousHops.map((session) => (
@@ -243,6 +258,18 @@ export function SalePanel(props: {
                   <div className="button-row dense">
                     <strong>{currency(props.getSessionLiveTotal(session, session.endedAt))}</strong>
                     <span className="muted">Carried forward</span>
+                  </div>
+                </div>
+              ))}
+              {selectedCustomerTabPendingBills.map((bill) => (
+                <div key={bill.id} className="line-item-row previous-due-session-row">
+                  <div>
+                    <strong>Previous due - {bill.billNumber}</strong>
+                    <div className="muted">{bill.customerName || selectedCustomerTab?.customerName || "Customer"}</div>
+                  </div>
+                  <div className="button-row dense">
+                    <strong className="pending-amount">{currency(bill.amountDue)}</strong>
+                    <span className="muted">Pending bill</span>
                   </div>
                 </div>
               ))}
@@ -281,9 +308,9 @@ export function SalePanel(props: {
             </div>
             <div className="checkout-footer">
               <div className="checkout-total-block">
-                <span className="muted">{previousHopTotal > 0 ? "Live total" : "Tab total"}</span>
+                <span className="muted">{previousPendingDue > 0 ? "Tab total + dues" : previousHopTotal > 0 ? "Live total" : "Tab total"}</span>
                 <strong>{currency(selectedCustomerTab ? liveTotal : 0)}</strong>
-                {previousHopTotal > 0 && <small className="muted">Includes previous sessions</small>}
+                {liveTotalDetail && <small className="muted">Includes {liveTotalDetail}</small>}
               </div>
               <div className="button-row">
                 {selectedCustomerTab && canEditCustomerTabDetails && (

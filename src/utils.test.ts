@@ -14,7 +14,9 @@ import {
   formatBillNumber,
   getReportRange,
   resolveCustomerTabWorkspaceSelection,
-  resolveEffectiveAmount
+  resolveEffectiveAmount,
+  getPendingBillsForCustomer,
+  getPendingReceivableGroups
 } from "./utils";
 import type { AppData, Bill, CustomerTab, CustomerTabItem, DraftBillLine, ExpenseTemplate, ExpenseTemplateOverride, Payment, Session } from "./types";
 
@@ -433,6 +435,41 @@ function makeBill(id: string, status: Bill["status"], amountPaid: number, overri
 function makePayment(billId: string, mode: Payment["mode"], amount: number, createdAt = "2025-01-01T00:00:00Z"): Payment {
   return { id: `pay-${billId}-${mode}-${createdAt}`, billId, mode, amount, createdAt, receivedByUserId: "u1" };
 }
+
+describe("pending receivable customer helpers", () => {
+  it("finds pending bills by customer id, normalized phone, or normalized name", () => {
+    const bills = [
+      makeBill("by-id", "pending", 0, { customerId: "cust-1", amountDue: 100, total: 100 }),
+      makeBill("by-phone", "pending", 0, { customerPhone: "+91 98765-43210", amountDue: 200, total: 200 }),
+      makeBill("by-name", "pending", 0, { customerName: "Amit  Sharma", amountDue: 300, total: 300 }),
+      makeBill("issued", "issued", 100, { customerId: "cust-1" })
+    ];
+
+    expect(getPendingBillsForCustomer(bills, "cust-1").map((bill) => bill.id)).toEqual(["by-id"]);
+    expect(getPendingBillsForCustomer(bills, undefined, undefined, "+919876543210").map((bill) => bill.id)).toEqual(["by-phone"]);
+    expect(getPendingBillsForCustomer(bills, undefined, "amit sharma").map((bill) => bill.id)).toEqual(["by-name"]);
+  });
+
+  it("groups pending bills and keeps unknown walk-ins separate", () => {
+    const bills = [
+      makeBill("b1", "pending", 0, { customerId: "cust-1", customerName: "Riya", amountDue: 100, total: 100, issuedAt: "2026-06-01T10:00:00.000Z" }),
+      makeBill("b2", "pending", 0, { customerId: "cust-1", customerName: "Riya", amountDue: 150, total: 150, issuedAt: "2026-06-03T10:00:00.000Z" }),
+      makeBill("b3", "pending", 0, { amountDue: 200, total: 200, issuedAt: "2026-06-02T10:00:00.000Z" }),
+      makeBill("b4", "pending", 0, { amountDue: 250, total: 250, issuedAt: "2026-06-04T10:00:00.000Z" })
+    ];
+
+    const groups = getPendingReceivableGroups(
+      bills,
+      { b1: "2026-06-01", b2: "2026-06-03", b3: "2026-06-02", b4: "2026-06-04" },
+      "2026-06-05"
+    );
+
+    const customerGroup = groups.find((group) => group.customerId === "cust-1");
+    expect(customerGroup?.totalDue).toBe(250);
+    expect(customerGroup?.bills.map((bill) => bill.id)).toEqual(["b1", "b2"]);
+    expect(groups.filter((group) => group.isUngrouped).map((group) => group.bills[0].id).sort()).toEqual(["b3", "b4"]);
+  });
+});
 
 describe("computePaymentModeTotals", () => {
   it("all-cash issued bills — correct cash total, upi = 0", () => {
