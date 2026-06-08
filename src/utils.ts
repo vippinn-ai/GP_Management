@@ -11,6 +11,7 @@ import type {
   ComboAppliedChoice,
   ComboInventorySelection,
   ComboPackage,
+  Expense,
   ExpenseTemplate,
   ExpenseTemplateOverride,
   InventoryReportFilterState,
@@ -731,6 +732,31 @@ export function computePaymentModeTotals(
     cash: sumBy(revenueCountedPayments.filter((p) => p.mode === "cash"), (p) => p.amount),
     upi: sumBy(revenueCountedPayments.filter((p) => p.mode === "upi"), (p) => p.amount)
   };
+}
+
+export function computeExpensePaymentModeTotals(expenses: Expense[]): { cash: number; upi: number; unknown: number } {
+  return expenses.reduce(
+    (totals, expense) => {
+      if (expense.paymentMode === "cash") {
+        totals.cash += expense.amount;
+      } else if (expense.paymentMode === "upi") {
+        totals.upi += expense.amount;
+      } else if (expense.paymentMode === "split") {
+        const splitCash = expense.cashAmount ?? 0;
+        const splitUpi = expense.upiAmount ?? 0;
+        if (splitCash > 0 || splitUpi > 0) {
+          totals.cash += splitCash;
+          totals.upi += splitUpi;
+        } else {
+          totals.unknown += expense.amount;
+        }
+      } else {
+        totals.unknown += expense.amount;
+      }
+      return totals;
+    },
+    { cash: 0, upi: 0, unknown: 0 }
+  );
 }
 
 export function isRevenueCountedBill(bill: Bill): boolean {

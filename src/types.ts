@@ -1,6 +1,7 @@
 export type Role = "admin" | "manager" | "receptionist";
 export type PaymentMode = "cash" | "upi";
 export type BillPaymentMode = "cash" | "upi" | "split" | "deferred";
+export type ExpensePaymentMode = PaymentMode | "split";
 export type StationMode = "timed" | "unit_sale";
 export type SessionStatus = "active" | "paused" | "closed";
 export type BillStatus = "issued" | "pending" | "voided" | "refunded" | "replaced";
@@ -343,6 +344,9 @@ export interface Expense {
   title: string;
   category: string;
   amount: number;
+  paymentMode?: ExpensePaymentMode;
+  cashAmount?: number;
+  upiAmount?: number;
   spentAt: string;
   notes?: string;
   createdByUserId: string;

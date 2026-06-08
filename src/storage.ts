@@ -132,7 +132,12 @@ export function hydrateAppData(parsed: Partial<AppData>): AppData {
       createdAt: combo.createdAt ?? new Date().toISOString(),
       updatedAt: combo.updatedAt ?? combo.createdAt ?? new Date().toISOString()
     })),
-    expenses: parsed.expenses ?? cloneValue(emptyAppData.expenses),
+    expenses: (parsed.expenses ?? cloneValue(emptyAppData.expenses)).map((expense) => ({
+      ...expense,
+      paymentMode: expense.paymentMode === "cash" || expense.paymentMode === "upi" || expense.paymentMode === "split" ? expense.paymentMode : undefined,
+      cashAmount: typeof expense.cashAmount === "number" && Number.isFinite(expense.cashAmount) ? expense.cashAmount : undefined,
+      upiAmount: typeof expense.upiAmount === "number" && Number.isFinite(expense.upiAmount) ? expense.upiAmount : undefined
+    })),
     expenseTemplates: parsed.expenseTemplates ?? cloneValue(emptyAppData.expenseTemplates),
     expenseTemplateOverrides: parsed.expenseTemplateOverrides ?? cloneValue(emptyAppData.expenseTemplateOverrides)
   };

@@ -1,5 +1,5 @@
 import { type FormEvent, useState } from "react";
-import type { Bill, BusinessProfile, Expense, ExpenseTemplate, ExpenseTemplateOverride, PendingReceivable, ReportFilterState, ReportPreset, Station } from "../types";
+import type { Bill, BusinessProfile, Expense, ExpensePaymentMode, ExpenseTemplate, ExpenseTemplateOverride, PendingReceivable, ReportFilterState, ReportPreset, Station } from "../types";
 import { currency, formatDateTime, formatMonthLabel, getMonthKeysForYear, resolveEffectiveAmount } from "../utils";
 
 interface NormalizedExpenseDetail {
@@ -19,6 +19,9 @@ interface ExpenseForm {
   title: string;
   category: string;
   amount: number;
+  paymentMode: ExpensePaymentMode;
+  cashAmount: number;
+  upiAmount: number;
   spentAt: string;
   notes: string;
 }
@@ -28,7 +31,7 @@ interface ReportSummary {
   netCashEarnings: number;
   normalizedNetProfit: number;
   issuedBillsCount: number;
-  cashExpenses: number;
+  oneTimeExpenses: number;
   normalizedExpenses: number;
   sessionRevenue: number;
   itemRevenue: number;
@@ -41,6 +44,7 @@ interface ReportSummary {
   averageBillValue: number;
   topStation: [string, number] | null;
   paymentModeTotals: { cash: number; upi: number };
+  expensePaymentModeTotals: { cash: number; upi: number; unknown: number };
   expenseByCategory: [string, number][];
   normalizedExpenseByCategory: [string, number][];
   normalizedExpenseDetails: NormalizedExpenseDetail[];
@@ -65,7 +69,9 @@ export function ReportsPanel(props: {
   expenseTemplateForm: ExpenseTemplate;
   expenseCategoryOptions: string[];
   allPendingReceivables: PendingReceivable[];
-  canEditReports: boolean;
+  canCreateExpenses: boolean;
+  canDeleteExpenses: boolean;
+  canManageExpenseTemplates: boolean;
   isManagerReadOnly: boolean;
   onSettlePendingBill: (billId: string) => void;
   onReportFilterChange: (next: ReportFilterState) => void;
@@ -85,7 +91,7 @@ export function ReportsPanel(props: {
   const {
     reportFilter, reportFromDate, reportToDate, summary, expenseForm, expenseTemplateForm,
     filteredExpenses, expenseCategoryOptions, expenseTemplates, expenseTemplateOverrides,
-    canEditReports, isManagerReadOnly
+    canCreateExpenses, canDeleteExpenses, canManageExpenseTemplates, isManagerReadOnly
   } = props;
 
   const currentYear = new Date().getFullYear();
@@ -98,6 +104,16 @@ export function ReportsPanel(props: {
   const [skipReason, setSkipReason] = useState<string>("");
 
   const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+  function getExpensePaymentModeLabel(expense: Expense) {
+    const mode = expense.paymentMode;
+    if (mode === "cash") return "Cash";
+    if (mode === "upi") return "UPI";
+    if (mode === "split") {
+      return `Split: Cash ${currency(expense.cashAmount ?? 0)} / UPI ${currency(expense.upiAmount ?? 0)}`;
+    }
+    return "Unknown";
+  }
 
   function openEditDialog(templateId: string, monthKey: string, currentAmount: number) {
     setEditingCell({ templateId, monthKey, amount: currentAmount });
@@ -132,7 +148,11 @@ export function ReportsPanel(props: {
         <div className="reports-toolbar-copy">
           <h2>Operational Reports</h2>
           <p>Range-based revenue, expense, and profit insights for owners.</p>
-          {isManagerReadOnly && <div className="read-only-banner compact">Manager view: read-only access on this page.</div>}
+          {isManagerReadOnly && (
+            <div className="read-only-banner compact">
+              Manager view: analytics are read-only except one-time expense creation.
+            </div>
+          )}
         </div>
         <div className="report-filter-inline">
           <label>
@@ -187,7 +207,7 @@ export function ReportsPanel(props: {
                 </div>
               )}
               <div className="report-kpi-card is-primary">
-                <span className="muted">Net Cash Earnings</span>
+                <span className="muted">Net Earnings</span>
                 <strong>{currency(summary.netCashEarnings)}</strong>
               </div>
               <div className="report-kpi-card is-primary">
@@ -201,8 +221,8 @@ export function ReportsPanel(props: {
                 <strong>{`${summary.issuedBillsCount}`}</strong>
               </div>
               <div className="report-kpi-card is-secondary">
-                <span className="muted">Cash Expenses</span>
-                <strong>{currency(summary.cashExpenses)}</strong>
+                <span className="muted">One-Time Expenses</span>
+                <strong>{currency(summary.oneTimeExpenses)}</strong>
               </div>
               <div className="report-kpi-card is-secondary">
                 <span className="muted">Monthly Expenses (Pro-rated)</span>
@@ -268,20 +288,26 @@ export function ReportsPanel(props: {
                 <span className="muted">{currency(summary.grossRevenue)}</span>
               </div>
               <div className="activity-row">
-                <strong>Cash Expenses</strong>
-                <span className="muted">{currency(summary.cashExpenses)}</span>
+                <strong>One-Time Expenses</strong>
+                <span className="muted">{currency(summary.oneTimeExpenses)}</span>
               </div>
               <div className="activity-row">
                 <strong>Monthly Expenses (Pro-rated)</strong>
                 <span className="muted">{currency(summary.normalizedExpenses)}</span>
               </div>
               <div className="activity-row">
-                <strong>Net Cash Earnings</strong>
+                <strong>Net Earnings</strong>
                 <span className="muted">{currency(summary.netCashEarnings)}</span>
               </div>
               <div className="activity-row">
                 <strong>Net Profit (Normalized)</strong>
                 <span className="muted">{currency(summary.normalizedNetProfit)}</span>
+              </div>
+              <div className="activity-row">
+                <strong>Expense Payment Mix</strong>
+                <span className="muted">
+                  Cash {currency(summary.expensePaymentModeTotals.cash)} / UPI {currency(summary.expensePaymentModeTotals.upi)} / Unknown {currency(summary.expensePaymentModeTotals.unknown)}
+                </span>
               </div>
               <div className="activity-row">
                 <strong>Payment Mix</strong>
@@ -300,7 +326,10 @@ export function ReportsPanel(props: {
             </div>
             <div className="expense-breakdown-grid">
               <div className="expense-breakdown-card">
-                <strong>Cash Expenses</strong>
+                <strong>One-Time Expenses</strong>
+                <div className="muted small-text">
+                  Cash {currency(summary.expensePaymentModeTotals.cash)} / UPI {currency(summary.expensePaymentModeTotals.upi)} / Unknown {currency(summary.expensePaymentModeTotals.unknown)}
+                </div>
                 {summary.expenseByCategory.length > 0 ? (
                   <div className="activity-list compact-list">
                     {summary.expenseByCategory.map(([category, amount]) => (
@@ -338,7 +367,7 @@ export function ReportsPanel(props: {
               </div>
             </div>
           </div>
-          {canEditReports && (
+          {canCreateExpenses && (
             <>
               <div className="section-block">
                 <div className="panel-header">
@@ -356,9 +385,34 @@ export function ReportsPanel(props: {
                     </select>
                   </label>
                   <label>
-                    <span>Amount</span>
-                    <NumericInput required mode="decimal" min={0} value={expenseForm.amount} onValueChange={(value) => props.onExpenseFormChange({ ...expenseForm, amount: value })} />
+                    <span>Paid By</span>
+                    <select value={expenseForm.paymentMode} onChange={(event) => props.onExpenseFormChange({ ...expenseForm, paymentMode: event.target.value as ExpensePaymentMode, amount: 0, cashAmount: 0, upiAmount: 0 })}>
+                      <option value="cash">Cash</option>
+                      <option value="upi">UPI</option>
+                      <option value="split">Split (Cash + UPI)</option>
+                    </select>
                   </label>
+                  {expenseForm.paymentMode === "split" ? (
+                    <>
+                      <label>
+                        <span>Cash Amount</span>
+                        <NumericInput required mode="decimal" min={0} value={expenseForm.cashAmount} onValueChange={(value) => props.onExpenseFormChange({ ...expenseForm, cashAmount: value })} />
+                      </label>
+                      <label>
+                        <span>UPI Amount</span>
+                        <NumericInput required mode="decimal" min={0} value={expenseForm.upiAmount} onValueChange={(value) => props.onExpenseFormChange({ ...expenseForm, upiAmount: value })} />
+                      </label>
+                      <div className="line-item-row field-span-full">
+                        <span className="muted">Total Expense</span>
+                        <strong>{currency(expenseForm.cashAmount + expenseForm.upiAmount)}</strong>
+                      </div>
+                    </>
+                  ) : (
+                    <label>
+                      <span>Amount</span>
+                      <NumericInput required mode="decimal" min={0} value={expenseForm.amount} onValueChange={(value) => props.onExpenseFormChange({ ...expenseForm, amount: value })} />
+                    </label>
+                  )}
                   <label>
                     <span>Date</span>
                     <input type="date" value={expenseForm.spentAt} onChange={(event) => props.onExpenseFormChange({ ...expenseForm, spentAt: event.target.value })} />
@@ -374,16 +428,23 @@ export function ReportsPanel(props: {
                     <div key={expense.id} className="line-item-row">
                       <div>
                         <strong>{expense.title}</strong>
+                        <div className="muted">Paid by {getExpensePaymentModeLabel(expense)}</div>
                         <div className="muted">{expense.category} · {formatDateTime(expense.spentAt)}</div>
                       </div>
                       <div className="button-row dense">
                         <span>{currency(expense.amount)}</span>
-                        <button className="ghost-button danger" type="button" onClick={() => props.onDeleteExpense(expense.id)}>Delete</button>
+                        {canDeleteExpenses && (
+                          <button className="ghost-button danger" type="button" onClick={() => props.onDeleteExpense(expense.id)}>Delete</button>
+                        )}
                       </div>
                     </div>
                   )) : <div className="empty-state">No one-time expenses logged for this period.</div>}
                 </div>
               </div>
+            </>
+          )}
+          {canManageExpenseTemplates && (
+            <>
               <div className="section-block section-block-muted">
                 <div className="panel-header">
                   <div><h2>Monthly Expense Templates</h2><p>Track repeating monthly costs like rent and internet without creating fake daily entries.</p></div>
@@ -480,7 +541,7 @@ export function ReportsPanel(props: {
                                     ) : (
                                       <div className="month-cell-amount">{currency(effectiveAmount!)}{hasOverride && <span className="override-dot" title="Custom amount" />}</div>
                                     )}
-                                    {canEditReports && (
+                                    {canManageExpenseTemplates && (
                                       <div className="month-cell-actions">
                                         {isSkipped ? (
                                           <button className="ghost-button micro" type="button" onClick={() => props.onDeleteOverride(template.id, monthKey)}>Restore</button>

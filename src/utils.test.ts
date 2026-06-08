@@ -3,6 +3,7 @@ import {
   toLocalDateKey,
   getDiscountAmount,
   buildBillPreview,
+  computeExpensePaymentModeTotals,
   computePaymentModeTotals,
   allocatePaymentRevenueToBill,
   filterPaymentsByBusinessDate,
@@ -24,7 +25,7 @@ import {
   resolveComboChoiceSelections,
   getSessionCheckoutLines
 } from "./utils";
-import type { AppData, Bill, ComboPackage, CustomerTab, CustomerTabItem, DraftBillLine, ExpenseTemplate, ExpenseTemplateOverride, InventoryItem, Payment, PricingRule, SellableInventoryOption, Session, StockMovement } from "./types";
+import type { AppData, Bill, ComboPackage, CustomerTab, CustomerTabItem, DraftBillLine, Expense, ExpenseTemplate, ExpenseTemplateOverride, InventoryItem, Payment, PricingRule, SellableInventoryOption, Session, StockMovement } from "./types";
 
 // ─── toLocalDateKey ─────────────────────────────────────────────────────────
 
@@ -877,6 +878,51 @@ describe("computePaymentModeTotals", () => {
     const result = computePaymentModeTotals([bill1, bill2], payments);
     expect(result.cash).toBe(300);
     expect(result.upi).toBe(800);
+  });
+});
+
+describe("computeExpensePaymentModeTotals", () => {
+  function makeExpense(id: string, amount: number, paymentMode?: Expense["paymentMode"], split?: { cashAmount?: number; upiAmount?: number }): Expense {
+    return {
+      id,
+      title: `Expense ${id}`,
+      category: "Utilities",
+      amount,
+      paymentMode,
+      cashAmount: split?.cashAmount,
+      upiAmount: split?.upiAmount,
+      spentAt: "2026-06-08T12:00:00.000Z",
+      createdByUserId: "user-1"
+    };
+  }
+
+  it("splits one-time expenses by cash, upi, and unknown payment mode", () => {
+    const result = computeExpensePaymentModeTotals([
+      makeExpense("cash-1", 100, "cash"),
+      makeExpense("cash-2", 50, "cash"),
+      makeExpense("upi-1", 75, "upi"),
+      makeExpense("split-1", 100, "split", { cashAmount: 40, upiAmount: 60 }),
+      makeExpense("old-1", 25)
+    ]);
+
+    expect(result).toEqual({ cash: 190, upi: 135, unknown: 25 });
+  });
+
+  it("keeps old expenses without payment mode in unknown instead of cash or upi", () => {
+    const result = computeExpensePaymentModeTotals([
+      makeExpense("old-1", 80),
+      makeExpense("old-2", 20)
+    ]);
+
+    expect(result).toEqual({ cash: 0, upi: 0, unknown: 100 });
+  });
+
+  it("keeps split expenses without a usable breakdown in unknown", () => {
+    const result = computeExpensePaymentModeTotals([
+      makeExpense("bad-split", 120, "split")
+    ]);
+
+    expect(result).toEqual({ cash: 0, upi: 0, unknown: 120 });
   });
 });
 

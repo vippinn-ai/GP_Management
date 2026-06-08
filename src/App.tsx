@@ -53,6 +53,7 @@ import type {
   ComboPackage,
   DiscountType,
   DraftLineDiscountMap,
+  ExpensePaymentMode,
   InventoryReportFilterState,
   InventoryItem,
   InventoryState,
@@ -123,6 +124,7 @@ import {
   getSessionCheckoutLines,
   normalizeAppDataCustomers,
   allocatePaymentRevenueToBill,
+  computeExpensePaymentModeTotals,
   computePaymentModeTotals,
   filterPaymentsByBusinessDate,
   getRevenueCountedPayments,
@@ -333,6 +335,9 @@ export default function App() {
     title: "",
     category: "Utilities",
     amount: 0,
+    paymentMode: "cash" as ExpensePaymentMode,
+    cashAmount: 0,
+    upiAmount: 0,
     spentAt: todayDateKey,
     notes: ""
   });
@@ -484,7 +489,9 @@ export default function App() {
   }, [activeUser]);
   const canAccessTab = useCallback((tabId: TabId) => visibleTabs.some((tab) => tab.id === tabId), [visibleTabs]);
   const canEditInventory = activeUser?.role === "admin";
-  const canEditReports = activeUser?.role === "admin";
+  const canCreateExpenses = activeUser?.role === "admin" || activeUser?.role === "manager";
+  const canDeleteExpenses = activeUser?.role === "admin";
+  const canManageExpenseTemplates = activeUser?.role === "admin";
   const canEditSettings = activeUser?.role === "admin";
   const canManageUsers = activeUser?.role === "admin";
   const canVoidRefundBills = activeUser?.role === "admin";
@@ -3795,7 +3802,18 @@ export default function App() {
 
   function createExpense(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!activeUser || !canEditReports || expenseForm.amount <= 0 || !expenseForm.title.trim()) {
+    const expenseCashAmount =
+      expenseForm.paymentMode === "cash" ? expenseForm.amount : expenseForm.paymentMode === "split" ? expenseForm.cashAmount : 0;
+    const expenseUpiAmount =
+      expenseForm.paymentMode === "upi" ? expenseForm.amount : expenseForm.paymentMode === "split" ? expenseForm.upiAmount : 0;
+    const expenseAmount = expenseCashAmount + expenseUpiAmount;
+    if (
+      !activeUser ||
+      !canCreateExpenses ||
+      expenseAmount <= 0 ||
+      (expenseForm.paymentMode === "split" && (expenseCashAmount <= 0 || expenseUpiAmount <= 0)) ||
+      !expenseForm.title.trim()
+    ) {
       return;
     }
     void commitAppDataChange("Saving expense...", (draft) => {
@@ -3804,7 +3822,10 @@ export default function App() {
         id: expenseId,
         title: expenseForm.title.trim(),
         category: expenseForm.category.trim(),
-        amount: expenseForm.amount,
+        amount: expenseAmount,
+        paymentMode: expenseForm.paymentMode,
+        cashAmount: expenseCashAmount,
+        upiAmount: expenseUpiAmount,
         spentAt: new Date(`${expenseForm.spentAt}T12:00:00`).toISOString(),
         notes: expenseForm.notes.trim() || undefined,
         createdByUserId: activeUser.id
@@ -3815,13 +3836,18 @@ export default function App() {
         "expense_created",
         "expense",
         expenseId,
-        `Logged expense ${expenseForm.title.trim()} for ${currency(expenseForm.amount)}.`
+        expenseForm.paymentMode === "split"
+          ? `Logged SPLIT expense ${expenseForm.title.trim()} for ${currency(expenseAmount)} (Cash ${currency(expenseCashAmount)}, UPI ${currency(expenseUpiAmount)}).`
+          : `Logged ${expenseForm.paymentMode.toUpperCase()} expense ${expenseForm.title.trim()} for ${currency(expenseAmount)}.`
       );
     }, () => {
       setExpenseForm({
         title: "",
         category: "Utilities",
         amount: 0,
+        paymentMode: "cash",
+        cashAmount: 0,
+        upiAmount: 0,
         spentAt: toBusinessDayKey(now),
         notes: ""
       });
@@ -3830,7 +3856,7 @@ export default function App() {
 
   function saveExpenseTemplate(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!activeUser || !canEditReports || expenseTemplateForm.amount <= 0 || !expenseTemplateForm.title.trim()) {
+    if (!activeUser || !canManageExpenseTemplates || expenseTemplateForm.amount <= 0 || !expenseTemplateForm.title.trim()) {
       return;
     }
     let newTemplateId: string | null = null;
@@ -3882,7 +3908,7 @@ export default function App() {
   }
 
   function resolveBackfillPrompt(templateId: string, backfill: boolean) {
-    if (!activeUser || !canEditReports) return;
+    if (!activeUser || !canManageExpenseTemplates) return;
     if (backfill) {
       const year = todayDateKey.slice(0, 4);
       void commitAppDataChange("Updating expense template...", (draft) => {
@@ -3897,7 +3923,7 @@ export default function App() {
   }
 
   function deleteExpense(expenseId: string) {
-    if (!activeUser || !canEditReports) {
+    if (!activeUser || !canDeleteExpenses) {
       return;
     }
     void commitAppDataChange("Deleting expense...", (draft) => {
@@ -3917,7 +3943,7 @@ export default function App() {
   }
 
   function beginEditExpenseTemplate(template: ExpenseTemplate) {
-    if (!canEditReports) {
+    if (!canManageExpenseTemplates) {
       return;
     }
     setExpenseTemplateForm({
@@ -3927,7 +3953,7 @@ export default function App() {
   }
 
   function toggleExpenseTemplateActive(templateId: string) {
-    if (!activeUser || !canEditReports) {
+    if (!activeUser || !canManageExpenseTemplates) {
       return;
     }
     void commitAppDataChange("Updating expense template...", (draft) => {
@@ -3941,7 +3967,7 @@ export default function App() {
   }
 
   function deleteExpenseTemplate(templateId: string) {
-    if (!activeUser || !canEditReports) {
+    if (!activeUser || !canManageExpenseTemplates) {
       return;
     }
     void commitAppDataChange("Deleting expense template...", (draft) => {
@@ -3975,7 +4001,7 @@ export default function App() {
     skipReason?: string,
     notes?: string
   ) {
-    if (!activeUser || !canEditReports) return;
+    if (!activeUser || !canManageExpenseTemplates) return;
     void commitAppDataChange("Saving expense override...", (draft) => {
       const existing = draft.expenseTemplateOverrides.find(
         (o) => o.templateId === templateId && o.monthKey === monthKey
@@ -4010,7 +4036,7 @@ export default function App() {
     skipReason?: string,
     notes?: string
   ) {
-    if (!activeUser || !canEditReports) return;
+    if (!activeUser || !canManageExpenseTemplates) return;
     const [year] = fromMonthKey.split("-").map(Number);
     const endMonthKey = `${year}-12`;
     void commitAppDataChange("Saving future expense overrides...", (draft) => {
@@ -4047,7 +4073,7 @@ export default function App() {
   }
 
   function deleteOverride(templateId: string, monthKey: string) {
-    if (!activeUser || !canEditReports) return;
+    if (!activeUser || !canManageExpenseTemplates) return;
     void commitAppDataChange("Restoring expense default...", (draft) => {
       draft.expenseTemplateOverrides = draft.expenseTemplateOverrides.filter(
         (o) => !(o.templateId === templateId && o.monthKey === monthKey)
@@ -4350,7 +4376,8 @@ export default function App() {
   const sessionRevenue = sumBy(paymentAllocations, (allocation) => allocation.sessionRevenue);
   const itemRevenue = sumBy(paymentAllocations, (allocation) => allocation.itemRevenue);
   const totalDiscounts = sumBy(paymentAllocations, (allocation) => allocation.totalDiscounts);
-  const cashExpenses = sumBy(filteredExpenses, (expense) => expense.amount);
+  const oneTimeExpenses = sumBy(filteredExpenses, (expense) => expense.amount);
+  const expensePaymentModeTotals = computeExpensePaymentModeTotals(filteredExpenses);
   const reportMonthKeys = getMonthKeysInRange(reportFromDate, reportToDate);
   const normalizedExpenseEntries = appData.expenseTemplates
     .filter((template) => template.active)
@@ -4374,7 +4401,7 @@ export default function App() {
         })
     );
   const normalizedExpenses = sumBy(normalizedExpenseEntries, (entry) => entry.proratedAmount);
-  const netCashEarnings = grossRevenue - cashExpenses;
+  const netCashEarnings = grossRevenue - oneTimeExpenses;
   const normalizedNetProfit = grossRevenue - normalizedExpenses;
   const previousRange = getPreviousRange(reportFromDate, reportToDate);
   const previousRangeRevenue = sumBy(
@@ -4759,7 +4786,7 @@ export default function App() {
               netCashEarnings,
               normalizedNetProfit,
               issuedBillsCount: paidBillsInRange.length,
-              cashExpenses,
+              oneTimeExpenses,
               normalizedExpenses,
               sessionRevenue,
               itemRevenue,
@@ -4772,6 +4799,7 @@ export default function App() {
               averageBillValue,
               topStation,
               paymentModeTotals,
+              expensePaymentModeTotals,
               expenseByCategory,
               normalizedExpenseByCategory,
               normalizedExpenseDetails: normalizedExpenseEntries
@@ -4780,7 +4808,9 @@ export default function App() {
             expenseForm={expenseForm}
             expenseTemplateForm={expenseTemplateForm}
             expenseCategoryOptions={expenseCategoryOptions}
-            canEditReports={canEditReports}
+            canCreateExpenses={canCreateExpenses}
+            canDeleteExpenses={canDeleteExpenses}
+            canManageExpenseTemplates={canManageExpenseTemplates}
             isManagerReadOnly={isManagerReadOnly}
             onReportFilterChange={setReportFilter}
             onExpenseFormChange={setExpenseForm}
