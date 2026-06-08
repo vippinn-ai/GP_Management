@@ -1355,6 +1355,29 @@ span.catalog-card-icon-large {
   color: #4b5563;
 }
 
+.inventory-section-tabs {
+  margin-bottom: 1rem;
+  width: fit-content;
+}
+
+.inventory-report-layout {
+  display: grid;
+  gap: 1rem;
+}
+
+.inventory-report-toolbar {
+  align-items: flex-start;
+  margin-bottom: 1rem;
+}
+
+.inventory-report-kpis {
+  margin-bottom: 1rem;
+}
+
+.inventory-report-table-wrap table {
+  min-width: 58rem;
+}
+
 .insight-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

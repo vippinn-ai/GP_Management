@@ -1,6 +1,15 @@
-import { type FormEvent } from "react";
-import type { InventoryItem, InventoryState, SaleVariant, StockMovement, StockMovementType } from "../types";
-import { createId, currency } from "../utils";
+import { type FormEvent, useState } from "react";
+import type {
+  InventoryItem,
+  InventoryReportFilterState,
+  InventoryReportModel,
+  InventoryReportPreset,
+  InventoryState,
+  SaleVariant,
+  StockMovement,
+  StockMovementType
+} from "../types";
+import { createId, currency, formatDateTime } from "../utils";
 import { getCategoryIcon } from "../constants";
 import { getCategoryImage } from "../categoryImages";
 import { Modal } from "../components/Modal";
@@ -13,6 +22,7 @@ interface InventoryAction {
 }
 
 type InventoryArchiveView = "active" | "archived";
+type InventoryPanelView = "catalog" | "report";
 
 interface InventoryArchiveDraft {
   itemId: string;
@@ -150,6 +160,11 @@ export function InventoryPanel(props: {
   activeInventoryCount: number;
   archivedInventoryCount: number;
   inventoryArchiveDraft: InventoryArchiveDraft | null;
+  inventoryReport: InventoryReportModel;
+  inventoryReportFilter: InventoryReportFilterState;
+  inventoryReportFromDate: string;
+  inventoryReportToDate: string;
+  inventoryReportRangeLabel: string;
   filteredInventoryItems: InventoryItem[];
   inventoryCategoryOptions: string[];
   canEditInventory: boolean;
@@ -166,6 +181,7 @@ export function InventoryPanel(props: {
   onInventoryActionChange: (next: InventoryAction) => void;
   onInventoryItemSearchChange: (value: string) => void;
   onInventoryArchiveViewChange: (value: InventoryArchiveView) => void;
+  onInventoryReportFilterChange: (next: InventoryReportFilterState) => void;
   onArchiveDraftReasonChange: (value: string) => void;
   onUpsertInventoryItem: (event: FormEvent<HTMLFormElement>) => void;
   onSaveEditedInventoryItem: (event: FormEvent<HTMLFormElement>) => void;
@@ -181,8 +197,9 @@ export function InventoryPanel(props: {
     itemForm, editItemForm, useCustomItemCategory, customItemCategory,
     useCustomEditItemCategory, customEditItemCategory, inventoryAction,
     inventoryItemSearch, inventoryArchiveView, filteredInventoryItems, inventoryCategoryOptions,
-    canEditInventory, isManagerReadOnly
+    canEditInventory, isManagerReadOnly, inventoryReport, inventoryReportFilter
   } = props;
+  const [inventoryPanelView, setInventoryPanelView] = useState<InventoryPanelView>("catalog");
   const isItemFormCigarette = itemForm.category === "Cigarettes";
   const isEditItemFormCigarette = editItemForm?.category === "Cigarettes";
   const isArchivedView = inventoryArchiveView === "archived";
@@ -195,8 +212,211 @@ export function InventoryPanel(props: {
     return item.archivedAt ? new Date(item.archivedAt).toLocaleString() : "Archived";
   }
 
+  function formatUnits(value: number) {
+    return Number.isInteger(value) ? `${value}` : value.toFixed(2);
+  }
+
+  function formatSignedUnits(value: number) {
+    if (value === 0) {
+      return "0";
+    }
+    return `${value > 0 ? "+" : ""}${formatUnits(value)}`;
+  }
+
+  function movementTypeLabel(type: StockMovementType) {
+    switch (type) {
+      case "restock":
+        return "Restock";
+      case "sale":
+        return "Sale";
+      case "adjustment":
+        return "Adjustment";
+      case "void_refund_reversal":
+        return "Void/Refund Restore";
+      case "session_reservation":
+        return "Session Reserved";
+      case "session_reservation_void":
+        return "Reservation Released";
+    }
+  }
+
+  const inventoryReportPresets: Array<{ label: string; value: InventoryReportPreset }> = [
+    { label: "Today", value: "today" },
+    { label: "Yesterday", value: "yesterday" },
+    { label: "Last 7 Days", value: "last_7_days" },
+    { label: "Last 1 Month", value: "last_30_days" },
+    { label: "Custom Range", value: "custom" }
+  ];
+
   return (
     <>
+      <div className="segmented-control inventory-section-tabs" role="tablist" aria-label="Inventory section">
+        <button
+          type="button"
+          className={inventoryPanelView === "catalog" ? "is-active" : ""}
+          onClick={() => setInventoryPanelView("catalog")}
+        >
+          Catalog
+        </button>
+        <button
+          type="button"
+          className={inventoryPanelView === "report" ? "is-active" : ""}
+          onClick={() => setInventoryPanelView("report")}
+        >
+          Inventory Report
+        </button>
+      </div>
+
+      {inventoryPanelView === "report" ? (
+        <section className="inventory-report-layout">
+          <div className="panel">
+            <div className="reports-toolbar inventory-report-toolbar">
+              <div className="reports-toolbar-copy">
+                <h2>Inventory Report</h2>
+                <p>Business-day stock added, deducted, adjusted, restored, and currently reserved.</p>
+                {isManagerReadOnly && <div className="read-only-banner compact">Manager view: read-only access on this page.</div>}
+              </div>
+              <div className="report-filter-inline">
+                <label>
+                  <span>Range</span>
+                  <select
+                    value={inventoryReportFilter.preset}
+                    onChange={(event) => props.onInventoryReportFilterChange({
+                      ...inventoryReportFilter,
+                      preset: event.target.value as InventoryReportPreset
+                    })}
+                  >
+                    {inventoryReportPresets.map((preset) => (
+                      <option key={preset.value} value={preset.value}>{preset.label}</option>
+                    ))}
+                  </select>
+                </label>
+                {inventoryReportFilter.preset === "custom" && (
+                  <>
+                    <label>
+                      <span>From</span>
+                      <input
+                        type="date"
+                        value={inventoryReportFilter.fromDate ?? props.inventoryReportFromDate}
+                        onChange={(event) => props.onInventoryReportFilterChange({ ...inventoryReportFilter, fromDate: event.target.value })}
+                      />
+                    </label>
+                    <label>
+                      <span>To</span>
+                      <input
+                        type="date"
+                        value={inventoryReportFilter.toDate ?? props.inventoryReportToDate}
+                        onChange={(event) => props.onInventoryReportFilterChange({ ...inventoryReportFilter, toDate: event.target.value })}
+                      />
+                    </label>
+                  </>
+                )}
+                <div className="report-range-chip">
+                  <div className="report-range-chip-head">
+                    <span className="muted">Selected Period</span>
+                    <strong>{props.inventoryReportRangeLabel}</strong>
+                  </div>
+                  <div className="muted">{props.inventoryReportFromDate} to {props.inventoryReportToDate}</div>
+                </div>
+              </div>
+            </div>
+
+            <div className="reports-kpi-grid inventory-report-kpis">
+              <div className="report-kpi-card is-primary">
+                <span className="muted">Stock Added</span>
+                <strong>{formatUnits(inventoryReport.summary.added)}</strong>
+              </div>
+              <div className="report-kpi-card is-primary">
+                <span className="muted">Stock Deducted</span>
+                <strong>{formatUnits(inventoryReport.summary.deducted)}</strong>
+              </div>
+              <div className="report-kpi-card is-secondary">
+                <span className="muted">Manual Adjustments</span>
+                <strong>{formatSignedUnits(inventoryReport.summary.manualAdjustments)}</strong>
+              </div>
+              <div className="report-kpi-card is-secondary">
+                <span className="muted">Reversals / Restores</span>
+                <strong>{formatUnits(inventoryReport.summary.reversals)}</strong>
+              </div>
+              <div className="report-kpi-card is-primary">
+                <span className="muted">Net Stock Change</span>
+                <strong>{formatSignedUnits(inventoryReport.summary.netChange)}</strong>
+              </div>
+              <div className="report-kpi-card is-secondary">
+                <span className="muted">Currently Reserved</span>
+                <strong>{formatUnits(inventoryReport.summary.reserved)}</strong>
+              </div>
+            </div>
+
+            <div className="section-block section-block-muted">
+              <div className="section-block-header">
+                <h3>Item Summary</h3>
+                <p>{inventoryReport.summary.touchedItems} item{inventoryReport.summary.touchedItems !== 1 ? "s" : ""} with movement in this period.</p>
+              </div>
+              <div className="table-wrap inventory-report-table-wrap">
+                <table>
+                  <thead>
+                    <tr><th>Item</th><th>Category</th><th>Status</th><th>Added</th><th>Deducted</th><th>Adjustments</th><th>Reversals</th><th>Net</th><th>Current Stock</th><th>Reserved</th></tr>
+                  </thead>
+                  <tbody>
+                    {inventoryReport.rows.length === 0 && (
+                      <tr>
+                        <td colSpan={10}><div className="empty-state">No inventory movements or open reservations found for this range.</div></td>
+                      </tr>
+                    )}
+                    {inventoryReport.rows.map((row) => (
+                      <tr key={row.itemId}>
+                        <td>{row.itemName}</td>
+                        <td>{row.category}</td>
+                        <td>{row.active ? <span className="inventory-badge is-available">Active</span> : <span className="inventory-badge is-archived">Archived</span>}</td>
+                        <td>{formatUnits(row.added)}</td>
+                        <td>{formatUnits(row.deducted)}</td>
+                        <td>{formatSignedUnits(row.manualAdjustments)}</td>
+                        <td>{formatUnits(row.reversals)}</td>
+                        <td>{formatSignedUnits(row.netChange)}</td>
+                        <td>{formatUnits(row.currentStock)}</td>
+                        <td>{formatUnits(row.reserved)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div className="section-block">
+              <div className="section-block-header">
+                <h3>Movement Details</h3>
+                <p>Audit trail for stock movements within the selected business-day range.</p>
+              </div>
+              <div className="table-wrap inventory-report-table-wrap">
+                <table>
+                  <thead>
+                    <tr><th>Business Date</th><th>Time</th><th>Item</th><th>Type</th><th>Quantity</th><th>Reason</th><th>Bill</th></tr>
+                  </thead>
+                  <tbody>
+                    {inventoryReport.details.length === 0 && (
+                      <tr>
+                        <td colSpan={7}><div className="empty-state">No movement details found for this range.</div></td>
+                      </tr>
+                    )}
+                    {inventoryReport.details.map((detail) => (
+                      <tr key={detail.id}>
+                        <td>{detail.businessDate}</td>
+                        <td>{formatDateTime(detail.createdAt)}</td>
+                        <td>{detail.itemName}</td>
+                        <td>{movementTypeLabel(detail.type)}</td>
+                        <td>{formatSignedUnits(detail.quantity)}</td>
+                        <td>{detail.reason}</td>
+                        <td>{detail.relatedBillNumber ?? detail.relatedBillId ?? "-"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </section>
+      ) : (
       <section className="section-grid">
         <div className="panel">
           <div className="panel-header">
@@ -547,6 +767,7 @@ export function InventoryPanel(props: {
           </div>
         </div>
       </section>
+      )}
 
       {editItemForm && (
         <Modal title={`Edit Inventory Item${editItemForm.name ? ` - ${editItemForm.name}` : ""}`} onClose={props.onCloseEditInventoryModal}>

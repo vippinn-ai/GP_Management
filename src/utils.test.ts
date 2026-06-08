@@ -16,9 +16,11 @@ import {
   resolveCustomerTabWorkspaceSelection,
   resolveEffectiveAmount,
   getPendingBillsForCustomer,
-  getPendingReceivableGroups
+  getPendingReceivableGroups,
+  getInventoryReportRange,
+  buildInventoryReportModel
 } from "./utils";
-import type { AppData, Bill, CustomerTab, CustomerTabItem, DraftBillLine, ExpenseTemplate, ExpenseTemplateOverride, Payment, Session } from "./types";
+import type { AppData, Bill, CustomerTab, CustomerTabItem, DraftBillLine, ExpenseTemplate, ExpenseTemplateOverride, InventoryItem, Payment, Session, StockMovement } from "./types";
 
 // ─── toLocalDateKey ─────────────────────────────────────────────────────────
 
@@ -468,6 +470,146 @@ describe("pending receivable customer helpers", () => {
     expect(customerGroup?.totalDue).toBe(250);
     expect(customerGroup?.bills.map((bill) => bill.id)).toEqual(["b1", "b2"]);
     expect(groups.filter((group) => group.isUngrouped).map((group) => group.bills[0].id).sort()).toEqual(["b3", "b4"]);
+  });
+});
+
+describe("inventory report ranges", () => {
+  it("anchors last 30 days on the current business day", () => {
+    const now = new Date(2026, 5, 8, 3, 0, 0).toISOString();
+    const range = getInventoryReportRange({ preset: "last_30_days" }, now);
+
+    expect(range.from).toBe("2026-05-09");
+    expect(range.to).toBe("2026-06-07");
+    expect(range.label).toBe("Last 1 Month");
+  });
+
+  it("anchors yesterday relative to the 7 AM business day", () => {
+    const now = new Date(2026, 5, 8, 3, 0, 0).toISOString();
+    const range = getInventoryReportRange({ preset: "yesterday" }, now);
+
+    expect(range.from).toBe("2026-06-06");
+    expect(range.to).toBe("2026-06-06");
+  });
+});
+
+describe("buildInventoryReportModel", () => {
+  const inventoryItem = (patch: Partial<InventoryItem>): InventoryItem => ({
+    id: "item-1",
+    name: "Momo",
+    category: "Food",
+    price: 80,
+    stockQty: 42,
+    lowStockThreshold: 5,
+    unit: "piece",
+    isReusable: false,
+    active: true,
+    ...patch
+  });
+
+  const movement = (patch: Partial<StockMovement>): StockMovement => ({
+    id: `movement-${patch.type ?? "stock"}`,
+    itemId: "item-1",
+    type: "restock",
+    quantity: 0,
+    reason: "test",
+    createdAt: new Date(2026, 5, 8, 10, 0, 0).toISOString(),
+    userId: "user-1",
+    ...patch
+  });
+
+  const openSession = (itemId: string, quantity: number): Session => ({
+    id: "session-1",
+    stationId: "station-1",
+    stationNameSnapshot: "PS5",
+    mode: "timed",
+    startedAt: new Date(2026, 5, 8, 10, 0, 0).toISOString(),
+    status: "active",
+    playMode: "group",
+    ltpEligible: false,
+    pricingSnapshot: [],
+    items: [{
+      id: "session-item-1",
+      inventoryItemId: itemId,
+      name: "Momo Plate",
+      quantity,
+      unitPrice: 80,
+      addedAt: new Date(2026, 5, 8, 10, 5, 0).toISOString(),
+      stockUnitsPerSale: 8
+    }],
+    pauseLogIds: []
+  });
+
+  const openTab = (itemId: string, quantity: number): CustomerTab => ({
+    id: "tab-1",
+    customerName: "Vipin",
+    status: "open",
+    createdAt: new Date(2026, 5, 8, 10, 0, 0).toISOString(),
+    items: [{
+      id: "tab-item-1",
+      inventoryItemId: itemId,
+      name: "Momo Plate",
+      quantity,
+      unitPrice: 80,
+      addedAt: new Date(2026, 5, 8, 10, 10, 0).toISOString(),
+      stockUnitsPerSale: 8
+    }]
+  });
+
+  it("classifies finalized movements without double-counting reservations", () => {
+    const item = inventoryItem({});
+    const model = buildInventoryReportModel(
+      [item],
+      [
+        movement({ id: "restock-1", type: "restock", quantity: 20 }),
+        movement({ id: "sale-1", type: "sale", quantity: -8, relatedBillId: "bill-1" }),
+        movement({ id: "adjustment-1", type: "adjustment", quantity: -2 }),
+        movement({ id: "reversal-1", type: "void_refund_reversal", quantity: 3 }),
+        movement({ id: "reservation-1", type: "session_reservation", quantity: -8 })
+      ],
+      [openSession(item.id, 1)],
+      [openTab(item.id, 1)],
+      [{ id: "bill-1", billNumber: "BILL-001" } as Bill],
+      "2026-06-08",
+      "2026-06-08"
+    );
+
+    expect(model.summary.added).toBe(20);
+    expect(model.summary.deducted).toBe(8);
+    expect(model.summary.manualAdjustments).toBe(-2);
+    expect(model.summary.reversals).toBe(3);
+    expect(model.summary.netChange).toBe(13);
+    expect(model.summary.reserved).toBe(16);
+    expect(model.rows[0]).toMatchObject({
+      itemName: "Momo",
+      added: 20,
+      deducted: 8,
+      manualAdjustments: -2,
+      reversals: 3,
+      netChange: 13,
+      reserved: 16
+    });
+    expect(model.details.find((detail) => detail.id === "sale-1")?.relatedBillNumber).toBe("BILL-001");
+  });
+
+  it("includes archived items when they have movements in range", () => {
+    const archived = inventoryItem({
+      id: "item-archived",
+      name: "Old Chips",
+      active: false,
+      archivedAt: new Date(2026, 5, 8, 12, 0, 0).toISOString()
+    });
+    const model = buildInventoryReportModel(
+      [archived],
+      [movement({ id: "archived-sale", itemId: archived.id, type: "sale", quantity: -5 })],
+      [],
+      [],
+      [],
+      "2026-06-08",
+      "2026-06-08"
+    );
+
+    expect(model.rows).toHaveLength(1);
+    expect(model.rows[0]).toMatchObject({ itemName: "Old Chips", active: false, deducted: 5 });
   });
 });
 

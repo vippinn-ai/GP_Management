@@ -52,6 +52,7 @@ import type {
   CustomerProfileEditDraft,
   DiscountType,
   DraftLineDiscountMap,
+  InventoryReportFilterState,
   InventoryItem,
   InventoryState,
   SaleVariant,
@@ -102,6 +103,7 @@ import {
   getActiveInventoryItems,
   getArchivedInventoryItems,
   getInventoryItemOpenUsage,
+  getInventoryReportRange,
   getInventoryQuantityMap,
   getLineStockQuantity,
   getMonthKeysInRange,
@@ -119,6 +121,7 @@ import {
   getDirectlyLinkedHoppedSessions,
   getPendingBillsForCustomer as findPendingBillsForCustomer,
   getPendingReceivableGroups,
+  buildInventoryReportModel,
   getUnbilledHoppedSessionsForCustomer,
   normalizeCustomerName,
   normalizeCustomerPhone,
@@ -229,6 +232,11 @@ export default function App() {
   const remoteSaveTimerRef = useRef<number | null>(null);
   const todayDateKey = toLocalDateKey(new Date());
   const [reportFilter, setReportFilter] = useState<ReportFilterState>({
+    preset: "today",
+    fromDate: todayDateKey,
+    toDate: todayDateKey
+  });
+  const [inventoryReportFilter, setInventoryReportFilter] = useState<InventoryReportFilterState>({
     preset: "today",
     fromDate: todayDateKey,
     toDate: todayDateKey
@@ -499,6 +507,18 @@ export default function App() {
   const resolvedReportRange = getReportRange(reportFilter, now);
   const reportFromDate = resolvedReportRange.from <= resolvedReportRange.to ? resolvedReportRange.from : resolvedReportRange.to;
   const reportToDate = resolvedReportRange.from <= resolvedReportRange.to ? resolvedReportRange.to : resolvedReportRange.from;
+  const resolvedInventoryReportRange = getInventoryReportRange(inventoryReportFilter, now);
+  const inventoryReportFromDate = resolvedInventoryReportRange.from <= resolvedInventoryReportRange.to ? resolvedInventoryReportRange.from : resolvedInventoryReportRange.to;
+  const inventoryReportToDate = resolvedInventoryReportRange.from <= resolvedInventoryReportRange.to ? resolvedInventoryReportRange.to : resolvedInventoryReportRange.from;
+  const inventoryReportModel = buildInventoryReportModel(
+    appData.inventoryItems,
+    appData.stockMovements,
+    appData.sessions,
+    appData.customerTabs,
+    appData.bills,
+    inventoryReportFromDate,
+    inventoryReportToDate
+  );
   const filteredBills = appData.bills.filter((bill) => {
     const billDate = billBusinessDates[bill.id];
     return billDate >= reportFromDate && billDate <= reportToDate;
@@ -4402,6 +4422,11 @@ export default function App() {
             activeInventoryCount={activeInventoryItems.length}
             archivedInventoryCount={archivedInventoryItems.length}
             inventoryArchiveDraft={inventoryArchiveDraft}
+            inventoryReport={inventoryReportModel}
+            inventoryReportFilter={inventoryReportFilter}
+            inventoryReportFromDate={inventoryReportFromDate}
+            inventoryReportToDate={inventoryReportToDate}
+            inventoryReportRangeLabel={resolvedInventoryReportRange.label}
             filteredInventoryItems={filteredInventoryItems}
             inventoryCategoryOptions={inventoryCategoryOptions}
             canEditInventory={canEditInventory}
@@ -4418,6 +4443,7 @@ export default function App() {
             onInventoryActionChange={setInventoryAction}
             onInventoryItemSearchChange={setInventoryItemSearch}
             onInventoryArchiveViewChange={setInventoryArchiveView}
+            onInventoryReportFilterChange={setInventoryReportFilter}
             onArchiveDraftReasonChange={(reason) => {
               setInventoryArchiveDraft((draft) => draft ? { ...draft, reason } : draft);
             }}

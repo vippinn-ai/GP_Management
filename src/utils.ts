@@ -10,6 +10,10 @@ import type {
   DraftLineDiscountMap,
   ExpenseTemplate,
   ExpenseTemplateOverride,
+  InventoryReportFilterState,
+  InventoryReportModel,
+  InventoryReportMovementDetail,
+  InventoryReportRow,
   InventoryItem,
   Payment,
   PendingReceivableGroup,
@@ -144,6 +148,152 @@ export function getInventoryItemOpenUsage(
     sessionMatches,
     tabMatches,
     totalQuantity: sumBy(sessionMatches, (entry) => entry.quantity) + sumBy(tabMatches, (entry) => entry.quantity)
+  };
+}
+
+export function getInventoryReportRange(filter: InventoryReportFilterState, nowValue: string) {
+  const todayKey = toBusinessDayKey(new Date(nowValue));
+  const todayDate = new Date(`${todayKey}T12:00:00`);
+  switch (filter.preset) {
+    case "today":
+      return { from: todayKey, to: todayKey, label: "Today" };
+    case "yesterday": {
+      const yesterday = toLocalDateKey(addDays(todayDate, -1));
+      return { from: yesterday, to: yesterday, label: "Yesterday" };
+    }
+    case "last_7_days":
+      return { from: toLocalDateKey(addDays(todayDate, -6)), to: todayKey, label: "Last 7 Days" };
+    case "last_30_days":
+      return { from: toLocalDateKey(addDays(todayDate, -29)), to: todayKey, label: "Last 1 Month" };
+    case "custom":
+    default:
+      return {
+        from: filter.fromDate ?? todayKey,
+        to: filter.toDate ?? filter.fromDate ?? todayKey,
+        label:
+          filter.fromDate && filter.toDate
+            ? `${filter.fromDate} to ${filter.toDate}`
+            : "Custom Range"
+      };
+  }
+}
+
+function createInventoryReportRow(item: InventoryItem): InventoryReportRow {
+  return {
+    itemId: item.id,
+    itemName: item.name,
+    category: item.category,
+    active: item.active,
+    added: 0,
+    deducted: 0,
+    manualAdjustments: 0,
+    reversals: 0,
+    netChange: 0,
+    currentStock: item.stockQty,
+    reserved: 0,
+    movementCount: 0
+  };
+}
+
+export function buildInventoryReportModel(
+  inventoryItems: InventoryItem[],
+  stockMovements: AppData["stockMovements"],
+  sessions: Session[],
+  customerTabs: CustomerTab[],
+  bills: Bill[],
+  fromDate: string,
+  toDate: string
+): InventoryReportModel {
+  const itemById = new Map(inventoryItems.map((item) => [item.id, item]));
+  const billById = new Map(bills.map((bill) => [bill.id, bill]));
+  const rowsByItemId = new Map<string, InventoryReportRow>();
+  const details: InventoryReportMovementDetail[] = [];
+  const sortedFromDate = fromDate <= toDate ? fromDate : toDate;
+  const sortedToDate = fromDate <= toDate ? toDate : fromDate;
+
+  for (const item of inventoryItems) {
+    const usage = getInventoryItemOpenUsage(item.id, sessions, customerTabs);
+    if (usage.totalQuantity <= 0) {
+      continue;
+    }
+    const row = rowsByItemId.get(item.id) ?? createInventoryReportRow(item);
+    row.reserved = usage.totalQuantity;
+    rowsByItemId.set(item.id, row);
+  }
+
+  for (const movement of stockMovements) {
+    const businessDate = toBusinessDayKey(movement.createdAt);
+    if (businessDate < sortedFromDate || businessDate > sortedToDate) {
+      continue;
+    }
+    const item = itemById.get(movement.itemId);
+    if (!item) {
+      continue;
+    }
+    const row = rowsByItemId.get(item.id) ?? createInventoryReportRow(item);
+    const absoluteQuantity = Math.abs(movement.quantity);
+
+    switch (movement.type) {
+      case "restock":
+        row.added += Math.max(0, movement.quantity);
+        row.netChange += movement.quantity;
+        break;
+      case "sale":
+        row.deducted += absoluteQuantity;
+        row.netChange += movement.quantity;
+        break;
+      case "adjustment":
+        row.manualAdjustments += movement.quantity;
+        row.netChange += movement.quantity;
+        break;
+      case "void_refund_reversal":
+        row.reversals += Math.max(0, movement.quantity);
+        row.netChange += movement.quantity;
+        break;
+      case "session_reservation":
+      case "session_reservation_void":
+        break;
+    }
+
+    row.movementCount += 1;
+    rowsByItemId.set(item.id, row);
+
+    const relatedBill = movement.relatedBillId ? billById.get(movement.relatedBillId) : undefined;
+    details.push({
+      id: movement.id,
+      businessDate,
+      createdAt: movement.createdAt,
+      itemId: item.id,
+      itemName: item.name,
+      category: item.category,
+      type: movement.type,
+      quantity: movement.quantity,
+      reason: movement.reason,
+      relatedBillId: movement.relatedBillId,
+      relatedBillNumber: relatedBill?.billNumber
+    });
+  }
+
+  const rows = Array.from(rowsByItemId.values())
+    .filter((row) => row.movementCount > 0 || row.reserved > 0)
+    .sort((a, b) => {
+      const movementDelta = b.movementCount - a.movementCount;
+      if (movementDelta !== 0) return movementDelta;
+      return a.itemName.localeCompare(b.itemName);
+    });
+
+  return {
+    summary: {
+      added: sumBy(rows, (row) => row.added),
+      deducted: sumBy(rows, (row) => row.deducted),
+      manualAdjustments: sumBy(rows, (row) => row.manualAdjustments),
+      reversals: sumBy(rows, (row) => row.reversals),
+      netChange: sumBy(rows, (row) => row.netChange),
+      reserved: sumBy(rows, (row) => row.reserved),
+      touchedItems: rows.filter((row) => row.movementCount > 0).length
+    },
+    rows,
+    details: details.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
   };
 }
 

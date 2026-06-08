@@ -366,6 +366,7 @@ export interface DraftBillLine {
 export type TabId = "dashboard" | "sale" | "inventory" | "bills" | "reports" | "customers" | "settings" | "users";
 export type NumericInputMode = "integer" | "decimal";
 export type ReportPreset = "today" | "yesterday" | "last_7_days" | "this_month" | "last_month" | "this_year" | "custom";
+export type InventoryReportPreset = "today" | "yesterday" | "last_7_days" | "last_30_days" | "custom";
 export type InventoryState = "out" | "low" | "healthy" | "occupied" | "available";
 
 export interface StartSessionDraft {
@@ -461,6 +462,57 @@ export interface ReportFilterState {
   preset: ReportPreset;
   fromDate?: string;
   toDate?: string;
+}
+
+export interface InventoryReportFilterState {
+  preset: InventoryReportPreset;
+  fromDate?: string;
+  toDate?: string;
+}
+
+export interface InventoryReportSummary {
+  added: number;
+  deducted: number;
+  manualAdjustments: number;
+  reversals: number;
+  netChange: number;
+  reserved: number;
+  touchedItems: number;
+}
+
+export interface InventoryReportRow {
+  itemId: string;
+  itemName: string;
+  category: string;
+  active: boolean;
+  added: number;
+  deducted: number;
+  manualAdjustments: number;
+  reversals: number;
+  netChange: number;
+  currentStock: number;
+  reserved: number;
+  movementCount: number;
+}
+
+export interface InventoryReportMovementDetail {
+  id: string;
+  businessDate: string;
+  createdAt: string;
+  itemId: string;
+  itemName: string;
+  category: string;
+  type: StockMovementType;
+  quantity: number;
+  reason: string;
+  relatedBillId?: string;
+  relatedBillNumber?: string;
+}
+
+export interface InventoryReportModel {
+  summary: InventoryReportSummary;
+  rows: InventoryReportRow[];
+  details: InventoryReportMovementDetail[];
 }
 
 export interface SettlementDraft {
