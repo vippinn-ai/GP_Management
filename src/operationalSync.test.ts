@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AppData } from "./types";
 import {
   applyOperationalMutation,
@@ -72,6 +72,10 @@ function mutation(
 describe("operational sync", () => {
   beforeEach(() => {
     window.localStorage.removeItem(PENDING_OPERATION_STORAGE_KEY);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   it("applies a customer tab item operation immediately to local app data", () => {
@@ -268,5 +272,19 @@ describe("operational sync", () => {
     savePendingOperationalMutations([pending]);
 
     expect(loadPendingOperationalMutations()).toEqual([pending]);
+  });
+
+  it("does not throw when pending operation cache exceeds browser quota", () => {
+    const pending = mutation("updateCustomerTabItemQuantity", "customer_tab", "tab-1", {
+      customerTabId: "tab-1",
+      lineId: "line-1",
+      quantity: 2
+    });
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new DOMException("Quota exceeded.", "QuotaExceededError");
+    });
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    expect(() => savePendingOperationalMutations([pending])).not.toThrow();
   });
 });

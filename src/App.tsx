@@ -560,7 +560,11 @@ export default function App() {
     if (localStorage.getItem(flagKey)) return;
     const openSessions = appData.sessions.filter((s) => s.status !== "closed");
     if (openSessions.length === 0) {
-      localStorage.setItem(flagKey, "1");
+      try {
+        localStorage.setItem(flagKey, "1");
+      } catch {
+        // The migration flag is a best-effort local cache marker.
+      }
       return;
     }
     mutateAppData((draft) => {
@@ -587,7 +591,11 @@ export default function App() {
         }
       }
     });
-    localStorage.setItem(flagKey, "1");
+    try {
+      localStorage.setItem(flagKey, "1");
+    } catch {
+      // The migration flag is a best-effort local cache marker.
+    }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeUserId]);
 

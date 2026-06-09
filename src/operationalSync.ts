@@ -660,5 +660,9 @@ export function savePendingOperationalMutations(mutations: OperationalMutation[]
   if (typeof window === "undefined") {
     return;
   }
-  window.localStorage.setItem(PENDING_OPERATION_STORAGE_KEY, JSON.stringify(mutations));
+  try {
+    window.localStorage.setItem(PENDING_OPERATION_STORAGE_KEY, JSON.stringify(mutations));
+  } catch (error) {
+    console.warn("Unable to cache pending operational mutations locally.", error);
+  }
 }

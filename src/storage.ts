@@ -39,7 +39,11 @@ export function loadAppData(): AppData {
 }
 
 export function saveAppData(value: AppData): void {
-  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(value));
+  try {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(value));
+  } catch (error) {
+    console.warn("Unable to cache app data locally.", error);
+  }
 }
 
 export function hasStoredAppData(): boolean {
