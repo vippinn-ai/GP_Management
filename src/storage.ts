@@ -42,6 +42,10 @@ export function saveAppData(value: AppData): void {
   window.localStorage.setItem(STORAGE_KEY, JSON.stringify(value));
 }
 
+export function hasStoredAppData(): boolean {
+  return window.localStorage.getItem(STORAGE_KEY) !== null;
+}
+
 export function hydrateAppData(parsed: Partial<AppData>): AppData {
   return {
     ...cloneValue(emptyAppData),

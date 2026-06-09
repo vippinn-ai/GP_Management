@@ -238,6 +238,11 @@ td {
   color: #ffd190;
 }
 
+.status-pill.is-warning {
+  background: rgba(245, 165, 38, 0.2);
+  color: #ffe0a3;
+}
+
 .sync-detail-card {
   display: grid;
   gap: 0.35rem;
@@ -398,6 +403,34 @@ td {
   color: #f08080;
   text-decoration: underline;
   padding: 0;
+}
+
+.remote-restore-banner {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: flex-start;
+  margin-bottom: 1rem;
+  padding: 0.85rem 1rem;
+  border: 1px solid rgba(245, 165, 38, 0.35);
+  border-radius: 0.5rem;
+  background: #fff7e8;
+  color: #704700;
+  box-shadow: 0 10px 28px rgba(110, 75, 10, 0.08);
+}
+
+.remote-restore-banner div {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.remote-restore-banner strong {
+  color: #4f3200;
+}
+
+.remote-restore-banner span {
+  line-height: 1.4;
 }
 
 .helper-text,
@@ -2063,6 +2096,30 @@ span.catalog-card-icon-large {
   width: min(40rem, 100%);
   display: grid;
   gap: 1.25rem;
+}
+
+.restore-card {
+  width: min(34rem, 100%);
+}
+
+.restore-card p {
+  margin: 0.55rem 0 0;
+  color: #52615a;
+  line-height: 1.5;
+}
+
+.restore-card-logo {
+  width: 13rem;
+  max-width: 100%;
+  padding: 0.8rem;
+  border-radius: 0.75rem;
+  background: #050505;
+}
+
+.restore-card-logo img {
+  display: block;
+  width: 100%;
+  height: auto;
 }
 
 .login-layout {

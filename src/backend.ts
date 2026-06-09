@@ -46,6 +46,12 @@ export interface RemoteAppDataSnapshot {
   version: number;
 }
 
+export type RemoteSessionProfileResult =
+  | { status: "no-session" }
+  | { status: "active"; profile: RemoteProfile }
+  | { status: "inactive-or-missing"; userId: string }
+  | { status: "profile-unreachable"; userId: string; error: Error };
+
 let supabaseClient: SupabaseClient | null = null;
 let cachedProfiles: RemoteProfile[] = [];
 
@@ -154,26 +160,42 @@ export async function signOutRemote(): Promise<void> {
 }
 
 export async function fetchCurrentProfile(): Promise<RemoteProfile | null> {
+  const result = await resolveRemoteSessionProfile();
+  return result.status === "active" ? result.profile : null;
+}
+
+export async function resolveRemoteSessionProfile(): Promise<RemoteSessionProfileResult> {
   const supabase = getSupabase();
   const {
     data: { session }
   } = await supabase.auth.getSession();
   const authUserId = session?.user?.id;
   if (!authUserId) {
-    return null;
+    return { status: "no-session" };
   }
-  const { data, error } = await withRemoteTimeout(
-    supabase
-      .from("profiles")
-      .select("id, name, username, role, active")
-      .eq("id", authUserId)
-      .maybeSingle(),
-    "loading your profile"
-  );
-  if (error || !data) {
-    return null;
+  try {
+    const { data, error } = await withRemoteTimeout(
+      supabase
+        .from("profiles")
+        .select("id, name, username, role, active")
+        .eq("id", authUserId)
+        .maybeSingle(),
+      "loading your profile"
+    );
+    if (error) {
+      return { status: "profile-unreachable", userId: authUserId, error };
+    }
+    if (!data || !data.active) {
+      return { status: "inactive-or-missing", userId: authUserId };
+    }
+    return { status: "active", profile: data as RemoteProfile };
+  } catch (error) {
+    return {
+      status: "profile-unreachable",
+      userId: authUserId,
+      error: error instanceof Error ? error : new Error("Unable to verify your profile.")
+    };
   }
-  return data as RemoteProfile;
 }
 
 export async function fetchProfiles(): Promise<User[]> {

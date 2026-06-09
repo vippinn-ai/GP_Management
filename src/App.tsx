@@ -1,6 +1,6 @@
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useClock } from "./hooks/useClock";
-import { useAppSync } from "./hooks/useAppSync";
+import { useAppSync, type RemoteRestoreState } from "./hooks/useAppSync";
 import { Modal } from "./components/Modal";
 import { LoadingOverlay } from "./components/LoadingOverlay";
 import { AppLoadingScreen } from "./components/AppLoadingScreen";
@@ -24,7 +24,7 @@ import {
   type ReportRow
 } from "./exporters";
 import { calculateSessionCharge } from "./pricing";
-import { loadAppData, saveAppData } from "./storage";
+import { hasStoredAppData, loadAppData, saveAppData } from "./storage";
 import {
   adminChangePasswordRemote,
   changeOwnPasswordRemote,
@@ -221,6 +221,9 @@ export default function App() {
   const [loginPassword, setLoginPassword] = useState("");
   const [loginError, setLoginError] = useState("");
   const [remoteLoading, setRemoteLoading] = useState(backendConfigured);
+  const [remoteRestoreState, setRemoteRestoreState] = useState<RemoteRestoreState>(backendConfigured ? "checking" : "ready");
+  const [restoreRetrySignal, setRestoreRetrySignal] = useState(0);
+  const [hasCachedAppData] = useState(() => hasStoredAppData());
   const [remoteError, setRemoteError] = useState("");
   const [remoteVersion, setRemoteVersion] = useState(0);
   const [remoteSaving, setRemoteSaving] = useState(false);
@@ -383,6 +386,36 @@ export default function App() {
   const filteredInventoryItems = visibleInventoryItems.filter((item) =>
     `${item.name} ${item.category}`.toLowerCase().includes(inventoryItemSearch.trim().toLowerCase())
   );
+  const remoteReadOnly =
+    backendConfigured && (remoteRestoreState === "stale-cache" || remoteRestoreState === "retrying");
+  const remoteReadOnlyMessage =
+    "Latest remote data is still loading. Cached data is read-only until sync recovers.";
+
+  function retryRemoteRestore() {
+    setRemoteError("");
+    setRestoreRetrySignal((previous) => previous + 1);
+  }
+
+  function guardRemoteWrite(): boolean {
+    if (!remoteReadOnly) {
+      return true;
+    }
+    setRemoteError(remoteReadOnlyMessage);
+    return false;
+  }
+
+  function getRestoreRecoveryMessage() {
+    if (remoteError) {
+      return remoteError;
+    }
+    if (remoteRestoreState === "retrying") {
+      return "Checking the remote backend again. Your Supabase session is still being preserved.";
+    }
+    if (hasCachedAppData) {
+      return "Your Supabase session is still active, but the cached user profile cannot be opened safely. Retry remote restore or sign out.";
+    }
+    return "Your Supabase session is still active, but no usable cached app data is available. Retry remote restore or sign out.";
+  }
 
   function updatePendingOperationalMutations(
     nextValue:
@@ -436,9 +469,14 @@ export default function App() {
 
   useAppSync({
     backendConfigured,
+    online,
     activeUserId,
     appData,
     remoteLoading,
+    remoteReadOnly,
+    remoteRestoreState,
+    restoreRetrySignal,
+    hasCachedAppData,
     remoteVersion,
     skipRemotePersistRef,
     remoteSaveTimerRef,
@@ -448,6 +486,8 @@ export default function App() {
     setRemoteLoading,
     setRemoteError,
     setRemoteSaving,
+    setRemoteRestoreState,
+    setRestoreRetrySignal,
     setActiveTab,
     applyRemoteSnapshot: applyRemoteSnapshotWithPending
   });
@@ -463,6 +503,8 @@ export default function App() {
     skipRemotePersistRef.current = true;
     setAppData(normalizeAppDataCustomers(snapshot.appData));
     setRemoteVersion(snapshot.version);
+    setRemoteRestoreState("ready");
+    setRemoteError("");
     if (!options?.keepUser) {
       const profile = await fetchCurrentProfile();
       setActiveUserId(profile?.id ?? null);
@@ -472,6 +514,10 @@ export default function App() {
   async function saveRemoteSnapshot(nextAppData: AppData, expectedVersion = remoteVersion, isRetry = false) {
     if (!activeUserId) {
       return;
+    }
+    if (remoteReadOnly) {
+      setRemoteError(remoteReadOnlyMessage);
+      throw new Error(remoteReadOnlyMessage);
     }
     setRemoteSaving(true);
     try {
@@ -903,6 +949,9 @@ export default function App() {
     mutator: (draft: AppData) => void | false,
     onSuccess?: (nextAppData: AppData) => void
   ) {
+    if (backendConfigured && !guardRemoteWrite()) {
+      return false;
+    }
     const nextAppData = cloneValue(appData);
     const result = mutator(nextAppData);
     if (result === false) {
@@ -968,7 +1017,7 @@ export default function App() {
   }
 
   async function syncOperationalQueue() {
-    if (!backendConfigured || !activeUserId || !online || operationalSyncInFlightRef.current) {
+    if (!backendConfigured || !activeUserId || !online || remoteReadOnly || operationalSyncInFlightRef.current) {
       return;
     }
     const syncableMutations = pendingOperationalMutationsRef.current.filter(
@@ -1094,6 +1143,9 @@ export default function App() {
     onSuccess?: (nextAppData: AppData) => void
   ) {
     if (!mutation) {
+      return false;
+    }
+    if (backendConfigured && !guardRemoteWrite()) {
       return false;
     }
     try {
@@ -1558,6 +1610,7 @@ export default function App() {
         setActiveUserId(profile.id);
         setLoginError("");
         setRemoteError("");
+        setRemoteRestoreState("ready");
         setActiveTab("dashboard");
       }).catch((error: unknown) => {
         setLoginError(error instanceof Error ? error.message : "Invalid username or password.");
@@ -1592,6 +1645,10 @@ export default function App() {
     }
     setOwnPasswordError("");
     if (backendConfigured) {
+      if (!guardRemoteWrite()) {
+        setOwnPasswordError(remoteReadOnlyMessage);
+        return;
+      }
       void runBlockingAction("Updating password...", async () => {
         await changeOwnPasswordRemote(ownPasswordDraft.password);
         setOwnPasswordDraft(null);
@@ -1615,6 +1672,8 @@ export default function App() {
       void runBlockingAction("Signing out...", async () => {
         await signOutRemote();
         setActiveUserId(null);
+        setRemoteError("");
+        setRemoteRestoreState("ready");
       });
       return;
     }
@@ -2775,6 +2834,10 @@ export default function App() {
       return;
     }
     const sessionId = checkoutState.sessionId;
+    if (backendConfigured && !guardRemoteWrite()) {
+      window.alert(remoteReadOnlyMessage);
+      return;
+    }
     if (hasPendingOperationalForSession(sessionId)) {
       window.alert("This session has pending sync changes. Please wait for sync to finish before hopping.");
       scheduleOperationalSync(0);
@@ -3136,6 +3199,10 @@ export default function App() {
 
   async function finalizeCheckout() {
     if (!activeUser || !checkoutState) {
+      return;
+    }
+    if (backendConfigured && !guardRemoteWrite()) {
+      window.alert(remoteReadOnlyMessage);
       return;
     }
     if (checkoutState.mode === "session" && hasPendingOperationalForSession(checkoutState.sessionId)) {
@@ -4068,6 +4135,10 @@ export default function App() {
       return;
     }
     if (backendConfigured) {
+      if (!guardRemoteWrite()) {
+        window.alert(remoteReadOnlyMessage);
+        return;
+      }
       void runBlockingAction("Creating user...", async () => {
         await adminCreateUserRemote({
           name: nextName,
@@ -4151,6 +4222,10 @@ export default function App() {
     const cleanedTabPermissions = editUserDraft.tabPermissions?.filter((id) => !roleDefaultIds.has(id));
     const nextTabPermissions = cleanedTabPermissions?.length ? cleanedTabPermissions : undefined;
     if (backendConfigured) {
+      if (!guardRemoteWrite()) {
+        window.alert(remoteReadOnlyMessage);
+        return;
+      }
       void runBlockingAction("Updating user...", async () => {
         await adminUpdateUserRemote({
           id: editUserDraft.id,
@@ -4218,6 +4293,10 @@ export default function App() {
       return;
     }
     if (backendConfigured) {
+      if (!guardRemoteWrite()) {
+        setPasswordError(remoteReadOnlyMessage);
+        return;
+      }
       void runBlockingAction("Updating password...", async () => {
         await adminChangePasswordRemote(passwordDraft.userId, nextPassword);
         setPasswordDraft(null);
@@ -4533,6 +4612,10 @@ export default function App() {
       return;
     }
     if (backendConfigured) {
+      if (!guardRemoteWrite()) {
+        window.alert(remoteReadOnlyMessage);
+        return;
+      }
       void runBlockingAction(targetUser.active ? "Disabling user..." : "Enabling user...", async () => {
         await adminToggleUserActiveRemote(userId);
         await refreshRemoteState({ keepUser: true });
@@ -4914,9 +4997,55 @@ export default function App() {
       : checkoutState?.mode === "customer_tab"
         ? hasPendingOperationalForCustomerTab(checkoutState.customerTabId)
         : false;
+  const showRestoreRecovery =
+    backendConfigured &&
+    !activeUser &&
+    (remoteRestoreState === "blocked" ||
+      remoteRestoreState === "stale-cache" ||
+      remoteRestoreState === "retrying");
+  const restoreRecoveryTitle =
+    remoteRestoreState === "retrying" ? "Restoring your session" : "Remote restore blocked";
+  const restoreStatusLabel =
+    remoteRestoreState === "retrying"
+      ? "Reconnecting"
+      : remoteReadOnly
+        ? "Cached read-only"
+        : remoteSaving
+          ? "Syncing"
+          : online
+            ? "Online"
+            : "Offline fallback";
 
-  if (backendConfigured && remoteLoading) {
+  if (backendConfigured && remoteLoading && remoteRestoreState === "checking") {
     return <AppLoadingScreen />;
+  }
+
+  if (showRestoreRecovery) {
+    return (
+      <>
+        <div className="login-page">
+          <div className="login-card restore-card">
+            <div className="restore-card-logo">
+              <img src={brandLogo} alt={`${appData.businessProfile.name || "BreakPerfect"} logo`} />
+            </div>
+            <div>
+              <div className="eyebrow">BreakPerfect Gaming Lounge</div>
+              <h1>{restoreRecoveryTitle}</h1>
+              <p>{getRestoreRecoveryMessage()}</p>
+            </div>
+            <div className="button-row">
+              <button className="primary-button" type="button" onClick={retryRemoteRestore} disabled={remoteLoading}>
+                {remoteLoading ? "Retrying..." : "Retry"}
+              </button>
+              <button className="secondary-button" type="button" onClick={handleLogout}>
+                Sign Out
+              </button>
+            </div>
+          </div>
+        </div>
+        {blockingActionLabel && <LoadingOverlay label={blockingActionLabel} />}
+      </>
+    );
   }
 
   if (!activeUser) {
@@ -4956,8 +5085,8 @@ export default function App() {
           ))}
         </nav>
         <div className="sidebar-footer">
-          <div className={`status-pill ${online ? "is-online" : "is-offline"}`}>
-            {remoteSaving ? "Syncing" : online ? "Online" : "Offline fallback"}
+          <div className={`status-pill ${remoteReadOnly || remoteRestoreState === "retrying" ? "is-warning" : online ? "is-online" : "is-offline"}`}>
+            {restoreStatusLabel}
           </div>
           <div className={`sync-detail-card ${conflictOperationalCount > 0 ? "has-conflict" : failedOperationalCount > 0 ? "has-error" : pendingOperationalCount > 0 ? "has-pending" : ""}`}>
             <div>
@@ -5021,6 +5150,7 @@ export default function App() {
                 <button
                   className="ghost-button sidebar-user-action"
                   type="button"
+                  disabled={remoteReadOnly}
                   onClick={() => { setOwnPasswordDraft({ password: "", confirm: "" }); setOwnPasswordError(""); }}
                 >
                   Change Password
@@ -5051,6 +5181,18 @@ export default function App() {
             <MetricCard label="Open Sessions" value={`${activeSessions.length + openCustomerTabs.length}`} />
           </div>
         </header>
+
+        {remoteReadOnly && (
+          <div className="remote-restore-banner" role="alert">
+            <div>
+              <strong>{remoteRestoreState === "retrying" ? "Reconnecting to latest data" : "Cached read-only mode"}</strong>
+              <span>{remoteError || "Latest remote data could not be loaded. Cached data is read-only until retry succeeds."}</span>
+            </div>
+            <button className="secondary-button" type="button" onClick={retryRemoteRestore} disabled={remoteLoading}>
+              {remoteLoading ? "Retrying..." : "Retry"}
+            </button>
+          </div>
+        )}
 
         {activeTab === "dashboard" && (
           <DashboardPanel
