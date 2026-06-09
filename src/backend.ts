@@ -3,6 +3,7 @@ import {
   FunctionsFetchError,
   FunctionsHttpError,
   FunctionsRelayError,
+  type RealtimePostgresChangesPayload,
   type RealtimeChannel,
   type SupabaseClient
 } from "@supabase/supabase-js";
@@ -46,6 +47,7 @@ export interface RemoteAppDataSnapshot {
 }
 
 let supabaseClient: SupabaseClient | null = null;
+let cachedProfiles: RemoteProfile[] = [];
 
 async function withRemoteTimeout<T>(request: PromiseLike<T>, action: string): Promise<T> {
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
@@ -96,6 +98,16 @@ function mapProfileToUser(profile: RemoteProfile): User {
 function sanitizeAppData(appData: AppData): Partial<AppData> {
   const { users: _users, ...rest } = appData;
   return rest;
+}
+
+function snapshotFromAppStateRow(row: RemoteAppStateRow | null): RemoteAppDataSnapshot {
+  return {
+    appData: hydrateAppData({
+      ...(row?.data ?? {}),
+      users: cachedProfiles.map(mapProfileToUser)
+    }),
+    version: row?.version ?? 0
+  };
 }
 
 export function isBackendConfigured(): boolean {
@@ -176,7 +188,8 @@ export async function fetchProfiles(): Promise<User[]> {
   if (error) {
     throw error;
   }
-  return (data as RemoteProfile[]).map(mapProfileToUser);
+  cachedProfiles = data as RemoteProfile[];
+  return cachedProfiles.map(mapProfileToUser);
 }
 
 export async function loadRemoteAppData(): Promise<AppData> {
@@ -196,13 +209,14 @@ export async function loadRemoteAppDataSnapshot(): Promise<RemoteAppDataSnapshot
     throw appStateResult.error;
   }
   const row = appStateResult.data as RemoteAppStateRow | null;
-  return {
-    appData: hydrateAppData({
-      ...(row?.data ?? {}),
-      users
-    }),
-    version: row?.version ?? 0
-  };
+  cachedProfiles = users.map((user) => ({
+    id: user.id,
+    name: user.name,
+    username: user.username,
+    role: user.role,
+    active: user.active
+  }));
+  return snapshotFromAppStateRow(row);
 }
 
 export async function saveRemoteAppData(
@@ -246,9 +260,16 @@ export function subscribeToRemoteAppData(onChange: (snapshot: RemoteAppDataSnaps
         table: "app_state",
         filter: "id=eq.primary"
       },
-      async () => {
-        const nextState = await loadRemoteAppDataSnapshot();
-        onChange(nextState);
+      async (payload: RealtimePostgresChangesPayload<RemoteAppStateRow>) => {
+        if (!("data" in payload.new)) {
+          return;
+        }
+        try {
+          await fetchProfiles();
+        } catch {
+          // Keep applying operational updates even if the small profile refresh fails.
+        }
+        onChange(snapshotFromAppStateRow(payload.new));
       }
     )
     .subscribe();
