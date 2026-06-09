@@ -3,7 +3,8 @@ import {
   fetchCurrentProfile,
   loadRemoteAppDataSnapshot,
   saveRemoteAppData,
-  subscribeToRemoteAppData
+  subscribeToRemoteAppData,
+  type RemoteAppDataSnapshot
 } from "../backend";
 import { saveAppData } from "../storage";
 import { normalizeAppDataCustomers } from "../utils";
@@ -24,6 +25,7 @@ export function useAppSync(params: {
   setRemoteError: (err: string) => void;
   setRemoteSaving: (saving: boolean) => void;
   setActiveTab: (tab: TabId) => void;
+  applyRemoteSnapshot?: (snapshot: RemoteAppDataSnapshot) => void;
 }): void {
   const {
     backendConfigured,
@@ -39,7 +41,8 @@ export function useAppSync(params: {
     setRemoteLoading,
     setRemoteError,
     setRemoteSaving,
-    setActiveTab
+    setActiveTab,
+    applyRemoteSnapshot
   } = params;
 
   // Restore session on mount and load initial app data
@@ -55,9 +58,13 @@ export function useAppSync(params: {
           return;
         }
         return loadRemoteAppDataSnapshot().then((snapshot) => {
-          skipRemotePersistRef.current = true;
-          setAppData(normalizeAppDataCustomers(snapshot.appData));
-          setRemoteVersion(snapshot.version);
+          if (applyRemoteSnapshot) {
+            applyRemoteSnapshot(snapshot);
+          } else {
+            skipRemotePersistRef.current = true;
+            setAppData(normalizeAppDataCustomers(snapshot.appData));
+            setRemoteVersion(snapshot.version);
+          }
           setActiveUserId(profile.id);
           setActiveTab("dashboard");
         });
@@ -72,9 +79,13 @@ export function useAppSync(params: {
       return;
     }
     return subscribeToRemoteAppData((snapshot) => {
-      skipRemotePersistRef.current = true;
-      setAppData(normalizeAppDataCustomers(snapshot.appData));
-      setRemoteVersion(snapshot.version);
+      if (applyRemoteSnapshot) {
+        applyRemoteSnapshot(snapshot);
+      } else {
+        skipRemotePersistRef.current = true;
+        setAppData(normalizeAppDataCustomers(snapshot.appData));
+        setRemoteVersion(snapshot.version);
+      }
       setRemoteError("");
     });
   }, [activeUserId, backendConfigured]); // eslint-disable-line react-hooks/exhaustive-deps

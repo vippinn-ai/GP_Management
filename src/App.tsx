@@ -24,7 +24,7 @@ import {
   type ReportRow
 } from "./exporters";
 import { calculateSessionCharge } from "./pricing";
-import { loadAppData } from "./storage";
+import { loadAppData, saveAppData } from "./storage";
 import {
   adminChangePasswordRemote,
   changeOwnPasswordRemote,
@@ -150,6 +150,17 @@ import {
   getSettlementAmount,
   validateCheckoutPayment
 } from "./billing";
+import {
+  applyOperationalMutation,
+  getOperationalConflictMessages,
+  hasPendingOperationalMutationForEntity,
+  loadPendingOperationalMutations,
+  rebasePendingMutations,
+  savePendingOperationalMutations,
+  type OperationalMutation,
+  type OperationalMutationKind,
+  type OperationalMutationPayload
+} from "./operationalSync";
 
 type PostHopContinuationMode = "gaming" | "consumables";
 type SessionItemFormState = Record<string, { sellableOptionId: string; quantity: number; sellAsPackOf?: number }>;
@@ -214,6 +225,10 @@ export default function App() {
   const [remoteVersion, setRemoteVersion] = useState(0);
   const [remoteSaving, setRemoteSaving] = useState(false);
   const [blockingActionLabel, setBlockingActionLabel] = useState<string | null>(null);
+  const [pendingOperationalMutations, setPendingOperationalMutations] = useState<OperationalMutation[]>(() =>
+    loadPendingOperationalMutations()
+  );
+  const [lastOperationalSyncAt, setLastOperationalSyncAt] = useState<string | null>(null);
   const [startSessionDraft, setStartSessionDraft] = useState<StartSessionDraft>({
     stationId: "",
     customerName: "",
@@ -259,6 +274,11 @@ export default function App() {
   const [, setReceiptPreviewBlockHeight] = useState<number | null>(null);
   const skipRemotePersistRef = useRef(false);
   const remoteSaveTimerRef = useRef<number | null>(null);
+  const appDataRef = useRef(appData);
+  const remoteVersionRef = useRef(remoteVersion);
+  const pendingOperationalMutationsRef = useRef(pendingOperationalMutations);
+  const operationalSyncTimerRef = useRef<number | null>(null);
+  const operationalSyncInFlightRef = useRef(false);
   const todayDateKey = toLocalDateKey(new Date());
   const [reportFilter, setReportFilter] = useState<ReportFilterState>({
     preset: "today",
@@ -364,6 +384,56 @@ export default function App() {
     `${item.name} ${item.category}`.toLowerCase().includes(inventoryItemSearch.trim().toLowerCase())
   );
 
+  function updatePendingOperationalMutations(
+    nextValue:
+      | OperationalMutation[]
+      | ((previous: OperationalMutation[]) => OperationalMutation[])
+  ) {
+    const nextMutations =
+      typeof nextValue === "function"
+        ? (nextValue as (previous: OperationalMutation[]) => OperationalMutation[])(pendingOperationalMutationsRef.current)
+        : nextValue;
+    pendingOperationalMutationsRef.current = nextMutations;
+    setPendingOperationalMutations(nextMutations);
+    savePendingOperationalMutations(nextMutations);
+  }
+
+  const applyRemoteSnapshotWithPending = useCallback((snapshot: { appData: AppData; version: number }) => {
+    const activePending = pendingOperationalMutationsRef.current.filter((mutation) => mutation.status !== "conflict");
+    const normalizedRemoteData = normalizeAppDataCustomers(snapshot.appData);
+    const rebased = rebasePendingMutations(normalizedRemoteData, activePending);
+    const nextMutations = [
+      ...rebased.pendingMutations,
+      ...rebased.conflicts,
+      ...pendingOperationalMutationsRef.current.filter((mutation) => mutation.status === "conflict")
+    ];
+    pendingOperationalMutationsRef.current = nextMutations;
+    setPendingOperationalMutations(nextMutations);
+    savePendingOperationalMutations(nextMutations);
+    skipRemotePersistRef.current = true;
+    appDataRef.current = rebased.appData;
+    setAppData(rebased.appData);
+    saveAppData(rebased.appData);
+    remoteVersionRef.current = snapshot.version;
+    setRemoteVersion(snapshot.version);
+    if (rebased.conflicts.length > 0) {
+      setRemoteError(getOperationalConflictMessages(rebased.conflicts).join(" "));
+    }
+  }, []);
+
+  useEffect(() => {
+    appDataRef.current = appData;
+  }, [appData]);
+
+  useEffect(() => {
+    remoteVersionRef.current = remoteVersion;
+  }, [remoteVersion]);
+
+  useEffect(() => {
+    pendingOperationalMutationsRef.current = pendingOperationalMutations;
+    savePendingOperationalMutations(pendingOperationalMutations);
+  }, [pendingOperationalMutations]);
+
   useAppSync({
     backendConfigured,
     activeUserId,
@@ -378,8 +448,15 @@ export default function App() {
     setRemoteLoading,
     setRemoteError,
     setRemoteSaving,
-    setActiveTab
+    setActiveTab,
+    applyRemoteSnapshot: applyRemoteSnapshotWithPending
   });
+
+  useEffect(() => {
+    if (online && activeUserId && backendConfigured) {
+      scheduleOperationalSync(0);
+    }
+  }, [activeUserId, backendConfigured, online]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function refreshRemoteState(options?: { keepUser?: boolean }) {
     const snapshot = await loadRemoteAppDataSnapshot();
@@ -847,6 +924,210 @@ export default function App() {
       }
       return false;
     }
+  }
+
+  function hasPendingOperationalForSession(sessionId?: string) {
+    return hasPendingOperationalMutationForEntity(pendingOperationalMutations, "session", sessionId);
+  }
+
+  function hasPendingOperationalForCustomerTab(customerTabId?: string) {
+    return hasPendingOperationalMutationForEntity(pendingOperationalMutations, "customer_tab", customerTabId);
+  }
+
+  function createOperationalMutation(
+    kind: OperationalMutationKind,
+    label: string,
+    entityType: OperationalMutation["entityType"],
+    entityId: string,
+    payload: OperationalMutationPayload
+  ): OperationalMutation | null {
+    if (!activeUser) {
+      return null;
+    }
+    return {
+      id: createId("op"),
+      kind,
+      label,
+      userId: activeUser.id,
+      createdAt: new Date().toISOString(),
+      baseVersion: remoteVersionRef.current,
+      status: "pending",
+      entityType,
+      entityId,
+      payload
+    };
+  }
+
+  function scheduleOperationalSync(delayMs = 400) {
+    if (operationalSyncTimerRef.current) {
+      window.clearTimeout(operationalSyncTimerRef.current);
+    }
+    operationalSyncTimerRef.current = window.setTimeout(() => {
+      void syncOperationalQueue();
+    }, delayMs);
+  }
+
+  async function syncOperationalQueue() {
+    if (!backendConfigured || !activeUserId || !online || operationalSyncInFlightRef.current) {
+      return;
+    }
+    const syncableMutations = pendingOperationalMutationsRef.current.filter(
+      (mutation) => mutation.status === "pending" || mutation.status === "failed"
+    );
+    if (syncableMutations.length === 0) {
+      return;
+    }
+    const syncIds = new Set(syncableMutations.map((mutation) => mutation.id));
+    operationalSyncInFlightRef.current = true;
+    updatePendingOperationalMutations((previous) =>
+      previous.map((mutation) =>
+        syncIds.has(mutation.id)
+          ? { ...mutation, status: "syncing", failureReason: undefined }
+          : mutation
+      )
+    );
+    setRemoteSaving(true);
+    try {
+      const nextVersion = await saveRemoteAppData(appDataRef.current, activeUserId, remoteVersionRef.current);
+      remoteVersionRef.current = nextVersion;
+      setRemoteVersion(nextVersion);
+      updatePendingOperationalMutations((previous) => previous.filter((mutation) => !syncIds.has(mutation.id)));
+      setLastOperationalSyncAt(new Date().toISOString());
+      const remainingConflicts = getOperationalConflictMessages(pendingOperationalMutationsRef.current);
+      setRemoteError(remainingConflicts.length > 0 ? remainingConflicts.join(" ") : "");
+    } catch (error) {
+      const isVersionConflict =
+        error instanceof Error && error.message.toLowerCase().includes("remote data changed");
+      if (isVersionConflict) {
+        try {
+          const snapshot = await loadRemoteAppDataSnapshot();
+          const currentQueue = pendingOperationalMutationsRef.current.filter(
+            (mutation) => mutation.status === "syncing" || mutation.status === "pending" || mutation.status === "failed"
+          );
+          const rebased = rebasePendingMutations(normalizeAppDataCustomers(snapshot.appData), currentQueue);
+          skipRemotePersistRef.current = true;
+          appDataRef.current = rebased.appData;
+          setAppData(rebased.appData);
+          saveAppData(rebased.appData);
+          remoteVersionRef.current = snapshot.version;
+          setRemoteVersion(snapshot.version);
+          if (rebased.pendingMutations.length > 0) {
+            const savedVersion = await saveRemoteAppData(rebased.appData, activeUserId, snapshot.version);
+            remoteVersionRef.current = savedVersion;
+            setRemoteVersion(savedVersion);
+            const savedIds = new Set(rebased.pendingMutations.map((mutation) => mutation.id));
+            const conflictIds = new Set(rebased.conflicts.map((mutation) => mutation.id));
+            updatePendingOperationalMutations((previous) => [
+              ...previous.filter((mutation) => !savedIds.has(mutation.id) && !conflictIds.has(mutation.id)),
+              ...rebased.conflicts
+            ]);
+            setLastOperationalSyncAt(new Date().toISOString());
+          } else {
+            const conflictIds = new Set(rebased.conflicts.map((mutation) => mutation.id));
+            updatePendingOperationalMutations((previous) => [
+              ...previous.filter((mutation) => !conflictIds.has(mutation.id) && mutation.status === "conflict"),
+              ...rebased.conflicts
+            ]);
+          }
+          setRemoteError(
+            rebased.conflicts.length > 0
+              ? getOperationalConflictMessages(rebased.conflicts).join(" ")
+              : ""
+          );
+        } catch (rebaseError) {
+          updatePendingOperationalMutations((previous) =>
+            previous.map((mutation) =>
+              syncIds.has(mutation.id)
+                ? {
+                    ...mutation,
+                    status: "failed",
+                    failureReason:
+                      rebaseError instanceof Error
+                        ? rebaseError.message
+                        : "Unable to sync this pending operation."
+                  }
+                : mutation
+            )
+          );
+          setRemoteError(
+            rebaseError instanceof Error
+              ? rebaseError.message
+              : "Unable to sync pending operational changes."
+          );
+        }
+      } else {
+        updatePendingOperationalMutations((previous) =>
+          previous.map((mutation) =>
+            syncIds.has(mutation.id)
+              ? {
+                  ...mutation,
+                  status: "failed",
+                  failureReason:
+                    error instanceof Error
+                      ? error.message
+                      : "Unable to sync this pending operation."
+                }
+              : mutation
+          )
+        );
+        setRemoteError(
+          error instanceof Error
+            ? error.message
+            : "Unable to sync pending operational changes."
+        );
+      }
+    } finally {
+      setRemoteSaving(false);
+      operationalSyncInFlightRef.current = false;
+      if (
+        pendingOperationalMutationsRef.current.some(
+          (mutation) => mutation.status === "pending" || mutation.status === "failed"
+        )
+      ) {
+        scheduleOperationalSync(1200);
+      }
+    }
+  }
+
+  function commitOperationalChange(
+    mutation: OperationalMutation | null,
+    onSuccess?: (nextAppData: AppData) => void
+  ) {
+    if (!mutation) {
+      return false;
+    }
+    try {
+      const nextAppData = applyOperationalMutation(appDataRef.current, mutation);
+      skipRemotePersistRef.current = true;
+      appDataRef.current = nextAppData;
+      setAppData(nextAppData);
+      saveAppData(nextAppData);
+      if (backendConfigured) {
+        updatePendingOperationalMutations((previous) => [...previous, mutation]);
+        scheduleOperationalSync();
+      }
+      onSuccess?.(nextAppData);
+      return true;
+    } catch (error) {
+      setRemoteError(error instanceof Error ? error.message : "Unable to apply this action.");
+      return false;
+    }
+  }
+
+  function retryOperationalSyncNow() {
+    updatePendingOperationalMutations((previous) =>
+      previous.map((mutation) =>
+        mutation.status === "failed"
+          ? { ...mutation, status: "pending", failureReason: undefined }
+          : mutation
+      )
+    );
+    scheduleOperationalSync(0);
+  }
+
+  function clearOperationalConflicts() {
+    updatePendingOperationalMutations((previous) => previous.filter((mutation) => mutation.status !== "conflict"));
+    setRemoteError("");
   }
 
   function getSessionById(sessionId: string) {
@@ -1450,56 +1731,71 @@ export default function App() {
       ? getContinuationSessionIds(continuedFromSession)
       : undefined;
     const sessionId = createId("session");
-    void commitAppDataChange("Starting session...", (draft) => {
-      const customerId = resolveCustomerProfile(draft, customerName, customerPhone);
-      draft.sessions.unshift({
-        id: sessionId,
-        stationId: station.id,
-        stationNameSnapshot: station.name,
-        mode: station.mode,
-        startedAt: new Date().toISOString(),
-        status: "active",
-        customerId,
-        customerName: customerName.trim() || undefined,
-        customerPhone: customerPhone.trim() || undefined,
-        playMode: sessionPlayMode,
-        ltpEligible: station.ltpEnabled,
-        pricingSnapshot,
-        items: initialItems,
-        comboApplications: comboApplication ? [comboApplication] : [],
-        pauseLogIds: [],
-        continuedFromSessionIds
-      });
-      if (comboApplication) {
-        for (const sessionItem of initialItems.filter((item) => item.comboApplicationId === comboApplication.id)) {
-          const inventoryEntry = draft.inventoryItems.find((entry) => entry.id === sessionItem.inventoryItemId);
-          if (inventoryEntry && !inventoryEntry.isReusable) {
+    const startedAt = new Date().toISOString();
+    const session: Session = {
+      id: sessionId,
+      stationId: station.id,
+      stationNameSnapshot: station.name,
+      mode: station.mode,
+      startedAt,
+      status: "active",
+      customerName: customerName.trim() || undefined,
+      customerPhone: customerPhone.trim() || undefined,
+      playMode: sessionPlayMode,
+      ltpEligible: station.ltpEnabled,
+      pricingSnapshot,
+      items: initialItems,
+      comboApplications: comboApplication ? [comboApplication] : [],
+      pauseLogIds: [],
+      continuedFromSessionIds
+    };
+    const comboReservationMovements = comboApplication
+      ? initialItems
+          .filter((item) => item.comboApplicationId === comboApplication.id)
+          .flatMap((sessionItem) => {
+            const inventoryEntry = appData.inventoryItems.find((entry) => entry.id === sessionItem.inventoryItemId);
+            if (!inventoryEntry || inventoryEntry.isReusable) {
+              return [];
+            }
             const stockNeeded = getLineStockQuantity(sessionItem);
-            draft.stockMovements.unshift({
+            return [{
               id: createId("stock"),
               itemId: sessionItem.inventoryItemId,
-              type: "session_reservation",
+              type: "session_reservation" as StockMovementType,
               quantity: -stockNeeded,
               reason: `Reserved ${sessionItem.name} for combo ${comboApplication.comboName} on ${station.name}`,
-              createdAt: new Date().toISOString(),
+              createdAt: startedAt,
               userId: activeUser.id
-            });
-          }
-        }
+            }];
+          })
+      : [];
+    const auditMessage = continuedFromSession
+      ? `Started ${sessionPlayMode} session on ${station.name}, continuing hopped session from ${continuedFromSession.stationNameSnapshot}.`
+      : comboApplication
+        ? `Started ${sessionPlayMode} session on ${station.name} with combo ${comboApplication.comboName}.`
+        : `Started ${sessionPlayMode} session on ${station.name}${station.mode === "unit_sale" ? ` with ${initialItems[0]?.quantity ?? 0} ${initialItems[0]?.name ?? "coin pack(s)"}.` : station.ltpEnabled ? " with LTP enabled." : "."}`;
+    commitOperationalChange(createOperationalMutation(
+      "startSession",
+      "Starting session",
+      "session",
+      sessionId,
+      {
+        session,
+        customer: customerName.trim() || customerPhone.trim()
+          ? { id: createId("customer"), name: customerName, phone: customerPhone, visitAt: startedAt }
+          : undefined,
+        stockMovements: comboReservationMovements,
+        auditLogs: [{
+          id: createId("audit"),
+          action: "session_started",
+          entityType: "session",
+          entityId: sessionId,
+          message: auditMessage,
+          createdAt: startedAt,
+          userId: activeUser.id
+        }]
       }
-      addAuditLog(
-        draft,
-        activeUser.id,
-        "session_started",
-        "session",
-        sessionId,
-        continuedFromSession
-          ? `Started ${sessionPlayMode} session on ${station.name}, continuing hopped session from ${continuedFromSession.stationNameSnapshot}.`
-          : comboApplication
-            ? `Started ${sessionPlayMode} session on ${station.name} with combo ${comboApplication.comboName}.`
-            : `Started ${sessionPlayMode} session on ${station.name}${station.mode === "unit_sale" ? ` with ${initialItems[0]?.quantity ?? 0} ${initialItems[0]?.name ?? "coin pack(s)"}.` : station.ltpEnabled ? " with LTP enabled." : "."}`
-      );
-    }, () => {
+    ), () => {
       setStartSessionDraft(createStartSessionDraft());
       setLastHoppedSessionId(null);
       setPostHopContinuationMode("gaming");
@@ -1532,37 +1828,43 @@ export default function App() {
     if (!activeUser) {
       return;
     }
-    void commitAppDataChange(shouldPause ? "Pausing session..." : "Resuming session...", (draft) => {
-      const session = draft.sessions.find((entry) => entry.id === sessionId);
-      if (!session) {
-        return false;
-      }
-      if (shouldPause && session.status === "active") {
-        const pauseLogId = createId("pause");
-        draft.sessionPauseLogs.push({
-          id: pauseLogId,
-          sessionId,
-          pausedAt: new Date().toISOString()
-        });
-        session.pauseLogIds.push(pauseLogId);
-        session.status = "paused";
-      }
-      if (!shouldPause && session.status === "paused") {
-        const openPause = draft.sessionPauseLogs.find((entry) => entry.sessionId === sessionId && !entry.resumedAt);
-        if (openPause) {
-          openPause.resumedAt = new Date().toISOString();
-        }
-        session.status = "active";
-      }
-      addAuditLog(
-        draft,
-        activeUser.id,
-        shouldPause ? "session_paused" : "session_resumed",
+    const session = appData.sessions.find((entry) => entry.id === sessionId);
+    if (!session) {
+      return;
+    }
+    const changedAt = new Date().toISOString();
+    const auditLog = {
+      id: createId("audit"),
+      action: shouldPause ? "session_paused" : "session_resumed",
+      entityType: "session",
+      entityId: sessionId,
+      message: `${shouldPause ? "Paused" : "Resumed"} ${session.stationNameSnapshot}.`,
+      createdAt: changedAt,
+      userId: activeUser.id
+    };
+    if (shouldPause) {
+      const pauseLog = {
+        id: createId("pause"),
+        sessionId,
+        pausedAt: changedAt
+      };
+      commitOperationalChange(createOperationalMutation(
+        "pauseSession",
+        "Pausing session",
         "session",
         sessionId,
-        `${shouldPause ? "Paused" : "Resumed"} ${session.stationNameSnapshot}.`
-      );
-    });
+        { sessionId, pauseLog, auditLog }
+      ));
+      return;
+    }
+    const openPause = appData.sessionPauseLogs.find((entry) => entry.sessionId === sessionId && !entry.resumedAt);
+    commitOperationalChange(createOperationalMutation(
+      "resumeSession",
+      "Resuming session",
+      "session",
+      sessionId,
+      { sessionId, pauseLogId: openPause?.id, resumedAt: changedAt, auditLog }
+    ));
   }
 
   function editPauseLogEntry(logId: string, patch: Partial<Pick<SessionPauseLog, "pausedAt" | "resumedAt">>) {
@@ -1638,34 +1940,53 @@ export default function App() {
       }
       return;
     }
-    void commitAppDataChange("Adding item...", (draft) => {
-      const session = draft.sessions.find((entry) => entry.id === sessionId);
-      if (!session) return false;
-      session.items.push({
-        id: createId("session-item"),
-        inventoryItemId: item.id,
-        name: option.name,
-        quantity: clampNumber(form.quantity, 1),
-        unitPrice: packOf ? item.cigarettePack!.packPrice : option.price,
-        soldAsPackOf: packOf,
-        saleVariantId: option.saleVariantId,
-        stockUnitsPerSale: option.saleVariantId ? option.stockUnitsPerSale : undefined,
-        addedAt: new Date().toISOString()
-      });
-      const inventoryEntry = draft.inventoryItems.find((entry) => entry.id === item.id);
-      if (inventoryEntry && !inventoryEntry.isReusable) {
-        draft.stockMovements.unshift({
+    const session = appData.sessions.find((entry) => entry.id === sessionId);
+    if (!session) {
+      return;
+    }
+    const addedAt = new Date().toISOString();
+    const sessionItem: SessionItem = {
+      id: createId("session-item"),
+      inventoryItemId: item.id,
+      name: option.name,
+      quantity: clampNumber(form.quantity, 1),
+      unitPrice: packOf ? item.cigarettePack!.packPrice : option.price,
+      soldAsPackOf: packOf,
+      saleVariantId: option.saleVariantId,
+      stockUnitsPerSale: option.saleVariantId ? option.stockUnitsPerSale : undefined,
+      addedAt
+    };
+    const stockMovement = !item.isReusable
+      ? {
           id: createId("stock"),
           itemId: item.id,
-          type: "session_reservation",
+          type: "session_reservation" as StockMovementType,
           quantity: -stockNeeded,
           reason: `Reserved ${option.name} for ${session.stationNameSnapshot}${option.saleVariantId ? ` (${stockNeeded} ${item.name} unit${stockNeeded !== 1 ? "s" : ""})` : ""}`,
-          createdAt: new Date().toISOString(),
+          createdAt: addedAt,
           userId: activeUser.id
-        });
+        }
+      : undefined;
+    commitOperationalChange(createOperationalMutation(
+      "addSessionItem",
+      "Adding session item",
+      "session",
+      sessionId,
+      {
+        sessionId,
+        item: sessionItem,
+        stockMovement,
+        auditLog: {
+          id: createId("audit"),
+          action: "session_item_added",
+          entityType: "session",
+          entityId: sessionId,
+          message: `Added ${option.name}${packOf ? " (pack)" : ""} to ${session.stationNameSnapshot}.`,
+          createdAt: addedAt,
+          userId: activeUser.id
+        }
       }
-      addAuditLog(draft, activeUser.id, "session_item_added", "session", sessionId, `Added ${option.name}${packOf ? " (pack)" : ""} to ${session.stationNameSnapshot}.`);
-    }, () => {
+    ), () => {
       setSessionItemForm((previous) => ({
         ...previous,
         [sessionId]: { sellableOptionId: form.sellableOptionId, quantity: 1, sellAsPackOf: packOf }
@@ -1701,65 +2022,87 @@ export default function App() {
       return;
     }
     const repeatedItems = getComboSessionItems(repeatedApplication);
-    void commitAppDataChange("Repeating combo...", (draft) => {
-      const draftSession = draft.sessions.find((entry) => entry.id === sessionId && entry.status !== "closed");
-      if (!draftSession) return false;
-      draftSession.comboApplications = [...(draftSession.comboApplications ?? []), repeatedApplication];
-      draftSession.items.push(...repeatedItems);
-      for (const sessionItem of repeatedItems) {
-        const inventoryEntry = draft.inventoryItems.find((entry) => entry.id === sessionItem.inventoryItemId);
-        if (inventoryEntry && !inventoryEntry.isReusable) {
-          const stockNeeded = getLineStockQuantity(sessionItem);
-          draft.stockMovements.unshift({
-            id: createId("stock"),
-            itemId: sessionItem.inventoryItemId,
-            type: "session_reservation",
-            quantity: -stockNeeded,
-            reason: `Reserved ${sessionItem.name} for repeated combo ${repeatedApplication.comboName} on ${draftSession.stationNameSnapshot}`,
-            createdAt: repeatedApplication.appliedAt,
-            userId: activeUser.id
-          });
+    const stockMovements = repeatedItems.flatMap((sessionItem) => {
+      const inventoryEntry = appData.inventoryItems.find((entry) => entry.id === sessionItem.inventoryItemId);
+      if (!inventoryEntry || inventoryEntry.isReusable) {
+        return [];
+      }
+      const stockNeeded = getLineStockQuantity(sessionItem);
+      return [{
+        id: createId("stock"),
+        itemId: sessionItem.inventoryItemId,
+        type: "session_reservation" as StockMovementType,
+        quantity: -stockNeeded,
+        reason: `Reserved ${sessionItem.name} for repeated combo ${repeatedApplication.comboName} on ${session.stationNameSnapshot}`,
+        createdAt: repeatedApplication.appliedAt,
+        userId: activeUser.id
+      }];
+    });
+    commitOperationalChange(createOperationalMutation(
+      "repeatSessionCombo",
+      "Repeating combo",
+      "session",
+      sessionId,
+      {
+        sessionId,
+        comboApplication: repeatedApplication,
+        items: repeatedItems,
+        stockMovements,
+        auditLog: {
+          id: createId("audit"),
+          action: "combo_repeated",
+          entityType: "session",
+          entityId: sessionId,
+          message: `Repeated combo ${repeatedApplication.comboName} on ${session.stationNameSnapshot}.`,
+          createdAt: repeatedApplication.appliedAt,
+          userId: activeUser.id
         }
       }
-      addAuditLog(draft, activeUser.id, "combo_repeated", "session", sessionId, `Repeated combo ${repeatedApplication.comboName} on ${draftSession.stationNameSnapshot}.`);
-    });
+    ));
   }
 
   function removeItemFromSession(sessionId: string, sessionItemId: string) {
     if (!activeUser) {
       return;
     }
-    void commitAppDataChange("Removing item...", (draft) => {
-      const session = draft.sessions.find((entry) => entry.id === sessionId);
-      if (!session) {
-        return false;
-      }
-      const item = session.items.find((entry) => entry.id === sessionItemId);
-      session.items = session.items.filter((entry) => entry.id !== sessionItemId);
-      if (item) {
-        const inventoryEntry = draft.inventoryItems.find((entry) => entry.id === item.inventoryItemId);
-        if (inventoryEntry && !inventoryEntry.isReusable) {
-          const stockReleased = getLineStockQuantity(item);
-          draft.stockMovements.unshift({
-            id: createId("stock"),
-            itemId: item.inventoryItemId,
-            type: "session_reservation_void",
-            quantity: stockReleased,
-            reason: `Released from ${session.stationNameSnapshot}`,
-            createdAt: new Date().toISOString(),
-            userId: activeUser.id
-          });
+    const session = appData.sessions.find((entry) => entry.id === sessionId);
+    const item = session?.items.find((entry) => entry.id === sessionItemId);
+    if (!session || !item) {
+      return;
+    }
+    const removedAt = new Date().toISOString();
+    const inventoryEntry = appData.inventoryItems.find((entry) => entry.id === item.inventoryItemId);
+    const stockMovement = inventoryEntry && !inventoryEntry.isReusable
+      ? {
+          id: createId("stock"),
+          itemId: item.inventoryItemId,
+          type: "session_reservation_void" as StockMovementType,
+          quantity: getLineStockQuantity(item),
+          reason: `Released from ${session.stationNameSnapshot}`,
+          createdAt: removedAt,
+          userId: activeUser.id
         }
-        addAuditLog(
-          draft,
-          activeUser.id,
-          "session_item_removed",
-          "session",
-          sessionId,
-          `Removed ${item.name} from ${session.stationNameSnapshot}.`
-        );
+      : undefined;
+    commitOperationalChange(createOperationalMutation(
+      "removeSessionItem",
+      "Removing session item",
+      "session",
+      sessionId,
+      {
+        sessionId,
+        sessionItemId,
+        stockMovement,
+        auditLog: {
+          id: createId("audit"),
+          action: "session_item_removed",
+          entityType: "session",
+          entityId: sessionId,
+          message: `Removed ${item.name} from ${session.stationNameSnapshot}.`,
+          createdAt: removedAt,
+          userId: activeUser.id
+        }
       }
-    });
+    ));
   }
 
   function beginEditSessionDetails(session: Session) {
@@ -1795,42 +2138,62 @@ export default function App() {
         return;
       }
     }
-    void commitAppDataChange("Saving session details...", (draft) => {
-      const session = draft.sessions.find((entry) => entry.id === editSessionDraft.sessionId && entry.status !== "closed");
-      if (!session) {
-        return false;
+    const nextCustomerName = editSessionDraft.customerName.trim() || undefined;
+    const nextCustomerPhone = editSessionDraft.customerPhone.trim() || undefined;
+    const changes: string[] = [];
+    if ((sourceSession.customerName ?? "") !== (nextCustomerName ?? "")) {
+      changes.push(`customer name: ${formatAuditValue(sourceSession.customerName)} -> ${formatAuditValue(nextCustomerName)}`);
+    }
+    if ((sourceSession.customerPhone ?? "") !== (nextCustomerPhone ?? "")) {
+      changes.push(`customer phone: ${formatAuditValue(sourceSession.customerPhone)} -> ${formatAuditValue(nextCustomerPhone)}`);
+    }
+    let nextStartedAt: string | undefined;
+    if (canEditSessionTiming) {
+      const parsedStartedAt = parseDateTimeInputValue(editSessionDraft.startedAt);
+      const nextStartedAtNorm = new Date(parsedStartedAt).toISOString().substring(0, 19);
+      const sessionStartNorm = new Date(sourceSession.startedAt).toISOString().substring(0, 19);
+      if (sourceSession.mode === "timed" && parsedStartedAt && nextStartedAtNorm !== sessionStartNorm) {
+        changes.push(`start time: ${formatDateTime(sourceSession.startedAt)} -> ${formatDateTime(parsedStartedAt)}`);
+        nextStartedAt = parsedStartedAt;
       }
-      const nextCustomerName = editSessionDraft.customerName.trim() || undefined;
-      const nextCustomerPhone = editSessionDraft.customerPhone.trim() || undefined;
-      const customerId = resolveCustomerProfile(draft, nextCustomerName, nextCustomerPhone, session.startedAt);
-      const changes: string[] = [];
-      if ((session.customerName ?? "") !== (nextCustomerName ?? "")) {
-        changes.push(`customer name: ${formatAuditValue(session.customerName)} -> ${formatAuditValue(nextCustomerName)}`);
+    }
+    const changedAt = new Date().toISOString();
+    commitOperationalChange(createOperationalMutation(
+      "saveLiveSessionDetails",
+      "Saving session details",
+      "session",
+      editSessionDraft.sessionId,
+      {
+        sessionId: editSessionDraft.sessionId,
+        customer: nextCustomerName || nextCustomerPhone
+          ? { id: createId("customer"), name: nextCustomerName, phone: nextCustomerPhone, visitAt: sourceSession.startedAt }
+          : undefined,
+        customerName: nextCustomerName,
+        customerPhone: nextCustomerPhone,
+        startedAt: nextStartedAt,
+        auditLog: changes.length > 0
+          ? {
+              id: createId("audit"),
+              action: "session_details_updated",
+              entityType: "session",
+              entityId: sourceSession.id,
+              message: `Updated ${sourceSession.stationNameSnapshot}: ${changes.join("; ")}`,
+              createdAt: changedAt,
+              userId: activeUser.id
+            }
+          : undefined
       }
-      if ((session.customerPhone ?? "") !== (nextCustomerPhone ?? "")) {
-        changes.push(`customer phone: ${formatAuditValue(session.customerPhone)} -> ${formatAuditValue(nextCustomerPhone)}`);
-      }
-      session.customerId = customerId;
-      session.customerName = nextCustomerName;
-      session.customerPhone = nextCustomerPhone;
-      if (canEditSessionTiming) {
-        const nextStartedAt = parseDateTimeInputValue(editSessionDraft.startedAt);
-        const nextStartedAtNorm = new Date(nextStartedAt).toISOString().substring(0, 19);
-        const sessionStartNorm = new Date(session.startedAt).toISOString().substring(0, 19);
-        if (session.mode === "timed" && nextStartedAt && nextStartedAtNorm !== sessionStartNorm) {
-          changes.push(`start time: ${formatDateTime(session.startedAt)} -> ${formatDateTime(nextStartedAt)}`);
-          session.startedAt = nextStartedAt;
-        }
-      }
-      if (changes.length > 0) {
-        addAuditLog(draft, activeUser.id, "session_details_updated", "session", session.id, `Updated ${session.stationNameSnapshot}: ${changes.join("; ")}`);
-      }
-    }, () => setEditSessionDraft(null));
+    ), () => setEditSessionDraft(null));
   }
 
   function openSessionCheckout(sessionId: string) {
     const session = getSessionById(sessionId);
     if (!session) {
+      return;
+    }
+    if (hasPendingOperationalForSession(sessionId)) {
+      window.alert("This session has pending sync changes. Please wait for sync to finish before checkout.");
+      scheduleOperationalSync(0);
       return;
     }
     const closedAt = new Date().toISOString();
@@ -1970,35 +2333,44 @@ export default function App() {
     const customerPhone = draftValue.customerPhone.trim();
     const tabId = createId("customer-tab");
     let resolvedCustomerId = draftValue.customerId;
-    void commitAppDataChange("Opening customer tab...", (draft) => {
-      const customerId = resolveCustomerProfile(draft, customerName, customerPhone);
-      resolvedCustomerId = customerId;
-      draft.customerTabs.unshift({
-        id: tabId,
-        customerId,
-        customerName,
-        customerPhone: customerPhone || undefined,
-        status: "open",
-        createdAt: new Date().toISOString(),
-        items: [],
-        continuedFromSessionIds: options?.continuedFromSessionIds?.length
-          ? Array.from(new Set(options.continuedFromSessionIds))
-          : undefined
-      });
-      const continuedFromSession = options?.continuedFromSessionIds?.[0]
-        ? draft.sessions.find((session) => session.id === options.continuedFromSessionIds![0])
-        : undefined;
-      addAuditLog(
-        draft,
-        activeUser.id,
-        "customer_tab_opened",
-        "customer_tab",
-        tabId,
-        continuedFromSession
-          ? `Opened customer tab for ${customerName}, continuing hopped session from ${continuedFromSession.stationNameSnapshot}.`
-          : `Opened customer tab for ${customerName}.`
-      );
-    }, () => {
+    const createdAt = new Date().toISOString();
+    const continuedFromSession = options?.continuedFromSessionIds?.[0]
+      ? appData.sessions.find((session) => session.id === options.continuedFromSessionIds![0])
+      : undefined;
+    commitOperationalChange(createOperationalMutation(
+      "openCustomerTab",
+      "Opening customer tab",
+      "customer_tab",
+      tabId,
+      {
+        tab: {
+          id: tabId,
+          customerName,
+          customerPhone: customerPhone || undefined,
+          status: "open",
+          createdAt,
+          items: [],
+          continuedFromSessionIds: options?.continuedFromSessionIds?.length
+            ? Array.from(new Set(options.continuedFromSessionIds))
+            : undefined
+        },
+        customer: customerName || customerPhone
+          ? { id: resolvedCustomerId ?? createId("customer"), name: customerName, phone: customerPhone, visitAt: createdAt }
+          : undefined,
+        auditLog: {
+          id: createId("audit"),
+          action: "customer_tab_opened",
+          entityType: "customer_tab",
+          entityId: tabId,
+          message: continuedFromSession
+            ? `Opened customer tab for ${customerName}, continuing hopped session from ${continuedFromSession.stationNameSnapshot}.`
+            : `Opened customer tab for ${customerName}.`,
+          createdAt,
+          userId: activeUser.id
+        }
+      }
+    ), (nextAppData) => {
+      resolvedCustomerId = nextAppData.customerTabs.find((tab) => tab.id === tabId)?.customerId;
       setSelectedCustomerTabId(tabId);
       if (options?.updateSaleDraft) {
         setCustomerTabDraft({ customerId: resolvedCustomerId, customerName, customerPhone });
@@ -2046,27 +2418,42 @@ export default function App() {
     }
     const nextCustomerPhone = editCustomerTabDraft.customerPhone.trim() || undefined;
     let resolvedCustomerId = editCustomerTabDraft.customerId;
-    void commitAppDataChange("Saving customer details...", (draft) => {
-      const tab = draft.customerTabs.find((entry) => entry.id === editCustomerTabDraft.customerTabId && entry.status === "open");
-      if (!tab) {
-        return false;
+    const sourceTab = appData.customerTabs.find((entry) => entry.id === editCustomerTabDraft.customerTabId && entry.status === "open");
+    if (!sourceTab) {
+      return;
+    }
+    const changes: string[] = [];
+    if (sourceTab.customerName !== nextCustomerName) {
+      changes.push(`customer name: ${formatAuditValue(sourceTab.customerName)} -> ${formatAuditValue(nextCustomerName)}`);
+    }
+    if ((sourceTab.customerPhone ?? "") !== (nextCustomerPhone ?? "")) {
+      changes.push(`customer phone: ${formatAuditValue(sourceTab.customerPhone)} -> ${formatAuditValue(nextCustomerPhone)}`);
+    }
+    const changedAt = new Date().toISOString();
+    commitOperationalChange(createOperationalMutation(
+      "saveLiveCustomerTabDetails",
+      "Saving customer details",
+      "customer_tab",
+      editCustomerTabDraft.customerTabId,
+      {
+        customerTabId: editCustomerTabDraft.customerTabId,
+        customer: { id: resolvedCustomerId ?? createId("customer"), name: nextCustomerName, phone: nextCustomerPhone, visitAt: sourceTab.createdAt },
+        customerName: nextCustomerName,
+        customerPhone: nextCustomerPhone,
+        auditLog: changes.length > 0
+          ? {
+              id: createId("audit"),
+              action: "customer_tab_details_updated",
+              entityType: "customer_tab",
+              entityId: sourceTab.id,
+              message: `Updated customer tab: ${changes.join("; ")}`,
+              createdAt: changedAt,
+              userId: activeUser.id
+            }
+          : undefined
       }
-      const customerId = resolveCustomerProfile(draft, nextCustomerName, nextCustomerPhone, tab.createdAt);
-      resolvedCustomerId = customerId;
-      const changes: string[] = [];
-      if (tab.customerName !== nextCustomerName) {
-        changes.push(`customer name: ${formatAuditValue(tab.customerName)} -> ${formatAuditValue(nextCustomerName)}`);
-      }
-      if ((tab.customerPhone ?? "") !== (nextCustomerPhone ?? "")) {
-        changes.push(`customer phone: ${formatAuditValue(tab.customerPhone)} -> ${formatAuditValue(nextCustomerPhone)}`);
-      }
-      tab.customerId = customerId;
-      tab.customerName = nextCustomerName;
-      tab.customerPhone = nextCustomerPhone;
-      if (changes.length > 0) {
-        addAuditLog(draft, activeUser.id, "customer_tab_details_updated", "customer_tab", tab.id, `Updated customer tab: ${changes.join("; ")}`);
-      }
-    }, () => {
+    ), (nextAppData) => {
+      resolvedCustomerId = nextAppData.customerTabs.find((tab) => tab.id === sourceTab.id)?.customerId;
       setCustomerTabDraft({
         customerId: resolvedCustomerId,
         customerName: nextCustomerName,
@@ -2167,19 +2554,15 @@ export default function App() {
       }
       return;
     }
-    void commitAppDataChange("Adding item...", (draft) => {
-      const tab = draft.customerTabs.find((entry) => entry.id === targetTab.id && entry.status === "open");
-      if (!tab) return false;
-      const existing = tab.items.find(
-        (entry) =>
-          entry.inventoryItemId === item.id &&
-          entry.soldAsPackOf === sellAsPackOf &&
-          entry.saleVariantId === option.saleVariantId
-      );
-      if (existing) {
-        existing.quantity += 1;
-      } else {
-        tab.items.push({
+    const addedAt = new Date().toISOString();
+    commitOperationalChange(createOperationalMutation(
+      "addCustomerTabItem",
+      "Adding customer tab item",
+      "customer_tab",
+      targetTab.id,
+      {
+        customerTabId: targetTab.id,
+        line: {
           id: createId("customer-tab-item"),
           inventoryItemId: item.id,
           name: option.name,
@@ -2188,11 +2571,20 @@ export default function App() {
           soldAsPackOf: sellAsPackOf,
           saleVariantId: option.saleVariantId,
           stockUnitsPerSale: option.saleVariantId ? option.stockUnitsPerSale : undefined,
-          addedAt: new Date().toISOString()
-        });
+          addedAt
+        },
+        quantityDelta: 1,
+        auditLog: {
+          id: createId("audit"),
+          action: "customer_tab_item_added",
+          entityType: "customer_tab",
+          entityId: targetTab.id,
+          message: `Added ${option.name}${sellAsPackOf ? " (pack)" : ""} to ${targetTab.customerName}'s tab.`,
+          createdAt: addedAt,
+          userId: activeUser.id
+        }
       }
-      addAuditLog(draft, activeUser.id, "customer_tab_item_added", "customer_tab", tab.id, `Added ${option.name}${sellAsPackOf ? " (pack)" : ""} to ${tab.customerName}'s tab.`);
-    });
+    ));
   }
 
   function updateCustomerTabItemQuantity(customerTabId: string, lineId: string, quantity: number) {
@@ -2214,14 +2606,13 @@ export default function App() {
       window.alert(`Only ${availableSaleUnits} available for ${currentLine.name}.`);
       return;
     }
-    void commitAppDataChange("Updating item quantity...", (draft) => {
-      const tab = draft.customerTabs.find((entry) => entry.id === targetTab.id && entry.status === "open");
-      const line = tab?.items.find((entry) => entry.id === lineId);
-      if (!tab || !line) {
-        return false;
-      }
-      line.quantity = nextQuantity;
-    });
+    commitOperationalChange(createOperationalMutation(
+      "updateCustomerTabItemQuantity",
+      "Updating customer tab item quantity",
+      "customer_tab",
+      targetTab.id,
+      { customerTabId: targetTab.id, lineId, quantity: nextQuantity }
+    ));
   }
 
   function removeItemFromCustomerTab(customerTabId: string, lineId: string) {
@@ -2229,23 +2620,40 @@ export default function App() {
     if (!activeUser || !targetTab) {
       return;
     }
-    void commitAppDataChange("Removing item...", (draft) => {
-      const tab = draft.customerTabs.find((entry) => entry.id === targetTab.id && entry.status === "open");
-      if (!tab) {
-        return false;
+    const line = targetTab.items.find((entry) => entry.id === lineId);
+    const removedAt = new Date().toISOString();
+    commitOperationalChange(createOperationalMutation(
+      "removeCustomerTabItem",
+      "Removing customer tab item",
+      "customer_tab",
+      targetTab.id,
+      {
+        customerTabId: targetTab.id,
+        lineId,
+        auditLog: line
+          ? {
+              id: createId("audit"),
+              action: "customer_tab_item_removed",
+              entityType: "customer_tab",
+              entityId: targetTab.id,
+              message: `Removed ${line.name} from ${targetTab.customerName}'s tab.`,
+              createdAt: removedAt,
+              userId: activeUser.id
+            }
+          : undefined
       }
-      const line = tab.items.find((entry) => entry.id === lineId);
-      tab.items = tab.items.filter((entry) => entry.id !== lineId);
-      if (line) {
-        addAuditLog(draft, activeUser.id, "customer_tab_item_removed", "customer_tab", tab.id, `Removed ${line.name} from ${tab.customerName}'s tab.`);
-      }
-    });
+    ));
   }
 
   function beginCustomerTabCheckout() {
     const previousHops = selectedCustomerTab ? getUnbilledHoppedSessionsForTab(selectedCustomerTab) : [];
     if (!selectedCustomerTab || (selectedCustomerTab.items.length === 0 && previousHops.length === 0)) {
       window.alert("Open a customer tab and add items first.");
+      return;
+    }
+    if (hasPendingOperationalForCustomerTab(selectedCustomerTab.id)) {
+      window.alert("This customer tab has pending sync changes. Please wait for sync to finish before checkout.");
+      scheduleOperationalSync(0);
       return;
     }
     setCheckoutState({
@@ -2291,6 +2699,11 @@ export default function App() {
       window.alert("Open a customer tab and add items first.");
       return;
     }
+    if (hasPendingOperationalForCustomerTab(tab.id)) {
+      window.alert("This customer tab has pending sync changes. Please wait for sync to finish before checkout.");
+      scheduleOperationalSync(0);
+      return;
+    }
     setSelectedCustomerTabId(tab.id);
     setCustomerTabDraft({
       customerId: tab.customerId,
@@ -2321,6 +2734,11 @@ export default function App() {
     }
     const session = getSessionById(sessionId);
     if (!session || session.status === "closed") {
+      return;
+    }
+    if (hasPendingOperationalForSession(sessionId)) {
+      window.alert("This session has pending sync changes. Please wait for sync to finish before rejecting it.");
+      scheduleOperationalSync(0);
       return;
     }
     const reason = window.prompt("Enter reason for rejecting this session:");
@@ -2357,6 +2775,11 @@ export default function App() {
       return;
     }
     const sessionId = checkoutState.sessionId;
+    if (hasPendingOperationalForSession(sessionId)) {
+      window.alert("This session has pending sync changes. Please wait for sync to finish before hopping.");
+      scheduleOperationalSync(0);
+      return;
+    }
     const effectiveEndAt = checkoutState.sessionEndedAt ?? checkoutState.closedAt ?? new Date().toISOString();
     // Capture customer before clearing checkout state
     const hopCustomerName = checkoutState.customerName;
@@ -2538,6 +2961,11 @@ export default function App() {
     if (!tab || tab.status !== "open") {
       return;
     }
+    if (hasPendingOperationalForCustomerTab(customerTabId)) {
+      window.alert("This customer tab has pending sync changes. Please wait for sync to finish before rejecting it.");
+      scheduleOperationalSync(0);
+      return;
+    }
     const reason = window.prompt("Enter reason for rejecting this consumables tab:");
     if (!reason?.trim()) {
       return;
@@ -2708,6 +3136,16 @@ export default function App() {
 
   async function finalizeCheckout() {
     if (!activeUser || !checkoutState) {
+      return;
+    }
+    if (checkoutState.mode === "session" && hasPendingOperationalForSession(checkoutState.sessionId)) {
+      window.alert("This session still has pending sync changes. Please wait for sync to finish before issuing the bill.");
+      scheduleOperationalSync(0);
+      return;
+    }
+    if (checkoutState.mode === "customer_tab" && hasPendingOperationalForCustomerTab(checkoutState.customerTabId)) {
+      window.alert("This customer tab still has pending sync changes. Please wait for sync to finish before issuing the bill.");
+      scheduleOperationalSync(0);
       return;
     }
     let baseAppData = appData;
@@ -4457,6 +4895,25 @@ export default function App() {
       return { bill: b, businessDate, daysOverdue };
     })
     .sort((a, b) => b.daysOverdue - a.daysOverdue);
+  const pendingOperationalCount = pendingOperationalMutations.filter(
+    (mutation) => mutation.status === "pending" || mutation.status === "syncing" || mutation.status === "failed"
+  ).length;
+  const failedOperationalCount = pendingOperationalMutations.filter((mutation) => mutation.status === "failed").length;
+  const conflictOperationalCount = pendingOperationalMutations.filter((mutation) => mutation.status === "conflict").length;
+  const operationalStatusLabel =
+    conflictOperationalCount > 0
+      ? `${conflictOperationalCount} conflict${conflictOperationalCount !== 1 ? "s" : ""}`
+      : pendingOperationalCount > 0
+        ? `${pendingOperationalCount} pending`
+        : lastOperationalSyncAt
+          ? `Synced ${formatTime(lastOperationalSyncAt)}`
+          : "Synced";
+  const checkoutHasPendingOperational =
+    checkoutState?.mode === "session"
+      ? hasPendingOperationalForSession(checkoutState.sessionId)
+      : checkoutState?.mode === "customer_tab"
+        ? hasPendingOperationalForCustomerTab(checkoutState.customerTabId)
+        : false;
 
   if (backendConfigured && remoteLoading) {
     return <AppLoadingScreen />;
@@ -4501,6 +4958,26 @@ export default function App() {
         <div className="sidebar-footer">
           <div className={`status-pill ${online ? "is-online" : "is-offline"}`}>
             {remoteSaving ? "Syncing" : online ? "Online" : "Offline fallback"}
+          </div>
+          <div className={`sync-detail-card ${conflictOperationalCount > 0 ? "has-conflict" : failedOperationalCount > 0 ? "has-error" : pendingOperationalCount > 0 ? "has-pending" : ""}`}>
+            <div>
+              <strong>Live actions</strong>
+              <span>{operationalStatusLabel}</span>
+            </div>
+            {(failedOperationalCount > 0 || conflictOperationalCount > 0) && (
+              <div className="button-row" style={{ gap: "0.4rem", marginTop: "0.4rem" }}>
+                {failedOperationalCount > 0 && (
+                  <button type="button" className="secondary-button" onClick={retryOperationalSyncNow} disabled={remoteSaving}>
+                    Retry
+                  </button>
+                )}
+                {conflictOperationalCount > 0 && (
+                  <button type="button" className="ghost-button" onClick={clearOperationalConflicts}>
+                    Clear
+                  </button>
+                )}
+              </div>
+            )}
           </div>
           {remoteError && (
             <div className="remote-error-banner" role="alert">
@@ -5436,6 +5913,9 @@ export default function App() {
               </div>
             </>
           )}
+          {hasPendingOperationalForSession(managedSession.id) && (
+            <div className="inline-sync-warning">Pending sync. Checkout and close actions unlock after the latest live changes are saved.</div>
+          )}
           <div className="button-row">
             {canEditSessionCustomerDetails && (
               <button
@@ -5454,8 +5934,8 @@ export default function App() {
               </button>
             )}
             {managedSession.mode === "timed" && (managedSession.status === "active" ? <button className="secondary-button session-action-button is-pause" type="button" onClick={() => toggleSessionPause(managedSession.id, true)}>|| Pause Session</button> : <button className="secondary-button session-action-button is-resume" type="button" onClick={() => toggleSessionPause(managedSession.id, false)}>&gt; Resume Session</button>)}
-            <button className="ghost-button danger" type="button" onClick={() => rejectSession(managedSession.id)}>Reject Session</button>
-            <button className="primary-button" type="button" onClick={() => openSessionCheckout(managedSession.id)}>Proceed to Checkout</button>
+            <button className="ghost-button danger" type="button" onClick={() => rejectSession(managedSession.id)} disabled={hasPendingOperationalForSession(managedSession.id)}>Reject Session</button>
+            <button className="primary-button" type="button" onClick={() => openSessionCheckout(managedSession.id)} disabled={hasPendingOperationalForSession(managedSession.id)}>Proceed to Checkout</button>
           </div>
         </Modal>
       )}
@@ -6058,6 +6538,9 @@ export default function App() {
               </div>
             )}
           </div>
+          {checkoutHasPendingOperational && (
+            <div className="inline-sync-warning">Pending live changes are still syncing. Billing will unlock after sync completes.</div>
+          )}
           <div className="button-row">
             <button className="secondary-button" type="button" onClick={() => {
               if (checkoutSession?.closeDisposition === "hopped") {
@@ -6075,7 +6558,7 @@ export default function App() {
                 className="primary-button"
                 type="button"
                 onClick={() => void runBlockingAction("Closing session for game hop...", hopSession)}
-                disabled={remoteSaving || Boolean(blockingActionLabel)}
+                disabled={remoteSaving || Boolean(blockingActionLabel) || checkoutHasPendingOperational}
               >
                 Confirm Game Hop
               </button>
@@ -6089,8 +6572,14 @@ export default function App() {
                     finalizeCheckout
                   )
                 }
-                disabled={remoteSaving || Boolean(blockingActionLabel) || checkoutPreview.isZeroTotal}
-                title={checkoutPreview.isZeroTotal ? "Bill total is Rs 0 - add items or remove discounts" : undefined}
+                disabled={remoteSaving || Boolean(blockingActionLabel) || checkoutPreview.isZeroTotal || checkoutHasPendingOperational}
+                title={
+                  checkoutHasPendingOperational
+                    ? "Pending live changes are still syncing"
+                    : checkoutPreview.isZeroTotal
+                      ? "Bill total is Rs 0 - add items or remove discounts"
+                      : undefined
+                }
               >
                 {checkoutState.mode === "bill_replacement" ? "Issue Replacement Bill" : "Issue Bill"}
               </button>

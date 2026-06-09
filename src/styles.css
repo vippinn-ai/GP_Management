@@ -238,6 +238,55 @@ td {
   color: #ffd190;
 }
 
+.sync-detail-card {
+  display: grid;
+  gap: 0.35rem;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 0.5rem;
+  background: rgba(255, 255, 255, 0.05);
+  color: #d8e8df;
+  font-size: 0.78rem;
+}
+
+.sync-detail-card div:first-child {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.65rem;
+  align-items: center;
+}
+
+.sync-detail-card strong {
+  color: #ffffff;
+  font-size: 0.78rem;
+}
+
+.sync-detail-card span {
+  color: #aec5b8;
+  text-align: right;
+}
+
+.sync-detail-card.has-pending {
+  border-color: rgba(245, 165, 38, 0.36);
+  background: rgba(245, 165, 38, 0.1);
+}
+
+.sync-detail-card.has-error,
+.sync-detail-card.has-conflict {
+  border-color: rgba(192, 57, 43, 0.36);
+  background: rgba(192, 57, 43, 0.13);
+}
+
+.inline-sync-warning {
+  padding: 0.65rem 0.8rem;
+  border: 1px solid rgba(245, 165, 38, 0.35);
+  border-radius: 0.5rem;
+  background: rgba(245, 165, 38, 0.1);
+  color: #7a4b00;
+  font-size: 0.85rem;
+  line-height: 1.35;
+}
+
 @keyframes shimmer {
   0%   { background-position: -200% 0; }
   100% { background-position: 200% 0; }
