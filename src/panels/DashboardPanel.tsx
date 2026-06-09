@@ -101,7 +101,7 @@ export function DashboardPanel(props: {
 
   const nowMs = usePauseClock();
   const availableCombos = selectedStartStation
-    ? props.combos.filter((combo) => combo.active && combo.stationIds.includes(selectedStartStation.id))
+    ? props.combos.filter((combo) => (combo.type ?? "game") === "game" && combo.active && combo.stationIds.includes(selectedStartStation.id))
     : [];
   const selectedCombo = startSessionDraft.comboId
     ? availableCombos.find((combo) => combo.id === startSessionDraft.comboId) ?? null

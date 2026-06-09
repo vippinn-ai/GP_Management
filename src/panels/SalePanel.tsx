@@ -1,5 +1,5 @@
 import { type FormEvent, useState } from "react";
-import type { Bill, Customer, CustomerTab, CustomerTabDraft, CustomerTabEditDraft, CustomerTabItem, InventoryItem, SellableInventoryOption, Session } from "../types";
+import type { Bill, ComboPackage, Customer, CustomerTab, CustomerTabDraft, CustomerTabEditDraft, CustomerTabItem, InventoryItem, SellableInventoryOption, Session } from "../types";
 import { currency, formatMinutes } from "../utils";
 import { getCategoryIcon } from "../constants";
 import { Modal } from "../components/Modal";
@@ -12,6 +12,7 @@ import { CustomerAutocompleteFields } from "../components/CustomerAutocompleteFi
 export function SalePanel(props: {
   inventoryItems: InventoryItem[];
   sellableOptions: SellableInventoryOption[];
+  consumablesCombos: ComboPackage[];
   customers: Customer[];
   customerTabSearch: string;
   customerTabDraft: CustomerTabDraft;
@@ -31,6 +32,7 @@ export function SalePanel(props: {
   onSelectCustomerTab: (tabId: string) => void;
   onEditCustomerTabDraftChange: (next: CustomerTabEditDraft | null) => void;
   onAddItemToCustomerTab: (customerTabId: string, option: SellableInventoryOption, sellAsPackOf?: number) => void;
+  onApplyComboToCustomerTab: (customerTabId: string, comboId: string, choices: Record<string, string[]>) => void;
   onCreateOrSelectCustomerTab: (event: FormEvent<HTMLFormElement>) => void;
   onUpdateCustomerTabItemQuantity: (customerTabId: string, lineId: string, quantity: number) => void;
   onRemoveItemFromCustomerTab: (customerTabId: string, lineId: string) => void;
@@ -50,6 +52,7 @@ export function SalePanel(props: {
   } = props;
   const [cigPackModal, setCigPackModal] = useState<{ option: SellableInventoryOption } | null>(null);
   const [showInlineTabSwitcher, setShowInlineTabSwitcher] = useState(false);
+  const [comboChoiceDrafts, setComboChoiceDrafts] = useState<Record<string, Record<string, string[]>>>({});
   const previousHopTotal = selectedCustomerTabPreviousHops.reduce(
     (total, session) => total + props.getSessionLiveTotal(session, session.endedAt),
     0
@@ -59,6 +62,7 @@ export function SalePanel(props: {
   const liveTotal = currentTabTotal + previousHopTotal + previousPendingDue;
   const selectedTabItemCount =
     (selectedCustomerTab?.items.length ?? 0) +
+    (selectedCustomerTab?.comboApplications?.length ?? 0) +
     selectedCustomerTabPreviousHops.reduce((total, session) => total + session.items.length, 0);
   const liveTotalDetail = [
     previousHopTotal > 0 ? "previous sessions" : "",
@@ -74,6 +78,32 @@ export function SalePanel(props: {
       customerPhone: tab.customerPhone ?? ""
     });
     setShowInlineTabSwitcher(false);
+  }
+
+  function getSellableOptionName(optionId: string) {
+    return props.sellableOptions.find((option) => option.id === optionId)?.name ?? "Item";
+  }
+
+  function setComboChoice(comboId: string, groupId: string, index: number, optionId: string) {
+    setComboChoiceDrafts((previous) => {
+      const comboDraft = previous[comboId] ?? {};
+      const groupDraft = [...(comboDraft[groupId] ?? [])];
+      groupDraft[index] = optionId;
+      return {
+        ...previous,
+        [comboId]: {
+          ...comboDraft,
+          [groupId]: groupDraft
+        }
+      };
+    });
+  }
+
+  function applyCombo(combo: ComboPackage) {
+    if (!selectedCustomerTab) {
+      return;
+    }
+    props.onApplyComboToCustomerTab(selectedCustomerTab.id, combo.id, comboChoiceDrafts[combo.id] ?? {});
   }
 
   return (
@@ -118,7 +148,9 @@ export function SalePanel(props: {
                       {props.getPendingDueForCustomerTab(tab) > 0 && (
                         <span className="pending-amount">Previous dues {currency(props.getPendingDueForCustomerTab(tab))}</span>
                       )}
-                      <span>{tab.items.length} item{tab.items.length === 1 ? "" : "s"} · {currency(props.getCustomerTabTotal(tab))}</span>
+                      <span>
+                        {tab.items.length + (tab.comboApplications?.length ?? 0)} item{tab.items.length + (tab.comboApplications?.length ?? 0) === 1 ? "" : "s"} · {currency(props.getCustomerTabTotal(tab))}
+                      </span>
                     </button>
                   ))}
                 </div>
@@ -137,6 +169,61 @@ export function SalePanel(props: {
             onChange={(event) => props.onCustomerTabSearchChange(event.target.value)}
             placeholder="Search items..."
           />
+          {props.consumablesCombos.length > 0 && (
+            <div className="section-block combo-sale-section">
+              <div className="section-block-header">
+                <h3>Combos</h3>
+                <p>{selectedCustomerTab ? "Apply a package to this customer tab." : "Select a customer tab before applying combos."}</p>
+              </div>
+              <div className="combo-sale-grid">
+                {props.consumablesCombos.map((combo) => (
+                  <div key={combo.id} className="combo-sale-card">
+                    <div className="combo-sale-card-header">
+                      <div>
+                        <strong>{combo.name}</strong>
+                        <span>{currency(combo.price)}</span>
+                      </div>
+                      <button
+                        className="primary-button"
+                        type="button"
+                        disabled={!selectedCustomerTab}
+                        onClick={() => applyCombo(combo)}
+                      >
+                        Apply
+                      </button>
+                    </div>
+                    {combo.fixedItems.length > 0 && (
+                      <div className="muted">
+                        Includes {combo.fixedItems.map((item) => `${item.quantity} x ${getSellableOptionName(item.sellableOptionId)}`).join(", ")}
+                      </div>
+                    )}
+                    {combo.choiceGroups.map((group) => {
+                      const requiredQuantity = Math.max(1, Math.trunc(group.requiredQuantity));
+                      const selectedValues = comboChoiceDrafts[combo.id]?.[group.id] ?? [];
+                      return (
+                        <div key={group.id} className="combo-sale-choice-group">
+                          <span className="field-label">{group.label} ({requiredQuantity})</span>
+                          {Array.from({ length: requiredQuantity }, (_, index) => (
+                            <select
+                              key={`${group.id}-${index}`}
+                              value={selectedValues[index] ?? ""}
+                              disabled={!selectedCustomerTab}
+                              onChange={(event) => setComboChoice(combo.id, group.id, index, event.target.value)}
+                            >
+                              <option value="">Choose option {index + 1}</option>
+                              {group.optionIds.map((optionId) => (
+                                <option key={optionId} value={optionId}>{getSellableOptionName(optionId)}</option>
+                              ))}
+                            </select>
+                          ))}
+                        </div>
+                      );
+                    })}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
           <div className="catalog-grid">
             {props.sellableOptions
               .filter((option) =>
@@ -226,7 +313,9 @@ export function SalePanel(props: {
                   {props.getPendingDueForCustomerTab(tab) > 0 && (
                     <span className="pending-amount">Previous dues {currency(props.getPendingDueForCustomerTab(tab))}</span>
                   )}
-                  <span>{tab.items.length} item{tab.items.length === 1 ? "" : "s"} · {currency(props.getCustomerTabTotal(tab))}</span>
+                  <span>
+                    {tab.items.length + (tab.comboApplications?.length ?? 0)} item{tab.items.length + (tab.comboApplications?.length ?? 0) === 1 ? "" : "s"} · {currency(props.getCustomerTabTotal(tab))}
+                  </span>
                 </button>
               ))}
             </div>
@@ -238,7 +327,7 @@ export function SalePanel(props: {
             </div>
             <div className="line-items">
               {!selectedCustomerTab && <div className="empty-state">Open or select a customer tab first.</div>}
-              {selectedCustomerTab && selectedCustomerTab.items.length === 0 && selectedCustomerTabPreviousHops.length === 0 && selectedCustomerTabPendingBills.length === 0 && (
+              {selectedCustomerTab && selectedCustomerTab.items.length === 0 && (selectedCustomerTab.comboApplications?.length ?? 0) === 0 && selectedCustomerTabPreviousHops.length === 0 && selectedCustomerTabPendingBills.length === 0 && (
                 <div className="empty-state">Add items from the left panel.</div>
               )}
               {selectedCustomerTabPreviousHops.map((session) => (
@@ -273,9 +362,22 @@ export function SalePanel(props: {
                   </div>
                 </div>
               ))}
+              {selectedCustomerTab?.comboApplications?.map((combo) => (
+                <div key={combo.id} className="line-item-row combo-package-row">
+                  <div>
+                    <strong>{combo.comboName}</strong>
+                    <div className="muted">Combo package</div>
+                  </div>
+                  <div className="button-row dense">
+                    <strong>{currency(combo.price)}</strong>
+                    <span className="muted">Applied</span>
+                  </div>
+                </div>
+              ))}
               {selectedCustomerTab?.items.map((item: CustomerTabItem) => {
                 const invCategory = props.inventoryItems.find((i) => i.id === item.inventoryItemId)?.category ?? "";
                 const catImage = CATEGORY_IMAGES[invCategory];
+                const isComboIncluded = Boolean(item.comboApplicationId);
                 return (
                 <div key={item.id} className="line-item-row">
                   <div>
@@ -285,7 +387,7 @@ export function SalePanel(props: {
                         : invCategory ? <span className="category-icon">{getCategoryIcon(invCategory)}</span> : null}
                       {item.name}{item.soldAsPackOf ? ` (Pack of ${item.soldAsPackOf})` : ""}
                     </strong>
-                    <div className="muted">{currency(item.unitPrice)} each</div>
+                    <div className="muted">{isComboIncluded ? "Included in combo" : `${currency(item.unitPrice)} each`}</div>
                   </div>
                   <label className="inline-field small">
                     <span>Qty</span>
@@ -293,14 +395,19 @@ export function SalePanel(props: {
                       value={item.quantity}
                       min={1}
                       defaultValue={1}
+                      disabled={isComboIncluded}
                       onValueChange={(value) => props.onUpdateCustomerTabItemQuantity(selectedCustomerTab.id, item.id, value)}
                     />
                   </label>
                   <div className="button-row dense">
                     <strong>{currency(item.unitPrice * item.quantity)}</strong>
-                    <button className="ghost-button danger" type="button" onClick={() => props.onRemoveItemFromCustomerTab(selectedCustomerTab.id, item.id)}>
-                      Remove
-                    </button>
+                    {isComboIncluded ? (
+                      <span className="muted">Included</span>
+                    ) : (
+                      <button className="ghost-button danger" type="button" onClick={() => props.onRemoveItemFromCustomerTab(selectedCustomerTab.id, item.id)}>
+                        Remove
+                      </button>
+                    )}
                   </div>
                 </div>
                 );

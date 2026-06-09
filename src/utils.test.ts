@@ -21,6 +21,7 @@ import {
   getInventoryReportRange,
   buildInventoryReportModel,
   getCombosForStation,
+  getConsumablesCombos,
   resolveComboFixedSelections,
   resolveComboChoiceSelections,
   getSessionCheckoutLines
@@ -518,6 +519,19 @@ describe("session combo helpers", () => {
     expect(getCombosForStation([combo], "pool-1").map((entry) => entry.id)).toEqual(["combo-pool"]);
     expect(getCombosForStation([combo], "s2")).toEqual([]);
     expect(getCombosForStation([{ ...combo, active: false }], "pool-1")).toEqual([]);
+    expect(getCombosForStation([{ ...combo, type: "consumables" }], "pool-1")).toEqual([]);
+  });
+
+  it("filters active consumables combos separately from game combos", () => {
+    const consumablesCombo: ComboPackage = {
+      ...combo,
+      id: "snack-combo",
+      type: "consumables",
+      stationIds: [],
+      includedMinutes: 0
+    };
+
+    expect(getConsumablesCombos([combo, consumablesCombo, { ...consumablesCombo, id: "archived", active: false }]).map((entry) => entry.id)).toEqual(["snack-combo"]);
   });
 
   it("resolves fixed selections with stock units", () => {
@@ -628,6 +642,71 @@ describe("session combo helpers", () => {
       ["combo_detail", "1 hr Pool play included", 0],
       ["inventory_item", "Maggi (included in Pool Pot Combo)", 0],
       ["session_charge", "Pool extra time (30 min)", 150]
+    ]);
+  });
+
+  it("creates customer tab combo package and included detail lines", () => {
+    const lines = getCustomerTabCheckoutLines([], [{
+      id: "combo-app-1",
+      comboId: "snack-combo",
+      comboName: "Snack Combo",
+      price: 249,
+      includedMinutes: 0,
+      appliedAt: "2026-06-08T10:00:00.000Z",
+      fixedItems: [{ inventoryItemId: "maggi-item", name: "Maggi", sourceName: "Maggi", quantity: 2, unitPrice: 100, stockUnitsPerSale: 1 }],
+      choices: [{
+        groupId: "drink-choice",
+        groupLabel: "Drinks",
+        selections: [
+          { inventoryItemId: "coke-item", name: "Coke", sourceName: "Coke", quantity: 1, unitPrice: 40, stockUnitsPerSale: 1 },
+          { inventoryItemId: "shake-item", name: "Shake", sourceName: "Shake", quantity: 1, unitPrice: 80, stockUnitsPerSale: 1 }
+        ]
+      }]
+    }]);
+
+    expect(lines.map((line) => [line.type, line.description, line.quantity, line.unitPrice])).toEqual([
+      ["combo_package", "Snack Combo", 1, 249],
+      ["inventory_item", "Maggi (included in Snack Combo)", 2, 0],
+      ["inventory_item", "Coke (included in Snack Combo)", 1, 0],
+      ["inventory_item", "Shake (included in Snack Combo)", 1, 0]
+    ]);
+  });
+
+  it("does not duplicate customer tab combo included items as normal bill lines", () => {
+    const lines = getCustomerTabCheckoutLines(
+      [{
+        id: "line-included",
+        inventoryItemId: "maggi-item",
+        name: "Maggi",
+        quantity: 2,
+        unitPrice: 0,
+        addedAt: "2026-06-08T10:00:00.000Z",
+        comboApplicationId: "combo-app-1",
+        comboId: "snack-combo"
+      }, {
+        id: "line-extra",
+        inventoryItemId: "coke-item",
+        name: "Extra Coke",
+        quantity: 1,
+        unitPrice: 40,
+        addedAt: "2026-06-08T10:05:00.000Z"
+      }],
+      [{
+        id: "combo-app-1",
+        comboId: "snack-combo",
+        comboName: "Snack Combo",
+        price: 249,
+        includedMinutes: 0,
+        appliedAt: "2026-06-08T10:00:00.000Z",
+        fixedItems: [{ inventoryItemId: "maggi-item", name: "Maggi", sourceName: "Maggi", quantity: 2, unitPrice: 100, stockUnitsPerSale: 1 }],
+        choices: []
+      }]
+    );
+
+    expect(lines.map((line) => line.description)).toEqual([
+      "Snack Combo",
+      "Maggi (included in Snack Combo)",
+      "Extra Coke"
     ]);
   });
 });

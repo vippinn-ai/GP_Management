@@ -98,6 +98,7 @@ export function hydrateAppData(parsed: Partial<AppData>): AppData {
     })),
     customerTabs: (parsed.customerTabs ?? cloneValue(emptyAppData.customerTabs)).map((tab) => ({
       ...tab,
+      comboApplications: tab.comboApplications ?? [],
       continuedFromSessionIds: tab.continuedFromSessionIds ?? undefined,
       closeDisposition: tab.closeDisposition ?? (tab.closedBillId ? "billed" : undefined),
       closeReason: tab.closeReason ?? undefined
@@ -127,10 +128,13 @@ export function hydrateAppData(parsed: Partial<AppData>): AppData {
     }),
     combos: (parsed.combos ?? cloneValue(emptyAppData.combos)).map((combo) => ({
       ...combo,
+      type: combo.type ?? "game",
       active: combo.active ?? true,
-      stationIds: combo.stationIds ?? [],
+      stationIds: combo.type === "consumables" ? [] : combo.stationIds ?? [],
       price: combo.price ?? 0,
-      includedMinutes: Math.max(1, Math.trunc(combo.includedMinutes ?? 60)),
+      includedMinutes: (combo.type ?? "game") === "consumables"
+        ? 0
+        : Math.max(1, Math.trunc(combo.includedMinutes ?? 60)),
       fixedItems: combo.fixedItems ?? [],
       choiceGroups: (combo.choiceGroups ?? []).map((group) => ({
         ...group,

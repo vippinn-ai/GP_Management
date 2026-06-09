@@ -49,6 +49,7 @@ import type {
   CustomerTab,
   CustomerTabDraft,
   CustomerTabEditDraft,
+  CustomerTabItem,
   CustomerProfileEditDraft,
   ComboPackage,
   DiscountType,
@@ -110,6 +111,7 @@ import {
   getInventoryQuantityMap,
   getLineStockQuantity,
   getCombosForStation,
+  getConsumablesCombos,
   getComboInventorySelections,
   getComboApplicationsTotal,
   getComboIncludedMinutes,
@@ -177,6 +179,7 @@ function createComboDraft(): ComboPackage {
   return {
     id: "",
     name: "",
+    type: "game",
     active: true,
     stationIds: [],
     price: 0,
@@ -1252,7 +1255,7 @@ export default function App() {
       comboId: combo.id,
       comboName: combo.name,
       price: combo.price,
-      includedMinutes: combo.includedMinutes,
+      includedMinutes: combo.type === "consumables" ? 0 : combo.includedMinutes,
       appliedAt: new Date().toISOString(),
       fixedItems,
       choices: choiceSelections
@@ -1274,14 +1277,33 @@ export default function App() {
     }));
   }
 
-  function findUnavailableComboSelection(selections: ReturnType<typeof getComboInventorySelections>, ignoreSessionId?: string) {
+  function getComboCustomerTabItems(application: SessionComboApplication): CustomerTabItem[] {
+    return getComboInventorySelections(application).map((selection) => ({
+      id: createId("customer-tab-item"),
+      inventoryItemId: selection.inventoryItemId,
+      name: selection.name,
+      quantity: selection.quantity,
+      unitPrice: 0,
+      saleVariantId: selection.saleVariantId,
+      stockUnitsPerSale: selection.stockUnitsPerSale,
+      comboApplicationId: application.id,
+      comboId: application.comboId,
+      addedAt: application.appliedAt
+    }));
+  }
+
+  function findUnavailableComboSelection(
+    selections: ReturnType<typeof getComboInventorySelections>,
+    ignoreSessionId?: string,
+    ignoreCustomerTabId?: string
+  ) {
     const requiredByItemId = selections.reduce<Record<string, number>>((totals, selection) => {
       totals[selection.inventoryItemId] = (totals[selection.inventoryItemId] ?? 0) + selection.quantity * selection.stockUnitsPerSale;
       return totals;
     }, {});
     return Object.entries(requiredByItemId).find(([itemId, required]) => {
       const item = appData.inventoryItems.find((entry) => entry.id === itemId);
-      return !item || getAvailableStock(item, ignoreSessionId) < required;
+      return !item || getAvailableStock(item, ignoreSessionId, ignoreCustomerTabId) < required;
     });
   }
 
@@ -1361,7 +1383,7 @@ export default function App() {
   }
 
   function getCustomerTabTotal(tab: CustomerTab) {
-    return sumBy(tab.items, (item) => item.quantity * item.unitPrice);
+    return sumBy(tab.items, (item) => item.quantity * item.unitPrice) + sumBy(tab.comboApplications ?? [], (combo) => combo.price);
   }
 
   function getUnbilledHoppedSessionsForTab(tab: CustomerTab) {
@@ -1751,7 +1773,7 @@ export default function App() {
     const sessionPlayMode = station.ltpEnabled ? startSessionDraft.playMode : "group";
     const initialItems: SessionItem[] = [];
     const combo = startSessionDraft.comboId
-      ? appData.combos.find((entry) => entry.id === startSessionDraft.comboId && entry.active && entry.stationIds.includes(station.id))
+      ? appData.combos.find((entry) => entry.id === startSessionDraft.comboId && (entry.type ?? "game") === "game" && entry.active && entry.stationIds.includes(station.id))
       : undefined;
     const comboApplication = combo ? buildComboApplication(combo, startSessionDraft.comboChoices) : null;
     if (combo && !comboApplication) {
@@ -2654,6 +2676,49 @@ export default function App() {
     ));
   }
 
+  function applyComboToCustomerTab(customerTabId: string, comboId: string, choices: Record<string, string[]> = {}) {
+    const targetTab = appData.customerTabs.find((tab) => tab.id === customerTabId && tab.status === "open");
+    const combo = appData.combos.find((entry) => entry.id === comboId && entry.active && entry.type === "consumables");
+    if (!activeUser || !targetTab || !combo) {
+      window.alert("Open a customer tab and choose an active consumables combo first.");
+      return;
+    }
+    const comboApplication = buildComboApplication(combo, choices);
+    if (!comboApplication) {
+      window.alert("Select all required combo choices before applying this combo.");
+      return;
+    }
+    const selections = getComboInventorySelections(comboApplication);
+    const unavailable = findUnavailableComboSelection(selections);
+    if (unavailable) {
+      const [itemId] = unavailable;
+      const item = appData.inventoryItems.find((entry) => entry.id === itemId);
+      window.alert(`${item?.name ?? "One combo item"} is not available in the required quantity.`);
+      return;
+    }
+    const appliedAt = comboApplication.appliedAt;
+    commitOperationalChange(createOperationalMutation(
+      "applyCustomerTabCombo",
+      "Applying customer tab combo",
+      "customer_tab",
+      targetTab.id,
+      {
+        customerTabId: targetTab.id,
+        comboApplication,
+        items: getComboCustomerTabItems(comboApplication),
+        auditLog: {
+          id: createId("audit"),
+          action: "customer_tab_combo_applied",
+          entityType: "customer_tab",
+          entityId: targetTab.id,
+          message: `Applied combo ${combo.name} to ${targetTab.customerName}'s tab.`,
+          createdAt: appliedAt,
+          userId: activeUser.id
+        }
+      }
+    ));
+  }
+
   function updateCustomerTabItemQuantity(customerTabId: string, lineId: string, quantity: number) {
     const targetTab = appData.customerTabs.find((tab) => tab.id === customerTabId && tab.status === "open");
     if (!activeUser || !targetTab) {
@@ -2661,6 +2726,10 @@ export default function App() {
     }
     const nextQuantity = clampNumber(quantity, 1);
     const currentLine = targetTab.items.find((entry) => entry.id === lineId);
+    if (currentLine?.comboApplicationId) {
+      window.alert("Included combo items cannot be edited directly. Apply the combo again if the customer wants another set.");
+      return;
+    }
     const currentItem = currentLine
       ? appData.inventoryItems.find((entry) => entry.id === currentLine.inventoryItemId && entry.active)
       : undefined;
@@ -2688,6 +2757,10 @@ export default function App() {
       return;
     }
     const line = targetTab.items.find((entry) => entry.id === lineId);
+    if (line?.comboApplicationId) {
+      window.alert("Included combo items cannot be removed directly. Remove or void the whole tab during checkout if needed.");
+      return;
+    }
     const removedAt = new Date().toISOString();
     commitOperationalChange(createOperationalMutation(
       "removeCustomerTabItem",
@@ -3335,7 +3408,7 @@ export default function App() {
       checkoutState.mode === "session" && previewSession
         ? [...hoppedSourceLines, ...getSessionCheckoutLines(previewSession, calculateSessionCharge(previewSession, baseAppData.sessionPauseLogs, effectiveClosedAt))]
         : checkoutState.mode === "customer_tab"
-          ? [...hoppedSourceLines, ...getCustomerTabCheckoutLines(customerTab?.items ?? [])]
+          ? [...hoppedSourceLines, ...getCustomerTabCheckoutLines(customerTab?.items ?? [], customerTab?.comboApplications ?? [])]
           : checkoutState.replacementLines ?? [];
     if (previewSession) {
       const startedAt = new Date(previewSession.startedAt);
@@ -3351,7 +3424,7 @@ export default function App() {
       }
     }
     if (customerTab) {
-      const customerTabLines = getCustomerTabCheckoutLines(customerTab.items);
+      const customerTabLines = getCustomerTabCheckoutLines(customerTab.items, customerTab.comboApplications ?? []);
       const unavailableLine = customerTabLines.find((line) => {
         if (!line.inventoryItemId) {
           return false;
@@ -3962,27 +4035,40 @@ export default function App() {
       return;
     }
     const name = comboDraft.name.trim();
-    if (!name || comboDraft.stationIds.length === 0 || comboDraft.price < 0 || comboDraft.includedMinutes <= 0) {
-      window.alert("Combo name, station, price, and included minutes are required.");
+    const comboType = comboDraft.type ?? "game";
+    const fixedItems = comboDraft.fixedItems
+      .filter((item) => item.sellableOptionId && item.quantity > 0)
+      .map((item) => ({ ...item, quantity: Math.max(1, Math.trunc(item.quantity)) }));
+    const choiceGroups = comboDraft.choiceGroups
+      .filter((group) => group.label.trim() && group.optionIds.length > 0)
+      .map((group) => ({
+        ...group,
+        label: group.label.trim(),
+        requiredQuantity: Math.max(1, Math.trunc(group.requiredQuantity)),
+        optionIds: Array.from(new Set(group.optionIds))
+      }));
+    if (!name || comboDraft.price < 0) {
+      window.alert("Combo name and price are required.");
+      return;
+    }
+    if (comboType === "game" && (comboDraft.stationIds.length === 0 || comboDraft.includedMinutes <= 0)) {
+      window.alert("Game combos require at least one station and included minutes.");
+      return;
+    }
+    if (comboType === "consumables" && fixedItems.length === 0 && choiceGroups.length === 0) {
+      window.alert("Consumables combos require at least one fixed item or choice group.");
       return;
     }
     const sanitizedCombo: ComboPackage = {
       ...comboDraft,
       id: comboDraft.id || createId("combo"),
       name,
+      type: comboType,
       price: Math.max(0, comboDraft.price),
-      includedMinutes: Math.max(1, Math.trunc(comboDraft.includedMinutes)),
-      fixedItems: comboDraft.fixedItems
-        .filter((item) => item.sellableOptionId && item.quantity > 0)
-        .map((item) => ({ ...item, quantity: Math.max(1, Math.trunc(item.quantity)) })),
-      choiceGroups: comboDraft.choiceGroups
-        .filter((group) => group.label.trim() && group.optionIds.length > 0)
-        .map((group) => ({
-          ...group,
-          label: group.label.trim(),
-          requiredQuantity: Math.max(1, Math.trunc(group.requiredQuantity)),
-          optionIds: Array.from(new Set(group.optionIds))
-        })),
+      stationIds: comboType === "game" ? comboDraft.stationIds : [],
+      includedMinutes: comboType === "game" ? Math.max(1, Math.trunc(comboDraft.includedMinutes)) : 0,
+      fixedItems,
+      choiceGroups,
       createdAt: comboDraft.createdAt || new Date().toISOString(),
       updatedAt: new Date().toISOString()
     };
@@ -4793,7 +4879,8 @@ export default function App() {
         })()
       : checkoutState?.mode === "customer_tab" && checkoutState.customerTabId
         ? (() => {
-            const tabLines = getCustomerTabCheckoutLines(getCustomerTabById(checkoutState.customerTabId)?.items ?? []);
+            const tab = getCustomerTabById(checkoutState.customerTabId);
+            const tabLines = getCustomerTabCheckoutLines(tab?.items ?? [], tab?.comboApplications ?? []);
             const hoppedLines = (checkoutState.hoppedSessionIds ?? []).flatMap((hId) => {
               const hSession = getSessionById(hId);
               if (!hSession || !hSession.endedAt) return [];
@@ -5270,6 +5357,7 @@ export default function App() {
           <SalePanel
             inventoryItems={appData.inventoryItems}
             sellableOptions={sellableInventoryOptions}
+            consumablesCombos={getConsumablesCombos(appData.combos)}
             customers={appData.customers}
             customerTabSearch={customerTabSearch}
             customerTabDraft={customerTabDraft}
@@ -5295,6 +5383,7 @@ export default function App() {
             onSelectCustomerTab={setSelectedCustomerTabId}
             onEditCustomerTabDraftChange={setEditCustomerTabDraft}
             onAddItemToCustomerTab={(customerTabId, option, sellAsPackOf) => addItemToCustomerTab(customerTabId, option, sellAsPackOf)}
+            onApplyComboToCustomerTab={applyComboToCustomerTab}
             onCreateOrSelectCustomerTab={createOrSelectCustomerTab}
             onUpdateCustomerTabItemQuantity={updateCustomerTabItemQuantity}
             onRemoveItemFromCustomerTab={removeItemFromCustomerTab}

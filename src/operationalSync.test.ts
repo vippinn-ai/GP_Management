@@ -118,6 +118,59 @@ describe("operational sync", () => {
     expect(nextData.auditLogs[0].id).toBe("audit-1");
   });
 
+  it("applies a consumables combo to a customer tab", () => {
+    const appData = createAppData();
+    appData.customerTabs.push({
+      id: "tab-1",
+      customerName: "Vipin",
+      status: "open",
+      createdAt: "2026-06-09T09:00:00.000Z",
+      items: []
+    });
+
+    const nextData = applyOperationalMutation(
+      appData,
+      mutation("applyCustomerTabCombo", "customer_tab", "tab-1", {
+        customerTabId: "tab-1",
+        comboApplication: {
+          id: "combo-app-1",
+          comboId: "combo-1",
+          comboName: "Snack Combo",
+          price: 249,
+          includedMinutes: 0,
+          appliedAt: "2026-06-09T10:00:00.000Z",
+          fixedItems: [{ inventoryItemId: "coke", name: "Coke", sourceName: "Coke", quantity: 2, unitPrice: 40, stockUnitsPerSale: 1 }],
+          choices: []
+        },
+        items: [{
+          id: "line-combo-1",
+          inventoryItemId: "coke",
+          name: "Coke",
+          quantity: 2,
+          unitPrice: 0,
+          addedAt: "2026-06-09T10:00:00.000Z",
+          comboApplicationId: "combo-app-1",
+          comboId: "combo-1"
+        }],
+        auditLog: {
+          id: "audit-combo",
+          action: "customer_tab_combo_applied",
+          entityType: "customer_tab",
+          entityId: "tab-1",
+          message: "Applied Snack Combo.",
+          createdAt: "2026-06-09T10:00:00.000Z",
+          userId: "user-1"
+        }
+      })
+    );
+
+    expect(nextData.customerTabs[0].comboApplications).toHaveLength(1);
+    expect(nextData.customerTabs[0].items).toEqual([
+      expect.objectContaining({ id: "line-combo-1", quantity: 2, unitPrice: 0, comboApplicationId: "combo-app-1" })
+    ]);
+    expect(nextData.auditLogs[0].id).toBe("audit-combo");
+  });
+
   it("rebases a safe pending operation onto the latest remote state", () => {
     const remoteData = createAppData();
     remoteData.customerTabs.push({

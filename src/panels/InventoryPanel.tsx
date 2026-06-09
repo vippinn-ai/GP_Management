@@ -263,6 +263,7 @@ export function InventoryPanel(props: {
   function updateComboDraft(patch: Partial<ComboPackage>) {
     props.onComboDraftChange({ ...comboDraft, ...patch });
   }
+  const comboType = comboDraft.type ?? "game";
 
   return (
     <>
@@ -296,7 +297,7 @@ export function InventoryPanel(props: {
             <div className="panel-header">
               <div>
                 <h2>Combo Designer</h2>
-                <p>Create fixed-time game packages with included inventory and required choices.</p>
+                <p>Create game-session packages or consumables-only packages with included inventory and required choices.</p>
               </div>
             </div>
             {isManagerReadOnly && <div className="read-only-banner">Manager view: read-only access on this page.</div>}
@@ -311,34 +312,55 @@ export function InventoryPanel(props: {
                   <NumericInput required mode="decimal" min={0} value={comboDraft.price} onValueChange={(value) => updateComboDraft({ price: value })} />
                 </label>
                 <label>
-                  <span>Included Game Minutes</span>
-                  <NumericInput required min={1} value={comboDraft.includedMinutes} onValueChange={(value) => updateComboDraft({ includedMinutes: value })} />
+                  <span>Combo Type</span>
+                  <select
+                    value={comboType}
+                    onChange={(event) => {
+                      const nextType = event.target.value as ComboPackage["type"];
+                      updateComboDraft(nextType === "consumables"
+                        ? { type: nextType, stationIds: [], includedMinutes: 0 }
+                        : { type: nextType, includedMinutes: comboDraft.includedMinutes > 0 ? comboDraft.includedMinutes : 60 });
+                    }}
+                  >
+                    <option value="game">Game combo</option>
+                    <option value="consumables">Consumables combo</option>
+                  </select>
                 </label>
+                {comboType === "game" && (
+                  <label>
+                    <span>Included Game Minutes</span>
+                    <NumericInput required min={1} value={comboDraft.includedMinutes} onValueChange={(value) => updateComboDraft({ includedMinutes: value })} />
+                  </label>
+                )}
                 <label className="checkbox-field">
                   <input type="checkbox" checked={comboDraft.active} onChange={(event) => updateComboDraft({ active: event.target.checked })} />
                   <span>Active combo</span>
                 </label>
-                <div className="field-span-full combo-station-grid">
-                  <span className="field-label">Available Stations</span>
-                  {props.stations.filter((station) => station.mode === "timed").map((station) => (
-                    <label key={station.id} className="checkbox-field">
-                      <input
-                        type="checkbox"
-                        checked={comboDraft.stationIds.includes(station.id)}
-                        onChange={(event) => updateComboDraft({
-                          stationIds: event.target.checked
-                            ? Array.from(new Set([...comboDraft.stationIds, station.id]))
-                            : comboDraft.stationIds.filter((id) => id !== station.id)
-                        })}
-                      />
-                      <span>{station.name}</span>
-                    </label>
-                  ))}
-                </div>
+                {comboType === "game" ? (
+                  <div className="field-span-full combo-station-grid">
+                    <span className="field-label">Available Stations</span>
+                    {props.stations.filter((station) => station.mode === "timed").map((station) => (
+                      <label key={station.id} className="checkbox-field">
+                        <input
+                          type="checkbox"
+                          checked={comboDraft.stationIds.includes(station.id)}
+                          onChange={(event) => updateComboDraft({
+                            stationIds: event.target.checked
+                              ? Array.from(new Set([...comboDraft.stationIds, station.id]))
+                              : comboDraft.stationIds.filter((id) => id !== station.id)
+                          })}
+                        />
+                        <span>{station.name}</span>
+                      </label>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="field-span-full info-banner">Consumables combos appear in the Sale tab after a customer tab is opened. They do not require stations or game minutes.</div>
+                )}
                 <div className="field-span-full sale-variants-editor">
                   <div className="section-block-header compact">
                     <h3>Fixed Included Items</h3>
-                    <p>These items are always included and stock is reserved when the combo starts.</p>
+                    <p>These items are always included and stock is reserved when the {comboType === "game" ? "combo starts" : "combo is applied to a tab"}.</p>
                   </div>
                   <div className="variant-list">
                     {comboDraft.fixedItems.map((item) => (
@@ -366,7 +388,7 @@ export function InventoryPanel(props: {
                 <div className="field-span-full sale-variants-editor">
                   <div className="section-block-header compact">
                     <h3>Choice Groups</h3>
-                    <p>Use for options like fries flavor where staff must pick one item at session start.</p>
+                    <p>Use for options like fries flavor or drinks where staff must pick the required quantity at {comboType === "game" ? "session start" : "tab apply time"}.</p>
                   </div>
                   <div className="variant-list">
                     {comboDraft.choiceGroups.map((group) => (
@@ -414,7 +436,7 @@ export function InventoryPanel(props: {
                   </button>
                 </div>
                 <div className="button-row field-span-full">
-                  <button className="secondary-button" type="button" onClick={() => props.onComboDraftChange({ id: "", name: "", active: true, stationIds: [], price: 0, includedMinutes: 60, fixedItems: [], choiceGroups: [], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() })}>Reset</button>
+                  <button className="secondary-button" type="button" onClick={() => props.onComboDraftChange({ id: "", name: "", type: "game", active: true, stationIds: [], price: 0, includedMinutes: 60, fixedItems: [], choiceGroups: [], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() })}>Reset</button>
                   <button className="primary-button" type="submit">{comboDraft.id ? "Update Combo" : "Create Combo"}</button>
                 </div>
               </form>
@@ -424,7 +446,7 @@ export function InventoryPanel(props: {
             <div className="panel-header">
               <div>
                 <h2>Configured Combos</h2>
-                <p>Active combos appear while starting sessions on their selected stations.</p>
+                <p>Game combos appear at session start. Consumables combos appear in the Sale tab.</p>
               </div>
             </div>
             <div className="activity-list">
@@ -434,7 +456,9 @@ export function InventoryPanel(props: {
                   <div>
                     <strong>{combo.name}</strong>
                     <span className="muted">
-                      {currency(combo.price)} - {combo.includedMinutes} min - {combo.stationIds.map((id) => props.stations.find((station) => station.id === id)?.name ?? "Station").join(", ") || "No stations"}
+                      {(combo.type ?? "game") === "game"
+                        ? `Game - ${currency(combo.price)} - ${combo.includedMinutes} min - ${combo.stationIds.map((id) => props.stations.find((station) => station.id === id)?.name ?? "Station").join(", ") || "No stations"}`
+                        : `Consumables - ${currency(combo.price)} - Sale tab`}
                     </span>
                   </div>
                   <div className="button-row compact-actions">

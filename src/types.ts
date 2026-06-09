@@ -9,6 +9,7 @@ export type LineType = "session_charge" | "inventory_item" | "manual_charge" | "
 export type DiscountType = "amount" | "percentage";
 export type PlayMode = "group" | "solo";
 export type LtpOutcome = "won" | "lost";
+export type ComboType = "game" | "consumables";
 export type StockMovementType =
   | "restock"
   | "sale"
@@ -101,6 +102,7 @@ export interface ComboChoiceGroup {
 export interface ComboPackage {
   id: string;
   name: string;
+  type?: ComboType;
   active: boolean;
   stationIds: string[];
   price: number;
@@ -177,6 +179,7 @@ export interface CustomerTab {
   createdAt: string;
   closedAt?: string;
   items: CustomerTabItem[];
+  comboApplications?: SessionComboApplication[];
   continuedFromSessionIds?: string[];
   closedBillId?: string;
   closeDisposition?: "billed" | "rejected";

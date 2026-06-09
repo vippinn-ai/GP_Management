@@ -30,6 +30,7 @@ export type OperationalMutationKind =
   | "removeSessionItem"
   | "repeatSessionCombo"
   | "openCustomerTab"
+  | "applyCustomerTabCombo"
   | "addCustomerTabItem"
   | "updateCustomerTabItemQuantity"
   | "removeCustomerTabItem"
@@ -93,6 +94,13 @@ interface OpenCustomerTabPayload {
   auditLog: AuditLog;
 }
 
+interface ApplyCustomerTabComboPayload {
+  customerTabId: string;
+  comboApplication: SessionComboApplication;
+  items: CustomerTabItem[];
+  auditLog: AuditLog;
+}
+
 interface AddCustomerTabItemPayload {
   customerTabId: string;
   line: CustomerTabItem;
@@ -137,6 +145,7 @@ export type OperationalMutationPayload =
   | RemoveSessionItemPayload
   | RepeatSessionComboPayload
   | OpenCustomerTabPayload
+  | ApplyCustomerTabComboPayload
   | AddCustomerTabItemPayload
   | UpdateCustomerTabItemQuantityPayload
   | RemoveCustomerTabItemPayload
@@ -367,6 +376,17 @@ export function validateOperationalMutation(appData: AppData, mutation: Operatio
         ? { ok: false, reason: "A matching customer tab is already open." }
         : { ok: true };
     }
+    case "applyCustomerTabCombo": {
+      const payload = mutation.payload as ApplyCustomerTabComboPayload;
+      const tab = appData.customerTabs.find((entry) => entry.id === payload.customerTabId && entry.status === "open");
+      if (!tab) {
+        return { ok: false, reason: "The customer tab is no longer open." };
+      }
+      if ((tab.comboApplications ?? []).some((combo) => combo.id === payload.comboApplication.id)) {
+        return { ok: true };
+      }
+      return validateStockRequirements(appData, payload.items);
+    }
     case "addCustomerTabItem": {
       const payload = mutation.payload as AddCustomerTabItemPayload;
       const tab = appData.customerTabs.find((entry) => entry.id === payload.customerTabId && entry.status === "open");
@@ -512,6 +532,23 @@ export function applyOperationalMutation(source: AppData, mutation: OperationalM
         const tab = cloneValue(payload.tab);
         tab.customerId = resolveOperationalCustomer(appData, payload.customer);
         appData.customerTabs.unshift(tab);
+      }
+      insertFirstUnique(appData.auditLogs, payload.auditLog);
+      break;
+    }
+    case "applyCustomerTabCombo": {
+      const payload = mutation.payload as ApplyCustomerTabComboPayload;
+      const tab = appData.customerTabs.find((entry) => entry.id === payload.customerTabId && entry.status === "open");
+      if (tab) {
+        tab.comboApplications = tab.comboApplications ?? [];
+        if (!tab.comboApplications.some((combo) => combo.id === payload.comboApplication.id)) {
+          tab.comboApplications.push(cloneValue(payload.comboApplication));
+        }
+        for (const item of payload.items) {
+          if (!tab.items.some((entry) => entry.id === item.id)) {
+            tab.items.push(cloneValue(item));
+          }
+        }
       }
       insertFirstUnique(appData.auditLogs, payload.auditLog);
       break;

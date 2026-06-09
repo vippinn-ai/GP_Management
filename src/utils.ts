@@ -354,7 +354,11 @@ export function getCombosForStation(combos: ComboPackage[], stationId?: string):
   if (!stationId) {
     return [];
   }
-  return combos.filter((combo) => combo.active && combo.stationIds.includes(stationId));
+  return combos.filter((combo) => (combo.type ?? "game") === "game" && combo.active && combo.stationIds.includes(stationId));
+}
+
+export function getConsumablesCombos(combos: ComboPackage[]): ComboPackage[] {
+  return combos.filter((combo) => combo.type === "consumables" && combo.active);
 }
 
 export function getComboIncludedMinutes(session: Session): number {
@@ -496,6 +500,33 @@ export function getSessionComboCheckoutLines(session: Session): DraftBillLine[] 
   });
 }
 
+export function getConsumablesComboCheckoutLines(comboApplications: Session["comboApplications"] = []): DraftBillLine[] {
+  return comboApplications.flatMap((combo) => {
+    const packageLine: DraftBillLine = {
+      id: `line-combo-${combo.id}`,
+      type: "combo_package",
+      description: combo.comboName,
+      quantity: 1,
+      unitPrice: combo.price,
+      comboApplicationId: combo.id,
+      comboId: combo.comboId
+    };
+    const detailLines: DraftBillLine[] = getComboInventorySelections(combo).map((item, itemIndex) => ({
+      id: `line-combo-${combo.id}-item-${itemIndex}`,
+      type: "inventory_item" as const,
+      description: `${item.name} (included in ${combo.comboName})`,
+      quantity: item.quantity,
+      unitPrice: 0,
+      inventoryItemId: item.inventoryItemId,
+      saleVariantId: item.saleVariantId,
+      stockUnitsPerSale: item.stockUnitsPerSale,
+      comboApplicationId: combo.id,
+      comboId: combo.comboId
+    }));
+    return [packageLine, ...detailLines];
+  });
+}
+
 export function resolveCustomerTabWorkspaceSelection(
   openTabs: CustomerTab[],
   selectedTabId: string | null
@@ -593,20 +624,26 @@ export function getSessionCheckoutLines(session: Session, chargeSummary: Session
   return lines;
 }
 
-export function getCustomerTabCheckoutLines(items: CustomerTabItem[]): DraftBillLine[] {
-  return items.map((item) => ({
-    id: item.id,
-    type: "inventory_item",
-    description: item.soldAsPackOf ? `${item.name} (Pack of ${item.soldAsPackOf})` : item.name,
-    quantity: item.quantity,
-    unitPrice: item.unitPrice,
+export function getCustomerTabCheckoutLines(
+  items: CustomerTabItem[],
+  comboApplications: CustomerTab["comboApplications"] = []
+): DraftBillLine[] {
+  return [
+    ...getConsumablesComboCheckoutLines(comboApplications),
+    ...items.filter((item) => !item.comboApplicationId).map((item): DraftBillLine => ({
+      id: item.id,
+      type: "inventory_item",
+      description: item.soldAsPackOf ? `${item.name} (Pack of ${item.soldAsPackOf})` : item.name,
+      quantity: item.quantity,
+      unitPrice: item.unitPrice,
       inventoryItemId: item.inventoryItemId,
       soldAsPackOf: item.soldAsPackOf,
       saleVariantId: item.saleVariantId,
       stockUnitsPerSale: item.stockUnitsPerSale,
       comboApplicationId: item.comboApplicationId,
       comboId: item.comboId
-  }));
+    }))
+  ];
 }
 
 export function cloneBillLinesForReplacement(bill: AppData["bills"][number]): DraftBillLine[] {
