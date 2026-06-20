@@ -299,6 +299,13 @@ the session is still open, preserve idempotent retry behavior through `operation
 session status and pause-log rows, and write audit/event rows atomically. They intentionally do not
 touch bill, payment, or stock-finalization data.
 
+`add_session_item(payload jsonb)` and `remove_session_item(payload jsonb)` are implemented in
+`supabase/phase4-session-item-rpcs.sql`. They lock the target session row, validate that the session
+is open, validate touched inventory availability for add operations, write session item and
+reservation/release movement rows, and keep audit/event rows in the same transaction. The add path
+locks the touched inventory item row before checking open reservations so concurrent stock claims
+cannot both pass validation.
+
 Financial RPCs, migrated later:
 
 - `checkout_session(payload jsonb)`

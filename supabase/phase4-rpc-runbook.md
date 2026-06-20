@@ -9,7 +9,8 @@ Run in staging first.
 1. Confirm Phase 1 schema/backfill/parity are already complete.
 2. Run `supabase/phase4-start-session-rpc.sql`.
 3. Run `supabase/phase4-pause-resume-session-rpcs.sql`.
-4. Keep `VITE_BACKEND_RPC_OPERATIONAL_WRITES` disabled until a deliberate staging smoke test.
+4. Run `supabase/phase4-session-item-rpcs.sql`.
+5. Keep `VITE_BACKEND_RPC_OPERATIONAL_WRITES` disabled until a deliberate staging smoke test.
 
 ## Verify Function Install
 
@@ -23,7 +24,14 @@ select
   data_type
 from information_schema.routines
 where routine_schema = 'public'
-  and routine_name in ('start_session', 'pause_session', 'resume_session', 'raise_operational_rpc_error')
+  and routine_name in (
+    'start_session',
+    'pause_session',
+    'resume_session',
+    'add_session_item',
+    'remove_session_item',
+    'raise_operational_rpc_error'
+  )
 order by routine_name;
 ```
 
@@ -32,9 +40,13 @@ Expected:
 - `start_session` exists.
 - `pause_session` exists.
 - `resume_session` exists.
+- `add_session_item` exists.
+- `remove_session_item` exists.
 - `start_session` is `DEFINER`.
 - `pause_session` is `DEFINER`.
 - `resume_session` is `DEFINER`.
+- `add_session_item` is `DEFINER`.
+- `remove_session_item` is `DEFINER`.
 - `raise_operational_rpc_error` exists.
 
 ## Verify Execute Grant
@@ -48,7 +60,11 @@ select
   has_function_privilege('anon', 'public.pause_session(jsonb)', 'execute') as anon_can_pause,
   has_function_privilege('authenticated', 'public.pause_session(jsonb)', 'execute') as authenticated_can_pause,
   has_function_privilege('anon', 'public.resume_session(jsonb)', 'execute') as anon_can_resume,
-  has_function_privilege('authenticated', 'public.resume_session(jsonb)', 'execute') as authenticated_can_resume;
+  has_function_privilege('authenticated', 'public.resume_session(jsonb)', 'execute') as authenticated_can_resume,
+  has_function_privilege('anon', 'public.add_session_item(jsonb)', 'execute') as anon_can_add_session_item,
+  has_function_privilege('authenticated', 'public.add_session_item(jsonb)', 'execute') as authenticated_can_add_session_item,
+  has_function_privilege('anon', 'public.remove_session_item(jsonb)', 'execute') as anon_can_remove_session_item,
+  has_function_privilege('authenticated', 'public.remove_session_item(jsonb)', 'execute') as authenticated_can_remove_session_item;
 ```
 
 Expected:
@@ -59,6 +75,10 @@ Expected:
 - `authenticated_can_pause = true`
 - `anon_can_resume = false`
 - `authenticated_can_resume = true`
+- `anon_can_add_session_item = false`
+- `authenticated_can_add_session_item = true`
+- `anon_can_remove_session_item = false`
+- `authenticated_can_remove_session_item = true`
 
 This detailed grant query is useful when the boolean check does not match expectations:
 
@@ -69,13 +89,19 @@ select
   privilege_type
 from information_schema.routine_privileges
 where routine_schema = 'public'
-  and routine_name in ('start_session', 'pause_session', 'resume_session')
+  and routine_name in (
+    'start_session',
+    'pause_session',
+    'resume_session',
+    'add_session_item',
+    'remove_session_item'
+  )
 order by routine_name, grantee, privilege_type;
 ```
 
 Expected:
 
-- `authenticated` has `EXECUTE` on `start_session`, `pause_session`, and `resume_session`.
+- `authenticated` has `EXECUTE` on all listed operational RPCs.
 - `anon` does not have `EXECUTE` on these RPCs.
 - `postgres` may appear as owner/admin.
 - `service_role` may appear in Supabase-managed projects; it is not used by the browser anon key.
@@ -102,6 +128,15 @@ The `pause_session` and `resume_session` RPCs:
 - reject closed/missing sessions with `session_not_open`
 - reject invalid pause/resume state transitions with stable domain error codes
 - write session status, pause log, audit, and compact operational event rows atomically
+- return compact changed-row ids and event metadata
+
+The `add_session_item` and `remove_session_item` RPCs:
+
+- validate organization membership through `current_user_has_org_access`
+- lock the target session row for the duration of the short transaction
+- reject closed/missing sessions with `session_not_open`
+- validate inventory availability before adding a new reserved item
+- write session item, reservation/release stock movement, audit, and compact operational event rows atomically
 - return compact changed-row ids and event metadata
 
 ## Stop Conditions
