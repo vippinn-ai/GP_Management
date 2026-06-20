@@ -14,13 +14,17 @@ The current production baseline from `baseline.md` shows `app_state` at `2,501,7
 - `supabase/phase3-performance-evidence-probes.sql`
   - Read-only SQL probes for recent Bill Register, report reads, and older history search.
   - Uses the app's 7 AM Asia/Kolkata business-day boundary for bill/payment activity and mirrors the current Analytics local-date window for one-time expenses.
+- `supabase/phase3-performance-evidence-probes-single-result.sql`
+  - Same evidence probes, but returns one final grid for easier Supabase SQL Editor export.
 
 ## Staging Run Order
 
 Run these in staging:
 
 1. `supabase/phase3-read-performance-indexes.sql`
-2. `supabase/phase3-performance-evidence-probes.sql`
+2. `supabase/phase3-performance-evidence-probes-single-result.sql`
+
+Use `supabase/phase3-performance-evidence-probes.sql` only if you want separate result sets for each probe.
 
 Do not rerun `phase1-backfill-from-app-state.sql` after normalized tables become a production source of truth. At the current side-by-side stage it is still a staging validation script only.
 
@@ -46,4 +50,5 @@ Record the first summary grid and each `EXPLAIN ANALYZE` execution time.
 
 | Environment | Date | Recent Page Time | Report Probe Time | Older Search Time | Notes |
 | --- | --- | ---: | ---: | ---: | --- |
-| Staging | Pending | Pending | Pending | Pending | Run the scripts above and paste the summary/EXPLAIN output back into the thread |
+| Staging | 2026-06-20 | Pending | Pending | 3.290 ms | Partial output only; older search used `bills_org_issued_idx`, scanned 52 older-window candidate rows, returned 13 rows, and stayed in shared cache |
+| Staging | Pending | Pending | Pending | Pending | Run `phase3-performance-evidence-probes-single-result.sql` and paste the one-grid output back into the thread |
