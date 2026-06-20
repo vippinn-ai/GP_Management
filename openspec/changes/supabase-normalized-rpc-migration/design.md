@@ -343,6 +343,17 @@ interface BackendFeatureFlags {
 }
 ```
 
+Phase 2 implements this boundary with all flags defaulting to `false`. The current runtime still uses the `app_state` gateway unless one of these explicit Vite flags is enabled:
+
+- `VITE_BACKEND_NORMALIZED_CONFIG_READS`
+- `VITE_BACKEND_NORMALIZED_CATALOG_READS`
+- `VITE_BACKEND_NORMALIZED_BILL_HISTORY_READS`
+- `VITE_BACKEND_NORMALIZED_REALTIME`
+- `VITE_BACKEND_RPC_OPERATIONAL_WRITES`
+- `VITE_BACKEND_RPC_FINANCIAL_WRITES`
+
+Until Phase 3/4 adapters exist, enabling any normalized or RPC flag intentionally selects a guarded skeleton that fails with a clear "not implemented" error instead of performing a silent partial cutover.
+
 ## Migration and Rollback
 
 ### Backfill

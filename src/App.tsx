@@ -33,11 +33,10 @@ import {
   adminUpdateUserRemote,
   fetchCurrentProfile,
   isBackendConfigured,
-  loadRemoteAppDataSnapshot,
-  saveRemoteAppData,
   signInWithUsername,
   signOutRemote
 } from "./backend";
+import { defaultRemoteDataGateway } from "./dataGateway";
 import type {
   AppData,
   AppliedDiscount,
@@ -502,7 +501,7 @@ export default function App() {
   }, [activeUserId, backendConfigured, online]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function refreshRemoteState(options?: { keepUser?: boolean }) {
-    const snapshot = await loadRemoteAppDataSnapshot();
+    const snapshot = await defaultRemoteDataGateway.loadAppDataSnapshot();
     skipRemotePersistRef.current = true;
     setAppData(normalizeAppDataCustomers(snapshot.appData));
     setRemoteVersion(snapshot.version);
@@ -529,7 +528,7 @@ export default function App() {
     }
     setRemoteSaving(true);
     try {
-      const nextVersion = await saveRemoteAppData(nextAppData, activeUserId, expectedVersion, {
+      const nextVersion = await defaultRemoteDataGateway.saveAppData(nextAppData, activeUserId, expectedVersion, {
         actionLabel: isRetry ? `${actionLabel} retry` : actionLabel,
         source: "blocking"
       });
@@ -1056,7 +1055,7 @@ export default function App() {
     );
     setRemoteSaving(true);
     try {
-      const nextVersion = await saveRemoteAppData(appDataRef.current, activeUserId, remoteVersionRef.current, {
+      const nextVersion = await defaultRemoteDataGateway.saveAppData(appDataRef.current, activeUserId, remoteVersionRef.current, {
         actionLabel: syncableMutations.map((mutation) => mutation.kind).join(", "),
         source: "operational_queue",
         pendingOperationCount: syncableMutations.length
@@ -1072,7 +1071,7 @@ export default function App() {
         error instanceof Error && error.message.toLowerCase().includes("remote data changed");
       if (isVersionConflict) {
         try {
-          const snapshot = await loadRemoteAppDataSnapshot();
+          const snapshot = await defaultRemoteDataGateway.loadAppDataSnapshot();
           const currentQueue = pendingOperationalMutationsRef.current.filter(
             (mutation) => mutation.status === "syncing" || mutation.status === "pending" || mutation.status === "failed"
           );
@@ -1084,7 +1083,7 @@ export default function App() {
           remoteVersionRef.current = snapshot.version;
           setRemoteVersion(snapshot.version);
           if (rebased.pendingMutations.length > 0) {
-            const savedVersion = await saveRemoteAppData(rebased.appData, activeUserId, snapshot.version, {
+            const savedVersion = await defaultRemoteDataGateway.saveAppData(rebased.appData, activeUserId, snapshot.version, {
               actionLabel: `Rebased ${rebased.pendingMutations.map((mutation) => mutation.kind).join(", ")}`,
               source: "operational_queue",
               pendingOperationCount: rebased.pendingMutations.length
@@ -1649,7 +1648,7 @@ export default function App() {
     if (backendConfigured) {
       void runBlockingAction("Signing in...", async () => {
         const profile = await signInWithUsername(loginUsername, loginPassword);
-        const snapshot = await loadRemoteAppDataSnapshot();
+        const snapshot = await defaultRemoteDataGateway.loadAppDataSnapshot();
         skipRemotePersistRef.current = true;
         setAppData(normalizeAppDataCustomers(snapshot.appData));
         setRemoteVersion(snapshot.version);
@@ -2952,7 +2951,7 @@ export default function App() {
     let baseAppData = appData;
     let baseVersion = remoteVersion;
     if (backendConfigured) {
-      const snapshot = await loadRemoteAppDataSnapshot();
+      const snapshot = await defaultRemoteDataGateway.loadAppDataSnapshot();
       baseAppData = snapshot.appData;
       baseVersion = snapshot.version;
       setRemoteVersion(baseVersion);
@@ -3315,7 +3314,7 @@ export default function App() {
     let baseAppData = appData;
     let baseVersion = remoteVersion;
     if (backendConfigured) {
-      const snapshot = await loadRemoteAppDataSnapshot();
+      const snapshot = await defaultRemoteDataGateway.loadAppDataSnapshot();
       baseAppData = snapshot.appData;
       baseVersion = snapshot.version;
       setRemoteVersion(baseVersion);
@@ -4343,7 +4342,7 @@ export default function App() {
           username: nextUsername,
           role: editUserDraft.role
         });
-        const snapshot = await loadRemoteAppDataSnapshot();
+        const snapshot = await defaultRemoteDataGateway.loadAppDataSnapshot();
         const nextAppData = normalizeAppDataCustomers(snapshot.appData);
         const user = nextAppData.users.find((u) => u.id === editUserDraft.id);
         if (user) {

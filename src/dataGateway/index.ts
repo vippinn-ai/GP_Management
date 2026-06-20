@@ -1,0 +1,28 @@
+import { appStateRemoteDataGateway } from "./appStateGateway";
+import {
+  hasNormalizedGatewayFlag,
+  hasRpcGatewayFlag,
+  resolveBackendFeatureFlags,
+  type BackendFeatureFlags
+} from "./featureFlags";
+import { createNormalizedRemoteDataGateway } from "./normalizedGateway";
+import type { RemoteDataGateway } from "./types";
+
+export {
+  DEFAULT_BACKEND_FEATURE_FLAGS,
+  hasNormalizedGatewayFlag,
+  hasRpcGatewayFlag,
+  resolveBackendFeatureFlags,
+  type BackendFeatureFlags
+} from "./featureFlags";
+export { appStateRemoteDataGateway } from "./appStateGateway";
+export type { RemoteDataGateway } from "./types";
+
+export function createRemoteDataGateway(flags: BackendFeatureFlags = resolveBackendFeatureFlags()): RemoteDataGateway {
+  if (hasNormalizedGatewayFlag(flags) || hasRpcGatewayFlag(flags)) {
+    return createNormalizedRemoteDataGateway(flags);
+  }
+  return appStateRemoteDataGateway;
+}
+
+export const defaultRemoteDataGateway = createRemoteDataGateway();

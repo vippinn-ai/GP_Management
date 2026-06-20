@@ -1,12 +1,10 @@
 import { useEffect, type MutableRefObject } from "react";
 import {
-  loadRemoteAppDataSnapshot,
   resolveRemoteSessionProfile,
-  saveRemoteAppData,
-  subscribeToRemoteAppData,
   type RemoteAppDataSnapshot,
   type RemoteProfile
 } from "../backend";
+import { defaultRemoteDataGateway, type RemoteDataGateway } from "../dataGateway";
 import { saveAppData } from "../storage";
 import { normalizeAppDataCustomers } from "../utils";
 import type { AppData, TabId, User } from "../types";
@@ -69,6 +67,7 @@ export function useAppSync(params: {
   setRestoreRetrySignal: (value: number | ((previous: number) => number)) => void;
   setActiveTab: (tab: TabId) => void;
   applyRemoteSnapshot?: (snapshot: RemoteAppDataSnapshot) => void;
+  dataGateway?: RemoteDataGateway;
 }): void {
   const {
     backendConfigured,
@@ -93,7 +92,8 @@ export function useAppSync(params: {
     setRemoteRestoreState,
     setRestoreRetrySignal,
     setActiveTab,
-    applyRemoteSnapshot
+    applyRemoteSnapshot,
+    dataGateway = defaultRemoteDataGateway
   } = params;
 
   useEffect(() => {
@@ -134,7 +134,7 @@ export function useAppSync(params: {
         }
 
         try {
-          const snapshot = await loadRemoteAppDataSnapshot();
+          const snapshot = await dataGateway.loadAppDataSnapshot();
           if (cancelled) {
             return;
           }
@@ -192,7 +192,7 @@ export function useAppSync(params: {
     return () => {
       cancelled = true;
     };
-  }, [backendConfigured, restoreRetrySignal]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [backendConfigured, dataGateway, restoreRetrySignal]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!backendConfigured || !online) {
@@ -211,7 +211,7 @@ export function useAppSync(params: {
     if (!backendConfigured || !activeUserId) {
       return;
     }
-    return subscribeToRemoteAppData((snapshot) => {
+    return dataGateway.subscribeToAppData((snapshot) => {
       if (applyRemoteSnapshot) {
         applyRemoteSnapshot(snapshot);
       } else {
@@ -222,7 +222,7 @@ export function useAppSync(params: {
       setRemoteError("");
       setRemoteRestoreState("ready");
     });
-  }, [activeUserId, backendConfigured]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [activeUserId, backendConfigured, dataGateway]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!backendConfigured) {
@@ -244,17 +244,18 @@ export function useAppSync(params: {
         return;
       }
       setRemoteSaving(true);
-      saveRemoteAppData(appData, activeUserId, remoteVersion, {
-        actionLabel: "Auto-persist app data",
-        source: "auto_persist"
-      })
+      dataGateway
+        .saveAppData(appData, activeUserId, remoteVersion, {
+          actionLabel: "Auto-persist app data",
+          source: "auto_persist"
+        })
         .then((nextVersion) => {
           setRemoteVersion(nextVersion);
           setRemoteError("");
         })
         .catch(async (error: unknown) => {
           try {
-            const snapshot = await loadRemoteAppDataSnapshot();
+            const snapshot = await dataGateway.loadAppDataSnapshot();
             skipRemotePersistRef.current = true;
             setAppData(normalizeAppDataCustomers(snapshot.appData));
             setRemoteVersion(snapshot.version);
@@ -276,5 +277,5 @@ export function useAppSync(params: {
         window.clearTimeout(remoteSaveTimerRef.current);
       }
     };
-  }, [activeUserId, appData, backendConfigured, remoteLoading, remoteReadOnly]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [activeUserId, appData, backendConfigured, dataGateway, remoteLoading, remoteReadOnly]); // eslint-disable-line react-hooks/exhaustive-deps
 }

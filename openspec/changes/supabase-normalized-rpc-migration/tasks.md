@@ -30,11 +30,11 @@
 
 ## 4. Phase 2: Data Gateway
 
-- [ ] 4.1 Add frontend data gateway interfaces
-- [ ] 4.2 Add current `app_state` gateway implementation
-- [ ] 4.3 Add normalized read gateway skeleton
-- [ ] 4.4 Add backend feature flags with default values preserving current behavior
-- [ ] 4.5 Add tests proving disabled flags keep current behavior
+- [x] 4.1 Add frontend data gateway interfaces
+- [x] 4.2 Add current `app_state` gateway implementation
+- [x] 4.3 Add normalized read gateway skeleton
+- [x] 4.4 Add backend feature flags with default values preserving current behavior
+- [x] 4.5 Add tests proving disabled flags keep current behavior
 
 ## 5. Phase 3: Low-Risk Normalized Reads
 
@@ -76,8 +76,8 @@
 
 ## 9. Verification
 
-- [ ] 9.1 Run `npm test -- --run`
-- [ ] 9.2 Run `npm run build`
+- [x] 9.1 Run `npm test -- --run`
+- [x] 9.2 Run `npm run build`
 - [x] 9.3 Run staging SQL migration and backfill
 - [x] 9.4 Run staging parity checks
 - [ ] 9.5 Smoke test as admin, manager, and receptionist
