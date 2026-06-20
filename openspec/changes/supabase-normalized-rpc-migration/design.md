@@ -338,6 +338,7 @@ interface BackendFeatureFlags {
   normalizedCatalogReads: boolean;
   normalizedComboReads: boolean;
   normalizedCustomerSearchReads: boolean;
+  normalizedReportReads: boolean;
   normalizedBillHistoryReads: boolean;
   rpcOperationalWrites: boolean;
   rpcFinancialWrites: boolean;
@@ -351,6 +352,7 @@ Phase 2 implements this boundary with all flags defaulting to `false`. The curre
 - `VITE_BACKEND_NORMALIZED_CATALOG_READS`
 - `VITE_BACKEND_NORMALIZED_COMBO_READS`
 - `VITE_BACKEND_NORMALIZED_CUSTOMER_SEARCH_READS`
+- `VITE_BACKEND_NORMALIZED_REPORT_READS`
 - `VITE_BACKEND_NORMALIZED_BILL_HISTORY_READS`
 - `VITE_BACKEND_NORMALIZED_REALTIME`
 - `VITE_BACKEND_RPC_OPERATIONAL_WRITES`
@@ -364,6 +366,7 @@ The first Phase 3 slice implements normalized config/catalog read overlays:
 - `VITE_BACKEND_NORMALIZED_CATALOG_READS` overlays `inventoryItems` with grouped `saleVariants`.
 - `VITE_BACKEND_NORMALIZED_COMBO_READS` overlays `combos` from the split combo package, station-target, fixed-item, choice-group, and choice-option tables. Game and consumables combo defaults match the current app hydration rules.
 - `VITE_BACKEND_NORMALIZED_CUSTOMER_SEARCH_READS` routes customer autocomplete suggestions through a small normalized `customers` query with a hard page limit. The local in-memory customer list remains the fallback when the flag is disabled or the normalized search fails.
+- `VITE_BACKEND_NORMALIZED_REPORT_READS` routes the Reports tab through date-filtered normalized reads for payments, current-range bill activity, bill lines/discounts needed for revenue allocation, and one-time expenses. It fetches the comparison-range payments needed for growth calculations in the same bounded read and falls back to the current app-state report data on error.
 
 These read adapters intentionally keep saves and realtime on `app_state`. This lets staging validate normalized row mapping under feature flags before moving screen-specific reads away from the full snapshot load.
 

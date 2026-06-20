@@ -73,6 +73,12 @@ export function ReportsPanel(props: {
   canDeleteExpenses: boolean;
   canManageExpenseTemplates: boolean;
   isManagerReadOnly: boolean;
+  normalizedReports?: {
+    enabled: boolean;
+    loading: boolean;
+    error: string;
+    onRefresh: () => void;
+  };
   onSettlePendingBill: (billId: string) => void;
   onReportFilterChange: (next: ReportFilterState) => void;
   onExpenseFormChange: (next: ExpenseForm) => void;
@@ -151,6 +157,20 @@ export function ReportsPanel(props: {
           {isManagerReadOnly && (
             <div className="read-only-banner compact">
               Manager view: analytics are read-only except one-time expense creation.
+            </div>
+          )}
+          {props.normalizedReports?.enabled && (
+            <div className={`read-only-banner compact ${props.normalizedReports.error ? "is-warning" : ""}`}>
+              <span>
+                {props.normalizedReports.loading
+                  ? "Loading report rows from normalized tables..."
+                  : props.normalizedReports.error
+                    ? `Using current cached report data: ${props.normalizedReports.error}`
+                    : "Report range is loaded from normalized tables."}
+              </span>
+              <button className="secondary-button" type="button" onClick={props.normalizedReports.onRefresh} disabled={props.normalizedReports.loading}>
+                Refresh
+              </button>
             </div>
           )}
         </div>
