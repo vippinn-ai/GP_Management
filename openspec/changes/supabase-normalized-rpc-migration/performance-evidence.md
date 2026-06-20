@@ -48,7 +48,16 @@ Record the first summary grid and each `EXPLAIN ANALYZE` execution time.
 
 ## Result Log
 
-| Environment | Date | Recent Page Time | Report Probe Time | Older Search Time | Notes |
-| --- | --- | ---: | ---: | ---: | --- |
-| Staging | 2026-06-20 | Pending | Pending | 3.290 ms | Partial output only; older search used `bills_org_issued_idx`, scanned 52 older-window candidate rows, returned 13 rows, and stayed in shared cache |
-| Staging | Pending | Pending | Pending | Pending | Run `phase3-performance-evidence-probes-single-result.sql` and paste the one-grid output back into the thread |
+| Environment | Date | Recent Page Time | Detail Page Time | Report Probe Time | Older Search Time | Notes |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| Staging | 2026-06-20 | 0.090 ms | 0.352 ms | 0.254 ms | 1.996 ms | Single-result probe passed. Recent page used `bills_org_issued_idx`; recent bill page count was `4`, page JSON was `14,794` bytes versus staging `app_state` at `113,601` bytes, page detail rows were bounded to `17` bill lines, report reads used date indexes, and older search used `bills_org_issued_idx` over `52` older-window candidate rows returning `13` matches |
+
+## Staging Conclusion
+
+Staging evidence satisfies task `5.7`.
+
+- Recent default history reads are bounded to the last 15 business days and one Bill Register page.
+- Recent bill-page payload is materially smaller than the full staging `app_state` payload before related detail rows.
+- Analytics/report reads use bounded date filters across bills, payments, closed session activity, closed customer-tab activity, and expenses.
+- Older search remains available through paginated normalized bill queries and completed in under a few milliseconds on the staging dataset.
+- The small staging dataset caused some detail joins to use sequential scans on tiny tables, but the measured execution time is well below the target and the production-facing query remains bounded to the current page IDs.
