@@ -1,6 +1,17 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { getSupabaseClient } from "../backend";
-import type { AppData, BusinessProfile, InventoryItem, PricingRule, SaleVariant, Station } from "../types";
+import type {
+  AppData,
+  BusinessProfile,
+  ComboChoiceGroup,
+  ComboFixedItem,
+  ComboPackage,
+  ComboType,
+  InventoryItem,
+  PricingRule,
+  SaleVariant,
+  Station
+} from "../types";
 
 const NORMALIZED_READ_TIMEOUT_MS = 15_000;
 
@@ -64,6 +75,45 @@ interface SaleVariantRow {
   raw_data: Record<string, unknown> | null;
 }
 
+interface ComboRow {
+  id: string;
+  name: string;
+  type: string;
+  active: boolean;
+  price: number | string;
+  included_minutes: number | string;
+  raw_data: Record<string, unknown> | null;
+  created_at: string;
+  updated_at: string;
+}
+
+interface ComboStationTargetRow {
+  combo_id: string;
+  station_id: string;
+}
+
+interface ComboFixedItemRow {
+  combo_id: string;
+  id: string;
+  sellable_option_id: string;
+  quantity: number | string;
+  raw_data: Record<string, unknown> | null;
+}
+
+interface ComboChoiceGroupRow {
+  combo_id: string;
+  id: string;
+  label: string;
+  required_quantity: number | string;
+  raw_data: Record<string, unknown> | null;
+}
+
+interface ComboChoiceOptionRow {
+  combo_id: string;
+  choice_group_id: string;
+  option_id: string;
+}
+
 interface NormalizedQueryResult<T> {
   data: T | null;
   error: Error | { message: string } | null;
@@ -81,8 +131,16 @@ export interface NormalizedCatalogData {
   inventoryItems: InventoryItem[];
 }
 
+export interface NormalizedComboData {
+  combos: ComboPackage[];
+}
+
 function toRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+}
+
+function toRecordArray(value: unknown): Record<string, unknown>[] {
+  return Array.isArray(value) ? value.map(toRecord).filter((entry) => Object.keys(entry).length > 0) : [];
 }
 
 function toOptionalString(value: unknown): string | undefined {
@@ -126,6 +184,20 @@ function toBooleanValue(value: unknown, fallback: boolean): boolean {
     }
   }
   return fallback;
+}
+
+function toStringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.map((entry) => (typeof entry === "string" ? entry.trim() : "")).filter(Boolean)
+    : [];
+}
+
+function toPositiveInteger(value: unknown, fallback: unknown): number {
+  return Math.max(1, Math.trunc(toNumberValue(value, fallback)));
+}
+
+function toComboType(value: unknown, fallback: ComboType = "game"): ComboType {
+  return value === "consumables" || value === "game" ? value : fallback;
 }
 
 async function withNormalizedReadTimeout<T>(request: PromiseLike<T>, action: string): Promise<T> {
@@ -240,6 +312,76 @@ export function mapNormalizedInventoryItem(row: InventoryItemRow, saleVariants: 
   };
 }
 
+function mapNormalizedComboFixedItem(row: ComboFixedItemRow): ComboFixedItem {
+  const raw = toRecord(row.raw_data);
+  return {
+    id: row.id,
+    sellableOptionId: toStringValue(row.sellable_option_id, toStringValue(raw.sellableOptionId, "")),
+    quantity: toPositiveInteger(row.quantity, raw.quantity ?? 1)
+  };
+}
+
+function mapRawComboFixedItems(value: unknown): ComboFixedItem[] {
+  return toRecordArray(value)
+    .map((raw) => ({
+      id: toStringValue(raw.id, ""),
+      sellableOptionId: toStringValue(raw.sellableOptionId, ""),
+      quantity: toPositiveInteger(raw.quantity, 1)
+    }))
+    .filter((item) => item.id);
+}
+
+function mapNormalizedComboChoiceGroup(row: ComboChoiceGroupRow, optionIds: string[] = []): ComboChoiceGroup {
+  const raw = toRecord(row.raw_data);
+  return {
+    id: row.id,
+    label: toStringValue(row.label, toStringValue(raw.label, "Choice group")),
+    requiredQuantity: toPositiveInteger(row.required_quantity, raw.requiredQuantity ?? 1),
+    optionIds: optionIds.length > 0 ? optionIds : toStringArray(raw.optionIds)
+  };
+}
+
+function mapRawComboChoiceGroups(value: unknown): ComboChoiceGroup[] {
+  return toRecordArray(value)
+    .map((raw) => ({
+      id: toStringValue(raw.id, ""),
+      label: toStringValue(raw.label, "Choice group"),
+      requiredQuantity: toPositiveInteger(raw.requiredQuantity, 1),
+      optionIds: toStringArray(raw.optionIds)
+    }))
+    .filter((group) => group.id);
+}
+
+export function mapNormalizedComboPackage(
+  row: ComboRow,
+  params: {
+    stationIds?: string[];
+    fixedItems?: ComboFixedItem[];
+    choiceGroups?: ComboChoiceGroup[];
+  } = {}
+): ComboPackage {
+  const raw = toRecord(row.raw_data);
+  const comboType = toComboType(row.type, toComboType(raw.type, "game"));
+  const fixedItems = params.fixedItems && params.fixedItems.length > 0 ? params.fixedItems : mapRawComboFixedItems(raw.fixedItems);
+  const choiceGroups =
+    params.choiceGroups && params.choiceGroups.length > 0 ? params.choiceGroups : mapRawComboChoiceGroups(raw.choiceGroups);
+  const stationIds = params.stationIds && params.stationIds.length > 0 ? params.stationIds : toStringArray(raw.stationIds);
+
+  return {
+    id: row.id,
+    name: toStringValue(row.name, toStringValue(raw.name, "Unnamed combo")),
+    type: comboType,
+    active: toBooleanValue(row.active, toBooleanValue(raw.active, true)),
+    stationIds: comboType === "consumables" ? [] : stationIds,
+    price: toNumberValue(row.price, raw.price),
+    includedMinutes: comboType === "consumables" ? 0 : toPositiveInteger(row.included_minutes, raw.includedMinutes ?? 60),
+    fixedItems,
+    choiceGroups,
+    createdAt: toStringValue(row.created_at, toStringValue(raw.createdAt, new Date().toISOString())),
+    updatedAt: toStringValue(row.updated_at, toStringValue(raw.updatedAt, toStringValue(raw.createdAt, new Date().toISOString())))
+  };
+}
+
 export function buildNormalizedConfigData(params: {
   organization: OrganizationRow;
   inventoryCategories: InventoryCategoryRow[];
@@ -270,8 +412,55 @@ export function buildNormalizedCatalogData(params: {
   };
 }
 
-export async function loadNormalizedConfigData(client: SupabaseClient = getSupabaseClient()): Promise<NormalizedConfigData> {
-  const organization = assertNormalizedResult(
+export function buildNormalizedComboData(params: {
+  combos: ComboRow[];
+  stationTargets: ComboStationTargetRow[];
+  fixedItems: ComboFixedItemRow[];
+  choiceGroups: ComboChoiceGroupRow[];
+  choiceOptions: ComboChoiceOptionRow[];
+}): NormalizedComboData {
+  const stationIdsByComboId = new Map<string, string[]>();
+  params.stationTargets.forEach((row) => {
+    const stationIds = stationIdsByComboId.get(row.combo_id) ?? [];
+    stationIds.push(row.station_id);
+    stationIdsByComboId.set(row.combo_id, stationIds);
+  });
+
+  const fixedItemsByComboId = new Map<string, ComboFixedItem[]>();
+  params.fixedItems.forEach((row) => {
+    const fixedItems = fixedItemsByComboId.get(row.combo_id) ?? [];
+    fixedItems.push(mapNormalizedComboFixedItem(row));
+    fixedItemsByComboId.set(row.combo_id, fixedItems);
+  });
+
+  const optionIdsByGroupKey = new Map<string, string[]>();
+  params.choiceOptions.forEach((row) => {
+    const groupKey = `${row.combo_id}:${row.choice_group_id}`;
+    const optionIds = optionIdsByGroupKey.get(groupKey) ?? [];
+    optionIds.push(row.option_id);
+    optionIdsByGroupKey.set(groupKey, optionIds);
+  });
+
+  const choiceGroupsByComboId = new Map<string, ComboChoiceGroup[]>();
+  params.choiceGroups.forEach((row) => {
+    const choiceGroups = choiceGroupsByComboId.get(row.combo_id) ?? [];
+    choiceGroups.push(mapNormalizedComboChoiceGroup(row, optionIdsByGroupKey.get(`${row.combo_id}:${row.id}`) ?? []));
+    choiceGroupsByComboId.set(row.combo_id, choiceGroups);
+  });
+
+  return {
+    combos: params.combos.map((row) =>
+      mapNormalizedComboPackage(row, {
+        stationIds: stationIdsByComboId.get(row.id) ?? [],
+        fixedItems: fixedItemsByComboId.get(row.id) ?? [],
+        choiceGroups: choiceGroupsByComboId.get(row.id) ?? []
+      })
+    )
+  };
+}
+
+export async function loadNormalizedActiveOrganization(client: SupabaseClient = getSupabaseClient()): Promise<OrganizationRow> {
+  return assertNormalizedResult(
     await withNormalizedReadTimeout(
       client
         .from("organizations")
@@ -284,6 +473,10 @@ export async function loadNormalizedConfigData(client: SupabaseClient = getSupab
     ),
     "loading the active organization"
   ) as OrganizationRow;
+}
+
+export async function loadNormalizedConfigData(client: SupabaseClient = getSupabaseClient()): Promise<NormalizedConfigData> {
+  const organization = await loadNormalizedActiveOrganization(client);
 
   const organizationId = organization.id;
   const [inventoryCategories, stations, pricingRules] = await Promise.all([
@@ -347,24 +540,83 @@ export async function loadNormalizedCatalogData(
   return buildNormalizedCatalogData({ inventoryItems, saleVariants });
 }
 
+export async function loadNormalizedComboData(
+  organizationId: string,
+  client: SupabaseClient = getSupabaseClient()
+): Promise<NormalizedComboData> {
+  const [combos, stationTargets, fixedItems, choiceGroups, choiceOptions] = await Promise.all([
+    readMany<ComboRow>(
+      client
+        .from("combos")
+        .select("id, name, type, active, price, included_minutes, raw_data, created_at, updated_at")
+        .eq("organization_id", organizationId)
+        .order("name", { ascending: true }),
+      "loading normalized combos"
+    ),
+    readMany<ComboStationTargetRow>(
+      client
+        .from("combo_station_targets")
+        .select("combo_id, station_id")
+        .eq("organization_id", organizationId)
+        .order("combo_id", { ascending: true })
+        .order("station_id", { ascending: true }),
+      "loading normalized combo station targets"
+    ),
+    readMany<ComboFixedItemRow>(
+      client
+        .from("combo_fixed_items")
+        .select("combo_id, id, sellable_option_id, quantity, raw_data")
+        .eq("organization_id", organizationId)
+        .order("combo_id", { ascending: true })
+        .order("created_at", { ascending: true })
+        .order("id", { ascending: true }),
+      "loading normalized combo fixed items"
+    ),
+    readMany<ComboChoiceGroupRow>(
+      client
+        .from("combo_choice_groups")
+        .select("combo_id, id, label, required_quantity, raw_data")
+        .eq("organization_id", organizationId)
+        .order("combo_id", { ascending: true })
+        .order("created_at", { ascending: true })
+        .order("id", { ascending: true }),
+      "loading normalized combo choice groups"
+    ),
+    readMany<ComboChoiceOptionRow>(
+      client
+        .from("combo_choice_options")
+        .select("combo_id, choice_group_id, option_id")
+        .eq("organization_id", organizationId)
+        .order("combo_id", { ascending: true })
+        .order("choice_group_id", { ascending: true })
+        .order("option_id", { ascending: true }),
+      "loading normalized combo choice options"
+    )
+  ]);
+
+  return buildNormalizedComboData({ combos, stationTargets, fixedItems, choiceGroups, choiceOptions });
+}
+
 export async function loadNormalizedAppDataOverlay(params: {
   normalizedConfigReads: boolean;
   normalizedCatalogReads: boolean;
+  normalizedComboReads: boolean;
   client?: SupabaseClient;
 }): Promise<{ organizationId?: string; appData: Partial<AppData> }> {
   const client = params.client ?? getSupabaseClient();
   const overlay: Partial<AppData> = {};
   let organizationId: string | undefined;
 
-  if (params.normalizedConfigReads || params.normalizedCatalogReads) {
+  if (params.normalizedConfigReads) {
     const configData = await loadNormalizedConfigData(client);
     organizationId = configData.organizationId;
-    if (params.normalizedConfigReads) {
-      overlay.businessProfile = configData.businessProfile;
-      overlay.inventoryCategories = configData.inventoryCategories;
-      overlay.stations = configData.stations;
-      overlay.pricingRules = configData.pricingRules;
-    }
+    overlay.businessProfile = configData.businessProfile;
+    overlay.inventoryCategories = configData.inventoryCategories;
+    overlay.stations = configData.stations;
+    overlay.pricingRules = configData.pricingRules;
+  } else if (params.normalizedCatalogReads || params.normalizedComboReads) {
+    const organization = await loadNormalizedActiveOrganization(client);
+    organizationId = organization.id;
   }
 
   if (params.normalizedCatalogReads) {
@@ -373,6 +625,14 @@ export async function loadNormalizedAppDataOverlay(params: {
     }
     const catalogData = await loadNormalizedCatalogData(organizationId, client);
     overlay.inventoryItems = catalogData.inventoryItems;
+  }
+
+  if (params.normalizedComboReads) {
+    if (!organizationId) {
+      throw new Error("Normalized combo reads require an active organization.");
+    }
+    const comboData = await loadNormalizedComboData(organizationId, client);
+    overlay.combos = comboData.combos;
   }
 
   return { organizationId, appData: overlay };

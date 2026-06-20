@@ -65,6 +65,7 @@ describe("data gateway feature flags", () => {
     expect(DEFAULT_BACKEND_FEATURE_FLAGS).toEqual({
       normalizedConfigReads: false,
       normalizedCatalogReads: false,
+      normalizedComboReads: false,
       normalizedBillHistoryReads: false,
       normalizedRealtime: false,
       rpcOperationalWrites: false,
@@ -78,12 +79,14 @@ describe("data gateway feature flags", () => {
       {
         VITE_BACKEND_NORMALIZED_CONFIG_READS: "true",
         VITE_BACKEND_NORMALIZED_CATALOG_READS: "0",
+        VITE_BACKEND_NORMALIZED_COMBO_READS: "yes",
         VITE_BACKEND_RPC_FINANCIAL_WRITES: "false"
       }
     );
 
     expect(flags.normalizedConfigReads).toBe(true);
     expect(flags.normalizedCatalogReads).toBe(false);
+    expect(flags.normalizedComboReads).toBe(true);
     expect(flags.rpcFinancialWrites).toBe(true);
   });
 });
@@ -152,7 +155,50 @@ describe("app_state data gateway", () => {
     });
     expect(normalizedReadMocks.loadNormalizedAppDataOverlay).toHaveBeenCalledWith({
       normalizedConfigReads: false,
-      normalizedCatalogReads: true
+      normalizedCatalogReads: true,
+      normalizedComboReads: false
+    });
+  });
+
+  it("overlays normalized combo reads independently from catalog reads", async () => {
+    const appData = createAppData();
+    const normalizedCombo = {
+      id: "combo-1",
+      name: "Momo Combo",
+      type: "consumables" as const,
+      active: true,
+      stationIds: [],
+      price: 199,
+      includedMinutes: 0,
+      fixedItems: [{ id: "fixed-1", sellableOptionId: "momo-plate", quantity: 2 }],
+      choiceGroups: [],
+      createdAt: "2026-06-20T10:00:00.000Z",
+      updatedAt: "2026-06-20T10:00:00.000Z"
+    };
+    backendMocks.loadRemoteAppDataSnapshot.mockResolvedValue({ appData, version: 8 });
+    normalizedReadMocks.loadNormalizedAppDataOverlay.mockResolvedValue({
+      organizationId: "org-primary",
+      appData: {
+        combos: [normalizedCombo]
+      }
+    });
+
+    const gateway = createRemoteDataGateway({
+      ...DEFAULT_BACKEND_FEATURE_FLAGS,
+      normalizedComboReads: true
+    });
+
+    await expect(gateway.loadAppDataSnapshot()).resolves.toEqual({
+      appData: {
+        ...appData,
+        combos: [normalizedCombo]
+      },
+      version: 8
+    });
+    expect(normalizedReadMocks.loadNormalizedAppDataOverlay).toHaveBeenCalledWith({
+      normalizedConfigReads: false,
+      normalizedCatalogReads: false,
+      normalizedComboReads: true
     });
   });
 

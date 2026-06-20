@@ -336,6 +336,7 @@ Example flags:
 interface BackendFeatureFlags {
   normalizedConfigReads: boolean;
   normalizedCatalogReads: boolean;
+  normalizedComboReads: boolean;
   normalizedBillHistoryReads: boolean;
   rpcOperationalWrites: boolean;
   rpcFinancialWrites: boolean;
@@ -347,6 +348,7 @@ Phase 2 implements this boundary with all flags defaulting to `false`. The curre
 
 - `VITE_BACKEND_NORMALIZED_CONFIG_READS`
 - `VITE_BACKEND_NORMALIZED_CATALOG_READS`
+- `VITE_BACKEND_NORMALIZED_COMBO_READS`
 - `VITE_BACKEND_NORMALIZED_BILL_HISTORY_READS`
 - `VITE_BACKEND_NORMALIZED_REALTIME`
 - `VITE_BACKEND_RPC_OPERATIONAL_WRITES`
@@ -358,6 +360,7 @@ The first Phase 3 slice implements normalized config/catalog read overlays:
 
 - `VITE_BACKEND_NORMALIZED_CONFIG_READS` overlays `businessProfile`, `inventoryCategories`, `stations`, and `pricingRules` from normalized tables.
 - `VITE_BACKEND_NORMALIZED_CATALOG_READS` overlays `inventoryItems` with grouped `saleVariants`.
+- `VITE_BACKEND_NORMALIZED_COMBO_READS` overlays `combos` from the split combo package, station-target, fixed-item, choice-group, and choice-option tables. Game and consumables combo defaults match the current app hydration rules.
 
 These overlays intentionally keep saves and realtime on `app_state`. This lets staging validate normalized row mapping under feature flags before moving screen-specific reads away from the full snapshot load.
 

@@ -16,7 +16,8 @@ export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): 
       const snapshot = await appStateRemoteDataGateway.loadAppDataSnapshot();
       const overlay = await loadNormalizedAppDataOverlay({
         normalizedConfigReads: _flags.normalizedConfigReads,
-        normalizedCatalogReads: _flags.normalizedCatalogReads
+        normalizedCatalogReads: _flags.normalizedCatalogReads,
+        normalizedComboReads: _flags.normalizedComboReads
       });
       return {
         ...snapshot,
