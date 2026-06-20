@@ -14,8 +14,12 @@ function unsupportedGatewayCall(): never {
 }
 
 function mergeLiveSessions(baseSessions: Session[], normalizedSessions: Session[]): Session[] {
-  const normalizedSessionIds = new Set(normalizedSessions.map((session) => session.id));
-  const normalizedStationIds = new Set(normalizedSessions.map((session) => session.stationId).filter(Boolean));
+  const closedBaseSessionIds = new Set(
+    baseSessions.filter((session) => session.status === "closed").map((session) => session.id)
+  );
+  const effectiveNormalizedSessions = normalizedSessions.filter((session) => !closedBaseSessionIds.has(session.id));
+  const normalizedSessionIds = new Set(effectiveNormalizedSessions.map((session) => session.id));
+  const normalizedStationIds = new Set(effectiveNormalizedSessions.map((session) => session.stationId).filter(Boolean));
   const retainedBaseSessions = baseSessions.filter((session) => {
     if (normalizedSessionIds.has(session.id)) {
       return false;
@@ -25,12 +29,14 @@ function mergeLiveSessions(baseSessions: Session[], normalizedSessions: Session[
     }
     return true;
   });
-  return [...retainedBaseSessions, ...normalizedSessions];
+  return [...retainedBaseSessions, ...effectiveNormalizedSessions];
 }
 
 function mergeLiveCustomerTabs(baseTabs: CustomerTab[], normalizedTabs: CustomerTab[]): CustomerTab[] {
-  const normalizedTabIds = new Set(normalizedTabs.map((tab) => tab.id));
-  return [...baseTabs.filter((tab) => !normalizedTabIds.has(tab.id)), ...normalizedTabs];
+  const closedBaseTabIds = new Set(baseTabs.filter((tab) => tab.status === "closed").map((tab) => tab.id));
+  const effectiveNormalizedTabs = normalizedTabs.filter((tab) => !closedBaseTabIds.has(tab.id));
+  const normalizedTabIds = new Set(effectiveNormalizedTabs.map((tab) => tab.id));
+  return [...baseTabs.filter((tab) => !normalizedTabIds.has(tab.id)), ...effectiveNormalizedTabs];
 }
 
 function mergeLiveSessionPauseLogs(

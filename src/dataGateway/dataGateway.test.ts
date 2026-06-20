@@ -229,7 +229,7 @@ describe("app_state data gateway", () => {
         pricingSnapshot: [],
         items: [],
         pauseLogIds: [],
-        closedBillId: "bill-1"
+        closeDisposition: "hopped"
       },
       {
         id: "stale-open-session",
@@ -276,6 +276,19 @@ describe("app_state data gateway", () => {
       items: [],
       pauseLogIds: ["normalized-pause"]
     };
+    const staleNormalizedClosedSession = {
+      id: "closed-session",
+      stationId: "pool-2",
+      stationNameSnapshot: "Pool 2",
+      mode: "timed" as const,
+      startedAt: "2026-06-20T08:00:00.000Z",
+      status: "active" as const,
+      playMode: "group" as const,
+      ltpEligible: false,
+      pricingSnapshot: [],
+      items: [],
+      pauseLogIds: []
+    };
     const normalizedPauseLog = {
       id: "normalized-pause",
       sessionId: "normalized-open-session",
@@ -288,13 +301,20 @@ describe("app_state data gateway", () => {
       createdAt: "2026-06-20T10:00:00.000Z",
       items: []
     };
+    const staleNormalizedClosedTab = {
+      id: "closed-tab",
+      customerName: "Old Customer",
+      status: "open" as const,
+      createdAt: "2026-06-20T08:00:00.000Z",
+      items: []
+    };
     backendMocks.loadRemoteAppDataSnapshot.mockResolvedValue({ appData, version: 9 });
     normalizedReadMocks.loadNormalizedAppDataOverlay.mockResolvedValue({
       organizationId: "org-primary",
       appData: {
-        sessions: [normalizedSession],
+        sessions: [normalizedSession, staleNormalizedClosedSession],
         sessionPauseLogs: [normalizedPauseLog],
-        customerTabs: [normalizedTab]
+        customerTabs: [normalizedTab, staleNormalizedClosedTab]
       }
     });
 
