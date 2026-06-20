@@ -323,6 +323,12 @@ reservation stock movements already produced by the frontend for repeated game c
 bill, payment, and final stock-deduction behavior remains on the existing blocking path until the
 financial RPC phase.
 
+`save_live_session_details(payload jsonb)` and `save_live_customer_tab_details(payload jsonb)` are
+implemented in `supabase/phase4-live-detail-rpcs.sql`. These RPCs lock the target live record,
+resolve or clear the linked customer snapshot, update only live customer/start-time detail fields,
+write an optional audit row, and emit compact operational event metadata. They intentionally do not
+edit closed sessions/tabs or any bill/payment/stock-finalization data.
+
 Financial RPCs, migrated later:
 
 - `checkout_session(payload jsonb)`

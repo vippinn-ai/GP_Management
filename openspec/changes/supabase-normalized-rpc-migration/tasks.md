@@ -58,8 +58,9 @@
 - [x] 6.4 Implement session item add/remove RPCs
 - [x] 6.5 Implement customer tab open/item update RPCs
 - [x] 6.6 Implement combo apply/repeat RPCs
-- [ ] 6.7 Add compact operational event rows from each RPC
-- [ ] 6.8 Add two-browser conflict tests for station and stock conflicts
+- [x] 6.7 Implement live session/customer-tab detail save RPCs
+- [x] 6.8 Add compact operational event rows from each RPC
+- [ ] 6.9 Add two-browser conflict tests for station and stock conflicts
 
 ## 7. Phase 5: Financial RPC Writes
 
