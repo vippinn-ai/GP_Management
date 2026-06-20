@@ -15,13 +15,13 @@ Track staging-only evidence for compact financial RPC writes before any producti
 
 | Date | Event | Entity Type | Server Duration | App State Version | Notes |
 | --- | --- | --- | ---: | ---: | --- |
+| 2026-06-20 | `writeOffPendingBills` | `bill` | 129.702 ms | 392 | Confirmed `financial_adjustment_committed` event in staging |
+| 2026-06-20 | `settlePendingBills` | `bill` | 151.483 ms | 391 | Confirmed `financial_adjustment_committed` event in staging |
 | 2026-06-20 | `voidBill` | `bill` | 147.612 ms | 387 | Confirmed `financial_adjustment_committed` event after staging flag correction |
 | 2026-06-20 | `refundBill` | `bill` | 189.443 ms | 386 | Confirmed `financial_adjustment_committed` event after staging flag correction |
 
 ## Remaining Staging Evidence Needed
 
-- `settlePendingBills` timing from settling a pending receivable.
-- `writeOffPendingBills` timing from writing off a pending receivable.
 - Browser telemetry comparison for representative actions after hard refresh.
 - Manual smoke by admin, manager, and receptionist.
 - Multi-browser conflict smoke where practical.
