@@ -293,6 +293,12 @@ audit, and compact operational event rows in one transaction. It returns stable 
 through structured Postgres exception details, which the frontend RPC wrapper maps back to
 `OperationalRpcError.code`.
 
+`pause_session(payload jsonb)` and `resume_session(payload jsonb)` are implemented in
+`supabase/phase4-pause-resume-session-rpcs.sql`. They lock the target session row, validate that
+the session is still open, preserve idempotent retry behavior through `operational_events`, update
+session status and pause-log rows, and write audit/event rows atomically. They intentionally do not
+touch bill, payment, or stock-finalization data.
+
 Financial RPCs, migrated later:
 
 - `checkout_session(payload jsonb)`
