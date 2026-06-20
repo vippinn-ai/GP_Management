@@ -365,7 +365,7 @@ describe("app_state data gateway", () => {
     expect(backendMocks.saveRemoteAppData).toHaveBeenCalledWith(appData, "user-1", 8, undefined);
   });
 
-  it("exposes financial checkout RPC while keeping generic saves on app_state", async () => {
+  it("exposes financial RPC commits while keeping generic saves on app_state", async () => {
     const appData = createAppData();
     backendMocks.saveRemoteAppData.mockResolvedValue(10);
     const gateway = createRemoteDataGateway({
@@ -374,6 +374,7 @@ describe("app_state data gateway", () => {
     });
 
     expect(gateway.commitFinancialCheckout).toEqual(expect.any(Function));
+    expect(gateway.commitFinancialAdjustment).toEqual(expect.any(Function));
     await expect(gateway.saveAppData(appData, "user-1", 9)).resolves.toBe(10);
     expect(backendMocks.saveRemoteAppData).toHaveBeenCalledWith(appData, "user-1", 9, undefined);
   });

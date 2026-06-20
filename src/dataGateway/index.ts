@@ -46,10 +46,14 @@ export {
   type NormalizedBillRegisterQuery
 } from "./normalizedBillRegister";
 export {
+  buildFinancialAdjustmentRpcPayload,
   buildFinancialCheckoutRpcPayload,
   FinancialCheckoutRpcError,
+  invokeFinancialAdjustmentRpc,
   invokeFinancialCheckoutRpc,
+  mapFinancialAdjustmentRpcResult,
   mapFinancialCheckoutRpcResult,
+  type FinancialAdjustmentRpcPayloadEnvelope,
   type FinancialCheckoutRpcPayloadEnvelope
 } from "./financialRpcClient";
 export {
@@ -61,7 +65,14 @@ export {
   OperationalRpcError,
   type OperationalRpcPayloadEnvelope
 } from "./rpcClient";
-export type { FinancialCheckoutCommitResult, FinancialCheckoutPatch, RemoteDataGateway } from "./types";
+export type {
+  FinancialAdjustmentCommitResult,
+  FinancialAdjustmentKind,
+  FinancialAdjustmentPatch,
+  FinancialCheckoutCommitResult,
+  FinancialCheckoutPatch,
+  RemoteDataGateway
+} from "./types";
 
 export function createRemoteDataGateway(flags: BackendFeatureFlags = resolveBackendFeatureFlags()): RemoteDataGateway {
   if (hasNormalizedGatewayFlag(flags) || hasRpcGatewayFlag(flags)) {

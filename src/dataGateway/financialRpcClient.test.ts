@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { buildFinancialCheckoutRpcPayload, mapFinancialCheckoutRpcResult } from "./financialRpcClient";
-import type { FinancialCheckoutPatch } from "./types";
+import {
+  buildFinancialAdjustmentRpcPayload,
+  buildFinancialCheckoutRpcPayload,
+  mapFinancialAdjustmentRpcResult,
+  mapFinancialCheckoutRpcResult
+} from "./financialRpcClient";
+import type { FinancialAdjustmentPatch, FinancialCheckoutPatch } from "./types";
 
 function createPatch(): FinancialCheckoutPatch {
   return {
@@ -38,6 +43,41 @@ function createPatch(): FinancialCheckoutPatch {
     customers: [],
     sessions: [],
     customerTabs: [],
+    inventoryItems: []
+  };
+}
+
+function createAdjustmentPatch(): FinancialAdjustmentPatch {
+  return {
+    mutationId: "financial-adjustment-1",
+    kind: "settlePendingBills",
+    entityType: "bill_group",
+    entityId: "bill-1,bill-2",
+    userId: "user-1",
+    createdAt: "2026-06-20T12:05:00.000Z",
+    baseAppStateVersion: 9,
+    bills: [
+      {
+        ...createPatch().bill,
+        id: "bill-1",
+        billNumber: "BILL-20260620-001",
+        status: "issued",
+        amountPaid: 300,
+        amountDue: 0
+      }
+    ],
+    payments: [
+      {
+        id: "payment-1",
+        billId: "bill-1",
+        mode: "cash",
+        amount: 300,
+        createdAt: "2026-06-20T12:05:00.000Z",
+        receivedByUserId: "user-1"
+      }
+    ],
+    stockMovements: [],
+    auditLogs: [],
     inventoryItems: []
   };
 }
@@ -104,6 +144,63 @@ describe("financial checkout RPC client", () => {
       serverTime: "2026-06-20T12:00:01.000Z",
       serverDurationMs: 842.5,
       changedRows: { bills: ["bill-1"] }
+    });
+  });
+
+  it("builds the compact financial adjustment RPC envelope", () => {
+    const patch = createAdjustmentPatch();
+
+    expect(buildFinancialAdjustmentRpcPayload(patch, "org-primary")).toEqual({
+      organization_id: "org-primary",
+      mutation_id: "financial-adjustment-1",
+      mutation_kind: "settlePendingBills",
+      entity_type: "bill_group",
+      entity_id: "bill-1,bill-2",
+      user_id: "user-1",
+      client_created_at: "2026-06-20T12:05:00.000Z",
+      base_app_state_version: 9,
+      payload: {
+        bills: patch.bills,
+        payments: patch.payments,
+        stockMovements: [],
+        auditLogs: [],
+        inventoryItems: []
+      }
+    });
+  });
+
+  it("maps financial adjustment RPC result fields", () => {
+    const patch = createAdjustmentPatch();
+
+    expect(
+      mapFinancialAdjustmentRpcResult({
+        patch,
+        organizationId: "org-primary",
+        data: {
+          mutation_id: "financial-adjustment-1",
+          mutation_kind: "settlePendingBills",
+          organization_id: "org-primary",
+          entity_type: "bill_group",
+          entity_id: "bill-1,bill-2",
+          app_state_version: 10,
+          event_id: "event-2",
+          server_time: "2026-06-20T12:05:01.000Z",
+          server_duration_ms: 91.25,
+          changed_rows: { bills: ["bill-1"], payments: ["payment-1"] }
+        }
+      })
+    ).toMatchObject({
+      mutationId: "financial-adjustment-1",
+      rpcName: "commit_financial_adjustment",
+      organizationId: "org-primary",
+      kind: "settlePendingBills",
+      entityType: "bill_group",
+      entityId: "bill-1,bill-2",
+      appStateVersion: 10,
+      eventId: "event-2",
+      serverTime: "2026-06-20T12:05:01.000Z",
+      serverDurationMs: 91.25,
+      changedRows: { bills: ["bill-1"], payments: ["payment-1"] }
     });
   });
 });

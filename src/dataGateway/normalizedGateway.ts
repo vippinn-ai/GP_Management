@@ -1,6 +1,6 @@
 import type { BackendFeatureFlags } from "./featureFlags";
 import { appStateRemoteDataGateway } from "./appStateGateway";
-import { invokeFinancialCheckoutRpc } from "./financialRpcClient";
+import { invokeFinancialAdjustmentRpc, invokeFinancialCheckoutRpc } from "./financialRpcClient";
 import { loadNormalizedAppDataOverlay } from "./normalizedReads";
 import { invokeOperationalMutationRpc } from "./rpcClient";
 import type { RemoteDataGateway } from "./types";
@@ -105,6 +105,7 @@ export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): 
   }
   if (_flags.rpcFinancialWrites) {
     gateway.commitFinancialCheckout = (patch) => invokeFinancialCheckoutRpc(patch);
+    gateway.commitFinancialAdjustment = (patch) => invokeFinancialAdjustmentRpc(patch);
   }
   return gateway;
 }

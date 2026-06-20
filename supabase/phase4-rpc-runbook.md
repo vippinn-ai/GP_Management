@@ -14,7 +14,8 @@ Run in staging first.
 6. Run `supabase/phase4-combo-rpcs.sql`.
 7. Run `supabase/phase4-live-detail-rpcs.sql`.
 8. Run `supabase/phase5-financial-checkout-rpc.sql` only when you are ready to test compact issue-bill writes.
-9. Keep `VITE_BACKEND_RPC_OPERATIONAL_WRITES`, `VITE_BACKEND_NORMALIZED_LIVE_READS`, and `VITE_BACKEND_RPC_FINANCIAL_WRITES` disabled until a deliberate staging smoke test.
+9. Run `supabase/phase5-financial-adjustment-rpc.sql` only when you are ready to test compact pending settlement, pending write-off, and issued-bill void/refund writes.
+10. Keep `VITE_BACKEND_RPC_OPERATIONAL_WRITES`, `VITE_BACKEND_NORMALIZED_LIVE_READS`, and `VITE_BACKEND_RPC_FINANCIAL_WRITES` disabled until a deliberate staging smoke test.
 
 ## Frontend Smoke-Test Flags
 
@@ -35,7 +36,7 @@ VITE_BACKEND_NORMALIZED_LIVE_READS=true
 VITE_BACKEND_RPC_FINANCIAL_WRITES=true
 ```
 
-`VITE_BACKEND_RPC_FINANCIAL_WRITES` currently accelerates normal session checkout and customer-tab checkout. Bill replacement, void/refund, pending write-off, and admin/stock/config changes continue using the existing blocking save path.
+`VITE_BACKEND_RPC_FINANCIAL_WRITES` accelerates normal session checkout, customer-tab checkout, pending receivable settlement, pending write-off, and issued-bill void/refund after both Phase 5 scripts are installed. Bill replacement and admin/stock/config changes continue using the existing blocking save path.
 
 ## Verify Function Install
 
@@ -64,6 +65,7 @@ where routine_schema = 'public'
     'save_live_session_details',
     'save_live_customer_tab_details',
     'commit_checkout_bill',
+    'commit_financial_adjustment',
     'patch_app_state_array_by_id',
     'resolve_operational_customer',
     'raise_operational_rpc_error'
@@ -87,6 +89,7 @@ Expected:
 - `save_live_session_details` exists.
 - `save_live_customer_tab_details` exists.
 - `commit_checkout_bill` exists.
+- `commit_financial_adjustment` exists.
 - `patch_app_state_array_by_id` exists.
 - `resolve_operational_customer` exists.
 - `start_session` is `DEFINER`.
@@ -103,6 +106,7 @@ Expected:
 - `save_live_session_details` is `DEFINER`.
 - `save_live_customer_tab_details` is `DEFINER`.
 - `commit_checkout_bill` is `DEFINER`.
+- `commit_financial_adjustment` is `DEFINER`.
 - `raise_operational_rpc_error` exists.
 
 ## Verify Execute Grant
@@ -139,6 +143,8 @@ select
   has_function_privilege('authenticated', 'public.save_live_customer_tab_details(jsonb)', 'execute') as authenticated_can_save_live_customer_tab_details,
   has_function_privilege('anon', 'public.commit_checkout_bill(jsonb)', 'execute') as anon_can_commit_checkout_bill,
   has_function_privilege('authenticated', 'public.commit_checkout_bill(jsonb)', 'execute') as authenticated_can_commit_checkout_bill,
+  has_function_privilege('anon', 'public.commit_financial_adjustment(jsonb)', 'execute') as anon_can_commit_financial_adjustment,
+  has_function_privilege('authenticated', 'public.commit_financial_adjustment(jsonb)', 'execute') as authenticated_can_commit_financial_adjustment,
   has_function_privilege('anon', 'public.patch_app_state_array_by_id(jsonb, jsonb)', 'execute') as anon_can_patch_app_state_array_by_id,
   has_function_privilege('authenticated', 'public.patch_app_state_array_by_id(jsonb, jsonb)', 'execute') as authenticated_can_patch_app_state_array_by_id,
   has_function_privilege('anon', 'public.resolve_operational_customer(text, jsonb)', 'execute') as anon_can_resolve_operational_customer,
@@ -175,6 +181,8 @@ Expected:
 - `authenticated_can_save_live_customer_tab_details = true`
 - `anon_can_commit_checkout_bill = false`
 - `authenticated_can_commit_checkout_bill = true`
+- `anon_can_commit_financial_adjustment = false`
+- `authenticated_can_commit_financial_adjustment = true`
 - `anon_can_patch_app_state_array_by_id = false`
 - `authenticated_can_patch_app_state_array_by_id = false`
 - `anon_can_resolve_operational_customer = false`
@@ -204,6 +212,7 @@ where routine_schema = 'public'
     'save_live_session_details',
     'save_live_customer_tab_details',
     'commit_checkout_bill',
+    'commit_financial_adjustment',
     'patch_app_state_array_by_id',
     'resolve_operational_customer'
   )
@@ -215,6 +224,7 @@ Expected:
 - `authenticated` has `EXECUTE` on all listed browser-facing operational RPCs.
 - `anon` does not have `EXECUTE` on these RPCs.
 - `commit_checkout_bill` is browser-facing for Phase 5, so `authenticated` should have direct `EXECUTE`.
+- `commit_financial_adjustment` is browser-facing for Phase 5, so `authenticated` should have direct `EXECUTE`.
 - `resolve_operational_customer` and `patch_app_state_array_by_id` are helpers, so neither `anon` nor `authenticated` should have direct `EXECUTE`.
 - `postgres` may appear as owner/admin.
 - `service_role` may appear in Supabase-managed projects; it is not used by the browser anon key.
@@ -293,6 +303,16 @@ The `commit_checkout_bill` RPC:
 - rejects stale checkouts when the expected `app_state.version` has already changed
 - returns the next `app_state.version` so the browser can continue without a full save retry
 
+The `commit_financial_adjustment` RPC:
+
+- validates organization membership through `current_user_has_org_access`
+- supports pending receivable settlement, pending write-off, and issued-bill void/refund
+- locks only the affected bill rows and the single compatibility `app_state` row for the short transaction
+- validates the current bill status before applying the supplied compact patch
+- keeps `app_state` compatibility by patching only changed inventory, bill, payment, stock movement, and audit arrays
+- rejects stale writes when the expected `app_state.version` has already changed
+- returns the next `app_state.version` and database-side timing for staging verification
+
 ## Checkout Timing Checks
 
 After rerunning `phase5-financial-checkout-rpc.sql`, new checkout events include database-side
@@ -330,6 +350,30 @@ Expected simple session/customer-tab checkout timing shape:
 
 Replacement checkout, pending-settlement checkout, and hopped-session combined checkout still keep the full remote precheck until their wider server-side validations are implemented.
 
+## Financial Adjustment Timing Checks
+
+After running `phase5-financial-adjustment-rpc.sql`, new financial adjustment events include database-side
+duration in milliseconds. Use this in staging after settling, writing off, voiding, or refunding a test bill:
+
+```sql
+select
+  created_at,
+  entity_type,
+  entity_id,
+  metadata->>'mutation_kind' as mutation_kind,
+  (metadata->>'server_duration_ms')::numeric as server_duration_ms,
+  (metadata->>'app_state_version')::integer as app_state_version,
+  jsonb_array_length(coalesce(metadata #> '{changed_rows,bills}', '[]'::jsonb)) as bill_rows,
+  jsonb_array_length(coalesce(metadata #> '{changed_rows,payments}', '[]'::jsonb)) as payment_rows,
+  jsonb_array_length(coalesce(metadata #> '{changed_rows,stock_movements}', '[]'::jsonb)) as stock_rows,
+  jsonb_array_length(coalesce(metadata #> '{changed_rows,audit_logs}', '[]'::jsonb)) as audit_rows,
+  jsonb_array_length(coalesce(metadata #> '{changed_rows,inventory_items}', '[]'::jsonb)) as inventory_rows
+from public.operational_events
+where event_type = 'financial_adjustment_committed'
+order by created_at desc
+limit 10;
+```
+
 ## Stop Conditions
 
 Do not enable `VITE_BACKEND_RPC_OPERATIONAL_WRITES`, `VITE_BACKEND_NORMALIZED_LIVE_READS`, or `VITE_BACKEND_RPC_FINANCIAL_WRITES` if:
@@ -337,10 +381,12 @@ Do not enable `VITE_BACKEND_RPC_OPERATIONAL_WRITES`, `VITE_BACKEND_NORMALIZED_LI
 - the script fails
 - any operational RPC is not installed as a security definer function
 - `commit_checkout_bill` is not installed as a security definer function
+- `commit_financial_adjustment` is not installed as a security definer function after installing the adjustment script
 - `authenticated` does not have execute permission for each operational RPC
 - `authenticated` does not have execute permission for `commit_checkout_bill`
+- `authenticated` does not have execute permission for `commit_financial_adjustment` after installing the adjustment script
 - `anon` has execute permission for any operational RPC
-- `anon` has execute permission for `commit_checkout_bill` or `patch_app_state_array_by_id`
+- `anon` has execute permission for `commit_checkout_bill`, `commit_financial_adjustment`, or `patch_app_state_array_by_id`
 - Phase 1 parity checks are not clean
 
 Do not run this directly in production until the staging script install and a staging smoke test with all enabled frontend flags has passed.

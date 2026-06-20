@@ -1,10 +1,16 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { getSupabaseClient } from "../backend";
 import { resolveNormalizedBillRegisterOrganizationId } from "./normalizedBillRegister";
-import type { FinancialCheckoutCommitResult, FinancialCheckoutPatch } from "./types";
+import type {
+  FinancialAdjustmentCommitResult,
+  FinancialAdjustmentPatch,
+  FinancialCheckoutCommitResult,
+  FinancialCheckoutPatch
+} from "./types";
 
 const FINANCIAL_RPC_TIMEOUT_MS = 15_000;
 const CHECKOUT_BILL_RPC_NAME = "commit_checkout_bill";
+const FINANCIAL_ADJUSTMENT_RPC_NAME = "commit_financial_adjustment";
 
 interface RpcResult<T> {
   data: T | null;
@@ -43,6 +49,24 @@ export interface FinancialCheckoutRpcPayloadEnvelope {
     sessions: FinancialCheckoutPatch["sessions"];
     customerTabs: FinancialCheckoutPatch["customerTabs"];
     inventoryItems: FinancialCheckoutPatch["inventoryItems"];
+  };
+}
+
+export interface FinancialAdjustmentRpcPayloadEnvelope {
+  organization_id: string;
+  mutation_id: string;
+  mutation_kind: FinancialAdjustmentPatch["kind"];
+  entity_type: FinancialAdjustmentPatch["entityType"];
+  entity_id: string;
+  user_id: string;
+  client_created_at: string;
+  base_app_state_version: number;
+  payload: {
+    bills: FinancialAdjustmentPatch["bills"];
+    payments: FinancialAdjustmentPatch["payments"];
+    stockMovements: FinancialAdjustmentPatch["stockMovements"];
+    auditLogs: FinancialAdjustmentPatch["auditLogs"];
+    inventoryItems: FinancialAdjustmentPatch["inventoryItems"];
   };
 }
 
@@ -202,6 +226,59 @@ export function mapFinancialCheckoutRpcResult(params: {
   };
 }
 
+export function buildFinancialAdjustmentRpcPayload(
+  patch: FinancialAdjustmentPatch,
+  organizationId: string
+): FinancialAdjustmentRpcPayloadEnvelope {
+  return {
+    organization_id: organizationId,
+    mutation_id: patch.mutationId,
+    mutation_kind: patch.kind,
+    entity_type: patch.entityType,
+    entity_id: patch.entityId,
+    user_id: patch.userId,
+    client_created_at: patch.createdAt,
+    base_app_state_version: patch.baseAppStateVersion,
+    payload: {
+      bills: patch.bills,
+      payments: patch.payments,
+      stockMovements: patch.stockMovements,
+      auditLogs: patch.auditLogs,
+      inventoryItems: patch.inventoryItems
+    }
+  };
+}
+
+export function mapFinancialAdjustmentRpcResult(params: {
+  data: unknown;
+  patch: FinancialAdjustmentPatch;
+  organizationId: string;
+  rpcName?: string;
+}): FinancialAdjustmentCommitResult {
+  const row = toRecord(params.data);
+  return {
+    mutationId: toOptionalString(row.mutationId) ?? toOptionalString(row.mutation_id) ?? params.patch.mutationId,
+    rpcName: params.rpcName ?? FINANCIAL_ADJUSTMENT_RPC_NAME,
+    organizationId:
+      toOptionalString(row.organizationId) ?? toOptionalString(row.organization_id) ?? params.organizationId,
+    kind:
+      (toOptionalString(row.mutationKind) ??
+        toOptionalString(row.mutation_kind) ??
+        params.patch.kind) as FinancialAdjustmentPatch["kind"],
+    entityType:
+      (toOptionalString(row.entityType) ??
+        toOptionalString(row.entity_type) ??
+        params.patch.entityType) as FinancialAdjustmentPatch["entityType"],
+    entityId: toOptionalString(row.entityId) ?? toOptionalString(row.entity_id) ?? params.patch.entityId,
+    appStateVersion: toOptionalNumber(row.appStateVersion ?? row.app_state_version),
+    eventId: toOptionalString(row.eventId) ?? toOptionalString(row.event_id),
+    serverTime: toOptionalString(row.serverTime) ?? toOptionalString(row.server_time),
+    serverDurationMs: toOptionalNumber(row.serverDurationMs ?? row.server_duration_ms),
+    changedRows: toRecord(row.changedRows ?? row.changed_rows),
+    raw: params.data
+  };
+}
+
 export async function invokeFinancialCheckoutRpc(
   patch: FinancialCheckoutPatch,
   options: {
@@ -236,5 +313,42 @@ export async function invokeFinancialCheckoutRpc(
     patch,
     organizationId,
     rpcName: CHECKOUT_BILL_RPC_NAME
+  });
+}
+
+export async function invokeFinancialAdjustmentRpc(
+  patch: FinancialAdjustmentPatch,
+  options: {
+    organizationId?: string;
+    client?: SupabaseClient;
+  } = {}
+): Promise<FinancialAdjustmentCommitResult> {
+  const client = options.client ?? getSupabaseClient();
+  const organizationId = options.organizationId ?? (await resolveNormalizedBillRegisterOrganizationId(client));
+  const payload = buildFinancialAdjustmentRpcPayload(patch, organizationId);
+
+  let result: RpcResult<unknown>;
+  try {
+    result = await withFinancialRpcTimeout(
+      client.rpc(FINANCIAL_ADJUSTMENT_RPC_NAME, { payload }) as unknown as PromiseLike<RpcResult<unknown>>,
+      FINANCIAL_ADJUSTMENT_RPC_NAME
+    );
+  } catch (error) {
+    throw createFinancialRpcError({
+      error: error instanceof Error ? error : new Error("Unable to commit this financial adjustment."),
+      rpcName: FINANCIAL_ADJUSTMENT_RPC_NAME,
+      mutationId: patch.mutationId
+    });
+  }
+
+  if (result.error) {
+    throw createFinancialRpcError({ error: result.error, rpcName: FINANCIAL_ADJUSTMENT_RPC_NAME, mutationId: patch.mutationId });
+  }
+
+  return mapFinancialAdjustmentRpcResult({
+    data: result.data,
+    patch,
+    organizationId,
+    rpcName: FINANCIAL_ADJUSTMENT_RPC_NAME
   });
 }

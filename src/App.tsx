@@ -42,6 +42,9 @@ import {
   loadNormalizedReportData,
   loadNormalizedBillRegisterPage,
   resolveBackendFeatureFlags,
+  type FinancialAdjustmentCommitResult,
+  type FinancialAdjustmentKind,
+  type FinancialAdjustmentPatch,
   type FinancialCheckoutCommitResult,
   type FinancialCheckoutPatch,
   type NormalizedBillRegisterCursor,
@@ -1436,6 +1439,33 @@ export default function App() {
     }
   }
 
+  async function commitFinancialAdjustmentPatch(patch: FinancialAdjustmentPatch): Promise<FinancialAdjustmentCommitResult | null> {
+    if (!activeUserId || !defaultRemoteDataGateway.commitFinancialAdjustment) {
+      return null;
+    }
+    if (remoteReadOnly) {
+      setRemoteError(remoteReadOnlyMessage);
+      throw new Error(remoteReadOnlyMessage);
+    }
+    setRemoteSaving(true);
+    try {
+      const result = await defaultRemoteDataGateway.commitFinancialAdjustment(patch);
+      const nextVersion = result.appStateVersion ?? patch.baseAppStateVersion + 1;
+      remoteVersionRef.current = nextVersion;
+      setRemoteVersion(nextVersion);
+      setRemoteError("");
+      setPendingRetryData(null);
+      return result;
+    } catch (error) {
+      await refreshRemoteState({ keepUser: true });
+      setRemoteError(error instanceof Error ? error.message : "Could not save the financial update. Please check the latest data and try again.");
+      setPendingRetryData(null);
+      throw error;
+    } finally {
+      setRemoteSaving(false);
+    }
+  }
+
   function buildFinancialCheckoutPatch(params: {
     baseAppData: AppData;
     nextAppData: AppData;
@@ -1464,6 +1494,79 @@ export default function App() {
       customerTabs: recordsChanged(params.baseAppData.customerTabs, params.nextAppData.customerTabs),
       inventoryItems: recordsChanged(params.baseAppData.inventoryItems, params.nextAppData.inventoryItems)
     };
+  }
+
+  function buildFinancialAdjustmentPatch(params: {
+    baseAppData: AppData;
+    nextAppData: AppData;
+    kind: FinancialAdjustmentKind;
+    entityType: FinancialAdjustmentPatch["entityType"];
+    entityId: string;
+    baseVersion: number;
+    createdAt: string;
+  }): FinancialAdjustmentPatch {
+    return {
+      mutationId: createId("financial-adjustment"),
+      kind: params.kind,
+      entityType: params.entityType,
+      entityId: params.entityId,
+      userId: activeUser?.id ?? activeUserId ?? "",
+      createdAt: params.createdAt,
+      baseAppStateVersion: params.baseVersion,
+      bills: recordsChanged(params.baseAppData.bills, params.nextAppData.bills),
+      payments: newRecords(params.baseAppData.payments, params.nextAppData.payments),
+      stockMovements: newRecords(params.baseAppData.stockMovements, params.nextAppData.stockMovements),
+      auditLogs: newRecords(params.baseAppData.auditLogs, params.nextAppData.auditLogs),
+      inventoryItems: recordsChanged(params.baseAppData.inventoryItems, params.nextAppData.inventoryItems)
+    };
+  }
+
+  async function commitFinancialAdjustmentChange(
+    label: string,
+    kind: FinancialAdjustmentKind,
+    entityType: FinancialAdjustmentPatch["entityType"],
+    entityId: string,
+    mutator: (draft: AppData) => void | false,
+    onSuccess?: (nextAppData: AppData) => void
+  ) {
+    if (!backendConfigured || !defaultRemoteDataGateway.commitFinancialAdjustment) {
+      return commitAppDataChange(label, mutator, onSuccess);
+    }
+    if (!guardRemoteWrite()) {
+      return false;
+    }
+
+    const baseAppData = appData;
+    const nextAppData = cloneValue(appData);
+    const result = mutator(nextAppData);
+    if (result === false) {
+      return false;
+    }
+
+    const patch = buildFinancialAdjustmentPatch({
+      baseAppData,
+      nextAppData,
+      kind,
+      entityType,
+      entityId,
+      baseVersion: remoteVersionRef.current,
+      createdAt: new Date().toISOString()
+    });
+    if (patch.bills.length === 0) {
+      return false;
+    }
+
+    try {
+      await runBlockingAction(label, async () => {
+        await commitFinancialAdjustmentPatch(patch);
+        skipRemotePersistRef.current = true;
+        setAppData(normalizeAppDataCustomers(nextAppData));
+        onSuccess?.(nextAppData);
+      });
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   function createOperationalMutation(
@@ -4441,7 +4544,9 @@ export default function App() {
       return false;
     }
     const settledAt = new Date().toISOString();
-    return commitAppDataChange("Settling pending bill...", (data) => {
+    const settlementEntityType = selectedBills.length > 1 ? "bill_group" : "bill";
+    const settlementEntityId = selectedBills.map((bill) => bill.id).join(",");
+    return commitFinancialAdjustmentChange("Settling pending bill...", "settlePendingBills", settlementEntityType, settlementEntityId, (data) => {
       const settlementGroupId = result.allocations.length > 1 ? createId("settlement-group") : undefined;
       for (const allocation of result.allocations) {
         const target = data.bills.find((b) => b.id === allocation.billId);
@@ -4493,7 +4598,9 @@ export default function App() {
       return false;
     }
     const voidedAt = new Date().toISOString();
-    return commitAppDataChange("Writing off pending bills...", (data) => {
+    const voidEntityType = pendingBillsToVoid.length > 1 ? "bill_group" : "bill";
+    const voidEntityId = pendingBillsToVoid.map((bill) => bill.id).join(",");
+    return commitFinancialAdjustmentChange("Writing off pending bills...", "writeOffPendingBills", voidEntityType, voidEntityId, (data) => {
       for (const bill of pendingBillsToVoid) {
         const target = data.bills.find((b) => b.id === bill.id);
         if (!target || target.status !== "pending") continue;
@@ -5352,14 +5459,16 @@ export default function App() {
       return;
     }
     const refund = window.confirm("OK = refund, Cancel = void");
-    void commitAppDataChange(refund ? "Refunding bill..." : "Voiding bill...", (draft) => {
+    const voidedAt = new Date().toISOString();
+    const cleanReason = reason.trim();
+    void commitFinancialAdjustmentChange(refund ? "Refunding bill..." : "Voiding bill...", refund ? "refundBill" : "voidBill", "bill", billId, (draft) => {
       const bill = draft.bills.find((entry) => entry.id === billId);
       if (!bill || bill.status !== "issued") {
         return false;
       }
       bill.status = refund ? "refunded" : "voided";
-      bill.voidReason = reason.trim();
-      bill.voidedAt = new Date().toISOString();
+      bill.voidReason = cleanReason;
+      bill.voidedAt = voidedAt;
       bill.voidedByUserId = activeUser.id;
       for (const line of bill.lines) {
         if (!line.inventoryItemId) {
@@ -5376,8 +5485,8 @@ export default function App() {
           itemId: item.id,
           type: "void_refund_reversal",
           quantity: reverseDelta,
-          reason,
-          createdAt: new Date().toISOString(),
+          reason: cleanReason,
+          createdAt: voidedAt,
           userId: activeUser.id,
           relatedBillId: bill.id
         });

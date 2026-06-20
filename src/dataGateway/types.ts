@@ -50,6 +50,38 @@ export interface FinancialCheckoutCommitResult {
   raw?: unknown;
 }
 
+export type FinancialAdjustmentKind = "settlePendingBills" | "writeOffPendingBills" | "voidBill" | "refundBill";
+
+export interface FinancialAdjustmentPatch {
+  mutationId: string;
+  kind: FinancialAdjustmentKind;
+  entityType: "bill" | "bill_group";
+  entityId: string;
+  userId: string;
+  createdAt: string;
+  baseAppStateVersion: number;
+  bills: Bill[];
+  payments: Payment[];
+  stockMovements: StockMovement[];
+  auditLogs: AuditLog[];
+  inventoryItems: InventoryItem[];
+}
+
+export interface FinancialAdjustmentCommitResult {
+  mutationId: string;
+  rpcName: string;
+  organizationId: string;
+  kind: FinancialAdjustmentKind;
+  entityType: FinancialAdjustmentPatch["entityType"];
+  entityId: string;
+  appStateVersion?: number;
+  eventId?: string;
+  serverTime?: string;
+  serverDurationMs?: number;
+  changedRows?: Record<string, unknown>;
+  raw?: unknown;
+}
+
 export interface RemoteDataGateway {
   loadAppDataSnapshot(): Promise<RemoteAppDataSnapshot>;
   saveAppData(
@@ -60,5 +92,6 @@ export interface RemoteDataGateway {
   ): Promise<number>;
   commitOperationalMutation?(mutation: OperationalMutation): Promise<OperationalRpcCommitResult>;
   commitFinancialCheckout?(patch: FinancialCheckoutPatch): Promise<FinancialCheckoutCommitResult>;
+  commitFinancialAdjustment?(patch: FinancialAdjustmentPatch): Promise<FinancialAdjustmentCommitResult>;
   subscribeToAppData(onChange: (snapshot: RemoteAppDataSnapshot) => void): () => void;
 }
