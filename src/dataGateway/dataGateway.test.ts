@@ -66,6 +66,7 @@ describe("data gateway feature flags", () => {
       normalizedConfigReads: false,
       normalizedCatalogReads: false,
       normalizedComboReads: false,
+      normalizedLiveReads: false,
       normalizedCustomerSearchReads: false,
       normalizedReportReads: false,
       normalizedBillHistoryReads: false,
@@ -82,6 +83,7 @@ describe("data gateway feature flags", () => {
         VITE_BACKEND_NORMALIZED_CONFIG_READS: "true",
         VITE_BACKEND_NORMALIZED_CATALOG_READS: "0",
         VITE_BACKEND_NORMALIZED_COMBO_READS: "yes",
+        VITE_BACKEND_NORMALIZED_LIVE_READS: "true",
         VITE_BACKEND_NORMALIZED_CUSTOMER_SEARCH_READS: "on",
         VITE_BACKEND_NORMALIZED_REPORT_READS: "1",
         VITE_BACKEND_RPC_FINANCIAL_WRITES: "false"
@@ -91,6 +93,7 @@ describe("data gateway feature flags", () => {
     expect(flags.normalizedConfigReads).toBe(true);
     expect(flags.normalizedCatalogReads).toBe(false);
     expect(flags.normalizedComboReads).toBe(true);
+    expect(flags.normalizedLiveReads).toBe(true);
     expect(flags.normalizedCustomerSearchReads).toBe(true);
     expect(flags.normalizedReportReads).toBe(true);
     expect(flags.rpcFinancialWrites).toBe(true);
@@ -162,7 +165,8 @@ describe("app_state data gateway", () => {
     expect(normalizedReadMocks.loadNormalizedAppDataOverlay).toHaveBeenCalledWith({
       normalizedConfigReads: false,
       normalizedCatalogReads: true,
-      normalizedComboReads: false
+      normalizedComboReads: false,
+      normalizedLiveReads: false
     });
   });
 
@@ -204,7 +208,114 @@ describe("app_state data gateway", () => {
     expect(normalizedReadMocks.loadNormalizedAppDataOverlay).toHaveBeenCalledWith({
       normalizedConfigReads: false,
       normalizedCatalogReads: false,
-      normalizedComboReads: true
+      normalizedComboReads: true,
+      normalizedLiveReads: false
+    });
+  });
+
+  it("overlays normalized live sessions and tabs while preserving closed history", async () => {
+    const appData = createAppData();
+    appData.sessions = [
+      {
+        id: "closed-session",
+        stationId: "pool-2",
+        stationNameSnapshot: "Pool 2",
+        mode: "timed",
+        startedAt: "2026-06-20T08:00:00.000Z",
+        endedAt: "2026-06-20T09:00:00.000Z",
+        status: "closed",
+        playMode: "group",
+        ltpEligible: false,
+        pricingSnapshot: [],
+        items: [],
+        pauseLogIds: [],
+        closedBillId: "bill-1"
+      },
+      {
+        id: "stale-open-session",
+        stationId: "pool-1",
+        stationNameSnapshot: "Pool 1",
+        mode: "timed",
+        startedAt: "2026-06-20T09:00:00.000Z",
+        status: "active",
+        playMode: "group",
+        ltpEligible: false,
+        pricingSnapshot: [],
+        items: [],
+        pauseLogIds: ["stale-pause"]
+      }
+    ];
+    appData.sessionPauseLogs = [
+      {
+        id: "stale-pause",
+        sessionId: "stale-open-session",
+        pausedAt: "2026-06-20T09:30:00.000Z"
+      }
+    ];
+    appData.customerTabs = [
+      {
+        id: "closed-tab",
+        customerName: "Old Customer",
+        status: "closed",
+        createdAt: "2026-06-20T08:00:00.000Z",
+        closedAt: "2026-06-20T09:00:00.000Z",
+        items: [],
+        closedBillId: "bill-2"
+      }
+    ];
+    const normalizedSession = {
+      id: "normalized-open-session",
+      stationId: "pool-1",
+      stationNameSnapshot: "Pool 1",
+      mode: "timed" as const,
+      startedAt: "2026-06-20T10:00:00.000Z",
+      status: "active" as const,
+      playMode: "group" as const,
+      ltpEligible: false,
+      pricingSnapshot: [],
+      items: [],
+      pauseLogIds: ["normalized-pause"]
+    };
+    const normalizedPauseLog = {
+      id: "normalized-pause",
+      sessionId: "normalized-open-session",
+      pausedAt: "2026-06-20T10:10:00.000Z"
+    };
+    const normalizedTab = {
+      id: "open-tab",
+      customerName: "Live Customer",
+      status: "open" as const,
+      createdAt: "2026-06-20T10:00:00.000Z",
+      items: []
+    };
+    backendMocks.loadRemoteAppDataSnapshot.mockResolvedValue({ appData, version: 9 });
+    normalizedReadMocks.loadNormalizedAppDataOverlay.mockResolvedValue({
+      organizationId: "org-primary",
+      appData: {
+        sessions: [normalizedSession],
+        sessionPauseLogs: [normalizedPauseLog],
+        customerTabs: [normalizedTab]
+      }
+    });
+
+    const gateway = createRemoteDataGateway({
+      ...DEFAULT_BACKEND_FEATURE_FLAGS,
+      normalizedLiveReads: true
+    });
+
+    await expect(gateway.loadAppDataSnapshot()).resolves.toMatchObject({
+      version: 9,
+      appData: {
+        sessions: [appData.sessions[0], normalizedSession],
+        sessionPauseLogs: [normalizedPauseLog],
+        customerTabs: [appData.customerTabs[0], normalizedTab]
+      }
+    });
+    expect(normalizedReadMocks.loadNormalizedAppDataOverlay).toHaveBeenCalledWith({
+      normalizedConfigReads: false,
+      normalizedCatalogReads: false,
+      normalizedComboReads: false,
+      normalizedLiveReads: true
     });
   });
 

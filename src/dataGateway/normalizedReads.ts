@@ -7,9 +7,21 @@ import type {
   ComboFixedItem,
   ComboPackage,
   ComboType,
+  ComboAppliedChoice,
+  ComboInventorySelection,
+  CustomerTab,
+  CustomerTabItem,
   InventoryItem,
   PricingRule,
   SaleVariant,
+  Session,
+  SessionComboApplication,
+  SessionItem,
+  SessionPauseLog,
+  LtpOutcome,
+  PlayMode,
+  SessionStatus,
+  StationMode,
   Station
 } from "../types";
 
@@ -114,6 +126,101 @@ interface ComboChoiceOptionRow {
   option_id: string;
 }
 
+interface SessionRow {
+  id: string;
+  station_id: string | null;
+  station_name_snapshot: string | null;
+  mode: string;
+  started_at: string | null;
+  ended_at: string | null;
+  status: string;
+  customer_id: string | null;
+  customer_name: string | null;
+  customer_phone: string | null;
+  play_mode: string;
+  ltp_eligible: boolean;
+  ltp_outcome: string | null;
+  ltp_discount_applied: boolean | null;
+  pricing_snapshot: unknown;
+  pause_log_ids: unknown;
+  continued_from_session_ids: unknown;
+  closed_bill_id: string | null;
+  close_disposition: string | null;
+  close_reason: string | null;
+  raw_data: Record<string, unknown> | null;
+  created_at: string;
+}
+
+interface SessionPauseLogRow {
+  id: string;
+  session_id: string | null;
+  paused_at: string | null;
+  resumed_at: string | null;
+  raw_data: Record<string, unknown> | null;
+  created_at: string;
+}
+
+interface SaleLineRow {
+  id: string;
+  inventory_item_id: string | null;
+  name: string;
+  quantity: number | string;
+  unit_price: number | string;
+  added_at: string | null;
+  sold_as_pack_of: number | string | null;
+  sale_variant_id: string | null;
+  stock_units_per_sale: number | string | null;
+  combo_application_id: string | null;
+  combo_id: string | null;
+  raw_data: Record<string, unknown> | null;
+  created_at: string;
+}
+
+interface SessionItemRow extends SaleLineRow {
+  session_id: string;
+}
+
+interface ComboApplicationRow {
+  id: string;
+  combo_id: string | null;
+  combo_name: string;
+  price: number | string;
+  included_minutes: number | string;
+  applied_at: string | null;
+  fixed_items: unknown;
+  choices: unknown;
+  raw_data: Record<string, unknown> | null;
+  created_at: string;
+}
+
+interface SessionComboApplicationRow extends ComboApplicationRow {
+  session_id: string;
+}
+
+interface CustomerTabRow {
+  id: string;
+  customer_id: string | null;
+  customer_name: string;
+  customer_phone: string | null;
+  status: string;
+  opened_at: string | null;
+  closed_at: string | null;
+  continued_from_session_ids: unknown;
+  closed_bill_id: string | null;
+  close_disposition: string | null;
+  close_reason: string | null;
+  raw_data: Record<string, unknown> | null;
+  created_at: string;
+}
+
+interface CustomerTabItemRow extends SaleLineRow {
+  customer_tab_id: string;
+}
+
+interface CustomerTabComboApplicationRow extends ComboApplicationRow {
+  customer_tab_id: string;
+}
+
 interface NormalizedQueryResult<T> {
   data: T | null;
   error: Error | { message: string } | null;
@@ -133,6 +240,12 @@ export interface NormalizedCatalogData {
 
 export interface NormalizedComboData {
   combos: ComboPackage[];
+}
+
+export interface NormalizedLiveData {
+  sessions: Session[];
+  sessionPauseLogs: SessionPauseLog[];
+  customerTabs: CustomerTab[];
 }
 
 function toRecord(value: unknown): Record<string, unknown> {
@@ -171,6 +284,22 @@ function toNumberValue(value: unknown, fallback: unknown): number {
   return 0;
 }
 
+function toOptionalNumber(value: unknown, fallback?: unknown): number | undefined {
+  const candidates = [value, fallback];
+  for (const candidate of candidates) {
+    if (typeof candidate === "number" && Number.isFinite(candidate)) {
+      return candidate;
+    }
+    if (typeof candidate === "string" && candidate.trim()) {
+      const parsed = Number(candidate);
+      if (Number.isFinite(parsed)) {
+        return parsed;
+      }
+    }
+  }
+  return undefined;
+}
+
 function toBooleanValue(value: unknown, fallback: boolean): boolean {
   if (typeof value === "boolean") {
     return value;
@@ -198,6 +327,30 @@ function toPositiveInteger(value: unknown, fallback: unknown): number {
 
 function toComboType(value: unknown, fallback: ComboType = "game"): ComboType {
   return value === "consumables" || value === "game" ? value : fallback;
+}
+
+function toStationMode(value: unknown, fallback: StationMode = "timed"): StationMode {
+  return value === "timed" || value === "unit_sale" ? value : fallback;
+}
+
+function toSessionStatus(value: unknown, fallback: SessionStatus = "active"): SessionStatus {
+  return value === "active" || value === "paused" || value === "closed" ? value : fallback;
+}
+
+function toPlayMode(value: unknown, fallback: PlayMode = "group"): PlayMode {
+  return value === "group" || value === "solo" ? value : fallback;
+}
+
+function toLtpOutcome(value: unknown): LtpOutcome | undefined {
+  return value === "won" || value === "lost" ? value : undefined;
+}
+
+function toSessionCloseDisposition(value: unknown): Session["closeDisposition"] | undefined {
+  return value === "billed" || value === "rejected" || value === "hopped" ? value : undefined;
+}
+
+function toCustomerTabCloseDisposition(value: unknown): CustomerTab["closeDisposition"] | undefined {
+  return value === "billed" || value === "rejected" ? value : undefined;
 }
 
 async function withNormalizedReadTimeout<T>(request: PromiseLike<T>, action: string): Promise<T> {
@@ -382,6 +535,199 @@ export function mapNormalizedComboPackage(
   };
 }
 
+function mapComboInventorySelection(raw: Record<string, unknown>): ComboInventorySelection | undefined {
+  const inventoryItemId = toStringValue(raw.inventoryItemId, "");
+  if (!inventoryItemId) {
+    return undefined;
+  }
+  const name = toStringValue(raw.name, inventoryItemId);
+  return {
+    inventoryItemId,
+    saleVariantId: toOptionalString(raw.saleVariantId),
+    name,
+    sourceName: toStringValue(raw.sourceName, name),
+    quantity: toNumberValue(raw.quantity, 0),
+    unitPrice: toNumberValue(raw.unitPrice, 0),
+    stockUnitsPerSale: toNumberValue(raw.stockUnitsPerSale, 1)
+  };
+}
+
+function mapComboInventorySelections(value: unknown): ComboInventorySelection[] {
+  return toRecordArray(value)
+    .map(mapComboInventorySelection)
+    .filter((selection): selection is ComboInventorySelection => Boolean(selection));
+}
+
+function mapComboAppliedChoice(raw: Record<string, unknown>): ComboAppliedChoice | undefined {
+  const groupId = toStringValue(raw.groupId, "");
+  if (!groupId) {
+    return undefined;
+  }
+  const selections = mapComboInventorySelections(raw.selections);
+  const legacySelection = mapComboInventorySelection(toRecord(raw.selection));
+  return {
+    groupId,
+    groupLabel: toStringValue(raw.groupLabel, "Choice group"),
+    selections: selections.length > 0 ? selections : legacySelection ? [legacySelection] : [],
+    selection: legacySelection
+  };
+}
+
+function mapComboAppliedChoices(value: unknown): ComboAppliedChoice[] {
+  return toRecordArray(value)
+    .map(mapComboAppliedChoice)
+    .filter((choice): choice is ComboAppliedChoice => Boolean(choice));
+}
+
+function mapNormalizedSaleLine(row: SaleLineRow): SessionItem {
+  const raw = toRecord(row.raw_data);
+  const soldAsPackOf = toOptionalNumber(raw.soldAsPackOf, row.sold_as_pack_of);
+  const stockUnitsPerSale = toOptionalNumber(raw.stockUnitsPerSale, row.stock_units_per_sale);
+  return {
+    id: row.id,
+    inventoryItemId: toStringValue(raw.inventoryItemId, row.inventory_item_id ?? ""),
+    name: toStringValue(raw.name, row.name),
+    quantity: toNumberValue(raw.quantity, row.quantity),
+    unitPrice: toNumberValue(raw.unitPrice, row.unit_price),
+    addedAt: toStringValue(raw.addedAt, row.added_at ?? row.created_at),
+    soldAsPackOf,
+    saleVariantId: toOptionalString(raw.saleVariantId) ?? toOptionalString(row.sale_variant_id),
+    stockUnitsPerSale,
+    comboApplicationId: toOptionalString(raw.comboApplicationId) ?? toOptionalString(row.combo_application_id),
+    comboId: toOptionalString(raw.comboId) ?? toOptionalString(row.combo_id)
+  };
+}
+
+function mapNormalizedComboApplication(row: ComboApplicationRow): SessionComboApplication {
+  const raw = toRecord(row.raw_data);
+  const rawFixedItems = mapComboInventorySelections(raw.fixedItems);
+  const rawChoices = mapComboAppliedChoices(raw.choices);
+  const fixedItems = rawFixedItems.length > 0 ? rawFixedItems : mapComboInventorySelections(row.fixed_items);
+  const choices = rawChoices.length > 0 ? rawChoices : mapComboAppliedChoices(row.choices);
+  return {
+    id: row.id,
+    comboId: toStringValue(raw.comboId, row.combo_id ?? ""),
+    comboName: toStringValue(raw.comboName, row.combo_name),
+    price: toNumberValue(raw.price, row.price),
+    includedMinutes: toNumberValue(raw.includedMinutes, row.included_minutes),
+    appliedAt: toStringValue(raw.appliedAt, row.applied_at ?? row.created_at),
+    fixedItems,
+    choices
+  };
+}
+
+function mapNormalizedSessionPauseLog(row: SessionPauseLogRow): SessionPauseLog {
+  const raw = toRecord(row.raw_data);
+  return {
+    id: row.id,
+    sessionId: toStringValue(raw.sessionId, row.session_id ?? ""),
+    pausedAt: toStringValue(raw.pausedAt, row.paused_at ?? row.created_at),
+    resumedAt: toOptionalString(raw.resumedAt) ?? toOptionalString(row.resumed_at)
+  };
+}
+
+function groupByOwnerId<T>(rows: T[], getOwnerId: (row: T) => string | null | undefined): Map<string, T[]> {
+  const grouped = new Map<string, T[]>();
+  rows.forEach((row) => {
+    const ownerId = getOwnerId(row);
+    if (!ownerId) {
+      return;
+    }
+    const ownerRows = grouped.get(ownerId) ?? [];
+    ownerRows.push(row);
+    grouped.set(ownerId, ownerRows);
+  });
+  return grouped;
+}
+
+function mapNormalizedSession(
+  row: SessionRow,
+  params: {
+    items?: SessionItemRow[];
+    pauseLogs?: SessionPauseLog[];
+    comboApplications?: SessionComboApplicationRow[];
+  } = {}
+): Session {
+  const raw = toRecord(row.raw_data);
+  const rawPauseLogIds = toStringArray(raw.pauseLogIds);
+  const rowPauseLogIds = toStringArray(row.pause_log_ids);
+  const groupedPauseLogIds = (params.pauseLogs ?? []).map((log) => log.id);
+  return {
+    id: row.id,
+    stationId: toStringValue(raw.stationId, row.station_id ?? ""),
+    stationNameSnapshot: toStringValue(raw.stationNameSnapshot, row.station_name_snapshot ?? ""),
+    mode: toStationMode(raw.mode, toStationMode(row.mode)),
+    startedAt: toStringValue(raw.startedAt, row.started_at ?? row.created_at),
+    endedAt: toOptionalString(raw.endedAt) ?? toOptionalString(row.ended_at),
+    status: toSessionStatus(raw.status, toSessionStatus(row.status)),
+    customerId: toOptionalString(raw.customerId) ?? toOptionalString(row.customer_id),
+    customerName: toOptionalString(raw.customerName) ?? toOptionalString(row.customer_name),
+    customerPhone: toOptionalString(raw.customerPhone) ?? toOptionalString(row.customer_phone),
+    playMode: toPlayMode(raw.playMode, toPlayMode(row.play_mode)),
+    ltpEligible: toBooleanValue(raw.ltpEligible, row.ltp_eligible),
+    ltpOutcome: toLtpOutcome(raw.ltpOutcome) ?? toLtpOutcome(row.ltp_outcome),
+    ltpDiscountApplied:
+      typeof raw.ltpDiscountApplied === "boolean"
+        ? raw.ltpDiscountApplied
+        : typeof row.ltp_discount_applied === "boolean"
+          ? row.ltp_discount_applied
+          : undefined,
+    pricingSnapshot:
+      toRecordArray(raw.pricingSnapshot).length > 0
+        ? (raw.pricingSnapshot as PricingRule[])
+        : toRecordArray(row.pricing_snapshot).map((entry) => ({
+            id: toStringValue(entry.id, ""),
+            stationId: toStringValue(entry.stationId, ""),
+            label: toStringValue(entry.label, ""),
+            startMinute: toNumberValue(entry.startMinute, 0),
+            endMinute: toNumberValue(entry.endMinute, 0),
+            hourlyRate: toNumberValue(entry.hourlyRate, 0)
+          })),
+    items: (params.items ?? []).map(mapNormalizedSaleLine),
+    comboApplications: (params.comboApplications ?? []).map(mapNormalizedComboApplication),
+    pauseLogIds:
+      rawPauseLogIds.length > 0 ? rawPauseLogIds : rowPauseLogIds.length > 0 ? rowPauseLogIds : groupedPauseLogIds,
+    continuedFromSessionIds: toStringArray(raw.continuedFromSessionIds).length
+      ? toStringArray(raw.continuedFromSessionIds)
+      : toStringArray(row.continued_from_session_ids).length
+        ? toStringArray(row.continued_from_session_ids)
+        : undefined,
+    closedBillId: toOptionalString(raw.closedBillId) ?? toOptionalString(row.closed_bill_id),
+    closeDisposition: toSessionCloseDisposition(raw.closeDisposition) ?? toSessionCloseDisposition(row.close_disposition),
+    closeReason: toOptionalString(raw.closeReason) ?? toOptionalString(row.close_reason)
+  };
+}
+
+function mapNormalizedCustomerTab(
+  row: CustomerTabRow,
+  params: {
+    items?: CustomerTabItemRow[];
+    comboApplications?: CustomerTabComboApplicationRow[];
+  } = {}
+): CustomerTab {
+  const raw = toRecord(row.raw_data);
+  return {
+    id: row.id,
+    customerId: toOptionalString(raw.customerId) ?? toOptionalString(row.customer_id),
+    customerName: toStringValue(raw.customerName, row.customer_name),
+    customerPhone: toOptionalString(raw.customerPhone) ?? toOptionalString(row.customer_phone),
+    status: row.status === "closed" || raw.status === "closed" ? "closed" : "open",
+    createdAt: toStringValue(raw.createdAt, row.opened_at ?? row.created_at),
+    closedAt: toOptionalString(raw.closedAt) ?? toOptionalString(row.closed_at),
+    items: (params.items ?? []).map(mapNormalizedSaleLine) as CustomerTabItem[],
+    comboApplications: (params.comboApplications ?? []).map(mapNormalizedComboApplication),
+    continuedFromSessionIds: toStringArray(raw.continuedFromSessionIds).length
+      ? toStringArray(raw.continuedFromSessionIds)
+      : toStringArray(row.continued_from_session_ids).length
+        ? toStringArray(row.continued_from_session_ids)
+        : undefined,
+    closedBillId: toOptionalString(raw.closedBillId) ?? toOptionalString(row.closed_bill_id),
+    closeDisposition:
+      toCustomerTabCloseDisposition(raw.closeDisposition) ?? toCustomerTabCloseDisposition(row.close_disposition),
+    closeReason: toOptionalString(raw.closeReason) ?? toOptionalString(row.close_reason)
+  };
+}
+
 export function buildNormalizedConfigData(params: {
   organization: OrganizationRow;
   inventoryCategories: InventoryCategoryRow[];
@@ -454,6 +800,43 @@ export function buildNormalizedComboData(params: {
         stationIds: stationIdsByComboId.get(row.id) ?? [],
         fixedItems: fixedItemsByComboId.get(row.id) ?? [],
         choiceGroups: choiceGroupsByComboId.get(row.id) ?? []
+      })
+    )
+  };
+}
+
+export function buildNormalizedLiveData(params: {
+  sessions: SessionRow[];
+  sessionPauseLogs: SessionPauseLogRow[];
+  sessionItems: SessionItemRow[];
+  sessionComboApplications: SessionComboApplicationRow[];
+  customerTabs: CustomerTabRow[];
+  customerTabItems: CustomerTabItemRow[];
+  customerTabComboApplications: CustomerTabComboApplicationRow[];
+}): NormalizedLiveData {
+  const sessionItemsBySessionId = groupByOwnerId(params.sessionItems, (row) => row.session_id);
+  const sessionComboApplicationsBySessionId = groupByOwnerId(params.sessionComboApplications, (row) => row.session_id);
+  const pauseLogs = params.sessionPauseLogs.map(mapNormalizedSessionPauseLog);
+  const pauseLogsBySessionId = groupByOwnerId(pauseLogs, (row) => row.sessionId);
+  const customerTabItemsByTabId = groupByOwnerId(params.customerTabItems, (row) => row.customer_tab_id);
+  const customerTabComboApplicationsByTabId = groupByOwnerId(
+    params.customerTabComboApplications,
+    (row) => row.customer_tab_id
+  );
+
+  return {
+    sessions: params.sessions.map((row) =>
+      mapNormalizedSession(row, {
+        items: sessionItemsBySessionId.get(row.id) ?? [],
+        pauseLogs: pauseLogsBySessionId.get(row.id) ?? [],
+        comboApplications: sessionComboApplicationsBySessionId.get(row.id) ?? []
+      })
+    ),
+    sessionPauseLogs: pauseLogs,
+    customerTabs: params.customerTabs.map((row) =>
+      mapNormalizedCustomerTab(row, {
+        items: customerTabItemsByTabId.get(row.id) ?? [],
+        comboApplications: customerTabComboApplicationsByTabId.get(row.id) ?? []
       })
     )
   };
@@ -597,10 +980,128 @@ export async function loadNormalizedComboData(
   return buildNormalizedComboData({ combos, stationTargets, fixedItems, choiceGroups, choiceOptions });
 }
 
+export async function loadNormalizedLiveData(
+  organizationId: string,
+  client: SupabaseClient = getSupabaseClient()
+): Promise<NormalizedLiveData> {
+  const [sessions, customerTabs] = await Promise.all([
+    readMany<SessionRow>(
+      client
+        .from("sessions")
+        .select(
+          "id, station_id, station_name_snapshot, mode, started_at, ended_at, status, customer_id, customer_name, customer_phone, play_mode, ltp_eligible, ltp_outcome, ltp_discount_applied, pricing_snapshot, pause_log_ids, continued_from_session_ids, closed_bill_id, close_disposition, close_reason, raw_data, created_at"
+        )
+        .eq("organization_id", organizationId)
+        .neq("status", "closed")
+        .order("started_at", { ascending: false })
+        .order("id", { ascending: false }),
+      "loading normalized open sessions"
+    ),
+    readMany<CustomerTabRow>(
+      client
+        .from("customer_tabs")
+        .select(
+          "id, customer_id, customer_name, customer_phone, status, opened_at, closed_at, continued_from_session_ids, closed_bill_id, close_disposition, close_reason, raw_data, created_at"
+        )
+        .eq("organization_id", organizationId)
+        .eq("status", "open")
+        .order("opened_at", { ascending: false })
+        .order("id", { ascending: false }),
+      "loading normalized open customer tabs"
+    )
+  ]);
+
+  const sessionIds = sessions.map((session) => session.id);
+  const customerTabIds = customerTabs.map((tab) => tab.id);
+
+  const [sessionPauseLogs, sessionItems, sessionComboApplications, customerTabItems, customerTabComboApplications] =
+    await Promise.all([
+      sessionIds.length > 0
+        ? readMany<SessionPauseLogRow>(
+            client
+              .from("session_pause_logs")
+              .select("id, session_id, paused_at, resumed_at, raw_data, created_at")
+              .eq("organization_id", organizationId)
+              .in("session_id", sessionIds)
+              .order("paused_at", { ascending: true })
+              .order("id", { ascending: true }),
+            "loading normalized open session pause logs"
+          )
+        : Promise.resolve([]),
+      sessionIds.length > 0
+        ? readMany<SessionItemRow>(
+            client
+              .from("session_items")
+              .select(
+                "session_id, id, inventory_item_id, name, quantity, unit_price, added_at, sold_as_pack_of, sale_variant_id, stock_units_per_sale, combo_application_id, combo_id, raw_data, created_at"
+              )
+              .eq("organization_id", organizationId)
+              .in("session_id", sessionIds)
+              .order("added_at", { ascending: true })
+              .order("id", { ascending: true }),
+            "loading normalized open session items"
+          )
+        : Promise.resolve([]),
+      sessionIds.length > 0
+        ? readMany<SessionComboApplicationRow>(
+            client
+              .from("session_combo_applications")
+              .select(
+                "session_id, id, combo_id, combo_name, price, included_minutes, applied_at, fixed_items, choices, raw_data, created_at"
+              )
+              .eq("organization_id", organizationId)
+              .in("session_id", sessionIds)
+              .order("applied_at", { ascending: true })
+              .order("id", { ascending: true }),
+            "loading normalized open session combo applications"
+          )
+        : Promise.resolve([]),
+      customerTabIds.length > 0
+        ? readMany<CustomerTabItemRow>(
+            client
+              .from("customer_tab_items")
+              .select(
+                "customer_tab_id, id, inventory_item_id, name, quantity, unit_price, added_at, sold_as_pack_of, sale_variant_id, stock_units_per_sale, combo_application_id, combo_id, raw_data, created_at"
+              )
+              .eq("organization_id", organizationId)
+              .in("customer_tab_id", customerTabIds)
+              .order("added_at", { ascending: true })
+              .order("id", { ascending: true }),
+            "loading normalized open customer tab items"
+          )
+        : Promise.resolve([]),
+      customerTabIds.length > 0
+        ? readMany<CustomerTabComboApplicationRow>(
+            client
+              .from("customer_tab_combo_applications")
+              .select(
+                "customer_tab_id, id, combo_id, combo_name, price, included_minutes, applied_at, fixed_items, choices, raw_data, created_at"
+              )
+              .eq("organization_id", organizationId)
+              .in("customer_tab_id", customerTabIds)
+              .order("applied_at", { ascending: true })
+              .order("id", { ascending: true }),
+            "loading normalized open customer tab combo applications"
+          )
+        : Promise.resolve([])
+    ]);
+
+  return buildNormalizedLiveData({
+    sessions,
+    sessionPauseLogs,
+    sessionItems,
+    sessionComboApplications,
+    customerTabs,
+    customerTabItems,
+    customerTabComboApplications
+  });
+}
+
 export async function loadNormalizedAppDataOverlay(params: {
   normalizedConfigReads: boolean;
   normalizedCatalogReads: boolean;
   normalizedComboReads: boolean;
+  normalizedLiveReads?: boolean;
   client?: SupabaseClient;
 }): Promise<{ organizationId?: string; appData: Partial<AppData> }> {
   const client = params.client ?? getSupabaseClient();
@@ -614,7 +1115,7 @@ export async function loadNormalizedAppDataOverlay(params: {
     overlay.inventoryCategories = configData.inventoryCategories;
     overlay.stations = configData.stations;
     overlay.pricingRules = configData.pricingRules;
-  } else if (params.normalizedCatalogReads || params.normalizedComboReads) {
+  } else if (params.normalizedCatalogReads || params.normalizedComboReads || params.normalizedLiveReads) {
     const organization = await loadNormalizedActiveOrganization(client);
     organizationId = organization.id;
   }
@@ -633,6 +1134,16 @@ export async function loadNormalizedAppDataOverlay(params: {
     }
     const comboData = await loadNormalizedComboData(organizationId, client);
     overlay.combos = comboData.combos;
+  }
+
+  if (params.normalizedLiveReads) {
+    if (!organizationId) {
+      throw new Error("Normalized live reads require an active organization.");
+    }
+    const liveData = await loadNormalizedLiveData(organizationId, client);
+    overlay.sessions = liveData.sessions;
+    overlay.sessionPauseLogs = liveData.sessionPauseLogs;
+    overlay.customerTabs = liveData.customerTabs;
   }
 
   return { organizationId, appData: overlay };

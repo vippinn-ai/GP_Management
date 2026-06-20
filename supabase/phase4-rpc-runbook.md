@@ -13,7 +13,18 @@ Run in staging first.
 5. Run `supabase/phase4-customer-tab-rpcs.sql`.
 6. Run `supabase/phase4-combo-rpcs.sql`.
 7. Run `supabase/phase4-live-detail-rpcs.sql`.
-8. Keep `VITE_BACKEND_RPC_OPERATIONAL_WRITES` disabled until a deliberate staging smoke test.
+8. Keep `VITE_BACKEND_RPC_OPERATIONAL_WRITES` and `VITE_BACKEND_NORMALIZED_LIVE_READS` disabled until a deliberate staging smoke test.
+
+## Frontend Smoke-Test Flags
+
+Enable both flags together for staging RPC smoke tests:
+
+```text
+VITE_BACKEND_RPC_OPERATIONAL_WRITES=true
+VITE_BACKEND_NORMALIZED_LIVE_READS=true
+```
+
+Do not enable `VITE_BACKEND_RPC_OPERATIONAL_WRITES` by itself. RPC writes create/update normalized live rows, and `VITE_BACKEND_NORMALIZED_LIVE_READS` makes refreshes and other devices read open sessions/customer tabs from those normalized rows while preserving closed history from `app_state`.
 
 ## Verify Function Install
 
@@ -248,7 +259,7 @@ The `save_live_session_details` and `save_live_customer_tab_details` RPCs:
 
 ## Stop Conditions
 
-Do not enable `VITE_BACKEND_RPC_OPERATIONAL_WRITES` if:
+Do not enable `VITE_BACKEND_RPC_OPERATIONAL_WRITES` and `VITE_BACKEND_NORMALIZED_LIVE_READS` if:
 
 - the script fails
 - any operational RPC is not installed as a security definer function
@@ -256,4 +267,4 @@ Do not enable `VITE_BACKEND_RPC_OPERATIONAL_WRITES` if:
 - `anon` has execute permission for any operational RPC
 - Phase 1 parity checks are not clean
 
-Do not run this directly in production until the staging script install and a staging start-session smoke test have passed.
+Do not run this directly in production until the staging script install and a staging smoke test with both frontend flags has passed.
