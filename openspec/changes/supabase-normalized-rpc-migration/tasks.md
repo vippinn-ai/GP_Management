@@ -47,6 +47,8 @@
   - [x] 5.5.2 Wire Bill Register UI to normalized reader behind a screen-specific flag
 - [x] 5.6 Move report reads to date-filtered normalized queries
 - [ ] 5.7 Prove last 15 business days load quickly and older history remains searchable
+  - [x] 5.7.1 Add staging SQL probes and supplemental read indexes for performance evidence collection
+  - [ ] 5.7.2 Capture staging probe output and record pass/follow-up decision
 
 ## 6. Phase 4: Operational RPC Writes
 

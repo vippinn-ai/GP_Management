@@ -598,12 +598,16 @@ create index if not exists combo_station_targets_org_station_idx on public.combo
 create index if not exists sessions_org_status_started_idx on public.sessions (organization_id, status, started_at desc, id desc);
 create index if not exists sessions_org_station_open_idx on public.sessions (organization_id, station_id) where status <> 'closed';
 create index if not exists sessions_org_customer_idx on public.sessions (organization_id, customer_id) where customer_id is not null;
+create index if not exists sessions_org_started_closed_bill_idx on public.sessions (organization_id, started_at desc, id desc) where closed_bill_id is not null;
+create index if not exists sessions_org_closed_bill_idx on public.sessions (organization_id, closed_bill_id) where closed_bill_id is not null;
 create index if not exists session_pause_logs_org_session_idx on public.session_pause_logs (organization_id, session_id);
 create index if not exists session_items_org_session_idx on public.session_items (organization_id, session_id);
 create index if not exists session_items_org_inventory_idx on public.session_items (organization_id, inventory_item_id) where inventory_item_id is not null;
 create index if not exists session_combo_apps_org_session_idx on public.session_combo_applications (organization_id, session_id);
 create index if not exists customer_tabs_org_status_created_idx on public.customer_tabs (organization_id, status, opened_at desc, id desc);
 create index if not exists customer_tabs_org_customer_idx on public.customer_tabs (organization_id, customer_id) where customer_id is not null;
+create index if not exists customer_tabs_org_opened_closed_bill_idx on public.customer_tabs (organization_id, opened_at desc, id desc) where closed_bill_id is not null;
+create index if not exists customer_tabs_org_closed_bill_idx on public.customer_tabs (organization_id, closed_bill_id) where closed_bill_id is not null;
 create index if not exists customer_tab_items_org_tab_idx on public.customer_tab_items (organization_id, customer_tab_id);
 create index if not exists customer_tab_items_org_inventory_idx on public.customer_tab_items (organization_id, inventory_item_id) where inventory_item_id is not null;
 create index if not exists customer_tab_combo_apps_org_tab_idx on public.customer_tab_combo_applications (organization_id, customer_tab_id);
