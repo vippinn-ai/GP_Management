@@ -75,6 +75,8 @@
   - [ ] 7.4.3 Implement replacement stock delta handling
 - [x] 7.5 Implement payment split behavior in server transactions for checkout and pending settlement
 - [ ] 7.6 Add financial parity tests against current bill preview/build logic
+  - [x] 7.6.1 Add checkout and financial-adjustment patch parity tests
+  - [ ] 7.6.2 Add replacement-bill parity tests when replacement RPC is implemented
 - [x] 7.7 Keep `app_state` rollback snapshot strategy active until production is stable
 
 ## 8. Phase 6: Retire Full-State Sync

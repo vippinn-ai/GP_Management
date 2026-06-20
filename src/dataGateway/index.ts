@@ -46,6 +46,13 @@ export {
   type NormalizedBillRegisterQuery
 } from "./normalizedBillRegister";
 export {
+  buildFinancialAdjustmentPatch,
+  buildFinancialCheckoutPatch,
+  ensurePatchRecord,
+  getChangedRecords,
+  getNewRecords
+} from "./financialPatches";
+export {
   buildFinancialAdjustmentRpcPayload,
   buildFinancialCheckoutRpcPayload,
   FinancialCheckoutRpcError,

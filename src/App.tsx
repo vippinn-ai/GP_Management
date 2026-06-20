@@ -38,6 +38,8 @@ import {
 } from "./backend";
 import {
   defaultRemoteDataGateway,
+  buildFinancialAdjustmentPatch,
+  buildFinancialCheckoutPatch,
   loadNormalizedCustomerSearch,
   loadNormalizedReportData,
   loadNormalizedBillRegisterPage,
@@ -1398,20 +1400,6 @@ export default function App() {
     return hasPendingOperationalMutationForEntity(pendingOperationalMutations, "customer_tab", customerTabId);
   }
 
-  function recordsChanged<T extends { id: string }>(before: T[], after: T[]): T[] {
-    const beforeById = new Map(before.map((entry) => [entry.id, entry]));
-    return after.filter((entry) => JSON.stringify(beforeById.get(entry.id)) !== JSON.stringify(entry));
-  }
-
-  function newRecords<T extends { id: string }>(before: T[], after: T[]): T[] {
-    const beforeIds = new Set(before.map((entry) => entry.id));
-    return after.filter((entry) => !beforeIds.has(entry.id));
-  }
-
-  function ensurePatchRecord<T extends { id: string }>(records: T[], requiredRecord: T): T[] {
-    return records.some((entry) => entry.id === requiredRecord.id) ? records : [requiredRecord, ...records];
-  }
-
   async function commitFinancialCheckoutPatch(patch: FinancialCheckoutPatch): Promise<FinancialCheckoutCommitResult | null> {
     if (!activeUserId || !defaultRemoteDataGateway.commitFinancialCheckout) {
       return null;
@@ -1466,61 +1454,6 @@ export default function App() {
     }
   }
 
-  function buildFinancialCheckoutPatch(params: {
-    baseAppData: AppData;
-    nextAppData: AppData;
-    mode: "session" | "customer_tab";
-    entityId: string;
-    bill: Bill;
-    baseVersion: number;
-    createdAt: string;
-  }): FinancialCheckoutPatch {
-    const changedBills = ensurePatchRecord(recordsChanged(params.baseAppData.bills, params.nextAppData.bills), params.bill);
-    return {
-      mutationId: createId("financial"),
-      mode: params.mode,
-      entityType: params.mode === "session" ? "session" : "customer_tab",
-      entityId: params.entityId,
-      userId: activeUser?.id ?? activeUserId ?? "",
-      createdAt: params.createdAt,
-      baseAppStateVersion: params.baseVersion,
-      bill: params.bill,
-      bills: changedBills,
-      payments: newRecords(params.baseAppData.payments, params.nextAppData.payments),
-      stockMovements: newRecords(params.baseAppData.stockMovements, params.nextAppData.stockMovements),
-      auditLogs: newRecords(params.baseAppData.auditLogs, params.nextAppData.auditLogs),
-      customers: recordsChanged(params.baseAppData.customers, params.nextAppData.customers),
-      sessions: recordsChanged(params.baseAppData.sessions, params.nextAppData.sessions),
-      customerTabs: recordsChanged(params.baseAppData.customerTabs, params.nextAppData.customerTabs),
-      inventoryItems: recordsChanged(params.baseAppData.inventoryItems, params.nextAppData.inventoryItems)
-    };
-  }
-
-  function buildFinancialAdjustmentPatch(params: {
-    baseAppData: AppData;
-    nextAppData: AppData;
-    kind: FinancialAdjustmentKind;
-    entityType: FinancialAdjustmentPatch["entityType"];
-    entityId: string;
-    baseVersion: number;
-    createdAt: string;
-  }): FinancialAdjustmentPatch {
-    return {
-      mutationId: createId("financial-adjustment"),
-      kind: params.kind,
-      entityType: params.entityType,
-      entityId: params.entityId,
-      userId: activeUser?.id ?? activeUserId ?? "",
-      createdAt: params.createdAt,
-      baseAppStateVersion: params.baseVersion,
-      bills: recordsChanged(params.baseAppData.bills, params.nextAppData.bills),
-      payments: newRecords(params.baseAppData.payments, params.nextAppData.payments),
-      stockMovements: newRecords(params.baseAppData.stockMovements, params.nextAppData.stockMovements),
-      auditLogs: newRecords(params.baseAppData.auditLogs, params.nextAppData.auditLogs),
-      inventoryItems: recordsChanged(params.baseAppData.inventoryItems, params.nextAppData.inventoryItems)
-    };
-  }
-
   async function commitFinancialAdjustmentChange(
     label: string,
     kind: FinancialAdjustmentKind,
@@ -1550,7 +1483,9 @@ export default function App() {
       entityType,
       entityId,
       baseVersion: remoteVersionRef.current,
-      createdAt: new Date().toISOString()
+      createdAt: new Date().toISOString(),
+      userId: activeUser?.id ?? activeUserId ?? "",
+      mutationId: createId("financial-adjustment")
     });
     if (patch.bills.length === 0) {
       return false;
@@ -4468,7 +4403,9 @@ export default function App() {
           entityId: financialRpcEntityId,
           bill: issuedBill,
           baseVersion,
-          createdAt: issuedAt
+          createdAt: issuedAt,
+          userId: activeUser?.id ?? activeUserId ?? "",
+          mutationId: createId("financial")
         });
         const financialRpcStartedAt = Date.now();
         try {
