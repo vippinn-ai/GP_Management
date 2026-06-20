@@ -16,6 +16,19 @@ export {
   type BackendFeatureFlags
 } from "./featureFlags";
 export { appStateRemoteDataGateway } from "./appStateGateway";
+export {
+  buildBillRegisterCursorFilter,
+  buildBillRegisterSearchFilter,
+  buildNormalizedBillRegisterPage,
+  getBusinessDayIssuedAtRange,
+  loadNormalizedBillRegisterPage,
+  mapNormalizedBill,
+  mapNormalizedBillLine,
+  mapNormalizedPayment,
+  type NormalizedBillRegisterCursor,
+  type NormalizedBillRegisterPage,
+  type NormalizedBillRegisterQuery
+} from "./normalizedBillRegister";
 export type { RemoteDataGateway } from "./types";
 
 export function createRemoteDataGateway(flags: BackendFeatureFlags = resolveBackendFeatureFlags()): RemoteDataGateway {

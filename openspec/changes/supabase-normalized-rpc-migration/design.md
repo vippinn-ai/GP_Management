@@ -361,6 +361,8 @@ The first Phase 3 slice implements normalized config/catalog read overlays:
 
 These overlays intentionally keep saves and realtime on `app_state`. This lets staging validate normalized row mapping under feature flags before moving screen-specific reads away from the full snapshot load.
 
+The Bill Register Phase 3 slice adds `loadNormalizedBillRegisterPage()` as a screen-specific reader instead of overlaying `appData.bills`. It uses keyset pagination on `(issued_at, id)` and loads related lines, discounts, and payments only for the returned page. The UI cutover remains separate because the current register also drives receipt preview, pending receivable actions, and settlement flows from the in-memory full `AppData` shape.
+
 ## Migration and Rollback
 
 ### Backfill

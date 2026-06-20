@@ -43,6 +43,8 @@
 - [ ] 5.3 Move combo reads behind normalized gateway flag
 - [ ] 5.4 Move customer search reads behind normalized gateway flag
 - [ ] 5.5 Move bill register history reads to paginated normalized queries
+  - [x] 5.5.1 Add normalized paginated bill-register reader for bills, lines, discounts, and payments
+  - [ ] 5.5.2 Wire Bill Register UI to normalized reader behind a screen-specific flag
 - [ ] 5.6 Move report reads to date-filtered normalized queries
 - [ ] 5.7 Prove last 15 business days load quickly and older history remains searchable
 
