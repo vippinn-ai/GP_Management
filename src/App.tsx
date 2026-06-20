@@ -1443,17 +1443,45 @@ export default function App() {
     );
     setRemoteSaving(true);
     try {
-      const nextVersion = await defaultRemoteDataGateway.saveAppData(appDataRef.current, activeUserId, remoteVersionRef.current, {
-        actionLabel: syncableMutations.map((mutation) => mutation.kind).join(", "),
-        source: "operational_queue",
-        pendingOperationCount: syncableMutations.length
-      });
-      remoteVersionRef.current = nextVersion;
-      setRemoteVersion(nextVersion);
-      updatePendingOperationalMutations((previous) => previous.filter((mutation) => !syncIds.has(mutation.id)));
-      setLastOperationalSyncAt(new Date().toISOString());
-      const remainingConflicts = getOperationalConflictMessages(pendingOperationalMutationsRef.current);
-      setRemoteError(remainingConflicts.length > 0 ? remainingConflicts.join(" ") : "");
+      if (defaultRemoteDataGateway.commitOperationalMutation) {
+        const syncedIds = new Set<string>();
+        const failedMutations: OperationalMutation[] = [];
+        for (const mutation of syncableMutations) {
+          try {
+            await defaultRemoteDataGateway.commitOperationalMutation(mutation);
+            syncedIds.add(mutation.id);
+          } catch (error) {
+            failedMutations.push({
+              ...mutation,
+              status: "failed",
+              failureReason: error instanceof Error ? error.message : "Unable to sync this pending operation."
+            });
+          }
+        }
+        updatePendingOperationalMutations((previous) =>
+          previous
+            .filter((mutation) => !syncedIds.has(mutation.id))
+            .map((mutation) => failedMutations.find((failed) => failed.id === mutation.id) ?? mutation)
+        );
+        if (syncedIds.size > 0) {
+          setLastOperationalSyncAt(new Date().toISOString());
+        }
+        const failureMessage = failedMutations.map((mutation) => mutation.failureReason).filter(Boolean).join(" ");
+        const remainingConflicts = getOperationalConflictMessages(pendingOperationalMutationsRef.current);
+        setRemoteError(failureMessage || (remainingConflicts.length > 0 ? remainingConflicts.join(" ") : ""));
+      } else {
+        const nextVersion = await defaultRemoteDataGateway.saveAppData(appDataRef.current, activeUserId, remoteVersionRef.current, {
+          actionLabel: syncableMutations.map((mutation) => mutation.kind).join(", "),
+          source: "operational_queue",
+          pendingOperationCount: syncableMutations.length
+        });
+        remoteVersionRef.current = nextVersion;
+        setRemoteVersion(nextVersion);
+        updatePendingOperationalMutations((previous) => previous.filter((mutation) => !syncIds.has(mutation.id)));
+        setLastOperationalSyncAt(new Date().toISOString());
+        const remainingConflicts = getOperationalConflictMessages(pendingOperationalMutationsRef.current);
+        setRemoteError(remainingConflicts.length > 0 ? remainingConflicts.join(" ") : "");
+      }
     } catch (error) {
       const isVersionConflict =
         error instanceof Error && error.message.toLowerCase().includes("remote data changed");

@@ -278,6 +278,13 @@ Initial operational RPCs:
 - `save_live_session_details(payload jsonb)`
 - `save_live_customer_tab_details(payload jsonb)`
 
+The frontend Phase 4 wrapper is implemented in `src/dataGateway/rpcClient.ts`. It maps the existing
+`OperationalMutationKind` values to stable Supabase RPC names, sends one compact `payload jsonb`
+envelope per operation, and returns only mutation/event metadata plus changed-row references. The
+existing operational queue selects this RPC path only when `VITE_BACKEND_RPC_OPERATIONAL_WRITES` is
+enabled; otherwise it keeps the current app-state save behavior. The individual Postgres RPC
+functions remain separate tasks under Phase 4.
+
 Financial RPCs, migrated later:
 
 - `checkout_session(payload jsonb)`

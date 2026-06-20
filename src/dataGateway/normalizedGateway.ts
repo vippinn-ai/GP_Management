@@ -1,6 +1,7 @@
 import type { BackendFeatureFlags } from "./featureFlags";
 import { appStateRemoteDataGateway } from "./appStateGateway";
 import { loadNormalizedAppDataOverlay } from "./normalizedReads";
+import { invokeOperationalMutationRpc } from "./rpcClient";
 import type { RemoteDataGateway } from "./types";
 
 const NOT_IMPLEMENTED_MESSAGE =
@@ -11,7 +12,7 @@ function unsupportedGatewayCall(): never {
 }
 
 export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): RemoteDataGateway {
-  return {
+  const gateway: RemoteDataGateway = {
     async loadAppDataSnapshot() {
       const snapshot = await appStateRemoteDataGateway.loadAppDataSnapshot();
       const overlay = await loadNormalizedAppDataOverlay({
@@ -28,7 +29,7 @@ export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): 
       };
     },
     saveAppData(appData, activeUserId, expectedVersion, telemetryOptions) {
-      if (_flags.rpcOperationalWrites || _flags.rpcFinancialWrites) {
+      if (_flags.rpcFinancialWrites) {
         return Promise.reject(new Error(NOT_IMPLEMENTED_MESSAGE));
       }
       return appStateRemoteDataGateway.saveAppData(appData, activeUserId, expectedVersion, telemetryOptions);
@@ -40,4 +41,8 @@ export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): 
       return appStateRemoteDataGateway.subscribeToAppData(onChange);
     }
   };
+  if (_flags.rpcOperationalWrites) {
+    gateway.commitOperationalMutation = (mutation) => invokeOperationalMutationRpc(mutation);
+  }
+  return gateway;
 }

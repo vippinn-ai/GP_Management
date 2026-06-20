@@ -221,15 +221,37 @@ describe("app_state data gateway", () => {
     expect(backendMocks.saveRemoteAppData).toHaveBeenCalledWith(appData, "user-1", 7, undefined);
   });
 
-  it("blocks RPC write flags until RPC adapters exist", async () => {
+  it("exposes operational RPC commits while keeping non-operational saves on app_state", async () => {
+    const appData = createAppData();
+    backendMocks.saveRemoteAppData.mockResolvedValue(9);
     const gateway = createRemoteDataGateway({
       ...DEFAULT_BACKEND_FEATURE_FLAGS,
       rpcOperationalWrites: true
     });
 
+    expect(gateway.commitOperationalMutation).toEqual(expect.any(Function));
+    await expect(gateway.saveAppData(appData, "user-1", 8)).resolves.toBe(9);
+    expect(backendMocks.saveRemoteAppData).toHaveBeenCalledWith(appData, "user-1", 8, undefined);
+  });
+
+  it("blocks financial RPC write flags until financial adapters exist", async () => {
+    const gateway = createRemoteDataGateway({
+      ...DEFAULT_BACKEND_FEATURE_FLAGS,
+      rpcFinancialWrites: true
+    });
+
     await expect(gateway.saveAppData(createAppData(), "user-1", 1)).rejects.toThrow(
       "Normalized RPC or realtime gateway is not implemented yet"
     );
+  });
+
+  it("does not expose operational RPC commits unless the operational flag is enabled", () => {
+    const gateway = createRemoteDataGateway({
+      ...DEFAULT_BACKEND_FEATURE_FLAGS,
+      normalizedCatalogReads: true
+    });
+
+    expect(gateway.commitOperationalMutation).toBeUndefined();
   });
 
   it("blocks normalized realtime until the compact event subscription exists", () => {

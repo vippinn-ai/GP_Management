@@ -45,6 +45,15 @@ export {
   type NormalizedBillRegisterPage,
   type NormalizedBillRegisterQuery
 } from "./normalizedBillRegister";
+export {
+  buildOperationalRpcPayload,
+  getOperationalRpcFunctionName,
+  invokeOperationalMutationRpc,
+  mapOperationalRpcResult,
+  OPERATIONAL_RPC_FUNCTION_NAMES,
+  OperationalRpcError,
+  type OperationalRpcPayloadEnvelope
+} from "./rpcClient";
 export type { RemoteDataGateway } from "./types";
 
 export function createRemoteDataGateway(flags: BackendFeatureFlags = resolveBackendFeatureFlags()): RemoteDataGateway {
