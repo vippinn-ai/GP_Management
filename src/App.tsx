@@ -3812,8 +3812,7 @@ export default function App() {
       backendConfigured &&
       Boolean(defaultRemoteDataGateway.commitFinancialCheckout) &&
       (checkoutState.mode === "session" || checkoutState.mode === "customer_tab") &&
-      !(checkoutState.hoppedSessionIds?.length) &&
-      !checkoutState.pendingSettlement;
+      !(checkoutState.hoppedSessionIds?.length);
     let baseAppData = appData;
     let baseVersion = remoteVersionRef.current;
     if (backendConfigured && !canSkipFullSnapshotPrecheck) {
