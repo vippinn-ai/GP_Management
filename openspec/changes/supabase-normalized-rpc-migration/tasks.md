@@ -17,16 +17,16 @@
 
 ## 3. Phase 1: Normalized Schema Side-by-Side
 
-- [ ] 3.1 Create migration SQL for `organizations` and `organization_members`
-- [ ] 3.2 Create migration SQL for configuration tables
-- [ ] 3.3 Create migration SQL for inventory/catalog/combo tables
-- [ ] 3.4 Create migration SQL for live session and customer-tab tables
-- [ ] 3.5 Create migration SQL for billing/payment/receivable tables
-- [ ] 3.6 Create migration SQL for stock, audit, and expense tables
-- [ ] 3.7 Add RLS policies and membership helper functions
-- [ ] 3.8 Add indexes for tenant filters, live screens, pending bills, reports, and history pagination
-- [ ] 3.9 Add staging backfill script from `app_state` into normalized tables
-- [ ] 3.10 Add parity checks for counts, totals, stock, pending dues, and open live records
+- [x] 3.1 Create migration SQL for `organizations` and `organization_members`
+- [x] 3.2 Create migration SQL for configuration tables
+- [x] 3.3 Create migration SQL for inventory/catalog/combo tables
+- [x] 3.4 Create migration SQL for live session and customer-tab tables
+- [x] 3.5 Create migration SQL for billing/payment/receivable tables
+- [x] 3.6 Create migration SQL for stock, audit, and expense tables
+- [x] 3.7 Add RLS policies and membership helper functions
+- [x] 3.8 Add indexes for tenant filters, live screens, pending bills, reports, and history pagination
+- [x] 3.9 Add staging backfill script from `app_state` into normalized tables
+- [x] 3.10 Add parity checks for counts, totals, stock, pending dues, and open live records
 
 ## 4. Phase 2: Data Gateway
 
