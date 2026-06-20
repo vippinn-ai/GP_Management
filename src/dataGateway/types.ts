@@ -10,6 +10,7 @@ export interface OperationalRpcCommitResult {
   entityId: string;
   eventId?: string;
   serverTime?: string;
+  serverDurationMs?: number;
   changedRows?: Record<string, unknown>;
   raw?: unknown;
 }
@@ -44,6 +45,7 @@ export interface FinancialCheckoutCommitResult {
   appStateVersion?: number;
   eventId?: string;
   serverTime?: string;
+  serverDurationMs?: number;
   changedRows?: Record<string, unknown>;
   raw?: unknown;
 }

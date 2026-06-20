@@ -42,11 +42,16 @@ import {
   loadNormalizedReportData,
   loadNormalizedBillRegisterPage,
   resolveBackendFeatureFlags,
+  type FinancialCheckoutCommitResult,
   type FinancialCheckoutPatch,
   type NormalizedBillRegisterCursor,
   type NormalizedBillRegisterQuery,
   type NormalizedReportData
 } from "./dataGateway";
+import {
+  estimateCheckoutPayloadBytes,
+  recordCheckoutTelemetrySample
+} from "./checkoutTelemetry";
 import type {
   AppData,
   AppliedDiscount,
@@ -1404,9 +1409,9 @@ export default function App() {
     return records.some((entry) => entry.id === requiredRecord.id) ? records : [requiredRecord, ...records];
   }
 
-  async function commitFinancialCheckoutPatch(patch: FinancialCheckoutPatch) {
+  async function commitFinancialCheckoutPatch(patch: FinancialCheckoutPatch): Promise<FinancialCheckoutCommitResult | null> {
     if (!activeUserId || !defaultRemoteDataGateway.commitFinancialCheckout) {
-      return false;
+      return null;
     }
     if (remoteReadOnly) {
       setRemoteError(remoteReadOnlyMessage);
@@ -1420,7 +1425,7 @@ export default function App() {
       setRemoteVersion(nextVersion);
       setRemoteError("");
       setPendingRetryData(null);
-      return true;
+      return result;
     } catch (error) {
       await refreshRemoteState({ keepUser: true });
       setRemoteError(error instanceof Error ? error.message : "Could not issue the bill. Please check the latest data and try again.");
@@ -3799,10 +3804,42 @@ export default function App() {
       scheduleOperationalSync(0);
       return;
     }
+    const checkoutStartedAt = Date.now();
+    const checkoutTelemetryMode = checkoutState.mode;
+    const checkoutTelemetryEntityId =
+      checkoutState.sessionId ?? checkoutState.customerTabId ?? checkoutState.replacementBillId;
+    const canSkipFullSnapshotPrecheck =
+      backendConfigured &&
+      Boolean(defaultRemoteDataGateway.commitFinancialCheckout) &&
+      (checkoutState.mode === "session" || checkoutState.mode === "customer_tab") &&
+      !(checkoutState.hoppedSessionIds?.length) &&
+      !checkoutState.pendingSettlement;
     let baseAppData = appData;
-    let baseVersion = remoteVersion;
-    if (backendConfigured) {
-      const snapshot = await defaultRemoteDataGateway.loadAppDataSnapshot();
+    let baseVersion = remoteVersionRef.current;
+    if (backendConfigured && !canSkipFullSnapshotPrecheck) {
+      const precheckStartedAt = Date.now();
+      let snapshot;
+      try {
+        snapshot = await defaultRemoteDataGateway.loadAppDataSnapshot();
+        recordCheckoutTelemetrySample({
+          stage: "precheck_snapshot",
+          mode: checkoutTelemetryMode,
+          entityId: checkoutTelemetryEntityId,
+          durationMs: Date.now() - precheckStartedAt,
+          status: "success",
+          appStateVersion: snapshot.version
+        });
+      } catch (error) {
+        recordCheckoutTelemetrySample({
+          stage: "precheck_snapshot",
+          mode: checkoutTelemetryMode,
+          entityId: checkoutTelemetryEntityId,
+          durationMs: Date.now() - precheckStartedAt,
+          status: "error",
+          errorMessage: error instanceof Error ? error.message : "Could not load latest checkout data."
+        });
+        throw error;
+      }
       baseAppData = snapshot.appData;
       baseVersion = snapshot.version;
       setRemoteVersion(baseVersion);
@@ -3866,6 +3903,16 @@ export default function App() {
       }
       skipRemotePersistRef.current = true;
       setAppData(normalizeAppDataCustomers(baseAppData));
+    } else if (backendConfigured && canSkipFullSnapshotPrecheck) {
+      recordCheckoutTelemetrySample({
+        stage: "precheck_snapshot",
+        mode: checkoutTelemetryMode,
+        entityId: checkoutTelemetryEntityId,
+        durationMs: 0,
+        status: "success",
+        appStateVersion: baseVersion,
+        skippedFullSnapshot: true
+      });
     }
     function getAvailableStockFromData(
       data: AppData,
@@ -4313,17 +4360,42 @@ export default function App() {
             ? checkoutState.customerTabId
             : "";
       if (financialRpcMode && financialRpcEntityId) {
-        await commitFinancialCheckoutPatch(
-          buildFinancialCheckoutPatch({
-            baseAppData,
-            nextAppData,
+        const financialPatch = buildFinancialCheckoutPatch({
+          baseAppData,
+          nextAppData,
+          mode: financialRpcMode,
+          entityId: financialRpcEntityId,
+          bill: issuedBill,
+          baseVersion,
+          createdAt: issuedAt
+        });
+        const financialRpcStartedAt = Date.now();
+        try {
+          const financialResult = await commitFinancialCheckoutPatch(financialPatch);
+          recordCheckoutTelemetrySample({
+            stage: "financial_rpc",
             mode: financialRpcMode,
             entityId: financialRpcEntityId,
-            bill: issuedBill,
-            baseVersion,
-            createdAt: issuedAt
-          })
-        );
+            billNumber,
+            durationMs: Date.now() - financialRpcStartedAt,
+            status: "success",
+            payloadBytes: estimateCheckoutPayloadBytes(financialPatch),
+            appStateVersion: financialResult?.appStateVersion,
+            serverDurationMs: financialResult?.serverDurationMs
+          });
+        } catch (error) {
+          recordCheckoutTelemetrySample({
+            stage: "financial_rpc",
+            mode: financialRpcMode,
+            entityId: financialRpcEntityId,
+            billNumber,
+            durationMs: Date.now() - financialRpcStartedAt,
+            status: "error",
+            payloadBytes: estimateCheckoutPayloadBytes(financialPatch),
+            errorMessage: error instanceof Error ? error.message : "Could not issue the bill."
+          });
+          throw error;
+        }
       } else {
         await saveRemoteSnapshot(nextAppData, baseVersion, false, "Issuing bill");
       }
@@ -4342,6 +4414,15 @@ export default function App() {
     setLastHoppedSessionId(null);
     openReceiptWindow(nextAppData.businessProfile, issuedBill, nextAppData.bills, nextAppData.payments);
     downloadReceiptPdf(nextAppData.businessProfile, issuedBill, nextAppData.bills, nextAppData.payments);
+    recordCheckoutTelemetrySample({
+      stage: "checkout_total",
+      mode: checkoutTelemetryMode,
+      entityId: checkoutTelemetryEntityId,
+      billNumber,
+      durationMs: Date.now() - checkoutStartedAt,
+      status: "success",
+      skippedFullSnapshot: canSkipFullSnapshotPrecheck
+    });
   }
 
   async function settlePayment(draft: SettlementDraft): Promise<boolean> {

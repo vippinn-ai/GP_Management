@@ -62,6 +62,7 @@ security definer
 set search_path = public
 as $$
 declare
+  v_started_at timestamptz := clock_timestamp();
   v_organization_id text := nullif(payload->>'organization_id', '');
   v_mutation_id text := nullif(payload->>'mutation_id', '');
   v_mutation_kind text := nullif(payload->>'mutation_kind', '');
@@ -100,6 +101,7 @@ declare
   v_tab_status text;
   v_tab_closed_bill_id text;
   v_row jsonb;
+  v_server_duration_ms numeric;
 begin
   if v_organization_id is null then
     perform public.raise_operational_rpc_error('invalid_payload', 'The checkout payload is missing an organization.', '{}'::jsonb);
@@ -156,6 +158,7 @@ begin
       'app_state_version', nullif(v_event_metadata->>'app_state_version', '')::integer,
       'event_id', v_event_id,
       'server_time', timezone('utc', now()),
+      'server_duration_ms', nullif(v_event_metadata->>'server_duration_ms', '')::numeric,
       'idempotent', true,
       'changed_rows', coalesce(v_event_metadata->'changed_rows', '{}'::jsonb)
     );
@@ -845,6 +848,8 @@ begin
   where app_state.id = 'primary'
   returning app_state.version into v_next_app_state_version;
 
+  v_server_duration_ms := round((extract(epoch from (clock_timestamp() - v_started_at)) * 1000)::numeric, 3);
+
   insert into public.operational_events (
     organization_id,
     event_type,
@@ -865,6 +870,7 @@ begin
       'bill_id', v_bill_id,
       'bill_number', v_bill_number,
       'app_state_version', v_next_app_state_version,
+      'server_duration_ms', v_server_duration_ms,
       'changed_rows', jsonb_build_object(
         'bills', coalesce((select jsonb_agg(entry.value->>'id') from jsonb_array_elements(v_bills) as entry(value) where entry.value ? 'id'), '[]'::jsonb),
         'payments', coalesce((select jsonb_agg(entry.value->>'id') from jsonb_array_elements(v_payments) as entry(value) where entry.value ? 'id'), '[]'::jsonb),
@@ -889,6 +895,7 @@ begin
     'app_state_version', v_next_app_state_version,
     'event_id', v_event_id,
     'server_time', timezone('utc', now()),
+    'server_duration_ms', v_server_duration_ms,
     'changed_rows', v_event_metadata->'changed_rows'
   );
 end;

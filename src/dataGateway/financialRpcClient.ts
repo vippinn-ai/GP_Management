@@ -196,6 +196,7 @@ export function mapFinancialCheckoutRpcResult(params: {
     appStateVersion: toOptionalNumber(row.appStateVersion ?? row.app_state_version),
     eventId: toOptionalString(row.eventId) ?? toOptionalString(row.event_id),
     serverTime: toOptionalString(row.serverTime) ?? toOptionalString(row.server_time),
+    serverDurationMs: toOptionalNumber(row.serverDurationMs ?? row.server_duration_ms),
     changedRows: toRecord(row.changedRows ?? row.changed_rows),
     raw: params.data
   };

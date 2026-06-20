@@ -87,6 +87,7 @@ describe("financial checkout RPC client", () => {
           app_state_version: 9,
           event_id: "event-1",
           server_time: "2026-06-20T12:00:01.000Z",
+          server_duration_ms: 842.5,
           changed_rows: { bills: ["bill-1"] }
         }
       })
@@ -101,6 +102,7 @@ describe("financial checkout RPC client", () => {
       appStateVersion: 9,
       eventId: "event-1",
       serverTime: "2026-06-20T12:00:01.000Z",
+      serverDurationMs: 842.5,
       changedRows: { bills: ["bill-1"] }
     });
   });

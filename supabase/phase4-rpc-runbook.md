@@ -293,6 +293,43 @@ The `commit_checkout_bill` RPC:
 - rejects stale checkouts when the expected `app_state.version` has already changed
 - returns the next `app_state.version` so the browser can continue without a full save retry
 
+## Checkout Timing Checks
+
+After rerunning `phase5-financial-checkout-rpc.sql`, new checkout events include database-side
+duration in milliseconds. Use this in staging after issuing a test bill:
+
+```sql
+select
+  created_at,
+  entity_type,
+  entity_id,
+  metadata->>'bill_number' as bill_number,
+  (metadata->>'server_duration_ms')::numeric as server_duration_ms,
+  (metadata->>'app_state_version')::integer as app_state_version,
+  jsonb_array_length(coalesce(metadata #> '{changed_rows,bills}', '[]'::jsonb)) as bill_rows,
+  jsonb_array_length(coalesce(metadata #> '{changed_rows,payments}', '[]'::jsonb)) as payment_rows,
+  jsonb_array_length(coalesce(metadata #> '{changed_rows,stock_movements}', '[]'::jsonb)) as stock_rows,
+  jsonb_array_length(coalesce(metadata #> '{changed_rows,audit_logs}', '[]'::jsonb)) as audit_rows
+from public.operational_events
+where event_type = 'financial_checkout_committed'
+order by created_at desc
+limit 10;
+```
+
+In the staging browser console, use this after issuing a bill:
+
+```js
+window.__GP_CHECKOUT_TELEMETRY__?.getSamples?.().slice(0, 10)
+```
+
+Expected simple session/customer-tab checkout timing shape:
+
+- `precheck_snapshot` has `skippedFullSnapshot: true` and `durationMs: 0`.
+- `financial_rpc` shows the compact RPC network duration and `serverDurationMs` when the updated SQL is installed.
+- `checkout_total` should be close to the RPC duration plus receipt generation time.
+
+Replacement checkout, pending-settlement checkout, and hopped-session combined checkout still keep the full remote precheck until their wider server-side validations are implemented.
+
 ## Stop Conditions
 
 Do not enable `VITE_BACKEND_RPC_OPERATIONAL_WRITES`, `VITE_BACKEND_NORMALIZED_LIVE_READS`, or `VITE_BACKEND_RPC_FINANCIAL_WRITES` if:
