@@ -34,6 +34,21 @@ Expected:
 
 ## Verify Execute Grant
 
+Use this boolean check first:
+
+```sql
+select
+  has_function_privilege('anon', 'public.start_session(jsonb)', 'execute') as anon_can_execute,
+  has_function_privilege('authenticated', 'public.start_session(jsonb)', 'execute') as authenticated_can_execute;
+```
+
+Expected:
+
+- `anon_can_execute = false`
+- `authenticated_can_execute = true`
+
+This detailed grant query is useful when the boolean check does not match expectations:
+
 ```sql
 select
   routine_name,
@@ -48,6 +63,9 @@ order by grantee, privilege_type;
 Expected:
 
 - `authenticated` has `EXECUTE` on `start_session`.
+- `anon` does not have `EXECUTE` on `start_session`.
+- `postgres` may appear as owner/admin.
+- `service_role` may appear in Supabase-managed projects; it is not used by the browser anon key.
 
 ## Behavior Covered
 
@@ -71,6 +89,7 @@ Do not enable `VITE_BACKEND_RPC_OPERATIONAL_WRITES` if:
 - the script fails
 - `start_session` is not installed as a security definer function
 - `authenticated` does not have execute permission
+- `anon` has execute permission
 - Phase 1 parity checks are not clean
 
 Do not run this directly in production until the staging script install and a staging start-session smoke test have passed.

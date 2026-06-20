@@ -26,6 +26,8 @@ end;
 $$;
 
 revoke all on function public.raise_operational_rpc_error(text, text, jsonb) from public;
+revoke execute on function public.raise_operational_rpc_error(text, text, jsonb) from anon;
+revoke execute on function public.raise_operational_rpc_error(text, text, jsonb) from authenticated;
 
 create or replace function public.start_session(payload jsonb)
 returns jsonb
@@ -548,4 +550,5 @@ end;
 $$;
 
 revoke all on function public.start_session(jsonb) from public;
+revoke execute on function public.start_session(jsonb) from anon;
 grant execute on function public.start_session(jsonb) to authenticated;
