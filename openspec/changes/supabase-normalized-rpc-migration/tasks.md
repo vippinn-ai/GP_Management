@@ -78,8 +78,8 @@
 
 - [ ] 9.1 Run `npm test -- --run`
 - [ ] 9.2 Run `npm run build`
-- [ ] 9.3 Run staging SQL migration and backfill
-- [ ] 9.4 Run staging parity checks
+- [x] 9.3 Run staging SQL migration and backfill
+- [x] 9.4 Run staging parity checks
 - [ ] 9.5 Smoke test as admin, manager, and receptionist
 - [ ] 9.6 Smoke test with 5 browser sessions/devices where practical
 - [ ] 9.7 Compare before/after telemetry for representative actions
