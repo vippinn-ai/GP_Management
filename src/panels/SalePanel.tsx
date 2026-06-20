@@ -7,13 +7,14 @@ import { CATEGORY_IMAGES } from "../categoryImages";
 
 const LARGE_ICON_CATEGORIES = new Set(["Herbal Pot Flavour", "Herbal Pot Flavours", "Herbal Flavour", "Food"]);
 import { NumericInput } from "../components/NumericInput";
-import { CustomerAutocompleteFields } from "../components/CustomerAutocompleteFields";
+import { CustomerAutocompleteFields, type CustomerAutocompleteSuggestionProps } from "../components/CustomerAutocompleteFields";
 
 export function SalePanel(props: {
   inventoryItems: InventoryItem[];
   sellableOptions: SellableInventoryOption[];
   consumablesCombos: ComboPackage[];
   customers: Customer[];
+  customerAutocompleteSuggestions?: CustomerAutocompleteSuggestionProps;
   customerTabSearch: string;
   customerTabDraft: CustomerTabDraft;
   openCustomerTabs: CustomerTab[];
@@ -293,6 +294,7 @@ export function SalePanel(props: {
                 required
                 namePlaceholder="Enter customer name"
                 phonePlaceholder="Optional"
+                {...props.customerAutocompleteSuggestions}
                 onChange={(next) => props.onCustomerTabDraftChange({ ...customerTabDraft, ...next })}
               />
               <button className="primary-button" type="submit">
@@ -483,6 +485,7 @@ export function SalePanel(props: {
               customerPhone={editCustomerTabDraft.customerPhone}
               required
               phonePlaceholder="Optional"
+              {...props.customerAutocompleteSuggestions}
               onChange={(next) =>
                 props.onEditCustomerTabDraftChange({ ...editCustomerTabDraft, ...next })
               }

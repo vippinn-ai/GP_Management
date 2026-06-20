@@ -41,7 +41,7 @@
 - [x] 5.1 Move station/pricing reads behind normalized gateway flag
 - [x] 5.2 Move inventory/category/sale-variant reads behind normalized gateway flag
 - [x] 5.3 Move combo reads behind normalized gateway flag
-- [ ] 5.4 Move customer search reads behind normalized gateway flag
+- [x] 5.4 Move customer search reads behind normalized gateway flag
 - [ ] 5.5 Move bill register history reads to paginated normalized queries
   - [x] 5.5.1 Add normalized paginated bill-register reader for bills, lines, discounts, and payments
   - [x] 5.5.2 Wire Bill Register UI to normalized reader behind a screen-specific flag

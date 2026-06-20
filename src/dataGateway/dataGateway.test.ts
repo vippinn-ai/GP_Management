@@ -66,6 +66,7 @@ describe("data gateway feature flags", () => {
       normalizedConfigReads: false,
       normalizedCatalogReads: false,
       normalizedComboReads: false,
+      normalizedCustomerSearchReads: false,
       normalizedBillHistoryReads: false,
       normalizedRealtime: false,
       rpcOperationalWrites: false,
@@ -80,6 +81,7 @@ describe("data gateway feature flags", () => {
         VITE_BACKEND_NORMALIZED_CONFIG_READS: "true",
         VITE_BACKEND_NORMALIZED_CATALOG_READS: "0",
         VITE_BACKEND_NORMALIZED_COMBO_READS: "yes",
+        VITE_BACKEND_NORMALIZED_CUSTOMER_SEARCH_READS: "on",
         VITE_BACKEND_RPC_FINANCIAL_WRITES: "false"
       }
     );
@@ -87,6 +89,7 @@ describe("data gateway feature flags", () => {
     expect(flags.normalizedConfigReads).toBe(true);
     expect(flags.normalizedCatalogReads).toBe(false);
     expect(flags.normalizedComboReads).toBe(true);
+    expect(flags.normalizedCustomerSearchReads).toBe(true);
     expect(flags.rpcFinancialWrites).toBe(true);
   });
 });

@@ -17,6 +17,12 @@ export {
 } from "./featureFlags";
 export { appStateRemoteDataGateway } from "./appStateGateway";
 export {
+  buildCustomerSearchFilter,
+  loadNormalizedCustomerSearch,
+  mapNormalizedCustomer,
+  type NormalizedCustomerSearchQuery
+} from "./normalizedCustomerSearch";
+export {
   buildBillRegisterCursorFilter,
   buildBillRegisterSearchFilter,
   buildNormalizedBillRegisterPage,

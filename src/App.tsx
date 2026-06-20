@@ -7,7 +7,7 @@ import { AppLoadingScreen } from "./components/AppLoadingScreen";
 import { LoginScreen } from "./components/LoginScreen";
 import { MetricCard, TodayMetricCard } from "./components/MetricCard";
 import { NumericInput } from "./components/NumericInput";
-import { CustomerAutocompleteFields } from "./components/CustomerAutocompleteFields";
+import { CustomerAutocompleteFields, type CustomerAutocompleteSuggestionProps } from "./components/CustomerAutocompleteFields";
 import { UsersPanel } from "./panels/UsersPanel";
 import { SettingsPanel } from "./panels/SettingsPanel";
 import { InventoryPanel } from "./panels/InventoryPanel";
@@ -38,6 +38,7 @@ import {
 } from "./backend";
 import {
   defaultRemoteDataGateway,
+  loadNormalizedCustomerSearch,
   loadNormalizedBillRegisterPage,
   resolveBackendFeatureFlags,
   type NormalizedBillRegisterCursor,
@@ -177,6 +178,8 @@ type BillRegisterServerQuery = Omit<NormalizedBillRegisterQuery, "organizationId
 
 const BACKEND_FEATURE_FLAGS = resolveBackendFeatureFlags();
 const BILL_REGISTER_PAGE_SIZE = 50;
+const CUSTOMER_SEARCH_PAGE_SIZE = 8;
+const CUSTOMER_SEARCH_DEBOUNCE_MS = 180;
 
 interface InventoryArchiveDraft {
   itemId: string;
@@ -196,6 +199,13 @@ interface NormalizedBillRegisterState {
   queryKey: string;
 }
 
+interface NormalizedCustomerSearchState {
+  query: string;
+  customers: Customer[];
+  loading: boolean;
+  error: string;
+}
+
 function createEmptyNormalizedBillRegisterState(): NormalizedBillRegisterState {
   return {
     bills: [],
@@ -206,6 +216,15 @@ function createEmptyNormalizedBillRegisterState(): NormalizedBillRegisterState {
     error: "",
     loaded: false,
     queryKey: "{}"
+  };
+}
+
+function createEmptyNormalizedCustomerSearchState(): NormalizedCustomerSearchState {
+  return {
+    query: "",
+    customers: [],
+    loading: false,
+    error: ""
   };
 }
 
@@ -326,6 +345,10 @@ export default function App() {
   const [normalizedBillRegisterQuery, setNormalizedBillRegisterQuery] = useState<BillRegisterServerQuery>({});
   const [normalizedBillRegisterState, setNormalizedBillRegisterState] = useState<NormalizedBillRegisterState>(
     createEmptyNormalizedBillRegisterState
+  );
+  const [customerSuggestionQuery, setCustomerSuggestionQuery] = useState("");
+  const [normalizedCustomerSearchState, setNormalizedCustomerSearchState] = useState<NormalizedCustomerSearchState>(
+    createEmptyNormalizedCustomerSearchState
   );
   const receiptPreviewBlockRef = useRef<HTMLDivElement | null>(null);
   const [, setReceiptPreviewBlockHeight] = useState<number | null>(null);
@@ -682,6 +705,7 @@ export default function App() {
   }, [activeUser]);
   const canAccessTab = useCallback((tabId: TabId) => visibleTabs.some((tab) => tab.id === tabId), [visibleTabs]);
   const normalizedBillHistoryReadsEnabled = backendConfigured && BACKEND_FEATURE_FLAGS.normalizedBillHistoryReads;
+  const normalizedCustomerSearchReadsEnabled = backendConfigured && BACKEND_FEATURE_FLAGS.normalizedCustomerSearchReads;
   const canEditInventory = activeUser?.role === "admin";
   const canCreateExpenses = activeUser?.role === "admin" || activeUser?.role === "manager";
   const canDeleteExpenses = activeUser?.role === "admin";
@@ -1007,6 +1031,72 @@ export default function App() {
     const nextKey = JSON.stringify(query);
     setNormalizedBillRegisterQuery((previous) => (JSON.stringify(previous) === nextKey ? previous : query));
   }, []);
+
+  useEffect(() => {
+    if (!normalizedCustomerSearchReadsEnabled || !activeUserId) {
+      return;
+    }
+
+    const query = customerSuggestionQuery.trim();
+    if (!query) {
+      setNormalizedCustomerSearchState(createEmptyNormalizedCustomerSearchState());
+      return;
+    }
+
+    let cancelled = false;
+    setNormalizedCustomerSearchState((previous) => ({
+      ...previous,
+      query,
+      loading: true,
+      error: ""
+    }));
+
+    const timeoutId = window.setTimeout(() => {
+      loadNormalizedCustomerSearch({
+        search: query,
+        limit: CUSTOMER_SEARCH_PAGE_SIZE
+      })
+        .then((customers) => {
+          if (cancelled) {
+            return;
+          }
+          setNormalizedCustomerSearchState({
+            query,
+            customers,
+            loading: false,
+            error: ""
+          });
+        })
+        .catch((error: unknown) => {
+          if (cancelled) {
+            return;
+          }
+          setNormalizedCustomerSearchState({
+            query,
+            customers: [],
+            loading: false,
+            error: error instanceof Error ? error.message : "Unable to search normalized customers."
+          });
+        });
+    }, CUSTOMER_SEARCH_DEBOUNCE_MS);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeoutId);
+    };
+  }, [activeUserId, customerSuggestionQuery, normalizedCustomerSearchReadsEnabled]);
+
+  const customerAutocompleteSuggestions = useMemo<CustomerAutocompleteSuggestionProps | undefined>(() => {
+    if (!normalizedCustomerSearchReadsEnabled) {
+      return undefined;
+    }
+    return {
+      suggestionCustomers: normalizedCustomerSearchState.error ? undefined : normalizedCustomerSearchState.customers,
+      suggestionQuery: normalizedCustomerSearchState.query,
+      suggestionsLoading: normalizedCustomerSearchState.loading,
+      onSuggestionQueryChange: setCustomerSuggestionQuery
+    };
+  }, [normalizedCustomerSearchReadsEnabled, normalizedCustomerSearchState]);
 
   useEffect(() => {
     if (!normalizedBillHistoryReadsEnabled || activeTab !== "bills" || !activeUserId || !canAccessTab("bills")) {
@@ -5521,6 +5611,7 @@ export default function App() {
             sessionPauseLogs={appData.sessionPauseLogs}
             auditLogs={appData.auditLogs}
             customers={appData.customers}
+            customerAutocompleteSuggestions={customerAutocompleteSuggestions}
             inventoryItems={appData.inventoryItems}
             combos={appData.combos}
             sellableOptions={sellableInventoryOptions}
@@ -5584,6 +5675,7 @@ export default function App() {
             sellableOptions={sellableInventoryOptions}
             consumablesCombos={getConsumablesCombos(appData.combos)}
             customers={appData.customers}
+            customerAutocompleteSuggestions={customerAutocompleteSuggestions}
             customerTabSearch={customerTabSearch}
             customerTabDraft={customerTabDraft}
             openCustomerTabs={openCustomerTabs}
@@ -5933,6 +6025,7 @@ export default function App() {
               phonePlaceholder="Optional"
               phoneFieldClassName="field-span-full"
               disabled={Boolean(lastHoppedSessionId && postHopCustomerLocked)}
+              {...customerAutocompleteSuggestions}
               onChange={(next) => setStartSessionDraft((previous) => ({ ...previous, ...next }))}
             />
             {(!lastHoppedSessionId || postHopContinuationMode === "gaming") && selectedStartStation?.mode === "timed" && selectedStationCombos.length > 0 && (
@@ -6182,6 +6275,7 @@ export default function App() {
                   customerPhone={editSessionDraft.customerPhone}
                   namePlaceholder="Optional"
                   phonePlaceholder="Optional"
+                  {...customerAutocompleteSuggestions}
                   onChange={(next) =>
                     setEditSessionDraft((previous) => (previous ? { ...previous, ...next } : previous))
                   }
@@ -6447,6 +6541,7 @@ export default function App() {
               customerName={checkoutState.customerName}
               customerPhone={checkoutState.customerPhone}
               disabled={!canEditSessionCustomerDetails && checkoutState.mode !== "bill_replacement"}
+              {...customerAutocompleteSuggestions}
               onChange={(next) => setCheckoutState((p) => (p ? { ...p, ...next } : p))}
             />
             {!isHopMode && <label><span>Payment Mode</span><select value={checkoutState.paymentMode} onChange={(event) => setCheckoutState((p) => p ? { ...p, paymentMode: event.target.value as BillPaymentMode, splitCashAmount: 0, splitUpiAmount: 0, collectAmount: 0 } : p)}><option value="cash">Cash</option><option value="upi">UPI</option><option value="split">Split (Cash + UPI)</option>{checkoutState.mode !== "bill_replacement" && <option value="deferred">Pay Later</option>}</select></label>}

@@ -2,6 +2,7 @@ export interface BackendFeatureFlags {
   normalizedConfigReads: boolean;
   normalizedCatalogReads: boolean;
   normalizedComboReads: boolean;
+  normalizedCustomerSearchReads: boolean;
   normalizedBillHistoryReads: boolean;
   normalizedRealtime: boolean;
   rpcOperationalWrites: boolean;
@@ -12,6 +13,7 @@ export const DEFAULT_BACKEND_FEATURE_FLAGS: BackendFeatureFlags = Object.freeze(
   normalizedConfigReads: false,
   normalizedCatalogReads: false,
   normalizedComboReads: false,
+  normalizedCustomerSearchReads: false,
   normalizedBillHistoryReads: false,
   normalizedRealtime: false,
   rpcOperationalWrites: false,
@@ -24,6 +26,7 @@ const ENV_FLAG_NAMES: Record<BackendFeatureFlagKey, keyof ImportMetaEnv> = {
   normalizedConfigReads: "VITE_BACKEND_NORMALIZED_CONFIG_READS",
   normalizedCatalogReads: "VITE_BACKEND_NORMALIZED_CATALOG_READS",
   normalizedComboReads: "VITE_BACKEND_NORMALIZED_COMBO_READS",
+  normalizedCustomerSearchReads: "VITE_BACKEND_NORMALIZED_CUSTOMER_SEARCH_READS",
   normalizedBillHistoryReads: "VITE_BACKEND_NORMALIZED_BILL_HISTORY_READS",
   normalizedRealtime: "VITE_BACKEND_NORMALIZED_REALTIME",
   rpcOperationalWrites: "VITE_BACKEND_RPC_OPERATIONAL_WRITES",
@@ -56,6 +59,7 @@ export function hasNormalizedGatewayFlag(flags: BackendFeatureFlags): boolean {
     flags.normalizedConfigReads ||
     flags.normalizedCatalogReads ||
     flags.normalizedComboReads ||
+    flags.normalizedCustomerSearchReads ||
     flags.normalizedBillHistoryReads ||
     flags.normalizedRealtime
   );

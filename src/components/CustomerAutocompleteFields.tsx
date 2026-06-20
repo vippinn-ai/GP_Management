@@ -1,6 +1,13 @@
 import { useState } from "react";
 import type { Customer } from "../types";
 
+export interface CustomerAutocompleteSuggestionProps {
+  suggestionCustomers?: Customer[];
+  suggestionQuery?: string;
+  suggestionsLoading?: boolean;
+  onSuggestionQueryChange?: (query: string) => void;
+}
+
 export function CustomerAutocompleteFields(props: {
   customers: Customer[];
   customerId?: string;
@@ -13,9 +20,15 @@ export function CustomerAutocompleteFields(props: {
   phonePlaceholder?: string;
   nameFieldClassName?: string;
   phoneFieldClassName?: string;
-}) {
+} & CustomerAutocompleteSuggestionProps) {
   const [suggestionsOpen, setSuggestionsOpen] = useState(false);
+  const normalizedQuery = props.customerName.trim().replace(/\s+/g, " ").toLowerCase();
+  const normalizedPhoneQuery = (props.customerName.match(/[\d+]+/g)?.join("") ?? "").replace(/(?!^)\+/g, "");
+  const serverSuggestionsMatch = props.suggestionQuery?.trim() === props.customerName.trim();
   const suggestions = (() => {
+    if (props.suggestionCustomers && serverSuggestionsMatch) {
+      return props.suggestionCustomers;
+    }
     const normalizedQuery = props.customerName.trim().replace(/\s+/g, " ").toLowerCase();
     const normalizedPhoneQuery = (props.customerName.match(/[\d+]+/g)?.join("") ?? "").replace(/(?!^)\+/g, "");
     if (!normalizedQuery && !normalizedPhoneQuery) {
@@ -42,6 +55,9 @@ export function CustomerAutocompleteFields(props: {
       })
       .slice(0, 6);
   })();
+  const canShowLoadingState = Boolean(
+    props.suggestionsLoading && serverSuggestionsMatch && suggestionsOpen && (normalizedQuery || normalizedPhoneQuery)
+  );
 
   return (
     <>
@@ -53,18 +69,23 @@ export function CustomerAutocompleteFields(props: {
             disabled={props.disabled}
             value={props.customerName}
             placeholder={props.namePlaceholder}
-            onFocus={() => setSuggestionsOpen(true)}
+            onFocus={() => {
+              setSuggestionsOpen(true);
+              props.onSuggestionQueryChange?.(props.customerName);
+            }}
             onBlur={() => window.setTimeout(() => setSuggestionsOpen(false), 120)}
-            onChange={(event) =>
+            onChange={(event) => {
+              props.onSuggestionQueryChange?.(event.target.value);
               props.onChange({
                 customerId: undefined,
                 customerName: event.target.value,
                 customerPhone: props.customerPhone
-              })
-            }
+              });
+            }}
           />
-          {suggestionsOpen && suggestions.length > 0 && (
+          {suggestionsOpen && (suggestions.length > 0 || canShowLoadingState) && (
             <div className="customer-suggestion-list">
+              {canShowLoadingState && <div className="customer-suggestion muted">Searching customers...</div>}
               {suggestions.map((customer) => (
                 <button
                   key={customer.id}

@@ -18,7 +18,7 @@ import type {
 import { currency, formatDateTime, formatTime } from "../utils";
 import { MetricCard } from "../components/MetricCard";
 import { NumericInput } from "../components/NumericInput";
-import { CustomerAutocompleteFields } from "../components/CustomerAutocompleteFields";
+import { CustomerAutocompleteFields, type CustomerAutocompleteSuggestionProps } from "../components/CustomerAutocompleteFields";
 
 const PAUSE_OVERTIME_MS = 10 * 60 * 1000;
 
@@ -50,6 +50,7 @@ export function DashboardPanel(props: {
   openCustomerTabs: CustomerTab[];
   auditLogs: AuditLog[];
   customers: Customer[];
+  customerAutocompleteSuggestions?: CustomerAutocompleteSuggestionProps;
   inventoryItems: InventoryItem[];
   combos: ComboPackage[];
   sellableOptions: SellableInventoryOption[];
@@ -328,6 +329,7 @@ export function DashboardPanel(props: {
                 customerPhone={startSessionDraft.customerPhone}
                 namePlaceholder="Optional"
                 phonePlaceholder="Optional"
+                {...props.customerAutocompleteSuggestions}
                 onChange={(next) => props.onStartSessionDraftChange((previous) => ({ ...previous, ...next }))}
               />
               {selectedStartStation?.mode === "timed" && availableCombos.length > 0 && (
@@ -460,6 +462,7 @@ export function DashboardPanel(props: {
                   required
                   namePlaceholder="Enter customer name"
                   phonePlaceholder="Optional"
+                  {...props.customerAutocompleteSuggestions}
                   onChange={(next) => props.onDashboardCustomerTabDraftChange((previous) => ({ ...previous, ...next }))}
                 />
                 <div className="starter-submit-slot">
