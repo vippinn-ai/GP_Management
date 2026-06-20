@@ -306,6 +306,15 @@ reservation/release movement rows, and keep audit/event rows in the same transac
 locks the touched inventory item row before checking open reservations so concurrent stock claims
 cannot both pass validation.
 
+`open_customer_tab(payload jsonb)`, `add_customer_tab_item(payload jsonb)`,
+`update_customer_tab_item_quantity(payload jsonb)`, and `remove_customer_tab_item(payload jsonb)` are
+implemented in `supabase/phase4-customer-tab-rpcs.sql`. The open path uses a transaction-scoped
+advisory lock keyed by the normalized customer identifier to avoid duplicate live tabs for the same
+customer, resolves or creates the customer snapshot, and writes the tab/audit/event rows atomically.
+The item paths lock the target customer tab row, preserve idempotent retry behavior through
+`operational_events`, reject closed tabs and locked combo-included lines, validate stock availability
+before adding or increasing quantities, and return compact changed-row metadata.
+
 Financial RPCs, migrated later:
 
 - `checkout_session(payload jsonb)`

@@ -10,7 +10,8 @@ Run in staging first.
 2. Run `supabase/phase4-start-session-rpc.sql`.
 3. Run `supabase/phase4-pause-resume-session-rpcs.sql`.
 4. Run `supabase/phase4-session-item-rpcs.sql`.
-5. Keep `VITE_BACKEND_RPC_OPERATIONAL_WRITES` disabled until a deliberate staging smoke test.
+5. Run `supabase/phase4-customer-tab-rpcs.sql`.
+6. Keep `VITE_BACKEND_RPC_OPERATIONAL_WRITES` disabled until a deliberate staging smoke test.
 
 ## Verify Function Install
 
@@ -30,6 +31,11 @@ where routine_schema = 'public'
     'resume_session',
     'add_session_item',
     'remove_session_item',
+    'open_customer_tab',
+    'add_customer_tab_item',
+    'update_customer_tab_item_quantity',
+    'remove_customer_tab_item',
+    'resolve_operational_customer',
     'raise_operational_rpc_error'
   )
 order by routine_name;
@@ -42,11 +48,20 @@ Expected:
 - `resume_session` exists.
 - `add_session_item` exists.
 - `remove_session_item` exists.
+- `open_customer_tab` exists.
+- `add_customer_tab_item` exists.
+- `update_customer_tab_item_quantity` exists.
+- `remove_customer_tab_item` exists.
+- `resolve_operational_customer` exists.
 - `start_session` is `DEFINER`.
 - `pause_session` is `DEFINER`.
 - `resume_session` is `DEFINER`.
 - `add_session_item` is `DEFINER`.
 - `remove_session_item` is `DEFINER`.
+- `open_customer_tab` is `DEFINER`.
+- `add_customer_tab_item` is `DEFINER`.
+- `update_customer_tab_item_quantity` is `DEFINER`.
+- `remove_customer_tab_item` is `DEFINER`.
 - `raise_operational_rpc_error` exists.
 
 ## Verify Execute Grant
@@ -64,7 +79,17 @@ select
   has_function_privilege('anon', 'public.add_session_item(jsonb)', 'execute') as anon_can_add_session_item,
   has_function_privilege('authenticated', 'public.add_session_item(jsonb)', 'execute') as authenticated_can_add_session_item,
   has_function_privilege('anon', 'public.remove_session_item(jsonb)', 'execute') as anon_can_remove_session_item,
-  has_function_privilege('authenticated', 'public.remove_session_item(jsonb)', 'execute') as authenticated_can_remove_session_item;
+  has_function_privilege('authenticated', 'public.remove_session_item(jsonb)', 'execute') as authenticated_can_remove_session_item,
+  has_function_privilege('anon', 'public.open_customer_tab(jsonb)', 'execute') as anon_can_open_customer_tab,
+  has_function_privilege('authenticated', 'public.open_customer_tab(jsonb)', 'execute') as authenticated_can_open_customer_tab,
+  has_function_privilege('anon', 'public.add_customer_tab_item(jsonb)', 'execute') as anon_can_add_customer_tab_item,
+  has_function_privilege('authenticated', 'public.add_customer_tab_item(jsonb)', 'execute') as authenticated_can_add_customer_tab_item,
+  has_function_privilege('anon', 'public.update_customer_tab_item_quantity(jsonb)', 'execute') as anon_can_update_customer_tab_item_quantity,
+  has_function_privilege('authenticated', 'public.update_customer_tab_item_quantity(jsonb)', 'execute') as authenticated_can_update_customer_tab_item_quantity,
+  has_function_privilege('anon', 'public.remove_customer_tab_item(jsonb)', 'execute') as anon_can_remove_customer_tab_item,
+  has_function_privilege('authenticated', 'public.remove_customer_tab_item(jsonb)', 'execute') as authenticated_can_remove_customer_tab_item,
+  has_function_privilege('anon', 'public.resolve_operational_customer(text, jsonb)', 'execute') as anon_can_resolve_operational_customer,
+  has_function_privilege('authenticated', 'public.resolve_operational_customer(text, jsonb)', 'execute') as authenticated_can_resolve_operational_customer;
 ```
 
 Expected:
@@ -79,6 +104,16 @@ Expected:
 - `authenticated_can_add_session_item = true`
 - `anon_can_remove_session_item = false`
 - `authenticated_can_remove_session_item = true`
+- `anon_can_open_customer_tab = false`
+- `authenticated_can_open_customer_tab = true`
+- `anon_can_add_customer_tab_item = false`
+- `authenticated_can_add_customer_tab_item = true`
+- `anon_can_update_customer_tab_item_quantity = false`
+- `authenticated_can_update_customer_tab_item_quantity = true`
+- `anon_can_remove_customer_tab_item = false`
+- `authenticated_can_remove_customer_tab_item = true`
+- `anon_can_resolve_operational_customer = false`
+- `authenticated_can_resolve_operational_customer = false`
 
 This detailed grant query is useful when the boolean check does not match expectations:
 
@@ -94,15 +129,21 @@ where routine_schema = 'public'
     'pause_session',
     'resume_session',
     'add_session_item',
-    'remove_session_item'
+    'remove_session_item',
+    'open_customer_tab',
+    'add_customer_tab_item',
+    'update_customer_tab_item_quantity',
+    'remove_customer_tab_item',
+    'resolve_operational_customer'
   )
 order by routine_name, grantee, privilege_type;
 ```
 
 Expected:
 
-- `authenticated` has `EXECUTE` on all listed operational RPCs.
+- `authenticated` has `EXECUTE` on all listed browser-facing operational RPCs.
 - `anon` does not have `EXECUTE` on these RPCs.
+- `resolve_operational_customer` is a helper, so neither `anon` nor `authenticated` should have direct `EXECUTE`.
 - `postgres` may appear as owner/admin.
 - `service_role` may appear in Supabase-managed projects; it is not used by the browser anon key.
 
@@ -137,6 +178,19 @@ The `add_session_item` and `remove_session_item` RPCs:
 - reject closed/missing sessions with `session_not_open`
 - validate inventory availability before adding a new reserved item
 - write session item, reservation/release stock movement, audit, and compact operational event rows atomically
+- return compact changed-row ids and event metadata
+
+The `open_customer_tab`, `add_customer_tab_item`, `update_customer_tab_item_quantity`, and
+`remove_customer_tab_item` RPCs:
+
+- validate organization membership through `current_user_has_org_access`
+- serialize matching customer-tab opens with a transaction-scoped advisory lock
+- reject duplicate open tabs for the same customer name or phone with `matching_customer_tab_open`
+- lock the target customer tab row for item mutations
+- reject closed/missing tabs with `customer_tab_not_open`
+- reject direct edits/removals for included combo lines with `combo_item_locked`
+- validate inventory availability before adding or increasing tab item quantity
+- write customer, tab, item, audit, and compact operational event rows atomically
 - return compact changed-row ids and event metadata
 
 ## Stop Conditions
