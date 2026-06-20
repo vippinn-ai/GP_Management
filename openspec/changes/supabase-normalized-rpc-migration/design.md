@@ -363,6 +363,8 @@ These overlays intentionally keep saves and realtime on `app_state`. This lets s
 
 The Bill Register Phase 3 slice adds `loadNormalizedBillRegisterPage()` as a screen-specific reader instead of overlaying `appData.bills`. It uses keyset pagination on `(issued_at, id)` and loads related lines, discounts, and payments only for the returned page. The UI cutover remains separate because the current register also drives receipt preview, pending receivable actions, and settlement flows from the in-memory full `AppData` shape.
 
+The first Bill Register UI wiring uses `VITE_BACKEND_NORMALIZED_BILL_HISTORY_READS`. When enabled, the register list/receipt preview reads paginated normalized history and exposes Load More/Refresh controls. If the normalized read fails, the screen falls back to the current in-memory `appData.bills` path and shows the error in the normalized-history status strip. Settlement, void/refund, and replacement actions remain server-confirmed through the current app-state workflow.
+
 ## Migration and Rollback
 
 ### Backfill

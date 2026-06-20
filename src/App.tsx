@@ -36,7 +36,13 @@ import {
   signInWithUsername,
   signOutRemote
 } from "./backend";
-import { defaultRemoteDataGateway } from "./dataGateway";
+import {
+  defaultRemoteDataGateway,
+  loadNormalizedBillRegisterPage,
+  resolveBackendFeatureFlags,
+  type NormalizedBillRegisterCursor,
+  type NormalizedBillRegisterQuery
+} from "./dataGateway";
 import type {
   AppData,
   AppliedDiscount,
@@ -63,6 +69,7 @@ import type {
   SellableInventoryOption,
   LtpOutcome,
   PendingSettlementDraft,
+  Payment,
   PaymentMode,
   PlayMode,
   ReportFilterState,
@@ -166,11 +173,52 @@ import {
 type PostHopContinuationMode = "gaming" | "consumables";
 type SessionItemFormState = Record<string, { sellableOptionId: string; quantity: number; sellAsPackOf?: number }>;
 type InventoryArchiveView = "active" | "archived";
+type BillRegisterServerQuery = Omit<NormalizedBillRegisterQuery, "organizationId" | "cursor" | "limit">;
+
+const BACKEND_FEATURE_FLAGS = resolveBackendFeatureFlags();
+const BILL_REGISTER_PAGE_SIZE = 50;
 
 interface InventoryArchiveDraft {
   itemId: string;
   reason: string;
   remainingStock: number;
+}
+
+interface NormalizedBillRegisterState {
+  bills: Bill[];
+  payments: Payment[];
+  nextCursor?: NormalizedBillRegisterCursor;
+  hasMore: boolean;
+  loading: boolean;
+  loadingMore: boolean;
+  error: string;
+  loaded: boolean;
+  queryKey: string;
+}
+
+function createEmptyNormalizedBillRegisterState(): NormalizedBillRegisterState {
+  return {
+    bills: [],
+    payments: [],
+    hasMore: false,
+    loading: false,
+    loadingMore: false,
+    error: "",
+    loaded: false,
+    queryKey: "{}"
+  };
+}
+
+function mergeBillsById(primary: Bill[], fallback: Bill[]): Bill[] {
+  const map = new Map(fallback.map((bill) => [bill.id, bill]));
+  primary.forEach((bill) => map.set(bill.id, bill));
+  return Array.from(map.values());
+}
+
+function mergePaymentsById(primary: Payment[], fallback: Payment[]): Payment[] {
+  const map = new Map(fallback.map((payment) => [payment.id, payment]));
+  primary.forEach((payment) => map.set(payment.id, payment));
+  return Array.from(map.values());
 }
 
 function createComboDraft(): ComboPackage {
@@ -275,6 +323,10 @@ export default function App() {
   const [sessionItemForm, setSessionItemForm] = useState<SessionItemFormState>({});
   const [selectedReceiptBillId, setSelectedReceiptBillId] = useState<string | null>(null);
   const [billRegisterFocus, setBillRegisterFocus] = useState<{ token: number; search: string } | null>(null);
+  const [normalizedBillRegisterQuery, setNormalizedBillRegisterQuery] = useState<BillRegisterServerQuery>({});
+  const [normalizedBillRegisterState, setNormalizedBillRegisterState] = useState<NormalizedBillRegisterState>(
+    createEmptyNormalizedBillRegisterState
+  );
   const receiptPreviewBlockRef = useRef<HTMLDivElement | null>(null);
   const [, setReceiptPreviewBlockHeight] = useState<number | null>(null);
   const skipRemotePersistRef = useRef(false);
@@ -629,6 +681,7 @@ export default function App() {
     return [...roleTabs, ...extras];
   }, [activeUser]);
   const canAccessTab = useCallback((tabId: TabId) => visibleTabs.some((tab) => tab.id === tabId), [visibleTabs]);
+  const normalizedBillHistoryReadsEnabled = backendConfigured && BACKEND_FEATURE_FLAGS.normalizedBillHistoryReads;
   const canEditInventory = activeUser?.role === "admin";
   const canCreateExpenses = activeUser?.role === "admin" || activeUser?.role === "manager";
   const canDeleteExpenses = activeUser?.role === "admin";
@@ -944,6 +997,134 @@ export default function App() {
       setActiveTab(visibleTabs[0]?.id ?? "dashboard");
     }
   }, [activeTab, activeUser, visibleTabs]);
+
+  const normalizedBillRegisterQueryKey = useMemo(
+    () => JSON.stringify(normalizedBillRegisterQuery),
+    [normalizedBillRegisterQuery]
+  );
+
+  const handleNormalizedBillRegisterQueryChange = useCallback((query: BillRegisterServerQuery) => {
+    const nextKey = JSON.stringify(query);
+    setNormalizedBillRegisterQuery((previous) => (JSON.stringify(previous) === nextKey ? previous : query));
+  }, []);
+
+  useEffect(() => {
+    if (!normalizedBillHistoryReadsEnabled || activeTab !== "bills" || !activeUserId || !canAccessTab("bills")) {
+      return;
+    }
+    let cancelled = false;
+    setNormalizedBillRegisterState((previous) => ({
+      ...previous,
+      loading: true,
+      loadingMore: false,
+      error: "",
+      queryKey: normalizedBillRegisterQueryKey
+    }));
+
+    loadNormalizedBillRegisterPage({
+      ...normalizedBillRegisterQuery,
+      limit: BILL_REGISTER_PAGE_SIZE
+    })
+      .then((page) => {
+        if (cancelled) {
+          return;
+        }
+        setNormalizedBillRegisterState({
+          bills: page.bills,
+          payments: page.payments,
+          nextCursor: page.nextCursor,
+          hasMore: page.hasMore,
+          loading: false,
+          loadingMore: false,
+          error: "",
+          loaded: true,
+          queryKey: normalizedBillRegisterQueryKey
+        });
+      })
+      .catch((error: unknown) => {
+        if (cancelled) {
+          return;
+        }
+        setNormalizedBillRegisterState((previous) => ({
+          ...previous,
+          bills: [],
+          payments: [],
+          nextCursor: undefined,
+          hasMore: false,
+          loading: false,
+          loadingMore: false,
+          error: error instanceof Error ? error.message : "Unable to load normalized bill history.",
+          loaded: false,
+          queryKey: normalizedBillRegisterQueryKey
+        }));
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    activeTab,
+    activeUserId,
+    canAccessTab,
+    normalizedBillHistoryReadsEnabled,
+    normalizedBillRegisterQuery,
+    normalizedBillRegisterQueryKey
+  ]);
+
+  const loadMoreNormalizedBillRegister = useCallback(() => {
+    if (
+      !normalizedBillHistoryReadsEnabled ||
+      !normalizedBillRegisterState.nextCursor ||
+      normalizedBillRegisterState.loading ||
+      normalizedBillRegisterState.loadingMore
+    ) {
+      return;
+    }
+    const cursor = normalizedBillRegisterState.nextCursor;
+    setNormalizedBillRegisterState((previous) => ({ ...previous, loadingMore: true, error: "" }));
+    loadNormalizedBillRegisterPage({
+      ...normalizedBillRegisterQuery,
+      cursor,
+      limit: BILL_REGISTER_PAGE_SIZE
+    })
+      .then((page) => {
+        setNormalizedBillRegisterState((previous) => ({
+          ...previous,
+          bills: mergeBillsById(page.bills, previous.bills),
+          payments: mergePaymentsById(page.payments, previous.payments),
+          nextCursor: page.nextCursor,
+          hasMore: page.hasMore,
+          loading: false,
+          loadingMore: false,
+          error: "",
+          loaded: true,
+          queryKey: normalizedBillRegisterQueryKey
+        }));
+      })
+      .catch((error: unknown) => {
+        setNormalizedBillRegisterState((previous) => ({
+          ...previous,
+          loadingMore: false,
+          error: error instanceof Error ? error.message : "Unable to load more normalized bill history."
+        }));
+      });
+  }, [
+    normalizedBillHistoryReadsEnabled,
+    normalizedBillRegisterQuery,
+    normalizedBillRegisterQueryKey,
+    normalizedBillRegisterState.loading,
+    normalizedBillRegisterState.loadingMore,
+    normalizedBillRegisterState.nextCursor
+  ]);
+
+  const refreshNormalizedBillRegister = useCallback(() => {
+    setNormalizedBillRegisterState((previous) => ({
+      ...previous,
+      loaded: false,
+      queryKey: `${previous.queryKey}:refresh:${Date.now()}`
+    }));
+    setNormalizedBillRegisterQuery((previous) => ({ ...previous }));
+  }, []);
 
   function mutateAppData(mutator: (draft: AppData) => void) {
     setAppData((previous) => {
@@ -4792,9 +4973,38 @@ export default function App() {
     });
   }
 
-  const selectedReceiptBill = appData.bills.find((bill) => bill.id === selectedReceiptBillId) ?? appData.bills[0] ?? null;
+  const normalizedBillRegisterDisplayEnabled =
+    normalizedBillHistoryReadsEnabled && activeTab === "bills" && !normalizedBillRegisterState.error;
+  const billRegisterBills = normalizedBillRegisterDisplayEnabled ? normalizedBillRegisterState.bills : appData.bills;
+  const billRegisterPayments = normalizedBillRegisterDisplayEnabled ? normalizedBillRegisterState.payments : appData.payments;
+  const billRegisterBusinessDates = normalizedBillRegisterDisplayEnabled
+    ? billRegisterBills.reduce<Record<string, string>>((dates, bill) => {
+        dates[bill.id] = getBillBusinessDate(bill);
+        return dates;
+      }, {})
+    : billBusinessDates;
+  const billRegisterPaymentBusinessDates = normalizedBillRegisterDisplayEnabled
+    ? billRegisterPayments.reduce<Record<string, string[]>>((datesByBill, payment) => {
+        const dates = datesByBill[payment.billId] ?? [];
+        dates.push(toBusinessDayKey(payment.createdAt));
+        datesByBill[payment.billId] = dates;
+        return datesByBill;
+      }, {})
+    : billPaymentBusinessDates;
+  const billRegisterReceiptBills = normalizedBillRegisterDisplayEnabled
+    ? mergeBillsById(billRegisterBills, appData.bills)
+    : appData.bills;
+  const billRegisterReceiptPayments = normalizedBillRegisterDisplayEnabled
+    ? mergePaymentsById(billRegisterPayments, appData.payments)
+    : appData.payments;
+  const selectedReceiptBill =
+    billRegisterBills.find((bill) => bill.id === selectedReceiptBillId) ??
+    appData.bills.find((bill) => bill.id === selectedReceiptBillId) ??
+    billRegisterBills[0] ??
+    appData.bills[0] ??
+    null;
   const receiptPreviewModel = selectedReceiptBill
-    ? buildReceiptPreviewModel(appData.businessProfile, selectedReceiptBill, appData.bills, appData.payments)
+    ? buildReceiptPreviewModel(appData.businessProfile, selectedReceiptBill, billRegisterReceiptBills, billRegisterReceiptPayments)
     : null;
   const managedSession = manageSessionId ? getSessionById(manageSessionId) ?? null : null;
   const managedSessionCharge = managedSession ? getSessionChargeSummary(managedSession, getFrozenEndAtForSession(managedSession.id)) : null;
@@ -5472,22 +5682,36 @@ export default function App() {
 
         {activeTab === "bills" && canAccessTab("bills") && (
           <BillRegisterPanel
-            bills={appData.bills}
-            billBusinessDates={billBusinessDates}
-            billPaymentBusinessDates={billPaymentBusinessDates}
+            bills={billRegisterBills}
+            billBusinessDates={billRegisterBusinessDates}
+            billPaymentBusinessDates={billRegisterPaymentBusinessDates}
             stations={appData.stations}
             businessProfile={appData.businessProfile}
             selectedReceiptBillId={selectedReceiptBillId}
             selectedReceiptBill={selectedReceiptBill}
             receiptPreviewModel={receiptPreviewModel}
-            allBills={appData.bills}
-            allPayments={appData.payments}
+            allBills={billRegisterReceiptBills}
+            allPayments={billRegisterReceiptPayments}
             receivableGroups={pendingReceivableGroups}
             receivableFocusToken={billRegisterFocus?.token}
             receivableFocusSearch={billRegisterFocus?.search}
             canReplaceIssuedBills={canReplaceIssuedBills}
             canVoidRefundBills={canVoidRefundBills}
             canSettlePendingBills={canSettlePendingBills}
+            normalizedHistory={
+              normalizedBillHistoryReadsEnabled
+                ? {
+                    enabled: true,
+                    loading: normalizedBillRegisterState.loading,
+                    loadingMore: normalizedBillRegisterState.loadingMore,
+                    error: normalizedBillRegisterState.error,
+                    hasMore: normalizedBillRegisterState.hasMore,
+                    onQueryChange: handleNormalizedBillRegisterQueryChange,
+                    onLoadMore: loadMoreNormalizedBillRegister,
+                    onRefresh: refreshNormalizedBillRegister
+                  }
+                : undefined
+            }
             onSelectReceiptBill={setSelectedReceiptBillId}
             onSettlePendingBill={(billId) => setSettlementDraft({ billId, paymentMode: "cash", cashAmount: 0, upiAmount: 0 })}
             onSettlePendingBills={(billIds) => setSettlementDraft({ billIds, paymentMode: "cash", cashAmount: 0, upiAmount: 0 })}

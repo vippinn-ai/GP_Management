@@ -25,6 +25,7 @@ export {
   mapNormalizedBill,
   mapNormalizedBillLine,
   mapNormalizedPayment,
+  resolveNormalizedBillRegisterOrganizationId,
   type NormalizedBillRegisterCursor,
   type NormalizedBillRegisterPage,
   type NormalizedBillRegisterQuery

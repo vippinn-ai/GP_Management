@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useState, useMemo } from "react";
 import type { Bill, BillStatus, BillPaymentMode, Payment, PendingReceivableGroup, Station } from "../types";
+import type { NormalizedBillRegisterQuery } from "../dataGateway";
 import type { ReceiptPreviewModel } from "../exporters";
 import { openReceiptWindow, downloadReceiptPdf } from "../exporters";
 import { currency, formatDateTime, toBusinessDayKey, toLocalDateKey, addDays } from "../utils";
@@ -7,6 +8,7 @@ import brandLogo from "../../Branding/Logo.png";
 
 type QuickFilter = "all" | "pending" | "today" | "yesterday" | "this_week" | "issued" | "voided";
 type RegisterView = "bills" | "receivables";
+type BillRegisterServerQuery = Omit<NormalizedBillRegisterQuery, "cursor" | "limit" | "organizationId">;
 
 function currentBusinessDayKey(): string {
   return toBusinessDayKey(new Date());
@@ -56,6 +58,16 @@ export function BillRegisterPanel(props: {
   canReplaceIssuedBills: boolean;
   canVoidRefundBills: boolean;
   canSettlePendingBills: boolean;
+  normalizedHistory?: {
+    enabled: boolean;
+    loading: boolean;
+    loadingMore: boolean;
+    error: string;
+    hasMore: boolean;
+    onQueryChange: (query: BillRegisterServerQuery) => void;
+    onLoadMore: () => void;
+    onRefresh: () => void;
+  };
   onSelectReceiptBill: (billId: string | null) => void;
   onSettlePendingBill: (billId: string) => void;
   onSettlePendingBills: (billIds: string[]) => void;
@@ -138,6 +150,56 @@ export function BillRegisterPanel(props: {
 
     return list;
   }, [props.bills, props.billBusinessDates, props.billPaymentBusinessDates, quickFilter, search, filterStatus, filterMode, filterStation, filterFrom, filterTo, today, yesterday, weekAgo]);
+
+  const normalizedServerQuery = useMemo<BillRegisterServerQuery>(() => {
+    const query: BillRegisterServerQuery = {};
+    if (search.trim()) {
+      query.search = search.trim();
+    }
+    if (filterMode) {
+      query.paymentMode = filterMode;
+    }
+    if (filterStation === "__tab__") {
+      query.customerTabOnly = true;
+    } else if (filterStation) {
+      query.stationId = filterStation;
+    }
+
+    if (quickFilter === "pending") {
+      query.status = "pending";
+    } else if (quickFilter === "issued") {
+      query.status = "issued";
+    } else if (quickFilter === "voided") {
+      query.status = "voided";
+    } else if (quickFilter === "today") {
+      query.businessDateFrom = today;
+      query.businessDateTo = today;
+    } else if (quickFilter === "yesterday") {
+      query.businessDateFrom = yesterday;
+      query.businessDateTo = yesterday;
+    } else if (quickFilter === "this_week") {
+      query.businessDateFrom = weekAgo;
+      query.businessDateTo = today;
+    } else {
+      if (filterStatus) {
+        query.status = filterStatus;
+      }
+      if (filterFrom || filterTo) {
+        query.businessDateFrom = filterFrom || filterTo;
+        query.businessDateTo = filterTo || filterFrom;
+      }
+    }
+    return query;
+  }, [filterFrom, filterMode, filterStation, filterStatus, filterTo, quickFilter, search, today, weekAgo, yesterday]);
+
+  const normalizedServerQueryKey = useMemo(() => JSON.stringify(normalizedServerQuery), [normalizedServerQuery]);
+
+  useEffect(() => {
+    if (!props.normalizedHistory?.enabled) {
+      return;
+    }
+    props.normalizedHistory.onQueryChange(normalizedServerQuery);
+  }, [props.normalizedHistory?.enabled, props.normalizedHistory?.onQueryChange, normalizedServerQuery, normalizedServerQueryKey]);
 
   const filteredReceivableGroups = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -397,6 +459,23 @@ export function BillRegisterPanel(props: {
         )}
       </div>
 
+      {props.normalizedHistory?.enabled && (
+        <div className="bill-register-filter-bar">
+          <span className="muted">
+            Normalized history {props.normalizedHistory.loading ? "loading..." : "active"}
+            {props.normalizedHistory.error ? ` - ${props.normalizedHistory.error}` : ""}
+          </span>
+          <button
+            className="ghost-button"
+            type="button"
+            disabled={props.normalizedHistory.loading || props.normalizedHistory.loadingMore}
+            onClick={props.normalizedHistory.onRefresh}
+          >
+            Refresh
+          </button>
+        </div>
+      )}
+
       {/* Split workspace */}
       <div className="bill-register-workspace">
 
@@ -419,8 +498,11 @@ export function BillRegisterPanel(props: {
                 </tr>
               </thead>
               <tbody>
-                {filteredBills.length === 0 && (
-                  <tr><td colSpan={10}><div className="bill-register-empty">{props.bills.length === 0 ? "No bills have been recorded yet." : "No bills match the current filters."}</div></td></tr>
+                {props.normalizedHistory?.loading && filteredBills.length === 0 && (
+                  <tr><td colSpan={10}><div className="bill-register-empty">Loading bill history...</div></td></tr>
+                )}
+                {!props.normalizedHistory?.loading && filteredBills.length === 0 && (
+                  <tr><td colSpan={10}><div className="bill-register-empty">{props.bills.length === 0 && !props.normalizedHistory?.loading ? "No bills have been recorded yet." : "No bills match the current filters."}</div></td></tr>
                 )}
                 {filteredBills.map((bill) => (
                   <tr
@@ -457,6 +539,18 @@ export function BillRegisterPanel(props: {
                 ))}
               </tbody>
             </table>
+            {props.normalizedHistory?.enabled && (
+              <div className="button-row dense" style={{ justifyContent: "center", padding: "0.75rem" }}>
+                <button
+                  className="secondary-button"
+                  type="button"
+                  disabled={!props.normalizedHistory.hasMore || props.normalizedHistory.loading || props.normalizedHistory.loadingMore}
+                  onClick={props.normalizedHistory.onLoadMore}
+                >
+                  {props.normalizedHistory.loadingMore ? "Loading..." : props.normalizedHistory.hasMore ? "Load More Bills" : "No More Bills"}
+                </button>
+              </div>
+            )}
           </div>
         </div>
 
