@@ -101,7 +101,7 @@ The drafted Phase 1 SQL files are:
 
 - `supabase/phase1-normalized-schema.sql`: creates tenant-aware shadow tables, RLS helpers/policies, triggers, and indexes.
 - `supabase/phase1-backfill-from-app-state.sql`: resets and repopulates the default `org-primary` shadow organization from the current `app_state` JSON.
-- `supabase/phase1-parity-checks.sql`: compares JSON source counts/totals against normalized rows.
+- `supabase/phase1-parity-checks-single-result.sql`: compares JSON source counts/totals against normalized rows in one Supabase SQL Editor result grid.
 
 Most domain tables include `raw_data jsonb` in Phase 1. This preserves every current JSON field while we move toward narrower indexed reads and smaller RPC writes.
 

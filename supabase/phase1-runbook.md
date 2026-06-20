@@ -8,7 +8,7 @@ Run in staging first.
 
 1. Run `supabase/phase1-normalized-schema.sql`
 2. Run `supabase/phase1-backfill-from-app-state.sql`
-3. Run `supabase/phase1-parity-checks.sql`
+3. Run `supabase/phase1-parity-checks-single-result.sql`
 
 ## Stop Conditions
 
@@ -24,11 +24,11 @@ Do not proceed to any read cutover if:
 
 After the backfill, normalized tables should contain a full shadow copy of the current `app_state` data under `organization_id = 'org-primary'`.
 
-The parity script returns three result sets:
+The parity script returns one result set with three `check_group` values:
 
-1. collection counts
-2. financial and stock totals
-3. open/live/pending counts
+1. `collection_count`
+2. `totals`
+3. `live_summary`
 
 All deltas should be zero before Phase 2 data gateway work starts.
 
