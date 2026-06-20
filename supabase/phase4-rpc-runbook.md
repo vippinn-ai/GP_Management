@@ -13,7 +13,8 @@ Run in staging first.
 5. Run `supabase/phase4-customer-tab-rpcs.sql`.
 6. Run `supabase/phase4-combo-rpcs.sql`.
 7. Run `supabase/phase4-live-detail-rpcs.sql`.
-8. Keep `VITE_BACKEND_RPC_OPERATIONAL_WRITES` and `VITE_BACKEND_NORMALIZED_LIVE_READS` disabled until a deliberate staging smoke test.
+8. Run `supabase/phase5-financial-checkout-rpc.sql` only when you are ready to test compact issue-bill writes.
+9. Keep `VITE_BACKEND_RPC_OPERATIONAL_WRITES`, `VITE_BACKEND_NORMALIZED_LIVE_READS`, and `VITE_BACKEND_RPC_FINANCIAL_WRITES` disabled until a deliberate staging smoke test.
 
 ## Frontend Smoke-Test Flags
 
@@ -25,6 +26,16 @@ VITE_BACKEND_NORMALIZED_LIVE_READS=true
 ```
 
 Do not enable `VITE_BACKEND_RPC_OPERATIONAL_WRITES` by itself. RPC writes create/update normalized live rows, and `VITE_BACKEND_NORMALIZED_LIVE_READS` makes refreshes and other devices read open sessions/customer tabs from those normalized rows while preserving closed history from `app_state`.
+
+For Phase 5 issue-bill testing, enable all three flags together in staging:
+
+```text
+VITE_BACKEND_RPC_OPERATIONAL_WRITES=true
+VITE_BACKEND_NORMALIZED_LIVE_READS=true
+VITE_BACKEND_RPC_FINANCIAL_WRITES=true
+```
+
+`VITE_BACKEND_RPC_FINANCIAL_WRITES` currently accelerates normal session checkout and customer-tab checkout. Bill replacement, void/refund, pending write-off, and admin/stock/config changes continue using the existing blocking save path.
 
 ## Verify Function Install
 
@@ -52,6 +63,8 @@ where routine_schema = 'public'
     'apply_customer_tab_combo',
     'save_live_session_details',
     'save_live_customer_tab_details',
+    'commit_checkout_bill',
+    'patch_app_state_array_by_id',
     'resolve_operational_customer',
     'raise_operational_rpc_error'
   )
@@ -73,6 +86,8 @@ Expected:
 - `apply_customer_tab_combo` exists.
 - `save_live_session_details` exists.
 - `save_live_customer_tab_details` exists.
+- `commit_checkout_bill` exists.
+- `patch_app_state_array_by_id` exists.
 - `resolve_operational_customer` exists.
 - `start_session` is `DEFINER`.
 - `pause_session` is `DEFINER`.
@@ -87,6 +102,7 @@ Expected:
 - `apply_customer_tab_combo` is `DEFINER`.
 - `save_live_session_details` is `DEFINER`.
 - `save_live_customer_tab_details` is `DEFINER`.
+- `commit_checkout_bill` is `DEFINER`.
 - `raise_operational_rpc_error` exists.
 
 ## Verify Execute Grant
@@ -121,6 +137,10 @@ select
   has_function_privilege('authenticated', 'public.save_live_session_details(jsonb)', 'execute') as authenticated_can_save_live_session_details,
   has_function_privilege('anon', 'public.save_live_customer_tab_details(jsonb)', 'execute') as anon_can_save_live_customer_tab_details,
   has_function_privilege('authenticated', 'public.save_live_customer_tab_details(jsonb)', 'execute') as authenticated_can_save_live_customer_tab_details,
+  has_function_privilege('anon', 'public.commit_checkout_bill(jsonb)', 'execute') as anon_can_commit_checkout_bill,
+  has_function_privilege('authenticated', 'public.commit_checkout_bill(jsonb)', 'execute') as authenticated_can_commit_checkout_bill,
+  has_function_privilege('anon', 'public.patch_app_state_array_by_id(jsonb, jsonb)', 'execute') as anon_can_patch_app_state_array_by_id,
+  has_function_privilege('authenticated', 'public.patch_app_state_array_by_id(jsonb, jsonb)', 'execute') as authenticated_can_patch_app_state_array_by_id,
   has_function_privilege('anon', 'public.resolve_operational_customer(text, jsonb)', 'execute') as anon_can_resolve_operational_customer,
   has_function_privilege('authenticated', 'public.resolve_operational_customer(text, jsonb)', 'execute') as authenticated_can_resolve_operational_customer;
 ```
@@ -153,6 +173,10 @@ Expected:
 - `authenticated_can_save_live_session_details = true`
 - `anon_can_save_live_customer_tab_details = false`
 - `authenticated_can_save_live_customer_tab_details = true`
+- `anon_can_commit_checkout_bill = false`
+- `authenticated_can_commit_checkout_bill = true`
+- `anon_can_patch_app_state_array_by_id = false`
+- `authenticated_can_patch_app_state_array_by_id = false`
 - `anon_can_resolve_operational_customer = false`
 - `authenticated_can_resolve_operational_customer = false`
 
@@ -179,6 +203,8 @@ where routine_schema = 'public'
     'apply_customer_tab_combo',
     'save_live_session_details',
     'save_live_customer_tab_details',
+    'commit_checkout_bill',
+    'patch_app_state_array_by_id',
     'resolve_operational_customer'
   )
 order by routine_name, grantee, privilege_type;
@@ -188,7 +214,8 @@ Expected:
 
 - `authenticated` has `EXECUTE` on all listed browser-facing operational RPCs.
 - `anon` does not have `EXECUTE` on these RPCs.
-- `resolve_operational_customer` is a helper, so neither `anon` nor `authenticated` should have direct `EXECUTE`.
+- `commit_checkout_bill` is browser-facing for Phase 5, so `authenticated` should have direct `EXECUTE`.
+- `resolve_operational_customer` and `patch_app_state_array_by_id` are helpers, so neither `anon` nor `authenticated` should have direct `EXECUTE`.
 - `postgres` may appear as owner/admin.
 - `service_role` may appear in Supabase-managed projects; it is not used by the browser anon key.
 
@@ -257,14 +284,26 @@ The `save_live_session_details` and `save_live_customer_tab_details` RPCs:
 - update only live detail fields and optional audit rows
 - return compact changed-row ids and event metadata
 
+The `commit_checkout_bill` RPC:
+
+- validates organization membership through `current_user_has_org_access`
+- locks the target session or customer tab row for the checkout transaction
+- keeps `app_state` compatibility by patching only changed arrays instead of accepting a full app-state upload
+- writes bill, bill lines, discounts, payments, stock movements, audit logs, customer, inventory stock, and closed session/tab rows atomically
+- rejects stale checkouts when the expected `app_state.version` has already changed
+- returns the next `app_state.version` so the browser can continue without a full save retry
+
 ## Stop Conditions
 
-Do not enable `VITE_BACKEND_RPC_OPERATIONAL_WRITES` and `VITE_BACKEND_NORMALIZED_LIVE_READS` if:
+Do not enable `VITE_BACKEND_RPC_OPERATIONAL_WRITES`, `VITE_BACKEND_NORMALIZED_LIVE_READS`, or `VITE_BACKEND_RPC_FINANCIAL_WRITES` if:
 
 - the script fails
 - any operational RPC is not installed as a security definer function
+- `commit_checkout_bill` is not installed as a security definer function
 - `authenticated` does not have execute permission for each operational RPC
+- `authenticated` does not have execute permission for `commit_checkout_bill`
 - `anon` has execute permission for any operational RPC
+- `anon` has execute permission for `commit_checkout_bill` or `patch_app_state_array_by_id`
 - Phase 1 parity checks are not clean
 
-Do not run this directly in production until the staging script install and a staging smoke test with both frontend flags has passed.
+Do not run this directly in production until the staging script install and a staging smoke test with all enabled frontend flags has passed.

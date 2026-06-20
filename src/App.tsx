@@ -42,6 +42,7 @@ import {
   loadNormalizedReportData,
   loadNormalizedBillRegisterPage,
   resolveBackendFeatureFlags,
+  type FinancialCheckoutPatch,
   type NormalizedBillRegisterCursor,
   type NormalizedBillRegisterQuery,
   type NormalizedReportData
@@ -1387,6 +1388,77 @@ export default function App() {
 
   function hasPendingOperationalForCustomerTab(customerTabId?: string) {
     return hasPendingOperationalMutationForEntity(pendingOperationalMutations, "customer_tab", customerTabId);
+  }
+
+  function recordsChanged<T extends { id: string }>(before: T[], after: T[]): T[] {
+    const beforeById = new Map(before.map((entry) => [entry.id, entry]));
+    return after.filter((entry) => JSON.stringify(beforeById.get(entry.id)) !== JSON.stringify(entry));
+  }
+
+  function newRecords<T extends { id: string }>(before: T[], after: T[]): T[] {
+    const beforeIds = new Set(before.map((entry) => entry.id));
+    return after.filter((entry) => !beforeIds.has(entry.id));
+  }
+
+  function ensurePatchRecord<T extends { id: string }>(records: T[], requiredRecord: T): T[] {
+    return records.some((entry) => entry.id === requiredRecord.id) ? records : [requiredRecord, ...records];
+  }
+
+  async function commitFinancialCheckoutPatch(patch: FinancialCheckoutPatch) {
+    if (!activeUserId || !defaultRemoteDataGateway.commitFinancialCheckout) {
+      return false;
+    }
+    if (remoteReadOnly) {
+      setRemoteError(remoteReadOnlyMessage);
+      throw new Error(remoteReadOnlyMessage);
+    }
+    setRemoteSaving(true);
+    try {
+      const result = await defaultRemoteDataGateway.commitFinancialCheckout(patch);
+      const nextVersion = result.appStateVersion ?? patch.baseAppStateVersion + 1;
+      remoteVersionRef.current = nextVersion;
+      setRemoteVersion(nextVersion);
+      setRemoteError("");
+      setPendingRetryData(null);
+      return true;
+    } catch (error) {
+      await refreshRemoteState({ keepUser: true });
+      setRemoteError(error instanceof Error ? error.message : "Could not issue the bill. Please check the latest data and try again.");
+      setPendingRetryData(null);
+      throw error;
+    } finally {
+      setRemoteSaving(false);
+    }
+  }
+
+  function buildFinancialCheckoutPatch(params: {
+    baseAppData: AppData;
+    nextAppData: AppData;
+    mode: "session" | "customer_tab";
+    entityId: string;
+    bill: Bill;
+    baseVersion: number;
+    createdAt: string;
+  }): FinancialCheckoutPatch {
+    const changedBills = ensurePatchRecord(recordsChanged(params.baseAppData.bills, params.nextAppData.bills), params.bill);
+    return {
+      mutationId: createId("financial"),
+      mode: params.mode,
+      entityType: params.mode === "session" ? "session" : "customer_tab",
+      entityId: params.entityId,
+      userId: activeUser?.id ?? activeUserId ?? "",
+      createdAt: params.createdAt,
+      baseAppStateVersion: params.baseVersion,
+      bill: params.bill,
+      bills: changedBills,
+      payments: newRecords(params.baseAppData.payments, params.nextAppData.payments),
+      stockMovements: newRecords(params.baseAppData.stockMovements, params.nextAppData.stockMovements),
+      auditLogs: newRecords(params.baseAppData.auditLogs, params.nextAppData.auditLogs),
+      customers: recordsChanged(params.baseAppData.customers, params.nextAppData.customers),
+      sessions: recordsChanged(params.baseAppData.sessions, params.nextAppData.sessions),
+      customerTabs: recordsChanged(params.baseAppData.customerTabs, params.nextAppData.customerTabs),
+      inventoryItems: recordsChanged(params.baseAppData.inventoryItems, params.nextAppData.inventoryItems)
+    };
   }
 
   function createOperationalMutation(
@@ -4228,7 +4300,33 @@ export default function App() {
         addAuditLog(draft, activeUser.id, "bill_pending", "bill", billId, `${billNumber} issued as pending (due Rs ${billAmountDue.toFixed(2)}).`);
       }
     if (backendConfigured) {
-      await saveRemoteSnapshot(nextAppData, baseVersion, false, "Issuing bill");
+      const financialRpcMode =
+        defaultRemoteDataGateway.commitFinancialCheckout &&
+        !replacementBill &&
+        (checkoutState.mode === "session" || checkoutState.mode === "customer_tab")
+          ? checkoutState.mode
+          : null;
+      const financialRpcEntityId =
+        financialRpcMode === "session"
+          ? checkoutState.sessionId
+          : financialRpcMode === "customer_tab"
+            ? checkoutState.customerTabId
+            : "";
+      if (financialRpcMode && financialRpcEntityId) {
+        await commitFinancialCheckoutPatch(
+          buildFinancialCheckoutPatch({
+            baseAppData,
+            nextAppData,
+            mode: financialRpcMode,
+            entityId: financialRpcEntityId,
+            bill: issuedBill,
+            baseVersion,
+            createdAt: issuedAt
+          })
+        );
+      } else {
+        await saveRemoteSnapshot(nextAppData, baseVersion, false, "Issuing bill");
+      }
       skipRemotePersistRef.current = true;
       setAppData(normalizeAppDataCustomers(nextAppData));
     } else {

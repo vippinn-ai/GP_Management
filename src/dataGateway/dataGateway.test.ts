@@ -345,15 +345,17 @@ describe("app_state data gateway", () => {
     expect(backendMocks.saveRemoteAppData).toHaveBeenCalledWith(appData, "user-1", 8, undefined);
   });
 
-  it("blocks financial RPC write flags until financial adapters exist", async () => {
+  it("exposes financial checkout RPC while keeping generic saves on app_state", async () => {
+    const appData = createAppData();
+    backendMocks.saveRemoteAppData.mockResolvedValue(10);
     const gateway = createRemoteDataGateway({
       ...DEFAULT_BACKEND_FEATURE_FLAGS,
       rpcFinancialWrites: true
     });
 
-    await expect(gateway.saveAppData(createAppData(), "user-1", 1)).rejects.toThrow(
-      "Normalized RPC or realtime gateway is not implemented yet"
-    );
+    expect(gateway.commitFinancialCheckout).toEqual(expect.any(Function));
+    await expect(gateway.saveAppData(appData, "user-1", 9)).resolves.toBe(10);
+    expect(backendMocks.saveRemoteAppData).toHaveBeenCalledWith(appData, "user-1", 9, undefined);
   });
 
   it("does not expose operational RPC commits unless the operational flag is enabled", () => {
