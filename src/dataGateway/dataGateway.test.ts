@@ -5,10 +5,17 @@ import type { AppData } from "../types";
 const backendMocks = vi.hoisted(() => ({
   loadRemoteAppDataSnapshot: vi.fn(),
   saveRemoteAppData: vi.fn(),
-  subscribeToRemoteAppData: vi.fn()
+  subscribeToRemoteAppData: vi.fn(),
+  getSupabaseClient: vi.fn()
 }));
 
 vi.mock("../backend", () => backendMocks);
+
+const normalizedReadMocks = vi.hoisted(() => ({
+  loadNormalizedAppDataOverlay: vi.fn()
+}));
+
+vi.mock("./normalizedReads", () => normalizedReadMocks);
 
 import {
   DEFAULT_BACKEND_FEATURE_FLAGS,
@@ -110,16 +117,75 @@ describe("app_state data gateway", () => {
     expect(createRemoteDataGateway(DEFAULT_BACKEND_FEATURE_FLAGS)).toBe(appStateRemoteDataGateway);
   });
 
-  it("uses the guarded normalized skeleton when a future backend flag is enabled", async () => {
+  it("overlays normalized catalog reads on top of the current snapshot when the catalog flag is enabled", async () => {
+    const appData = createAppData();
+    const normalizedItem = {
+      id: "item-1",
+      name: "Normalized Coke",
+      category: "Beverage",
+      price: 40,
+      stockQty: 10,
+      lowStockThreshold: 2,
+      unit: "piece",
+      isReusable: false,
+      active: true
+    };
+    backendMocks.loadRemoteAppDataSnapshot.mockResolvedValue({ appData, version: 7 });
+    normalizedReadMocks.loadNormalizedAppDataOverlay.mockResolvedValue({
+      organizationId: "org-primary",
+      appData: {
+        inventoryItems: [normalizedItem]
+      }
+    });
+
     const gateway = createRemoteDataGateway({
       ...DEFAULT_BACKEND_FEATURE_FLAGS,
       normalizedCatalogReads: true
     });
 
-    await expect(gateway.loadAppDataSnapshot()).rejects.toThrow("Normalized data gateway is not implemented yet");
+    await expect(gateway.loadAppDataSnapshot()).resolves.toEqual({
+      appData: {
+        ...appData,
+        inventoryItems: [normalizedItem]
+      },
+      version: 7
+    });
+    expect(normalizedReadMocks.loadNormalizedAppDataOverlay).toHaveBeenCalledWith({
+      normalizedConfigReads: false,
+      normalizedCatalogReads: true
+    });
+  });
+
+  it("keeps saves on app_state until RPC write flags are enabled", async () => {
+    const appData = createAppData();
+    backendMocks.saveRemoteAppData.mockResolvedValue(8);
+
+    const gateway = createRemoteDataGateway({
+      ...DEFAULT_BACKEND_FEATURE_FLAGS,
+      normalizedCatalogReads: true
+    });
+
+    await expect(gateway.saveAppData(appData, "user-1", 7)).resolves.toBe(8);
+    expect(backendMocks.saveRemoteAppData).toHaveBeenCalledWith(appData, "user-1", 7, undefined);
+  });
+
+  it("blocks RPC write flags until RPC adapters exist", async () => {
+    const gateway = createRemoteDataGateway({
+      ...DEFAULT_BACKEND_FEATURE_FLAGS,
+      rpcOperationalWrites: true
+    });
+
     await expect(gateway.saveAppData(createAppData(), "user-1", 1)).rejects.toThrow(
-      "Normalized data gateway is not implemented yet"
+      "Normalized RPC or realtime gateway is not implemented yet"
     );
-    expect(() => gateway.subscribeToAppData(vi.fn())).toThrow("Normalized data gateway is not implemented yet");
+  });
+
+  it("blocks normalized realtime until the compact event subscription exists", () => {
+    const gateway = createRemoteDataGateway({
+      ...DEFAULT_BACKEND_FEATURE_FLAGS,
+      normalizedRealtime: true
+    });
+
+    expect(() => gateway.subscribeToAppData(vi.fn())).toThrow("Normalized RPC or realtime gateway is not implemented yet");
   });
 });

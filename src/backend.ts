@@ -102,6 +102,10 @@ function getSupabase(): SupabaseClient {
   return supabaseClient;
 }
 
+export function getSupabaseClient(): SupabaseClient {
+  return getSupabase();
+}
+
 function mapProfileToUser(profile: RemoteProfile): User {
   return {
     id: profile.id,

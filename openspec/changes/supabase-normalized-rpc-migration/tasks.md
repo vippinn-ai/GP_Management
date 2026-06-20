@@ -38,8 +38,8 @@
 
 ## 5. Phase 3: Low-Risk Normalized Reads
 
-- [ ] 5.1 Move station/pricing reads behind normalized gateway flag
-- [ ] 5.2 Move inventory/category/sale-variant reads behind normalized gateway flag
+- [x] 5.1 Move station/pricing reads behind normalized gateway flag
+- [x] 5.2 Move inventory/category/sale-variant reads behind normalized gateway flag
 - [ ] 5.3 Move combo reads behind normalized gateway flag
 - [ ] 5.4 Move customer search reads behind normalized gateway flag
 - [ ] 5.5 Move bill register history reads to paginated normalized queries

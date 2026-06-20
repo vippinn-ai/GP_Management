@@ -354,6 +354,13 @@ Phase 2 implements this boundary with all flags defaulting to `false`. The curre
 
 Until Phase 3/4 adapters exist, enabling any normalized or RPC flag intentionally selects a guarded skeleton that fails with a clear "not implemented" error instead of performing a silent partial cutover.
 
+The first Phase 3 slice implements normalized config/catalog read overlays:
+
+- `VITE_BACKEND_NORMALIZED_CONFIG_READS` overlays `businessProfile`, `inventoryCategories`, `stations`, and `pricingRules` from normalized tables.
+- `VITE_BACKEND_NORMALIZED_CATALOG_READS` overlays `inventoryItems` with grouped `saleVariants`.
+
+These overlays intentionally keep saves and realtime on `app_state`. This lets staging validate normalized row mapping under feature flags before moving screen-specific reads away from the full snapshot load.
+
 ## Migration and Rollback
 
 ### Backfill
