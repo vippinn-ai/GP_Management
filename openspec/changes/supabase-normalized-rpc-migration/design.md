@@ -285,6 +285,14 @@ existing operational queue selects this RPC path only when `VITE_BACKEND_RPC_OPE
 enabled; otherwise it keeps the current app-state save behavior. The individual Postgres RPC
 functions remain separate tasks under Phase 4.
 
+`start_session(payload jsonb)` is implemented in `supabase/phase4-start-session-rpc.sql`. It uses a
+transaction-scoped advisory lock for the station, validates the station is active and unoccupied,
+validates inventory availability against open session and customer-tab reservations, resolves or
+creates the customer snapshot, and writes session, session item, combo application, reservation,
+audit, and compact operational event rows in one transaction. It returns stable domain error codes
+through structured Postgres exception details, which the frontend RPC wrapper maps back to
+`OperationalRpcError.code`.
+
 Financial RPCs, migrated later:
 
 - `checkout_session(payload jsonb)`

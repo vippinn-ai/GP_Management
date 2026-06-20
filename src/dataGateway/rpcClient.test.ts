@@ -165,4 +165,39 @@ describe("operational RPC client", () => {
       details: "station-1"
     } satisfies Partial<OperationalRpcError>);
   });
+
+  it("prefers structured RPC error details from Postgres exceptions", async () => {
+    const rpc = vi.fn().mockResolvedValue({
+      data: null,
+      error: {
+        code: "P0001",
+        message: "This station was started on another device.",
+        details: JSON.stringify({
+          code: "station_occupied",
+          message: "This station was started on another device.",
+          details: {
+            station_id: "station-1",
+            station_name: "Pool Table"
+          }
+        })
+      }
+    });
+
+    await expect(
+      invokeOperationalMutationRpc(createMutation({ kind: "startSession", entityType: "session", entityId: "session-1" }), {
+        organizationId: "org-primary",
+        client: { rpc } as never
+      })
+    ).rejects.toMatchObject({
+      name: "OperationalRpcError",
+      code: "station_occupied",
+      message: "This station was started on another device.",
+      rpcName: "start_session",
+      mutationId: "op-1",
+      details: JSON.stringify({
+        station_id: "station-1",
+        station_name: "Pool Table"
+      })
+    } satisfies Partial<OperationalRpcError>);
+  });
 });

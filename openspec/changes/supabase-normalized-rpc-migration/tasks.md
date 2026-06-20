@@ -53,7 +53,7 @@
 ## 6. Phase 4: Operational RPC Writes
 
 - [x] 6.1 Implement operational RPC wrappers in the frontend
-- [ ] 6.2 Implement `start_session` RPC with station conflict and stock validation
+- [x] 6.2 Implement `start_session` RPC with station conflict and stock validation
 - [ ] 6.3 Implement pause/resume RPCs
 - [ ] 6.4 Implement session item add/remove RPCs
 - [ ] 6.5 Implement customer tab open/item update RPCs

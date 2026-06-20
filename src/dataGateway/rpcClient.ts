@@ -45,6 +45,13 @@ interface RpcResult<T> {
   } | null;
 }
 
+interface RpcErrorResponse {
+  code?: string;
+  message: string;
+  details?: string;
+  hint?: string;
+}
+
 export class OperationalRpcError extends Error {
   readonly code?: string;
   readonly rpcName: string;
@@ -75,6 +82,31 @@ function toOptionalString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value : undefined;
 }
 
+function parseJsonRecord(value: string | undefined): Record<string, unknown> {
+  if (!value) {
+    return {};
+  }
+  try {
+    return toRecord(JSON.parse(value));
+  } catch {
+    return {};
+  }
+}
+
+function stringifyDetail(value: unknown): string | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  if (typeof value === "string") {
+    return value;
+  }
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return undefined;
+  }
+}
+
 async function withOperationalRpcTimeout<T>(request: PromiseLike<T>, rpcName: string): Promise<T> {
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
@@ -93,18 +125,25 @@ async function withOperationalRpcTimeout<T>(request: PromiseLike<T>, rpcName: st
 }
 
 function createOperationalRpcError(params: {
-  error: { code?: string; message: string; details?: string; hint?: string } | Error;
+  error: RpcErrorResponse | Error;
   rpcName: string;
   mutationId: string;
 }) {
-  const message =
-    params.error instanceof Error
-      ? params.error.message
-      : params.error.message || "The server rejected this operational change.";
+  if (params.error instanceof Error) {
+    return new OperationalRpcError({
+      message: params.error.message,
+      rpcName: params.rpcName,
+      mutationId: params.mutationId
+    });
+  }
+  const parsedDetails = parseJsonRecord(params.error.details);
+  const parsedNestedDetails = parsedDetails.details;
+  const rawMessage = toOptionalString(parsedDetails.message) ?? params.error.message;
+  const message = rawMessage || "The server rejected this operational change.";
   return new OperationalRpcError({
     message,
-    code: params.error instanceof Error ? undefined : params.error.code,
-    details: params.error instanceof Error ? undefined : params.error.details ?? params.error.hint,
+    code: toOptionalString(parsedDetails.code) ?? params.error.code,
+    details: stringifyDetail(parsedNestedDetails) ?? params.error.details ?? params.error.hint,
     rpcName: params.rpcName,
     mutationId: params.mutationId
   });
