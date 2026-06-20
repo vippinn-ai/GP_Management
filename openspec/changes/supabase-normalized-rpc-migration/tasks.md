@@ -57,7 +57,7 @@
 - [x] 6.3 Implement pause/resume RPCs
 - [x] 6.4 Implement session item add/remove RPCs
 - [x] 6.5 Implement customer tab open/item update RPCs
-- [ ] 6.6 Implement combo apply/repeat RPCs
+- [x] 6.6 Implement combo apply/repeat RPCs
 - [ ] 6.7 Add compact operational event rows from each RPC
 - [ ] 6.8 Add two-browser conflict tests for station and stock conflicts
 

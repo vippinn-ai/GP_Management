@@ -11,7 +11,8 @@ Run in staging first.
 3. Run `supabase/phase4-pause-resume-session-rpcs.sql`.
 4. Run `supabase/phase4-session-item-rpcs.sql`.
 5. Run `supabase/phase4-customer-tab-rpcs.sql`.
-6. Keep `VITE_BACKEND_RPC_OPERATIONAL_WRITES` disabled until a deliberate staging smoke test.
+6. Run `supabase/phase4-combo-rpcs.sql`.
+7. Keep `VITE_BACKEND_RPC_OPERATIONAL_WRITES` disabled until a deliberate staging smoke test.
 
 ## Verify Function Install
 
@@ -35,6 +36,8 @@ where routine_schema = 'public'
     'add_customer_tab_item',
     'update_customer_tab_item_quantity',
     'remove_customer_tab_item',
+    'repeat_session_combo',
+    'apply_customer_tab_combo',
     'resolve_operational_customer',
     'raise_operational_rpc_error'
   )
@@ -52,6 +55,8 @@ Expected:
 - `add_customer_tab_item` exists.
 - `update_customer_tab_item_quantity` exists.
 - `remove_customer_tab_item` exists.
+- `repeat_session_combo` exists.
+- `apply_customer_tab_combo` exists.
 - `resolve_operational_customer` exists.
 - `start_session` is `DEFINER`.
 - `pause_session` is `DEFINER`.
@@ -62,6 +67,8 @@ Expected:
 - `add_customer_tab_item` is `DEFINER`.
 - `update_customer_tab_item_quantity` is `DEFINER`.
 - `remove_customer_tab_item` is `DEFINER`.
+- `repeat_session_combo` is `DEFINER`.
+- `apply_customer_tab_combo` is `DEFINER`.
 - `raise_operational_rpc_error` exists.
 
 ## Verify Execute Grant
@@ -88,6 +95,10 @@ select
   has_function_privilege('authenticated', 'public.update_customer_tab_item_quantity(jsonb)', 'execute') as authenticated_can_update_customer_tab_item_quantity,
   has_function_privilege('anon', 'public.remove_customer_tab_item(jsonb)', 'execute') as anon_can_remove_customer_tab_item,
   has_function_privilege('authenticated', 'public.remove_customer_tab_item(jsonb)', 'execute') as authenticated_can_remove_customer_tab_item,
+  has_function_privilege('anon', 'public.repeat_session_combo(jsonb)', 'execute') as anon_can_repeat_session_combo,
+  has_function_privilege('authenticated', 'public.repeat_session_combo(jsonb)', 'execute') as authenticated_can_repeat_session_combo,
+  has_function_privilege('anon', 'public.apply_customer_tab_combo(jsonb)', 'execute') as anon_can_apply_customer_tab_combo,
+  has_function_privilege('authenticated', 'public.apply_customer_tab_combo(jsonb)', 'execute') as authenticated_can_apply_customer_tab_combo,
   has_function_privilege('anon', 'public.resolve_operational_customer(text, jsonb)', 'execute') as anon_can_resolve_operational_customer,
   has_function_privilege('authenticated', 'public.resolve_operational_customer(text, jsonb)', 'execute') as authenticated_can_resolve_operational_customer;
 ```
@@ -112,6 +123,10 @@ Expected:
 - `authenticated_can_update_customer_tab_item_quantity = true`
 - `anon_can_remove_customer_tab_item = false`
 - `authenticated_can_remove_customer_tab_item = true`
+- `anon_can_repeat_session_combo = false`
+- `authenticated_can_repeat_session_combo = true`
+- `anon_can_apply_customer_tab_combo = false`
+- `authenticated_can_apply_customer_tab_combo = true`
 - `anon_can_resolve_operational_customer = false`
 - `authenticated_can_resolve_operational_customer = false`
 
@@ -134,6 +149,8 @@ where routine_schema = 'public'
     'add_customer_tab_item',
     'update_customer_tab_item_quantity',
     'remove_customer_tab_item',
+    'repeat_session_combo',
+    'apply_customer_tab_combo',
     'resolve_operational_customer'
   )
 order by routine_name, grantee, privilege_type;
@@ -191,6 +208,16 @@ The `open_customer_tab`, `add_customer_tab_item`, `update_customer_tab_item_quan
 - reject direct edits/removals for included combo lines with `combo_item_locked`
 - validate inventory availability before adding or increasing tab item quantity
 - write customer, tab, item, audit, and compact operational event rows atomically
+- return compact changed-row ids and event metadata
+
+The `repeat_session_combo` and `apply_customer_tab_combo` RPCs:
+
+- validate organization membership through `current_user_has_org_access`
+- lock the target session or customer tab row for the duration of the short transaction
+- reject closed/missing live records with `session_not_open` or `customer_tab_not_open`
+- preserve combo application snapshots exactly as supplied by the frontend
+- validate included inventory availability before adding combo item rows
+- write combo application, included item, stock movement where applicable, audit, and compact event rows atomically
 - return compact changed-row ids and event metadata
 
 ## Stop Conditions

@@ -315,6 +315,14 @@ The item paths lock the target customer tab row, preserve idempotent retry behav
 `operational_events`, reject closed tabs and locked combo-included lines, validate stock availability
 before adding or increasing quantities, and return compact changed-row metadata.
 
+`repeat_session_combo(payload jsonb)` and `apply_customer_tab_combo(payload jsonb)` are implemented
+in `supabase/phase4-combo-rpcs.sql`. These RPCs write the combo application snapshot supplied by the
+frontend, add the included zero-priced item rows, validate included inventory against currently open
+reservations, and return compact changed-row metadata. `repeat_session_combo` also persists the
+reservation stock movements already produced by the frontend for repeated game combos. Checkout,
+bill, payment, and final stock-deduction behavior remains on the existing blocking path until the
+financial RPC phase.
+
 Financial RPCs, migrated later:
 
 - `checkout_session(payload jsonb)`
