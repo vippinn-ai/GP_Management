@@ -244,7 +244,10 @@ export function useAppSync(params: {
         return;
       }
       setRemoteSaving(true);
-      saveRemoteAppData(appData, activeUserId, remoteVersion)
+      saveRemoteAppData(appData, activeUserId, remoteVersion, {
+        actionLabel: "Auto-persist app data",
+        source: "auto_persist"
+      })
         .then((nextVersion) => {
           setRemoteVersion(nextVersion);
           setRemoteError("");

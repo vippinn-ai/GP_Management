@@ -9,6 +9,11 @@ import {
 } from "@supabase/supabase-js";
 import type { AppData, Role, User } from "./types";
 import { hydrateAppData } from "./storage";
+import {
+  recordAppStateSaveTelemetry,
+  recordRealtimeSnapshotTelemetry,
+  type SyncTelemetrySource
+} from "./syncTelemetry";
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
@@ -44,6 +49,12 @@ export interface RemoteProfile {
 export interface RemoteAppDataSnapshot {
   appData: AppData;
   version: number;
+}
+
+export interface SaveRemoteTelemetryOptions {
+  actionLabel?: string;
+  source?: Exclude<SyncTelemetrySource, "realtime">;
+  pendingOperationCount?: number;
 }
 
 export type RemoteSessionProfileResult =
@@ -244,14 +255,17 @@ export async function loadRemoteAppDataSnapshot(): Promise<RemoteAppDataSnapshot
 export async function saveRemoteAppData(
   appData: AppData,
   activeUserId: string,
-  expectedVersion: number
+  expectedVersion: number,
+  telemetryOptions: SaveRemoteTelemetryOptions = {}
 ): Promise<number> {
   const supabase = getSupabase();
+  const startedAt = Date.now();
+  const sanitizedAppData = sanitizeAppData(appData);
   const { data, error } = await withRemoteTimeout(
     supabase
       .from("app_state")
       .update({
-        data: sanitizeAppData(appData),
+        data: sanitizedAppData,
         updated_by: activeUserId,
         version: expectedVersion + 1
       })
@@ -262,11 +276,41 @@ export async function saveRemoteAppData(
     "saving app data"
   );
   if (error) {
+    recordAppStateSaveTelemetry({
+      appData: sanitizedAppData,
+      actionLabel: telemetryOptions.actionLabel,
+      source: telemetryOptions.source ?? "blocking",
+      expectedVersion,
+      startedAt,
+      status: "error",
+      errorMessage: error.message,
+      pendingOperationCount: telemetryOptions.pendingOperationCount
+    });
     throw error;
   }
   if (!data) {
+    recordAppStateSaveTelemetry({
+      appData: sanitizedAppData,
+      actionLabel: telemetryOptions.actionLabel,
+      source: telemetryOptions.source ?? "blocking",
+      expectedVersion,
+      startedAt,
+      status: "conflict",
+      errorMessage: "Remote data changed in another browser.",
+      pendingOperationCount: telemetryOptions.pendingOperationCount
+    });
     throw new Error("Remote data changed in another browser. Refreshing latest data.");
   }
+  recordAppStateSaveTelemetry({
+    appData: sanitizedAppData,
+    actionLabel: telemetryOptions.actionLabel,
+    source: telemetryOptions.source ?? "blocking",
+    expectedVersion,
+    nextVersion: data.version as number,
+    startedAt,
+    status: "success",
+    pendingOperationCount: telemetryOptions.pendingOperationCount
+  });
   return data.version as number;
 }
 
@@ -291,6 +335,7 @@ export function subscribeToRemoteAppData(onChange: (snapshot: RemoteAppDataSnaps
         } catch {
           // Keep applying operational updates even if the small profile refresh fails.
         }
+        recordRealtimeSnapshotTelemetry({ appData: payload.new.data, version: payload.new.version });
         onChange(snapshotFromAppStateRow(payload.new));
       }
     )

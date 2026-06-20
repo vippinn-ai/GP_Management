@@ -514,7 +514,12 @@ export default function App() {
     }
   }
 
-  async function saveRemoteSnapshot(nextAppData: AppData, expectedVersion = remoteVersion, isRetry = false) {
+  async function saveRemoteSnapshot(
+    nextAppData: AppData,
+    expectedVersion = remoteVersion,
+    isRetry = false,
+    actionLabel = "Blocking app data save"
+  ) {
     if (!activeUserId) {
       return;
     }
@@ -524,7 +529,10 @@ export default function App() {
     }
     setRemoteSaving(true);
     try {
-      const nextVersion = await saveRemoteAppData(nextAppData, activeUserId, expectedVersion);
+      const nextVersion = await saveRemoteAppData(nextAppData, activeUserId, expectedVersion, {
+        actionLabel: isRetry ? `${actionLabel} retry` : actionLabel,
+        source: "blocking"
+      });
       setRemoteVersion(nextVersion);
       setRemoteError("");
       setPendingRetryData(null);
@@ -971,7 +979,7 @@ export default function App() {
     try {
       await runBlockingAction(label, async () => {
         if (backendConfigured) {
-          await saveRemoteSnapshot(nextAppData, remoteVersion);
+          await saveRemoteSnapshot(nextAppData, remoteVersion, false, label);
           skipRemotePersistRef.current = true;
         }
         setAppData(nextAppData);
@@ -1048,7 +1056,11 @@ export default function App() {
     );
     setRemoteSaving(true);
     try {
-      const nextVersion = await saveRemoteAppData(appDataRef.current, activeUserId, remoteVersionRef.current);
+      const nextVersion = await saveRemoteAppData(appDataRef.current, activeUserId, remoteVersionRef.current, {
+        actionLabel: syncableMutations.map((mutation) => mutation.kind).join(", "),
+        source: "operational_queue",
+        pendingOperationCount: syncableMutations.length
+      });
       remoteVersionRef.current = nextVersion;
       setRemoteVersion(nextVersion);
       updatePendingOperationalMutations((previous) => previous.filter((mutation) => !syncIds.has(mutation.id)));
@@ -1072,7 +1084,11 @@ export default function App() {
           remoteVersionRef.current = snapshot.version;
           setRemoteVersion(snapshot.version);
           if (rebased.pendingMutations.length > 0) {
-            const savedVersion = await saveRemoteAppData(rebased.appData, activeUserId, snapshot.version);
+            const savedVersion = await saveRemoteAppData(rebased.appData, activeUserId, snapshot.version, {
+              actionLabel: `Rebased ${rebased.pendingMutations.map((mutation) => mutation.kind).join(", ")}`,
+              source: "operational_queue",
+              pendingOperationCount: rebased.pendingMutations.length
+            });
             remoteVersionRef.current = savedVersion;
             setRemoteVersion(savedVersion);
             const savedIds = new Set(rebased.pendingMutations.map((mutation) => mutation.id));
@@ -2969,7 +2985,7 @@ export default function App() {
     targetSession.closeDisposition = "hopped";
     addAuditLog(draft, activeUser.id, "session_hopped", "session", sessionId, `Game hop: closed ${targetSession.stationNameSnapshot} without billing. Station released for next customer.`);
     if (backendConfigured) {
-      await saveRemoteSnapshot(nextAppData, baseVersion);
+      await saveRemoteSnapshot(nextAppData, baseVersion, false, "Closing session for game hop");
       skipRemotePersistRef.current = true;
       setAppData(normalizeAppDataCustomers(nextAppData));
     } else {
@@ -3797,7 +3813,7 @@ export default function App() {
         addAuditLog(draft, activeUser.id, "bill_pending", "bill", billId, `${billNumber} issued as pending (due Rs ${billAmountDue.toFixed(2)}).`);
       }
     if (backendConfigured) {
-      await saveRemoteSnapshot(nextAppData, baseVersion);
+      await saveRemoteSnapshot(nextAppData, baseVersion, false, "Issuing bill");
       skipRemotePersistRef.current = true;
       setAppData(normalizeAppDataCustomers(nextAppData));
     } else {
@@ -4333,7 +4349,7 @@ export default function App() {
         if (user) {
           user.tabPermissions = nextTabPermissions;
         }
-        await saveRemoteSnapshot(nextAppData, snapshot.version);
+        await saveRemoteSnapshot(nextAppData, snapshot.version, false, "Updating user permissions");
         skipRemotePersistRef.current = true;
         setAppData(nextAppData);
         setEditUserDraft(null);
@@ -5216,7 +5232,7 @@ export default function App() {
                       const dataToRetry = pendingRetryData;
                       setPendingRetryData(null);
                       setRemoteError("");
-                      void saveRemoteSnapshot(dataToRetry, remoteVersion, true);
+                      void saveRemoteSnapshot(dataToRetry, remoteVersion, true, "Retry pending save");
                     }}
                   >
                     Retry
