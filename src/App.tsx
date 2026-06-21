@@ -51,7 +51,8 @@ import {
   type FinancialCheckoutPatch,
   type NormalizedBillRegisterCursor,
   type NormalizedBillRegisterQuery,
-  type NormalizedReportData
+  type NormalizedReportData,
+  OperationalRpcError
 } from "./dataGateway";
 import {
   estimateCheckoutPayloadBytes,
@@ -543,6 +544,53 @@ export default function App() {
     pendingOperationalMutationsRef.current = nextMutations;
     setPendingOperationalMutations(nextMutations);
     savePendingOperationalMutations(nextMutations);
+  }
+
+  function dedupeOperationalMutations(mutations: OperationalMutation[]) {
+    const seen = new Set<string>();
+    return mutations.filter((mutation) => {
+      if (seen.has(mutation.id)) {
+        return false;
+      }
+      seen.add(mutation.id);
+      return true;
+    });
+  }
+
+  function isSameCustomerTabQuantityMutation(candidate: OperationalMutation, nextMutation: OperationalMutation) {
+    if (candidate.kind !== "updateCustomerTabItemQuantity" || nextMutation.kind !== "updateCustomerTabItemQuantity") {
+      return false;
+    }
+    const candidatePayload = candidate.payload as { customerTabId?: string; lineId?: string };
+    const nextPayload = nextMutation.payload as { customerTabId?: string; lineId?: string };
+    return (
+      candidate.entityType === nextMutation.entityType &&
+      candidate.entityId === nextMutation.entityId &&
+      candidatePayload.customerTabId === nextPayload.customerTabId &&
+      candidatePayload.lineId === nextPayload.lineId
+    );
+  }
+
+  function appendPendingOperationalMutation(previous: OperationalMutation[], mutation: OperationalMutation) {
+    if (mutation.kind !== "updateCustomerTabItemQuantity") {
+      return [...previous, mutation];
+    }
+    return [
+      ...previous.filter(
+        (candidate) =>
+          candidate.status === "syncing" ||
+          !isSameCustomerTabQuantityMutation(candidate, mutation)
+      ),
+      mutation
+    ];
+  }
+
+  function getOperationalErrorMessage(error: unknown) {
+    return error instanceof Error ? error.message : "Unable to sync this pending operation.";
+  }
+
+  function isOperationalBusinessConflict(error: unknown) {
+    return error instanceof OperationalRpcError && Boolean(error.code);
   }
 
   const applyRemoteSnapshotWithPending = useCallback((snapshot: { appData: AppData; version: number }) => {
@@ -1561,29 +1609,101 @@ export default function App() {
       if (defaultRemoteDataGateway.commitOperationalMutation) {
         const syncedIds = new Set<string>();
         const failedMutations: OperationalMutation[] = [];
+        const conflictMutations: OperationalMutation[] = [];
         for (const mutation of syncableMutations) {
           try {
             await defaultRemoteDataGateway.commitOperationalMutation(mutation);
             syncedIds.add(mutation.id);
           } catch (error) {
-            failedMutations.push({
+            const rejectedMutation: OperationalMutation = {
               ...mutation,
-              status: "failed",
-              failureReason: error instanceof Error ? error.message : "Unable to sync this pending operation."
-            });
+              status: isOperationalBusinessConflict(error) ? "conflict" : "failed",
+              failureReason: getOperationalErrorMessage(error)
+            };
+            if (rejectedMutation.status === "conflict") {
+              conflictMutations.push(rejectedMutation);
+            } else {
+              failedMutations.push(rejectedMutation);
+            }
           }
         }
-        updatePendingOperationalMutations((previous) =>
-          previous
-            .filter((mutation) => !syncedIds.has(mutation.id))
-            .map((mutation) => failedMutations.find((failed) => failed.id === mutation.id) ?? mutation)
-        );
+        if (conflictMutations.length > 0) {
+          const conflictIds = new Set(conflictMutations.map((mutation) => mutation.id));
+          const failedIds = new Set(failedMutations.map((mutation) => mutation.id));
+          try {
+            const snapshot = await defaultRemoteDataGateway.loadAppDataSnapshot();
+            const rebaseQueue = pendingOperationalMutationsRef.current
+              .filter(
+                (mutation) =>
+                  !syncedIds.has(mutation.id) &&
+                  !conflictIds.has(mutation.id) &&
+                  !failedIds.has(mutation.id) &&
+                  mutation.status !== "conflict"
+              )
+              .map((mutation) =>
+                mutation.status === "syncing" ? { ...mutation, status: "pending" as const } : mutation
+              );
+            const rebased = rebasePendingMutations(normalizeAppDataCustomers(snapshot.appData), rebaseQueue);
+            skipRemotePersistRef.current = true;
+            appDataRef.current = rebased.appData;
+            setAppData(rebased.appData);
+            saveAppData(rebased.appData);
+            remoteVersionRef.current = snapshot.version;
+            setRemoteVersion(snapshot.version);
+            const rebaseConflictIds = new Set(rebased.conflicts.map((mutation) => mutation.id));
+            updatePendingOperationalMutations((previous) =>
+              dedupeOperationalMutations([
+                ...rebased.pendingMutations,
+                ...failedMutations,
+                ...conflictMutations,
+                ...rebased.conflicts,
+                ...previous.filter(
+                  (mutation) =>
+                    mutation.status === "conflict" &&
+                    !conflictIds.has(mutation.id) &&
+                    !rebaseConflictIds.has(mutation.id)
+                )
+              ])
+            );
+            const conflictMessage = getOperationalConflictMessages([
+              ...conflictMutations,
+              ...rebased.conflicts
+            ]).join(" ");
+            const failureMessage = failedMutations.map((mutation) => mutation.failureReason).filter(Boolean).join(" ");
+            setRemoteError([failureMessage, conflictMessage].filter(Boolean).join(" "));
+          } catch (refreshError) {
+            updatePendingOperationalMutations((previous) =>
+              dedupeOperationalMutations([
+                ...previous.filter(
+                  (mutation) =>
+                    !syncedIds.has(mutation.id) &&
+                    !conflictIds.has(mutation.id) &&
+                    !failedIds.has(mutation.id)
+                ),
+                ...failedMutations,
+                ...conflictMutations
+              ])
+            );
+            setRemoteError(
+              [
+                getOperationalErrorMessage(refreshError),
+                getOperationalConflictMessages(conflictMutations).join(" ")
+              ].filter(Boolean).join(" ")
+            );
+          }
+        } else {
+          updatePendingOperationalMutations((previous) =>
+            previous
+              .filter((mutation) => !syncedIds.has(mutation.id))
+              .map((mutation) => failedMutations.find((failed) => failed.id === mutation.id) ?? mutation)
+          );
+          const failureMessage = failedMutations.map((mutation) => mutation.failureReason).filter(Boolean).join(" ");
+          const remainingConflicts = getOperationalConflictMessages(pendingOperationalMutationsRef.current);
+          setRemoteError(failureMessage || (remainingConflicts.length > 0 ? remainingConflicts.join(" ") : ""));
+        }
         if (syncedIds.size > 0) {
           setLastOperationalSyncAt(new Date().toISOString());
         }
-        const failureMessage = failedMutations.map((mutation) => mutation.failureReason).filter(Boolean).join(" ");
-        const remainingConflicts = getOperationalConflictMessages(pendingOperationalMutationsRef.current);
-        setRemoteError(failureMessage || (remainingConflicts.length > 0 ? remainingConflicts.join(" ") : ""));
       } else {
         const nextVersion = await defaultRemoteDataGateway.saveAppData(appDataRef.current, activeUserId, remoteVersionRef.current, {
           actionLabel: syncableMutations.map((mutation) => mutation.kind).join(", "),
@@ -1712,7 +1832,7 @@ export default function App() {
       setAppData(nextAppData);
       saveAppData(nextAppData);
       if (backendConfigured) {
-        updatePendingOperationalMutations((previous) => [...previous, mutation]);
+        updatePendingOperationalMutations((previous) => appendPendingOperationalMutation(previous, mutation));
         scheduleOperationalSync();
       }
       onSuccess?.(nextAppData);
