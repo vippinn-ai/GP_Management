@@ -36,7 +36,7 @@ VITE_BACKEND_NORMALIZED_LIVE_READS=true
 VITE_BACKEND_RPC_FINANCIAL_WRITES=true
 ```
 
-`VITE_BACKEND_RPC_FINANCIAL_WRITES` accelerates normal session checkout, customer-tab checkout, pending receivable settlement, pending write-off, and issued-bill void/refund after both Phase 5 scripts are installed. Bill replacement and admin/stock/config changes continue using the existing blocking save path.
+`VITE_BACKEND_RPC_FINANCIAL_WRITES` accelerates normal session checkout, customer-tab checkout, bill replacement, pending receivable settlement, pending write-off, and issued-bill void/refund after both Phase 5 scripts are installed. Admin, stock-admin, and config changes continue using the existing blocking save path.
 
 ## Verify Function Install
 
@@ -348,7 +348,7 @@ Expected simple session/customer-tab checkout timing shape:
 - `financial_rpc` shows the compact RPC network duration and `serverDurationMs` when the updated SQL is installed.
 - `checkout_total` should be close to the RPC duration plus receipt generation time.
 
-Replacement checkout, pending-settlement checkout, and hopped-session combined checkout still keep the full remote precheck until their wider server-side validations are implemented.
+Replacement checkout should also show `skippedFullSnapshot: true` after the updated `phase5-financial-checkout-rpc.sql` is installed. Pending-settlement checkout and hopped-session combined checkout still keep the full remote precheck until their wider server-side validations are implemented.
 
 ## Financial Adjustment Timing Checks
 
