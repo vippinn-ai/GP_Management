@@ -27,6 +27,7 @@
 - [x] 3.8 Add indexes for tenant filters, live screens, pending bills, reports, and history pagination
 - [x] 3.9 Add staging backfill script from `app_state` into normalized tables
 - [x] 3.10 Add parity checks for counts, totals, stock, pending dues, and open live records
+- [ ] 3.11 Run staging organization membership sync after creating new QA users
 
 ## 4. Phase 2: Data Gateway
 

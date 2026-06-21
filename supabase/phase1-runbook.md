@@ -7,8 +7,9 @@ Run in staging first.
 ## Order
 
 1. Run `supabase/phase1-normalized-schema.sql`
-2. Run `supabase/phase1-backfill-from-app-state.sql`
-3. Run `supabase/phase1-parity-checks-single-result.sql`
+2. Run `supabase/phase1-organization-member-sync.sql`
+3. Run `supabase/phase1-backfill-from-app-state.sql`
+4. Run `supabase/phase1-parity-checks-single-result.sql`
 
 ## Stop Conditions
 
@@ -36,5 +37,6 @@ All deltas should be zero before Phase 2 data gateway work starts.
 
 - `phase1-backfill-from-app-state.sql` deletes and repopulates only the `org-primary` shadow organization.
 - It does not delete or update `public.app_state`.
+- `phase1-organization-member-sync.sql` is safe to rerun after creating, updating, or disabling staff users. It backfills `organization_members` from `profiles` and installs the trigger that keeps future profile changes synchronized.
 - Do not run the backfill script after normalized tables become the production source of truth.
 - Keep `app_state` as the production source until a later cutover is explicitly approved.

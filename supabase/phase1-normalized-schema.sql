@@ -73,6 +73,40 @@ $$;
 grant execute on function public.current_user_has_org_access(text) to authenticated;
 grant execute on function public.current_user_org_role(text) to authenticated;
 
+create or replace function public.sync_org_primary_member_from_profile()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if exists (
+    select 1
+    from public.organizations
+    where organizations.id = 'org-primary'
+  ) then
+    insert into public.organization_members (organization_id, user_id, role, active)
+    values ('org-primary', new.id, new.role, new.active)
+    on conflict (organization_id, user_id) do update
+    set
+      role = excluded.role,
+      active = excluded.active,
+      updated_at = timezone('utc', now());
+  end if;
+
+  return new;
+end;
+$$;
+
+revoke all on function public.sync_org_primary_member_from_profile() from public;
+
+drop trigger if exists profiles_sync_org_primary_member on public.profiles;
+
+create trigger profiles_sync_org_primary_member
+after insert or update of role, active on public.profiles
+for each row
+execute function public.sync_org_primary_member_from_profile();
+
 create table if not exists public.inventory_categories (
   organization_id text not null references public.organizations (id) on delete cascade,
   id text not null,
