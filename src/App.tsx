@@ -312,6 +312,22 @@ async function verifyPassword(password: string, stored: string): Promise<boolean
   return btoa(String.fromCharCode(...new Uint8Array(bits))) === parts[2];
 }
 
+function getOperationalAttentionMessage(mutation: OperationalMutation) {
+  const reason = mutation.failureReason ?? (
+    mutation.status === "conflict"
+      ? "Conflicts with the latest server data."
+      : "Unable to sync this pending operation."
+  );
+  return `${mutation.label}: ${reason}`;
+}
+
+function showLiveSyncAlert(message: string) {
+  if (!message.trim()) {
+    return;
+  }
+  window.alert(message);
+}
+
 export default function App() {
   const backendConfigured = isBackendConfigured();
   const [appData, setAppData] = useState<AppData>(() =>
@@ -398,6 +414,8 @@ export default function App() {
   const pendingOperationalMutationsRef = useRef(pendingOperationalMutations);
   const operationalSyncTimerRef = useRef<number | null>(null);
   const operationalSyncInFlightRef = useRef(false);
+  const alertedOperationalMutationIdsRef = useRef<Set<string>>(new Set());
+  const lastCheckoutPendingSyncAlertKeyRef = useRef<string | null>(null);
   const todayDateKey = toLocalDateKey(new Date());
   const [reportFilter, setReportFilter] = useState<ReportFilterState>({
     preset: "today",
@@ -715,6 +733,50 @@ export default function App() {
     pendingOperationalMutationsRef.current = pendingOperationalMutations;
     savePendingOperationalMutations(pendingOperationalMutations);
   }, [pendingOperationalMutations]);
+
+  useEffect(() => {
+    const attentionMutations = pendingOperationalMutations.filter(
+      (mutation) =>
+        (mutation.status === "failed" || mutation.status === "conflict") &&
+        !alertedOperationalMutationIdsRef.current.has(mutation.id)
+    );
+    if (attentionMutations.length === 0) {
+      return;
+    }
+    attentionMutations.forEach((mutation) => alertedOperationalMutationIdsRef.current.add(mutation.id));
+    showLiveSyncAlert(`Live action could not sync:\n\n${attentionMutations.map(getOperationalAttentionMessage).join("\n\n")}`);
+  }, [pendingOperationalMutations]);
+
+  useEffect(() => {
+    const entity =
+      checkoutState?.mode === "session" && checkoutState.sessionId
+        ? { type: "session" as const, id: checkoutState.sessionId, label: "this session" }
+        : checkoutState?.mode === "customer_tab" && checkoutState.customerTabId
+          ? { type: "customer_tab" as const, id: checkoutState.customerTabId, label: "this customer tab" }
+          : null;
+    if (!entity) {
+      lastCheckoutPendingSyncAlertKeyRef.current = null;
+      return;
+    }
+    const pendingForCheckout = pendingOperationalMutations.filter(
+      (mutation) =>
+        mutation.entityType === entity.type &&
+        mutation.entityId === entity.id &&
+        (mutation.status === "pending" || mutation.status === "syncing" || mutation.status === "failed")
+    );
+    if (pendingForCheckout.length === 0) {
+      lastCheckoutPendingSyncAlertKeyRef.current = null;
+      return;
+    }
+    const alertKey = `${entity.type}:${entity.id}:${pendingForCheckout.map((mutation) => mutation.id).join("|")}`;
+    if (lastCheckoutPendingSyncAlertKeyRef.current === alertKey) {
+      return;
+    }
+    lastCheckoutPendingSyncAlertKeyRef.current = alertKey;
+    showLiveSyncAlert(
+      `Live changes for ${entity.label} are still syncing with the server. Please wait until Live actions shows Synced before issuing the bill, hopping, rejecting, or closing it.`
+    );
+  }, [checkoutState, pendingOperationalMutations]);
 
   useAppSync({
     backendConfigured,
@@ -1948,6 +2010,9 @@ export default function App() {
   }
 
   function retryOperationalSyncNow() {
+    pendingOperationalMutationsRef.current
+      .filter((mutation) => mutation.status === "failed")
+      .forEach((mutation) => alertedOperationalMutationIdsRef.current.delete(mutation.id));
     updatePendingOperationalMutations((previous) =>
       previous.map((mutation) =>
         mutation.status === "failed"
@@ -1959,6 +2024,9 @@ export default function App() {
   }
 
   function clearOperationalConflicts() {
+    pendingOperationalMutationsRef.current
+      .filter((mutation) => mutation.status === "conflict")
+      .forEach((mutation) => alertedOperationalMutationIdsRef.current.delete(mutation.id));
     updatePendingOperationalMutations((previous) => previous.filter((mutation) => mutation.status !== "conflict"));
     setRemoteError("");
   }
