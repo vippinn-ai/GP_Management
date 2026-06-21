@@ -52,6 +52,7 @@ import {
   type NormalizedBillRegisterCursor,
   type NormalizedBillRegisterQuery,
   type NormalizedReportData,
+  type OperationalRpcCommitResult,
   OperationalRpcError
 } from "./dataGateway";
 import {
@@ -591,6 +592,92 @@ export default function App() {
 
   function isOperationalBusinessConflict(error: unknown) {
     return error instanceof OperationalRpcError && Boolean(error.code);
+  }
+
+  function getFirstChangedRowId(result: OperationalRpcCommitResult, collectionName: string) {
+    const changedRows = result.changedRows ?? {};
+    const collection = changedRows[collectionName];
+    return Array.isArray(collection) && typeof collection[0] === "string" ? collection[0] : undefined;
+  }
+
+  function getCustomerTabLineIdReconciliation(mutation: OperationalMutation, result: OperationalRpcCommitResult) {
+    if (mutation.kind !== "addCustomerTabItem") {
+      return null;
+    }
+    const payload = mutation.payload as { customerTabId?: string; line?: CustomerTabItem };
+    const localLineId = payload.line?.id;
+    const serverLineId = getFirstChangedRowId(result, "customer_tab_items");
+    if (!payload.customerTabId || !localLineId || !serverLineId || serverLineId === localLineId) {
+      return null;
+    }
+    return {
+      customerTabId: payload.customerTabId,
+      localLineId,
+      serverLineId
+    };
+  }
+
+  function isCustomerTabLineReferenceMutation(
+    mutation: OperationalMutation
+  ): mutation is OperationalMutation & {
+    kind: "updateCustomerTabItemQuantity" | "removeCustomerTabItem";
+    payload: { customerTabId: string; lineId: string };
+  } {
+    return mutation.kind === "updateCustomerTabItemQuantity" || mutation.kind === "removeCustomerTabItem";
+  }
+
+  function rewriteCustomerTabLineReference(
+    mutation: OperationalMutation,
+    lineReconciliation: { customerTabId: string; localLineId: string; serverLineId: string }
+  ): OperationalMutation {
+    if (!isCustomerTabLineReferenceMutation(mutation)) {
+      return mutation;
+    }
+    if (mutation.payload.customerTabId !== lineReconciliation.customerTabId ||
+      mutation.payload.lineId !== lineReconciliation.localLineId) {
+      return mutation;
+    }
+    return {
+      ...mutation,
+      payload: {
+        ...mutation.payload,
+        lineId: lineReconciliation.serverLineId
+      }
+    };
+  }
+
+  function reconcileOperationalRpcResult(
+    source: AppData,
+    mutation: OperationalMutation,
+    result: OperationalRpcCommitResult
+  ) {
+    const lineReconciliation = getCustomerTabLineIdReconciliation(mutation, result);
+    if (!lineReconciliation) {
+      return source;
+    }
+    const sourceTab = source.customerTabs.find((tab) => tab.id === lineReconciliation.customerTabId);
+    const sourceLine = sourceTab?.items.find((line) => line.id === lineReconciliation.localLineId);
+    if (!sourceTab || !sourceLine) {
+      return source;
+    }
+
+    const nextAppData = cloneValue(source);
+    const tab = nextAppData.customerTabs.find((entry) => entry.id === lineReconciliation.customerTabId);
+    if (!tab) {
+      return source;
+    }
+    const localLine = tab.items.find((line) => line.id === lineReconciliation.localLineId);
+    const serverLine = tab.items.find((line) => line.id === lineReconciliation.serverLineId);
+    if (!localLine) {
+      return source;
+    }
+    if (serverLine) {
+      serverLine.quantity += localLine.quantity;
+      tab.items = tab.items.filter((line) => line.id !== lineReconciliation.localLineId);
+    } else {
+      localLine.id = lineReconciliation.serverLineId;
+    }
+    return nextAppData;
   }
 
   const applyRemoteSnapshotWithPending = useCallback((snapshot: { appData: AppData; version: number }) => {
@@ -1589,7 +1676,7 @@ export default function App() {
     if (!backendConfigured || !activeUserId || !online || remoteReadOnly || operationalSyncInFlightRef.current) {
       return;
     }
-    const syncableMutations = pendingOperationalMutationsRef.current.filter(
+    let syncableMutations = pendingOperationalMutationsRef.current.filter(
       (mutation) => mutation.status === "pending" || mutation.status === "failed"
     );
     if (syncableMutations.length === 0) {
@@ -1610,9 +1697,26 @@ export default function App() {
         const syncedIds = new Set<string>();
         const failedMutations: OperationalMutation[] = [];
         const conflictMutations: OperationalMutation[] = [];
-        for (const mutation of syncableMutations) {
+        for (let syncIndex = 0; syncIndex < syncableMutations.length; syncIndex += 1) {
+          const mutation = syncableMutations[syncIndex];
           try {
-            await defaultRemoteDataGateway.commitOperationalMutation(mutation);
+            const result = await defaultRemoteDataGateway.commitOperationalMutation(mutation);
+            const lineReconciliation = getCustomerTabLineIdReconciliation(mutation, result);
+            const reconciledData = reconcileOperationalRpcResult(appDataRef.current, mutation, result);
+            if (reconciledData !== appDataRef.current) {
+              skipRemotePersistRef.current = true;
+              appDataRef.current = reconciledData;
+              setAppData(reconciledData);
+              saveAppData(reconciledData);
+            }
+            if (lineReconciliation) {
+              syncableMutations = syncableMutations.map((entry) =>
+                rewriteCustomerTabLineReference(entry, lineReconciliation)
+              );
+              updatePendingOperationalMutations((previous) =>
+                previous.map((entry) => rewriteCustomerTabLineReference(entry, lineReconciliation))
+              );
+            }
             syncedIds.add(mutation.id);
           } catch (error) {
             const rejectedMutation: OperationalMutation = {
@@ -2007,6 +2111,18 @@ export default function App() {
     );
   }
 
+  function getCustomerTabReservedQuantityExceptLine(itemId: string, customerTabId: string, lineId: string) {
+    return sumBy(
+      appData.customerTabs.filter((tab) => tab.status === "open"),
+      (tab) => sumBy(
+        tab.items.filter(
+          (item) => item.inventoryItemId === itemId && !(tab.id === customerTabId && item.id === lineId)
+        ),
+        (item) => getLineStockQuantity(item)
+      )
+    );
+  }
+
   function getReservedQuantity(
     item: InventoryItem,
     options?: { ignoreSessionId?: string; ignoreCustomerTabId?: string }
@@ -2033,6 +2149,15 @@ export default function App() {
     return Math.max(
       0,
       item.stockQty - getReservedQuantity(item, { ignoreSessionId, ignoreCustomerTabId })
+    );
+  }
+
+  function getAvailableStockForCustomerTabLineUpdate(item: InventoryItem, customerTabId: string, lineId: string) {
+    return Math.max(
+      0,
+      item.stockQty -
+        getSessionReservedQuantity(item.id) -
+        getCustomerTabReservedQuantityExceptLine(item.id, customerTabId, lineId)
     );
   }
 
@@ -3399,12 +3524,15 @@ export default function App() {
     const currentItem = currentLine
       ? appData.inventoryItems.find((entry) => entry.id === currentLine.inventoryItemId && entry.active)
       : undefined;
+    const availableForLineUpdate = currentItem
+      ? getAvailableStockForCustomerTabLineUpdate(currentItem, targetTab.id, lineId)
+      : 0;
     if (
       currentLine &&
       currentItem &&
-      getLineStockQuantity({ ...currentLine, quantity: nextQuantity }) > getAvailableStock(currentItem, undefined, targetTab.id)
+      getLineStockQuantity({ ...currentLine, quantity: nextQuantity }) > availableForLineUpdate
     ) {
-      const availableSaleUnits = Math.floor(getAvailableStock(currentItem, undefined, targetTab.id) / getStockUnitsPerSale(currentLine));
+      const availableSaleUnits = Math.floor(availableForLineUpdate / getStockUnitsPerSale(currentLine));
       window.alert(`Only ${availableSaleUnits} available for ${currentLine.name}.`);
       return;
     }

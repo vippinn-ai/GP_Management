@@ -78,6 +78,7 @@ export type {
   FinancialAdjustmentPatch,
   FinancialCheckoutCommitResult,
   FinancialCheckoutPatch,
+  OperationalRpcCommitResult,
   RemoteDataGateway
 } from "./types";
 

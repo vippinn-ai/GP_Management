@@ -327,6 +327,55 @@ describe("operational sync", () => {
     expect(loadPendingOperationalMutations()).toEqual([pending]);
   });
 
+  it("validates customer tab quantity updates against other same-source variant lines", () => {
+    const appData = createAppData();
+    appData.inventoryItems[0].name = "Momo";
+    appData.inventoryItems[0].stockQty = 10;
+    appData.inventoryItems[0].saleVariants = [
+      { id: "fried", name: "Momo Fried", price: 80, stockUnitsPerSale: 4, active: true },
+      { id: "steam", name: "Momo Steam", price: 70, stockUnitsPerSale: 4, active: true }
+    ];
+    appData.customerTabs.push({
+      id: "tab-1",
+      customerName: "Variant Customer",
+      status: "open",
+      createdAt: "2026-06-09T09:00:00.000Z",
+      items: [
+        {
+          id: "fried-line",
+          inventoryItemId: "coke",
+          saleVariantId: "fried",
+          stockUnitsPerSale: 4,
+          name: "Momo Fried",
+          quantity: 1,
+          unitPrice: 80,
+          addedAt: "2026-06-09T09:10:00.000Z"
+        },
+        {
+          id: "steam-line",
+          inventoryItemId: "coke",
+          saleVariantId: "steam",
+          stockUnitsPerSale: 4,
+          name: "Momo Steam",
+          quantity: 1,
+          unitPrice: 70,
+          addedAt: "2026-06-09T09:11:00.000Z"
+        }
+      ]
+    });
+
+    const pending = mutation("updateCustomerTabItemQuantity", "customer_tab", "tab-1", {
+      customerTabId: "tab-1",
+      lineId: "fried-line",
+      quantity: 2
+    });
+
+    expect(validateOperationalMutation(appData, pending)).toMatchObject({
+      ok: false,
+      reason: expect.stringContaining("Momo")
+    });
+  });
+
   it("does not throw when pending operation cache exceeds browser quota", () => {
     const pending = mutation("updateCustomerTabItemQuantity", "customer_tab", "tab-1", {
       customerTabId: "tab-1",

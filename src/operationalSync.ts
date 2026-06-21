@@ -202,12 +202,32 @@ function getSessionReservedQuantity(appData: AppData, itemId: string, ignoreSess
   );
 }
 
-function getCustomerTabReservedQuantity(appData: AppData, itemId: string, ignoreCustomerTabId?: string) {
+function getCustomerTabReservedQuantity(
+  appData: AppData,
+  itemId: string,
+  options?: { ignoreCustomerTabId?: string; ignoreCustomerTabItemId?: string }
+) {
   return sumBy(
-    appData.customerTabs.filter((tab) => tab.status === "open" && tab.id !== ignoreCustomerTabId),
+    appData.customerTabs.filter((tab) => {
+      if (tab.status !== "open") {
+        return false;
+      }
+      if (options?.ignoreCustomerTabItemId) {
+        return true;
+      }
+      return tab.id !== options?.ignoreCustomerTabId;
+    }),
     (tab) =>
       sumBy(
-        tab.items.filter((item) => item.inventoryItemId === itemId),
+        tab.items.filter(
+          (item) =>
+            item.inventoryItemId === itemId &&
+            !(
+              options?.ignoreCustomerTabItemId &&
+              tab.id === options.ignoreCustomerTabId &&
+              item.id === options.ignoreCustomerTabItemId
+            )
+        ),
         (item) => getLineStockQuantity(item)
       )
   );
@@ -216,7 +236,7 @@ function getCustomerTabReservedQuantity(appData: AppData, itemId: string, ignore
 function getAvailableStockFromData(
   appData: AppData,
   itemId: string,
-  options?: { ignoreSessionId?: string; ignoreCustomerTabId?: string }
+  options?: { ignoreSessionId?: string; ignoreCustomerTabId?: string; ignoreCustomerTabItemId?: string }
 ) {
   const item = appData.inventoryItems.find((entry) => entry.id === itemId);
   if (!item) {
@@ -226,7 +246,10 @@ function getAvailableStockFromData(
     0,
     item.stockQty -
       getSessionReservedQuantity(appData, itemId, options?.ignoreSessionId) -
-      getCustomerTabReservedQuantity(appData, itemId, options?.ignoreCustomerTabId)
+      getCustomerTabReservedQuantity(appData, itemId, {
+        ignoreCustomerTabId: options?.ignoreCustomerTabId,
+        ignoreCustomerTabItemId: options?.ignoreCustomerTabItemId
+      })
   );
 }
 
@@ -240,7 +263,7 @@ function getRequiredStockByItem(lines: Array<{ inventoryItemId: string; quantity
 function validateStockRequirements(
   appData: AppData,
   lines: Array<{ inventoryItemId: string; quantity: number; soldAsPackOf?: number; stockUnitsPerSale?: number }>,
-  options?: { ignoreSessionId?: string; ignoreCustomerTabId?: string }
+  options?: { ignoreSessionId?: string; ignoreCustomerTabId?: string; ignoreCustomerTabItemId?: string }
 ): OperationalValidationResult {
   const requiredByItem = getRequiredStockByItem(lines);
   for (const [itemId, required] of Object.entries(requiredByItem)) {
@@ -406,7 +429,8 @@ export function validateOperationalMutation(appData: AppData, mutation: Operatio
         return { ok: false, reason: "The customer tab item is no longer available." };
       }
       return validateStockRequirements(appData, [{ ...line, quantity: payload.quantity }], {
-        ignoreCustomerTabId: payload.customerTabId
+        ignoreCustomerTabId: payload.customerTabId,
+        ignoreCustomerTabItemId: payload.lineId
       });
     }
     case "removeCustomerTabItem": {

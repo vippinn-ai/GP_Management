@@ -937,7 +937,10 @@ begin
   where customer_tab_items.organization_id = v_organization_id
     and customer_tab_items.inventory_item_id = v_inventory_item_id
     and customer_tabs.status = 'open'
-    and customer_tabs.id <> v_customer_tab_id;
+    and not (
+      customer_tabs.id = v_customer_tab_id
+      and customer_tab_items.id = v_line_id
+    );
 
   v_required_quantity := v_quantity * v_stock_units_per_sale;
   v_available := greatest(0, v_item_stock - v_session_reserved - v_tab_reserved);
