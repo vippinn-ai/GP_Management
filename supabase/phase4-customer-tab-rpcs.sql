@@ -3,6 +3,46 @@
 -- Run after supabase/phase4-start-session-rpc.sql because these functions
 -- reuse public.raise_operational_rpc_error.
 
+create or replace function public.resolve_operational_inventory_item(
+  target_organization_id text,
+  target_item_id text
+)
+returns table(item_name text, stock_qty numeric)
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_state_item jsonb;
+begin
+  select item.value
+  into v_state_item
+  from public.app_state
+  cross join lateral jsonb_array_elements(coalesce(app_state.data->'inventoryItems', '[]'::jsonb)) as item(value)
+  where app_state.id = 'primary'
+    and item.value->>'id' = target_item_id
+  limit 1;
+
+  if v_state_item is not null then
+    item_name := coalesce(nullif(v_state_item->>'name', ''), 'Inventory item');
+    stock_qty := coalesce(nullif(v_state_item->>'stockQty', '')::numeric, 0);
+    return next;
+    return;
+  end if;
+
+  return query
+  select inventory_items.name, inventory_items.stock_qty
+  from public.inventory_items
+  where inventory_items.organization_id = target_organization_id
+    and inventory_items.id = target_item_id
+  limit 1;
+end;
+$$;
+
+revoke all on function public.resolve_operational_inventory_item(text, text) from public;
+revoke execute on function public.resolve_operational_inventory_item(text, text) from anon;
+revoke execute on function public.resolve_operational_inventory_item(text, text) from authenticated;
+
 create or replace function public.resolve_operational_customer(
   target_organization_id text,
   customer_payload jsonb
@@ -543,12 +583,9 @@ begin
   end if;
 
   if v_inventory_item_id is not null then
-    select inventory_items.name, inventory_items.stock_qty
+    select item_snapshot.item_name, item_snapshot.stock_qty
     into v_item_name, v_item_stock
-    from public.inventory_items
-    where inventory_items.organization_id = v_organization_id
-      and inventory_items.id = v_inventory_item_id
-    for update;
+    from public.resolve_operational_inventory_item(v_organization_id, v_inventory_item_id) as item_snapshot;
 
     if v_item_name is null then
       perform public.raise_operational_rpc_error(
@@ -897,12 +934,9 @@ begin
     );
   end if;
 
-  select inventory_items.name, inventory_items.stock_qty
+  select item_snapshot.item_name, item_snapshot.stock_qty
   into v_item_name, v_item_stock
-  from public.inventory_items
-  where inventory_items.organization_id = v_organization_id
-    and inventory_items.id = v_inventory_item_id
-  for update;
+  from public.resolve_operational_inventory_item(v_organization_id, v_inventory_item_id) as item_snapshot;
 
   if v_item_name is null then
     perform public.raise_operational_rpc_error(
