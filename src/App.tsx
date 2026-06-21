@@ -2238,7 +2238,8 @@ export default function App() {
   }
 
   function getBillById(billId: string) {
-    return appData.bills.find((bill) => bill.id === billId);
+    return appData.bills.find((bill) => bill.id === billId) ??
+      normalizedBillRegisterState.bills.find((bill) => bill.id === billId);
   }
 
   function getCustomerTabTotal(tab: CustomerTab) {
@@ -4268,6 +4269,17 @@ export default function App() {
         skippedFullSnapshot: true
       });
     }
+    if (checkoutState.mode === "bill_replacement" && checkoutState.replacementBillId) {
+      const normalizedReplacementBill = normalizedBillRegisterState.bills.find(
+        (entry) => entry.id === checkoutState.replacementBillId
+      );
+      if (normalizedReplacementBill && !baseAppData.bills.some((entry) => entry.id === normalizedReplacementBill.id)) {
+        baseAppData = {
+          ...baseAppData,
+          bills: mergeBillsById([normalizedReplacementBill], baseAppData.bills)
+        };
+      }
+    }
     function getAvailableStockFromData(
       data: AppData,
       item: InventoryItem,
@@ -4303,6 +4315,10 @@ export default function App() {
       checkoutState.mode === "bill_replacement" && checkoutState.replacementBillId
         ? baseAppData.bills.find((entry) => entry.id === checkoutState.replacementBillId)
         : undefined;
+    if (checkoutState.mode === "bill_replacement" && !replacementBill) {
+      window.alert("The original bill is not loaded for replacement. Refresh the Bill Register and try again.");
+      return;
+    }
     const hoppedSourceLines = (checkoutState.hoppedSessionIds ?? []).flatMap((hId) => {
       const hSession = baseAppData.sessions.find((s) => s.id === hId);
       if (!hSession || !hSession.endedAt) return [];
