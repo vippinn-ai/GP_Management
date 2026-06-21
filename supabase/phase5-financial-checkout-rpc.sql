@@ -76,6 +76,8 @@ declare
   v_bill jsonb := coalesce(v_patch->'bill', '{}'::jsonb);
   v_bill_id text := nullif(v_bill->>'id', '');
   v_bill_number text := nullif(v_bill->>'billNumber', '');
+  v_replacement_of_bill_id text := nullif(v_bill->>'replacementOfBillId', '');
+  v_replace_reason text := nullif(v_bill->>'replaceReason', '');
   v_bills jsonb := case
     when jsonb_typeof(v_patch->'bills') = 'array' and jsonb_array_length(v_patch->'bills') > 0 then v_patch->'bills'
     when jsonb_typeof(v_bill) = 'object' and v_bill ? 'id' then jsonb_build_array(v_bill)
@@ -100,6 +102,8 @@ declare
   v_session_close_disposition text;
   v_tab_status text;
   v_tab_closed_bill_id text;
+  v_original_bill_status text;
+  v_original_bill_replaced_by_bill_id text;
   v_row jsonb;
   v_server_duration_ms numeric;
 begin
@@ -123,7 +127,13 @@ begin
     );
   end if;
 
-  if v_entity_type not in ('session', 'customer_tab') or v_mode not in ('session', 'customer_tab') or v_entity_id is null then
+  if v_entity_id is null
+    or not (
+      (v_entity_type = 'session' and v_mode = 'session')
+      or (v_entity_type = 'customer_tab' and v_mode = 'customer_tab')
+      or (v_entity_type = 'bill' and v_mode = 'bill_replacement')
+    )
+  then
     perform public.raise_operational_rpc_error(
       'invalid_payload',
       'The checkout entity is invalid.',
@@ -229,7 +239,7 @@ begin
         jsonb_build_object('session_id', v_entity_id)
       );
     end if;
-  else
+  elsif v_entity_type = 'customer_tab' then
     select customer_tabs.status, customer_tabs.closed_bill_id
     into v_tab_status, v_tab_closed_bill_id
     from public.customer_tabs
@@ -258,6 +268,79 @@ begin
         'customer_tab_already_closed',
         'This consumables tab was already closed from another browser.',
         jsonb_build_object('customer_tab_id', v_entity_id)
+      );
+    end if;
+  else
+    if v_replacement_of_bill_id is null or v_replacement_of_bill_id <> v_entity_id or v_bill_id = v_entity_id then
+      perform public.raise_operational_rpc_error(
+        'invalid_payload',
+        'The replacement bill payload is invalid.',
+        jsonb_build_object(
+          'bill_id',
+          v_bill_id,
+          'replacement_of_bill_id',
+          v_replacement_of_bill_id,
+          'entity_id',
+          v_entity_id
+        )
+      );
+    end if;
+
+    if v_replace_reason is null then
+      perform public.raise_operational_rpc_error(
+        'replacement_reason_required',
+        'Replacement reason is required.',
+        jsonb_build_object('bill_id', v_bill_id, 'replacement_of_bill_id', v_entity_id)
+      );
+    end if;
+
+    select bills.status, bills.replaced_by_bill_id
+    into v_original_bill_status, v_original_bill_replaced_by_bill_id
+    from public.bills
+    where bills.organization_id = v_organization_id
+      and bills.id = v_entity_id
+    for update;
+
+    if v_original_bill_status is null then
+      perform public.raise_operational_rpc_error(
+        'bill_not_found',
+        'This bill no longer exists.',
+        jsonb_build_object('bill_id', v_entity_id)
+      );
+    end if;
+
+    if v_original_bill_status <> 'issued' then
+      perform public.raise_operational_rpc_error(
+        'bill_not_replaceable',
+        'This bill was already changed from another browser.',
+        jsonb_build_object('bill_id', v_entity_id, 'status', v_original_bill_status)
+      );
+    end if;
+
+    if v_original_bill_replaced_by_bill_id is not null and v_original_bill_replaced_by_bill_id <> v_bill_id then
+      perform public.raise_operational_rpc_error(
+        'bill_already_replaced',
+        'This bill was already replaced from another browser.',
+        jsonb_build_object(
+          'bill_id',
+          v_entity_id,
+          'replaced_by_bill_id',
+          v_original_bill_replaced_by_bill_id
+        )
+      );
+    end if;
+
+    if not exists (
+      select 1
+      from jsonb_array_elements(v_bills) as source(original_bill)
+      where original_bill->>'id' = v_entity_id
+        and original_bill->>'status' = 'replaced'
+        and original_bill->>'replacedByBillId' = v_bill_id
+    ) then
+      perform public.raise_operational_rpc_error(
+        'invalid_payload',
+        'The replacement payload is missing the updated original bill.',
+        jsonb_build_object('bill_id', v_entity_id, 'replacement_bill_id', v_bill_id)
       );
     end if;
   end if;

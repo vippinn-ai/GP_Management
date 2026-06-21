@@ -70,17 +70,17 @@
 
 - [x] 7.1 Implement checkout RPCs for sessions and customer tabs
 - [x] 7.2 Implement pending receivable settlement RPC
-- [ ] 7.3 Implement void/refund/replacement RPCs
+- [x] 7.3 Implement void/refund/replacement RPCs
   - [x] 7.3.1 Implement void/refund RPC path
-  - [ ] 7.3.2 Implement replacement RPC path
-- [ ] 7.4 Implement stock finalization and reversal behavior in server transactions
+  - [x] 7.3.2 Implement replacement RPC path
+- [x] 7.4 Implement stock finalization and reversal behavior in server transactions
   - [x] 7.4.1 Implement checkout stock finalization
   - [x] 7.4.2 Implement void/refund stock reversal
-  - [ ] 7.4.3 Implement replacement stock delta handling
+  - [x] 7.4.3 Implement replacement stock delta handling
 - [x] 7.5 Implement payment split behavior in server transactions for checkout and pending settlement
-- [ ] 7.6 Add financial parity tests against current bill preview/build logic
+- [x] 7.6 Add financial parity tests against current bill preview/build logic
   - [x] 7.6.1 Add checkout and financial-adjustment patch parity tests
-  - [ ] 7.6.2 Add replacement-bill parity tests when replacement RPC is implemented
+  - [x] 7.6.2 Add replacement-bill parity tests when replacement RPC is implemented
 - [x] 7.7 Keep `app_state` rollback snapshot strategy active until production is stable
 
 ## 8. Phase 6: Retire Full-State Sync
@@ -102,3 +102,4 @@
   - [x] 9.7.1 Compare checkout RPC timings in staging
   - [x] 9.7.2 Compare void/refund RPC timings in staging
   - [x] 9.7.3 Compare pending settlement/write-off RPC timings in staging
+  - [ ] 9.7.4 Compare replacement RPC timings in staging

@@ -272,6 +272,128 @@ describe("financial patch helpers", () => {
     expect(patch.inventoryItems.map((entry) => [entry.id, entry.stockQty])).toEqual([["item-1", 92]]);
   });
 
+  it("builds replacement checkout patches with original bill updates and stock deltas", () => {
+    const originalBill = createBill({
+      id: "bill-original",
+      billNumber: "BILL-20260620-010",
+      lines: [
+        {
+          id: "line-original",
+          type: "inventory_item",
+          description: "Momo",
+          quantity: 1,
+          unitPrice: 80,
+          subtotal: 80,
+          discountAmount: 0,
+          total: 80,
+          inventoryItemId: "item-1",
+          stockUnitsPerSale: 1
+        }
+      ],
+      subtotal: 80,
+      total: 80,
+      amountPaid: 80
+    });
+    const replacedOriginalBill = {
+      ...originalBill,
+      status: "replaced" as const,
+      replacedByBillId: "bill-replacement",
+      replacedAt: "2026-06-20T12:30:00.000Z",
+      replacedByUserId: "user-1",
+      replaceReason: "Corrected quantity"
+    };
+    const replacementBill = createBill({
+      id: "bill-replacement",
+      billNumber: "BILL-20260620-011",
+      createdAt: "2026-06-20T12:30:00.000Z",
+      issuedAt: "2026-06-20T12:30:00.000Z",
+      replacementOfBillId: "bill-original",
+      replaceReason: "Corrected quantity",
+      lines: [
+        {
+          id: "line-replacement",
+          type: "inventory_item",
+          description: "Momo",
+          quantity: 2,
+          unitPrice: 80,
+          subtotal: 160,
+          discountAmount: 0,
+          total: 160,
+          inventoryItemId: "item-1",
+          stockUnitsPerSale: 1
+        }
+      ],
+      subtotal: 160,
+      total: 160,
+      amountPaid: 160
+    });
+    const payment = createPayment({
+      id: "payment-replacement",
+      billId: "bill-replacement",
+      amount: 160,
+      createdAt: "2026-06-20T12:30:00.000Z"
+    });
+    const stockDelta = createStockMovement({
+      id: "stock-replacement",
+      itemId: "item-1",
+      type: "sale",
+      quantity: -1,
+      reason: "Replacement adjustment from BILL-20260620-010 to BILL-20260620-011",
+      relatedBillId: "bill-replacement",
+      createdAt: "2026-06-20T12:30:00.000Z"
+    });
+    const baseItem = createInventoryItem({ stockQty: 9 });
+    const replacementItem = createInventoryItem({ stockQty: 8 });
+
+    const patch = buildFinancialCheckoutPatch({
+      baseAppData: createAppData({
+        bills: [originalBill],
+        inventoryItems: [baseItem]
+      }),
+      nextAppData: createAppData({
+        bills: [replacementBill, replacedOriginalBill],
+        payments: [payment],
+        stockMovements: [stockDelta],
+        auditLogs: [createAuditLog({ id: "audit-replacement", action: "bill_replaced", entityId: "bill-replacement" })],
+        inventoryItems: [replacementItem]
+      }),
+      mode: "bill_replacement",
+      entityId: "bill-original",
+      bill: replacementBill,
+      baseVersion: 60,
+      createdAt: replacementBill.issuedAt,
+      userId: "user-1",
+      mutationId: "financial-replacement-1"
+    });
+
+    expect(patch).toMatchObject({
+      mutationId: "financial-replacement-1",
+      mode: "bill_replacement",
+      entityType: "bill",
+      entityId: "bill-original",
+      baseAppStateVersion: 60,
+      bill: {
+        id: "bill-replacement",
+        replacementOfBillId: "bill-original",
+        replaceReason: "Corrected quantity"
+      }
+    });
+    expect(patch.bills.map((entry) => [entry.id, entry.status, entry.replacedByBillId, entry.replacementOfBillId])).toEqual([
+      ["bill-replacement", "issued", undefined, "bill-original"],
+      ["bill-original", "replaced", "bill-replacement", undefined]
+    ]);
+    expect(patch.payments.map((entry) => [entry.id, entry.billId, entry.amount])).toEqual([
+      ["payment-replacement", "bill-replacement", 160]
+    ]);
+    expect(patch.stockMovements.map((entry) => [entry.id, entry.type, entry.quantity, entry.relatedBillId])).toEqual([
+      ["stock-replacement", "sale", -1, "bill-replacement"]
+    ]);
+    expect(patch.inventoryItems.map((entry) => [entry.id, entry.stockQty])).toEqual([["item-1", 8]]);
+    expect(patch.auditLogs.map((entry) => entry.action)).toEqual(["bill_replaced"]);
+    expect(patch.sessions).toEqual([]);
+    expect(patch.customerTabs).toEqual([]);
+  });
+
   it("builds pending settlement adjustment patches from receivable settlement allocations", () => {
     const pendingBill = createBill({
       id: "pending-1",

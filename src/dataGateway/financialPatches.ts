@@ -15,10 +15,20 @@ export function ensurePatchRecord<T extends { id: string }>(records: T[], requir
   return records.some((entry) => entry.id === requiredRecord.id) ? records : [requiredRecord, ...records];
 }
 
+function getFinancialCheckoutEntityType(mode: FinancialCheckoutPatch["mode"]): FinancialCheckoutPatch["entityType"] {
+  if (mode === "session") {
+    return "session";
+  }
+  if (mode === "customer_tab") {
+    return "customer_tab";
+  }
+  return "bill";
+}
+
 export function buildFinancialCheckoutPatch(params: {
   baseAppData: AppData;
   nextAppData: AppData;
-  mode: "session" | "customer_tab";
+  mode: FinancialCheckoutPatch["mode"];
   entityId: string;
   bill: Bill;
   baseVersion: number;
@@ -30,7 +40,7 @@ export function buildFinancialCheckoutPatch(params: {
   return {
     mutationId: params.mutationId,
     mode: params.mode,
-    entityType: params.mode === "session" ? "session" : "customer_tab",
+    entityType: getFinancialCheckoutEntityType(params.mode),
     entityId: params.entityId,
     userId: params.userId,
     createdAt: params.createdAt,

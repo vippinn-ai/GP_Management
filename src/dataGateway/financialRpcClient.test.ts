@@ -110,6 +110,55 @@ describe("financial checkout RPC client", () => {
     });
   });
 
+  it("builds the compact replacement checkout RPC envelope", () => {
+    const patch: FinancialCheckoutPatch = {
+      ...createPatch(),
+      mutationId: "financial-replacement-1",
+      mode: "bill_replacement",
+      entityType: "bill",
+      entityId: "bill-original",
+      bill: {
+        ...createPatch().bill,
+        id: "bill-replacement",
+        billNumber: "BILL-20260620-011",
+        replacementOfBillId: "bill-original",
+        replaceReason: "Corrected quantity"
+      },
+      bills: [
+        {
+          ...createPatch().bill,
+          id: "bill-replacement",
+          billNumber: "BILL-20260620-011",
+          replacementOfBillId: "bill-original",
+          replaceReason: "Corrected quantity"
+        },
+        {
+          ...createPatch().bill,
+          id: "bill-original",
+          billNumber: "BILL-20260620-010",
+          status: "replaced",
+          replacedByBillId: "bill-replacement"
+        }
+      ]
+    };
+
+    expect(buildFinancialCheckoutRpcPayload(patch, "org-primary")).toMatchObject({
+      organization_id: "org-primary",
+      mutation_id: "financial-replacement-1",
+      mutation_kind: "commitCheckoutBill",
+      entity_type: "bill",
+      entity_id: "bill-original",
+      payload: {
+        mode: "bill_replacement",
+        bill: {
+          id: "bill-replacement",
+          replacementOfBillId: "bill-original",
+          replaceReason: "Corrected quantity"
+        }
+      }
+    });
+  });
+
   it("maps snake_case RPC result fields", () => {
     const patch = createPatch();
 

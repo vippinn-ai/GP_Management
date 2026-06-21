@@ -15,10 +15,13 @@ export interface OperationalRpcCommitResult {
   raw?: unknown;
 }
 
+export type FinancialCheckoutMode = "session" | "customer_tab" | "bill_replacement";
+export type FinancialCheckoutEntityType = "session" | "customer_tab" | "bill";
+
 export interface FinancialCheckoutPatch {
   mutationId: string;
-  mode: "session" | "customer_tab";
-  entityType: "session" | "customer_tab";
+  mode: FinancialCheckoutMode;
+  entityType: FinancialCheckoutEntityType;
   entityId: string;
   userId: string;
   createdAt: string;

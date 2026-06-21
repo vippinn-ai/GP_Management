@@ -4165,7 +4165,9 @@ export default function App() {
     const canSkipFullSnapshotPrecheck =
       backendConfigured &&
       Boolean(defaultRemoteDataGateway.commitFinancialCheckout) &&
-      (checkoutState.mode === "session" || checkoutState.mode === "customer_tab");
+      (checkoutState.mode === "session" ||
+        checkoutState.mode === "customer_tab" ||
+        checkoutState.mode === "bill_replacement");
     let baseAppData = appData;
     let baseVersion = remoteVersionRef.current;
     if (backendConfigured && !canSkipFullSnapshotPrecheck) {
@@ -4701,8 +4703,9 @@ export default function App() {
     if (backendConfigured) {
       const financialRpcMode =
         defaultRemoteDataGateway.commitFinancialCheckout &&
-        !replacementBill &&
-        (checkoutState.mode === "session" || checkoutState.mode === "customer_tab")
+        (checkoutState.mode === "session" ||
+          checkoutState.mode === "customer_tab" ||
+          (checkoutState.mode === "bill_replacement" && replacementBill))
           ? checkoutState.mode
           : null;
       const financialRpcEntityId =
@@ -4710,7 +4713,9 @@ export default function App() {
           ? checkoutState.sessionId
           : financialRpcMode === "customer_tab"
             ? checkoutState.customerTabId
-            : "";
+            : financialRpcMode === "bill_replacement"
+              ? checkoutState.replacementBillId
+              : "";
       if (financialRpcMode && financialRpcEntityId) {
         const financialPatch = buildFinancialCheckoutPatch({
           baseAppData,
