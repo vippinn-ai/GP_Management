@@ -27,7 +27,7 @@
 - [x] 3.8 Add indexes for tenant filters, live screens, pending bills, reports, and history pagination
 - [x] 3.9 Add staging backfill script from `app_state` into normalized tables
 - [x] 3.10 Add parity checks for counts, totals, stock, pending dues, and open live records
-- [ ] 3.11 Run staging organization membership sync after creating new QA users
+- [x] 3.11 Run staging organization membership sync after creating new QA users
 
 ## 4. Phase 2: Data Gateway
 
@@ -61,7 +61,10 @@
 - [x] 6.6 Implement combo apply/repeat RPCs
 - [x] 6.7 Implement live session/customer-tab detail save RPCs
 - [x] 6.8 Add compact operational event rows from each RPC
-- [ ] 6.9 Add two-browser conflict tests for station and stock conflicts
+- [x] 6.9 Add two-browser conflict tests for station and stock conflicts
+  - [x] 6.9.1 Validate staging conflict behavior across multiple browser sessions
+  - [x] 6.9.2 Fix variant customer-tab stock conflicts by aligning customer-tab RPC stock checks with the current `app_state` inventory source
+  - [x] 6.9.3 Add popup alerts for failed/conflict live actions and pending-sync checkout blocks
 
 ## 7. Phase 5: Financial RPC Writes
 
@@ -95,7 +98,7 @@
 - [x] 9.4 Run staging parity checks
 - [ ] 9.5 Smoke test as admin, manager, and receptionist
 - [ ] 9.6 Smoke test with 5 browser sessions/devices where practical
-- [ ] 9.7 Compare before/after telemetry for representative actions
+- [x] 9.7 Compare before/after telemetry for representative actions
   - [x] 9.7.1 Compare checkout RPC timings in staging
   - [x] 9.7.2 Compare void/refund RPC timings in staging
   - [x] 9.7.3 Compare pending settlement/write-off RPC timings in staging
