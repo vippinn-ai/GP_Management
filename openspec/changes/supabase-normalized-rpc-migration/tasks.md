@@ -102,4 +102,4 @@
   - [x] 9.7.1 Compare checkout RPC timings in staging
   - [x] 9.7.2 Compare void/refund RPC timings in staging
   - [x] 9.7.3 Compare pending settlement/write-off RPC timings in staging
-  - [ ] 9.7.4 Compare replacement RPC timings in staging
+  - [x] 9.7.4 Compare replacement RPC timings in staging
