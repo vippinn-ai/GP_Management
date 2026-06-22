@@ -150,14 +150,14 @@ with state as (
 ),
 app_totals as (
   select
-    coalesce(sum(coalesce(nullif(bill->>'total', '')::numeric, 0)), 0) as bill_total,
-    coalesce(sum(coalesce(nullif(bill->>'amountPaid', '')::numeric, 0)), 0) as bill_amount_paid,
-    coalesce(sum(coalesce(nullif(bill->>'amountDue', '')::numeric, 0)), 0) as bill_amount_due
+    coalesce(sum(round(coalesce(nullif(bill->>'total', '')::numeric, 0), 2)), 0) as bill_total,
+    coalesce(sum(round(coalesce(nullif(bill->>'amountPaid', '')::numeric, 0), 2)), 0) as bill_amount_paid,
+    coalesce(sum(round(coalesce(nullif(bill->>'amountDue', '')::numeric, 0), 2)), 0) as bill_amount_due
   from state
   cross join lateral jsonb_array_elements(coalesce(data->'bills', '[]'::jsonb)) as bill
 ),
 app_payments as (
-  select coalesce(sum(coalesce(nullif(payment->>'amount', '')::numeric, 0)), 0) as payment_amount
+  select coalesce(sum(round(coalesce(nullif(payment->>'amount', '')::numeric, 0), 2)), 0) as payment_amount
   from state
   cross join lateral jsonb_array_elements(coalesce(data->'payments', '[]'::jsonb)) as payment
 ),
