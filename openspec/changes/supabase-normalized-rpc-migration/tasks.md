@@ -66,6 +66,7 @@
   - [x] 6.9.2 Fix variant customer-tab stock conflicts by aligning customer-tab RPC stock checks with the current `app_state` inventory source
   - [x] 6.9.3 Add popup alerts for failed/conflict live actions and pending-sync checkout blocks
 - [x] 6.10 Implement compact reject session/customer-tab RPCs so reject actions do not fall back to full `app_state` upload
+- [x] 6.11 Optimize the shared `app_state` JSON array patch helper after production reject-session timeout evidence
 
 ## 7. Phase 5: Financial RPC Writes
 

@@ -14,9 +14,10 @@ Run in staging first.
 6. Run `supabase/phase4-combo-rpcs.sql`.
 7. Run `supabase/phase4-live-detail-rpcs.sql`.
 8. Run `supabase/phase4-reject-rpcs.sql`.
-9. Run `supabase/phase5-financial-checkout-rpc.sql` only when you are ready to test compact issue-bill writes.
-10. Run `supabase/phase5-financial-adjustment-rpc.sql` only when you are ready to test compact pending settlement, pending write-off, and issued-bill void/refund writes.
-11. Keep `VITE_BACKEND_RPC_OPERATIONAL_WRITES`, `VITE_BACKEND_NORMALIZED_LIVE_READS`, and `VITE_BACKEND_RPC_FINANCIAL_WRITES` disabled until a deliberate staging smoke test.
+9. Run `supabase/phase4-fast-app-state-patch-helper.sql` if this environment was already on an older helper or if reject/financial RPCs show statement-timeout errors on production-sized `app_state` arrays.
+10. Run `supabase/phase5-financial-checkout-rpc.sql` only when you are ready to test compact issue-bill writes.
+11. Run `supabase/phase5-financial-adjustment-rpc.sql` only when you are ready to test compact pending settlement, pending write-off, and issued-bill void/refund writes.
+12. Keep `VITE_BACKEND_RPC_OPERATIONAL_WRITES`, `VITE_BACKEND_NORMALIZED_LIVE_READS`, and `VITE_BACKEND_RPC_FINANCIAL_WRITES` disabled until a deliberate staging smoke test.
 
 ## Frontend Smoke-Test Flags
 
@@ -301,6 +302,7 @@ The `reject_session` and `reject_customer_tab` RPCs:
 - patch only the affected legacy `sessions` or `customerTabs`, optional `sessionPauseLogs`, and `auditLogs` arrays in `app_state`
 - increment and return the next `app_state.version` so later compatibility writes do not retry against a stale version
 - avoid the old full app-state upload path for rejected sessions/tabs
+- require the set-based `patch_app_state_array_by_id` helper from `phase4-fast-app-state-patch-helper.sql` on large production datasets to avoid statement-timeout errors while patching arrays such as `auditLogs`
 
 The `repeat_session_combo` and `apply_customer_tab_combo` RPCs:
 

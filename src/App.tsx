@@ -609,7 +609,8 @@ export default function App() {
   }
 
   function isOperationalBusinessConflict(error: unknown) {
-    return error instanceof OperationalRpcError && Boolean(error.code);
+    const code = error instanceof OperationalRpcError ? error.code : undefined;
+    return code ? !/^[A-Z0-9]{5}$/i.test(code) : false;
   }
 
   function getFirstChangedRowId(result: OperationalRpcCommitResult, collectionName: string) {

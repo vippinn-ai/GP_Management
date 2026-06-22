@@ -9,46 +9,68 @@ create or replace function public.patch_app_state_array_by_id(
   patch_array jsonb
 )
 returns jsonb
-language plpgsql
+language sql
 as $$
-declare
-  v_target jsonb := case when jsonb_typeof(target_array) = 'array' then target_array else '[]'::jsonb end;
-  v_patches jsonb := case when jsonb_typeof(patch_array) = 'array' then patch_array else '[]'::jsonb end;
-  v_result jsonb := '[]'::jsonb;
-  v_existing_ids text[] := array[]::text[];
-  v_entry jsonb;
-  v_entry_id text;
-  v_patch jsonb;
-  v_missing jsonb := '[]'::jsonb;
-begin
-  for v_entry in
-    select item.value
-    from jsonb_array_elements(v_target) as item(value)
-  loop
-    v_entry_id := nullif(v_entry->>'id', '');
-    v_patch := null;
-
-    if v_entry_id is not null then
-      v_existing_ids := array_append(v_existing_ids, v_entry_id);
-      select patch.value
-      into v_patch
-      from jsonb_array_elements(v_patches) with ordinality as patch(value, ordinality)
-      where patch.value->>'id' = v_entry_id
-      order by patch.ordinality
-      limit 1;
-    end if;
-
-    v_result := v_result || jsonb_build_array(coalesce(v_patch, v_entry));
-  end loop;
-
-  select coalesce(jsonb_agg(patch.value order by patch.ordinality), '[]'::jsonb)
-  into v_missing
-  from jsonb_array_elements(v_patches) with ordinality as patch(value, ordinality)
-  where nullif(patch.value->>'id', '') is not null
-    and not ((patch.value->>'id') = any(v_existing_ids));
-
-  return coalesce(v_missing, '[]'::jsonb) || v_result;
-end;
+  with target_entries as (
+    select
+      item.value,
+      item.ordinality,
+      nullif(item.value->>'id', '') as id
+    from jsonb_array_elements(
+      case when jsonb_typeof(target_array) = 'array' then target_array else '[]'::jsonb end
+    ) with ordinality as item(value, ordinality)
+  ),
+  patch_entries as (
+    select
+      item.value,
+      item.ordinality,
+      nullif(item.value->>'id', '') as id
+    from jsonb_array_elements(
+      case when jsonb_typeof(patch_array) = 'array' then patch_array else '[]'::jsonb end
+    ) with ordinality as item(value, ordinality)
+  ),
+  first_patch_by_id as (
+    select distinct on (id)
+      id,
+      value
+    from patch_entries
+    where id is not null
+    order by id, ordinality
+  ),
+  target_ids as (
+    select distinct id
+    from target_entries
+    where id is not null
+  ),
+  missing_patches as (
+    select
+      0 as section_order,
+      patch_entries.ordinality,
+      patch_entries.value
+    from patch_entries
+    where patch_entries.id is not null
+      and not exists (
+        select 1
+        from target_ids
+        where target_ids.id = patch_entries.id
+      )
+  ),
+  patched_target as (
+    select
+      1 as section_order,
+      target_entries.ordinality,
+      coalesce(first_patch_by_id.value, target_entries.value) as value
+    from target_entries
+    left join first_patch_by_id
+      on first_patch_by_id.id = target_entries.id
+  ),
+  combined_entries as (
+    select section_order, ordinality, value from missing_patches
+    union all
+    select section_order, ordinality, value from patched_target
+  )
+  select coalesce(jsonb_agg(value order by section_order, ordinality), '[]'::jsonb)
+  from combined_entries;
 $$;
 
 revoke all on function public.patch_app_state_array_by_id(jsonb, jsonb) from public;
