@@ -24,7 +24,10 @@ app_counts as (
   union all
   select 'pricing_rules', jsonb_array_length(coalesce(data->'pricingRules', '[]'::jsonb)) from state
   union all
-  select 'customers', jsonb_array_length(coalesce(data->'customers', '[]'::jsonb)) from state
+  select 'customers', count(distinct customer->>'id')::bigint
+  from state
+  cross join lateral jsonb_array_elements(coalesce(data->'customers', '[]'::jsonb)) as customer
+  where customer ? 'id'
   union all
   select 'inventory_items', jsonb_array_length(coalesce(data->'inventoryItems', '[]'::jsonb)) from state
   union all

@@ -21,7 +21,11 @@ app_counts as (
   where name is not null
   union all select 'stations', jsonb_array_length(coalesce(data->'stations', '[]'::jsonb))::numeric from state
   union all select 'pricing_rules', jsonb_array_length(coalesce(data->'pricingRules', '[]'::jsonb))::numeric from state
-  union all select 'customers', jsonb_array_length(coalesce(data->'customers', '[]'::jsonb))::numeric from state
+  union all
+  select 'customers', count(distinct customer->>'id')::numeric
+  from state
+  cross join lateral jsonb_array_elements(coalesce(data->'customers', '[]'::jsonb)) as customer
+  where customer ? 'id'
   union all select 'inventory_items', jsonb_array_length(coalesce(data->'inventoryItems', '[]'::jsonb))::numeric from state
   union all
   select 'sale_variants', coalesce(sum(jsonb_array_length(coalesce(item->'saleVariants', '[]'::jsonb))), 0)::numeric

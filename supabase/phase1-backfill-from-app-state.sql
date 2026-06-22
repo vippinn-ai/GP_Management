@@ -113,6 +113,56 @@ with state as (
   select data
   from public.app_state
   where id = 'primary'
+),
+customer_rows as (
+  select
+    customer,
+    ordinality
+  from state
+  cross join lateral jsonb_array_elements(coalesce(data->'customers', '[]'::jsonb))
+    with ordinality as customer_values(customer, ordinality)
+  where customer ? 'id'
+),
+deduped_customers as (
+  select
+    customer->>'id' as id,
+    coalesce(
+      (array_remove(array_agg(
+        nullif(customer->>'name', '')
+        order by
+          nullif(customer->>'lastVisitAt', '')::timestamptz desc nulls last,
+          nullif(customer->>'createdAt', '')::timestamptz desc nulls last,
+          ordinality desc
+      ), null))[1],
+      'Walk-in customer'
+    ) as name,
+    (array_remove(array_agg(
+      nullif(customer->>'phone', '')
+      order by
+        (nullif(customer->>'phone', '') is not null) desc,
+        nullif(customer->>'lastVisitAt', '')::timestamptz desc nulls last,
+        nullif(customer->>'createdAt', '')::timestamptz desc nulls last,
+        ordinality desc
+    ), null))[1] as phone,
+    min(nullif(customer->>'createdAt', '')::timestamptz) as first_seen_at,
+    max(nullif(customer->>'lastVisitAt', '')::timestamptz) as last_visit_at,
+    (array_remove(array_agg(
+      nullif(customer->>'notes', '')
+      order by
+        (nullif(customer->>'notes', '') is not null) desc,
+        nullif(customer->>'lastVisitAt', '')::timestamptz desc nulls last,
+        ordinality desc
+    ), null))[1] as notes,
+    (array_agg(
+      customer
+      order by
+        (nullif(customer->>'phone', '') is not null) desc,
+        nullif(customer->>'lastVisitAt', '')::timestamptz desc nulls last,
+        nullif(customer->>'createdAt', '')::timestamptz desc nulls last,
+        ordinality desc
+    ))[1] as raw_data
+  from customer_rows
+  group by customer->>'id'
 )
 insert into public.customers (
   organization_id,
@@ -126,16 +176,20 @@ insert into public.customers (
 )
 select
   'org-primary',
-  customer->>'id',
-  coalesce(nullif(customer->>'name', ''), 'Walk-in customer'),
-  nullif(customer->>'phone', ''),
-  nullif(customer->>'createdAt', '')::timestamptz,
-  nullif(customer->>'lastVisitAt', '')::timestamptz,
-  nullif(customer->>'notes', ''),
-  customer
-from state
-cross join lateral jsonb_array_elements(coalesce(data->'customers', '[]'::jsonb)) as customer
-where customer ? 'id';
+  id,
+  name,
+  phone,
+  first_seen_at,
+  last_visit_at,
+  notes,
+  raw_data || jsonb_strip_nulls(jsonb_build_object(
+    'name', name,
+    'phone', phone,
+    'createdAt', first_seen_at,
+    'lastVisitAt', last_visit_at,
+    'notes', notes
+  ))
+from deduped_customers;
 
 with state as (
   select data
