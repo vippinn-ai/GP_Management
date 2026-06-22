@@ -51,12 +51,14 @@ describe("operational RPC client", () => {
     expect(getOperationalRpcFunctionName("resumeSession")).toBe("resume_session");
     expect(getOperationalRpcFunctionName("addSessionItem")).toBe("add_session_item");
     expect(getOperationalRpcFunctionName("removeSessionItem")).toBe("remove_session_item");
+    expect(getOperationalRpcFunctionName("rejectSession")).toBe("reject_session");
     expect(getOperationalRpcFunctionName("repeatSessionCombo")).toBe("repeat_session_combo");
     expect(getOperationalRpcFunctionName("openCustomerTab")).toBe("open_customer_tab");
     expect(getOperationalRpcFunctionName("applyCustomerTabCombo")).toBe("apply_customer_tab_combo");
     expect(getOperationalRpcFunctionName("addCustomerTabItem")).toBe("add_customer_tab_item");
     expect(getOperationalRpcFunctionName("updateCustomerTabItemQuantity")).toBe("update_customer_tab_item_quantity");
     expect(getOperationalRpcFunctionName("removeCustomerTabItem")).toBe("remove_customer_tab_item");
+    expect(getOperationalRpcFunctionName("rejectCustomerTab")).toBe("reject_customer_tab");
     expect(getOperationalRpcFunctionName("saveLiveSessionDetails")).toBe("save_live_session_details");
     expect(getOperationalRpcFunctionName("saveLiveCustomerTabDetails")).toBe("save_live_customer_tab_details");
   });
@@ -88,6 +90,8 @@ describe("operational RPC client", () => {
         entity_id: "tab-1",
         event_id: "event-1",
         server_time: "2026-06-20T10:00:01.000Z",
+        app_state_version: 43,
+        server_duration_ms: "125.25",
         changed_rows: { customer_tabs: ["tab-1"] }
       },
       error: null
@@ -107,6 +111,8 @@ describe("operational RPC client", () => {
       entityId: "tab-1",
       eventId: "event-1",
       serverTime: "2026-06-20T10:00:01.000Z",
+      appStateVersion: 43,
+      serverDurationMs: 125.25,
       changedRows: { customer_tabs: ["tab-1"] },
       raw: {
         mutation_id: "op-1",
@@ -115,6 +121,8 @@ describe("operational RPC client", () => {
         entity_id: "tab-1",
         event_id: "event-1",
         server_time: "2026-06-20T10:00:01.000Z",
+        app_state_version: 43,
+        server_duration_ms: "125.25",
         changed_rows: { customer_tabs: ["tab-1"] }
       }
     });

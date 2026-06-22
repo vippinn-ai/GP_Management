@@ -28,12 +28,14 @@ export type OperationalMutationKind =
   | "resumeSession"
   | "addSessionItem"
   | "removeSessionItem"
+  | "rejectSession"
   | "repeatSessionCombo"
   | "openCustomerTab"
   | "applyCustomerTabCombo"
   | "addCustomerTabItem"
   | "updateCustomerTabItemQuantity"
   | "removeCustomerTabItem"
+  | "rejectCustomerTab"
   | "saveLiveSessionDetails"
   | "saveLiveCustomerTabDetails";
 
@@ -80,6 +82,12 @@ interface RemoveSessionItemPayload {
   auditLog?: AuditLog;
 }
 
+interface RejectSessionPayload {
+  session: Session;
+  pauseLog?: SessionPauseLog;
+  auditLog: AuditLog;
+}
+
 interface RepeatSessionComboPayload {
   sessionId: string;
   comboApplication: SessionComboApplication;
@@ -120,6 +128,11 @@ interface RemoveCustomerTabItemPayload {
   auditLog?: AuditLog;
 }
 
+interface RejectCustomerTabPayload {
+  tab: CustomerTab;
+  auditLog: AuditLog;
+}
+
 interface SaveLiveSessionDetailsPayload {
   sessionId: string;
   customer?: OperationalCustomerPayload;
@@ -143,12 +156,14 @@ export type OperationalMutationPayload =
   | ResumeSessionPayload
   | AddSessionItemPayload
   | RemoveSessionItemPayload
+  | RejectSessionPayload
   | RepeatSessionComboPayload
   | OpenCustomerTabPayload
   | ApplyCustomerTabComboPayload
   | AddCustomerTabItemPayload
   | UpdateCustomerTabItemQuantityPayload
   | RemoveCustomerTabItemPayload
+  | RejectCustomerTabPayload
   | SaveLiveSessionDetailsPayload
   | SaveLiveCustomerTabDetailsPayload;
 
@@ -379,6 +394,11 @@ export function validateOperationalMutation(appData: AppData, mutation: Operatio
       const session = appData.sessions.find((entry) => entry.id === payload.sessionId && entry.status !== "closed");
       return session ? { ok: true } : { ok: false, reason: "The session is no longer open." };
     }
+    case "rejectSession": {
+      const payload = mutation.payload as RejectSessionPayload;
+      const session = appData.sessions.find((entry) => entry.id === payload.session.id && entry.status !== "closed");
+      return session ? { ok: true } : { ok: false, reason: "The session is no longer open." };
+    }
     case "repeatSessionCombo": {
       const payload = mutation.payload as RepeatSessionComboPayload;
       const session = appData.sessions.find((entry) => entry.id === payload.sessionId && entry.status !== "closed");
@@ -436,6 +456,11 @@ export function validateOperationalMutation(appData: AppData, mutation: Operatio
     case "removeCustomerTabItem": {
       const payload = mutation.payload as RemoveCustomerTabItemPayload;
       const tab = appData.customerTabs.find((entry) => entry.id === payload.customerTabId && entry.status === "open");
+      return tab ? { ok: true } : { ok: false, reason: "The customer tab is no longer open." };
+    }
+    case "rejectCustomerTab": {
+      const payload = mutation.payload as RejectCustomerTabPayload;
+      const tab = appData.customerTabs.find((entry) => entry.id === payload.tab.id && entry.status === "open");
       return tab ? { ok: true } : { ok: false, reason: "The customer tab is no longer open." };
     }
     case "saveLiveSessionDetails": {
@@ -530,6 +555,23 @@ export function applyOperationalMutation(source: AppData, mutation: OperationalM
       }
       break;
     }
+    case "rejectSession": {
+      const payload = mutation.payload as RejectSessionPayload;
+      const sessionIndex = appData.sessions.findIndex((entry) => entry.id === payload.session.id);
+      if (sessionIndex >= 0) {
+        appData.sessions[sessionIndex] = cloneValue(payload.session);
+      }
+      if (payload.pauseLog) {
+        const pauseIndex = appData.sessionPauseLogs.findIndex((entry) => entry.id === payload.pauseLog?.id);
+        if (pauseIndex >= 0) {
+          appData.sessionPauseLogs[pauseIndex] = cloneValue(payload.pauseLog);
+        } else {
+          pushUnique(appData.sessionPauseLogs, payload.pauseLog);
+        }
+      }
+      insertFirstUnique(appData.auditLogs, payload.auditLog);
+      break;
+    }
     case "repeatSessionCombo": {
       const payload = mutation.payload as RepeatSessionComboPayload;
       const session = appData.sessions.find((entry) => entry.id === payload.sessionId && entry.status !== "closed");
@@ -615,6 +657,15 @@ export function applyOperationalMutation(source: AppData, mutation: OperationalM
       if (payload.auditLog) {
         insertFirstUnique(appData.auditLogs, payload.auditLog);
       }
+      break;
+    }
+    case "rejectCustomerTab": {
+      const payload = mutation.payload as RejectCustomerTabPayload;
+      const tabIndex = appData.customerTabs.findIndex((entry) => entry.id === payload.tab.id);
+      if (tabIndex >= 0) {
+        appData.customerTabs[tabIndex] = cloneValue(payload.tab);
+      }
+      insertFirstUnique(appData.auditLogs, payload.auditLog);
       break;
     }
     case "saveLiveSessionDetails": {

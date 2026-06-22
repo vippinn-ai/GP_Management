@@ -1765,6 +1765,10 @@ export default function App() {
             const result = await defaultRemoteDataGateway.commitOperationalMutation(mutation);
             const lineReconciliation = getCustomerTabLineIdReconciliation(mutation, result);
             const reconciledData = reconcileOperationalRpcResult(appDataRef.current, mutation, result);
+            if (result.appStateVersion) {
+              remoteVersionRef.current = result.appStateVersion;
+              setRemoteVersion(result.appStateVersion);
+            }
             if (reconciledData !== appDataRef.current) {
               skipRemotePersistRef.current = true;
               appDataRef.current = reconciledData;
@@ -3749,23 +3753,38 @@ export default function App() {
       return;
     }
     const rejectedAt = new Date().toISOString();
-    void commitAppDataChange("Rejecting session...", (draft) => {
-      const targetSession = draft.sessions.find((entry) => entry.id === sessionId);
-      if (!targetSession || targetSession.status === "closed") {
-        return false;
-      }
-      if (targetSession.status === "paused") {
-        const openPause = draft.sessionPauseLogs.find((entry) => entry.sessionId === sessionId && !entry.resumedAt);
-        if (openPause) {
-          openPause.resumedAt = rejectedAt;
+    const rejectedSession = cloneValue(session);
+    const openPause =
+      rejectedSession.status === "paused"
+        ? appData.sessionPauseLogs.find((entry) => entry.sessionId === sessionId && !entry.resumedAt)
+        : undefined;
+    const rejectedPause = openPause ? cloneValue(openPause) : undefined;
+    if (rejectedPause) {
+      rejectedPause.resumedAt = rejectedAt;
+    }
+    rejectedSession.status = "closed";
+    rejectedSession.endedAt = rejectedAt;
+    rejectedSession.closeDisposition = "rejected";
+    rejectedSession.closeReason = reason.trim();
+    commitOperationalChange(createOperationalMutation(
+      "rejectSession",
+      "Rejecting session",
+      "session",
+      sessionId,
+      {
+        session: rejectedSession,
+        pauseLog: rejectedPause,
+        auditLog: {
+          id: createId("audit"),
+          action: "session_rejected",
+          entityType: "session",
+          entityId: sessionId,
+          message: `Rejected ${rejectedSession.stationNameSnapshot}. Reason: ${reason.trim()}`,
+          createdAt: rejectedAt,
+          userId: activeUser.id
         }
       }
-      targetSession.status = "closed";
-      targetSession.endedAt = rejectedAt;
-      targetSession.closeDisposition = "rejected";
-      targetSession.closeReason = reason.trim();
-      addAuditLog(draft, activeUser.id, "session_rejected", "session", sessionId, `Rejected ${targetSession.stationNameSnapshot}. Reason: ${reason.trim()}`);
-    }, () => {
+    ), () => {
       setCheckoutState((previous) =>
         previous?.mode === "session" && previous.sessionId === sessionId ? null : previous
       );
@@ -3978,17 +3997,29 @@ export default function App() {
       return;
     }
     const rejectedAt = new Date().toISOString();
-    void commitAppDataChange("Rejecting customer tab...", (draft) => {
-      const targetTab = draft.customerTabs.find((entry) => entry.id === customerTabId);
-      if (!targetTab || targetTab.status !== "open") {
-        return false;
+    const rejectedTab = cloneValue(tab);
+    rejectedTab.status = "closed";
+    rejectedTab.closedAt = rejectedAt;
+    rejectedTab.closeDisposition = "rejected";
+    rejectedTab.closeReason = reason.trim();
+    commitOperationalChange(createOperationalMutation(
+      "rejectCustomerTab",
+      "Rejecting customer tab",
+      "customer_tab",
+      customerTabId,
+      {
+        tab: rejectedTab,
+        auditLog: {
+          id: createId("audit"),
+          action: "customer_tab_rejected",
+          entityType: "customer_tab",
+          entityId: customerTabId,
+          message: `Rejected ${rejectedTab.customerName}'s tab. Reason: ${reason.trim()}`,
+          createdAt: rejectedAt,
+          userId: activeUser.id
+        }
       }
-      targetTab.status = "closed";
-      targetTab.closedAt = rejectedAt;
-      targetTab.closeDisposition = "rejected";
-      targetTab.closeReason = reason.trim();
-      addAuditLog(draft, activeUser.id, "customer_tab_rejected", "customer_tab", customerTabId, `Rejected ${targetTab.customerName}'s tab. Reason: ${reason.trim()}`);
-    }, () => {
+    ), () => {
       setCheckoutState((previous) =>
         previous?.mode === "customer_tab" && previous.customerTabId === customerTabId ? null : previous
       );

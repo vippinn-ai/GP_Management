@@ -10,6 +10,7 @@ export interface OperationalRpcCommitResult {
   entityId: string;
   eventId?: string;
   serverTime?: string;
+  appStateVersion?: number;
   serverDurationMs?: number;
   changedRows?: Record<string, unknown>;
   raw?: unknown;

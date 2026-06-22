@@ -65,6 +65,7 @@
   - [x] 6.9.1 Validate staging conflict behavior across multiple browser sessions
   - [x] 6.9.2 Fix variant customer-tab stock conflicts by aligning customer-tab RPC stock checks with the current `app_state` inventory source
   - [x] 6.9.3 Add popup alerts for failed/conflict live actions and pending-sync checkout blocks
+- [x] 6.10 Implement compact reject session/customer-tab RPCs so reject actions do not fall back to full `app_state` upload
 
 ## 7. Phase 5: Financial RPC Writes
 
@@ -133,7 +134,7 @@
 - [ ] 10.3.3 Run `supabase/phase1-backfill-from-app-state.sql` in production during the write-pause window
 - [ ] 10.3.4 Run `supabase/phase1-parity-checks-single-result.sql` in production and confirm every `delta` is `0`
 - [ ] 10.3.5 Run `supabase/phase3-read-performance-indexes.sql` in production before enabling normalized history/report reads
-- [ ] 10.3.6 Run Phase 4 RPC scripts in order: start session, pause/resume, session items, customer tabs, combos, live details
+- [ ] 10.3.6 Run Phase 4 RPC scripts in order: start session, pause/resume, session items, customer tabs, combos, live details, reject session/tab
 - [ ] 10.3.7 Run Phase 5 RPC scripts in order: `phase5-financial-checkout-rpc.sql`, then `phase5-financial-adjustment-rpc.sql`
 - [ ] 10.3.8 Run the function install and execute-grant checks from `supabase/phase4-rpc-runbook.md`
 - [ ] 10.3.9 Confirm `anon` cannot execute browser-facing RPCs or helper functions

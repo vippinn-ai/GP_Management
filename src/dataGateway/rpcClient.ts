@@ -12,12 +12,14 @@ export const OPERATIONAL_RPC_FUNCTION_NAMES: Record<OperationalMutationKind, str
   resumeSession: "resume_session",
   addSessionItem: "add_session_item",
   removeSessionItem: "remove_session_item",
+  rejectSession: "reject_session",
   repeatSessionCombo: "repeat_session_combo",
   openCustomerTab: "open_customer_tab",
   applyCustomerTabCombo: "apply_customer_tab_combo",
   addCustomerTabItem: "add_customer_tab_item",
   updateCustomerTabItemQuantity: "update_customer_tab_item_quantity",
   removeCustomerTabItem: "remove_customer_tab_item",
+  rejectCustomerTab: "reject_customer_tab",
   saveLiveSessionDetails: "save_live_session_details",
   saveLiveCustomerTabDetails: "save_live_customer_tab_details"
 });
@@ -80,6 +82,17 @@ function toRecord(value: unknown): Record<string, unknown> {
 
 function toOptionalString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+function toOptionalNumber(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+  return undefined;
 }
 
 function parseJsonRecord(value: string | undefined): Record<string, unknown> {
@@ -188,6 +201,8 @@ export function mapOperationalRpcResult(params: {
     entityId: toOptionalString(row.entityId) ?? toOptionalString(row.entity_id) ?? params.mutation.entityId,
     eventId: toOptionalString(row.eventId) ?? toOptionalString(row.event_id),
     serverTime: toOptionalString(row.serverTime) ?? toOptionalString(row.server_time),
+    appStateVersion: toOptionalNumber(row.appStateVersion ?? row.app_state_version),
+    serverDurationMs: toOptionalNumber(row.serverDurationMs ?? row.server_duration_ms),
     changedRows: toRecord(row.changedRows ?? row.changed_rows),
     raw: params.data
   };

@@ -118,6 +118,103 @@ describe("operational sync", () => {
     expect(nextData.auditLogs[0].id).toBe("audit-1");
   });
 
+  it("applies a rejected session operation and resumes any open pause log", () => {
+    const appData = createAppData();
+    appData.sessions.push({
+      id: "session-1",
+      stationId: "station-1",
+      stationNameSnapshot: "Pool 1",
+      mode: "timed",
+      startedAt: "2026-06-09T09:00:00.000Z",
+      status: "paused",
+      playMode: "group",
+      ltpEligible: false,
+      pricingSnapshot: [],
+      items: [],
+      comboApplications: [],
+      pauseLogIds: ["pause-1"]
+    });
+    appData.sessionPauseLogs.push({
+      id: "pause-1",
+      sessionId: "session-1",
+      pausedAt: "2026-06-09T09:30:00.000Z"
+    });
+
+    const nextData = applyOperationalMutation(
+      appData,
+      mutation("rejectSession", "session", "session-1", {
+        session: {
+          ...appData.sessions[0],
+          status: "closed",
+          endedAt: "2026-06-09T10:00:00.000Z",
+          closeDisposition: "rejected",
+          closeReason: "Wrong start"
+        },
+        pauseLog: {
+          ...appData.sessionPauseLogs[0],
+          resumedAt: "2026-06-09T10:00:00.000Z"
+        },
+        auditLog: {
+          id: "audit-reject-session",
+          action: "session_rejected",
+          entityType: "session",
+          entityId: "session-1",
+          message: "Rejected Pool 1.",
+          createdAt: "2026-06-09T10:00:00.000Z",
+          userId: "user-1"
+        }
+      })
+    );
+
+    expect(nextData.sessions[0]).toMatchObject({
+      status: "closed",
+      closeDisposition: "rejected",
+      closeReason: "Wrong start"
+    });
+    expect(nextData.sessionPauseLogs[0].resumedAt).toBe("2026-06-09T10:00:00.000Z");
+    expect(nextData.auditLogs[0].id).toBe("audit-reject-session");
+  });
+
+  it("applies a rejected customer tab operation immediately to local app data", () => {
+    const appData = createAppData();
+    appData.customerTabs.push({
+      id: "tab-1",
+      customerName: "Vipin",
+      status: "open",
+      createdAt: "2026-06-09T09:00:00.000Z",
+      items: []
+    });
+
+    const nextData = applyOperationalMutation(
+      appData,
+      mutation("rejectCustomerTab", "customer_tab", "tab-1", {
+        tab: {
+          ...appData.customerTabs[0],
+          status: "closed",
+          closedAt: "2026-06-09T10:00:00.000Z",
+          closeDisposition: "rejected",
+          closeReason: "Duplicate tab"
+        },
+        auditLog: {
+          id: "audit-reject-tab",
+          action: "customer_tab_rejected",
+          entityType: "customer_tab",
+          entityId: "tab-1",
+          message: "Rejected tab.",
+          createdAt: "2026-06-09T10:00:00.000Z",
+          userId: "user-1"
+        }
+      })
+    );
+
+    expect(nextData.customerTabs[0]).toMatchObject({
+      status: "closed",
+      closeDisposition: "rejected",
+      closeReason: "Duplicate tab"
+    });
+    expect(nextData.auditLogs[0].id).toBe("audit-reject-tab");
+  });
+
   it("applies a consumables combo to a customer tab", () => {
     const appData = createAppData();
     appData.customerTabs.push({

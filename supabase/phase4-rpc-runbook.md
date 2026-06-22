@@ -13,9 +13,10 @@ Run in staging first.
 5. Run `supabase/phase4-customer-tab-rpcs.sql`.
 6. Run `supabase/phase4-combo-rpcs.sql`.
 7. Run `supabase/phase4-live-detail-rpcs.sql`.
-8. Run `supabase/phase5-financial-checkout-rpc.sql` only when you are ready to test compact issue-bill writes.
-9. Run `supabase/phase5-financial-adjustment-rpc.sql` only when you are ready to test compact pending settlement, pending write-off, and issued-bill void/refund writes.
-10. Keep `VITE_BACKEND_RPC_OPERATIONAL_WRITES`, `VITE_BACKEND_NORMALIZED_LIVE_READS`, and `VITE_BACKEND_RPC_FINANCIAL_WRITES` disabled until a deliberate staging smoke test.
+8. Run `supabase/phase4-reject-rpcs.sql`.
+9. Run `supabase/phase5-financial-checkout-rpc.sql` only when you are ready to test compact issue-bill writes.
+10. Run `supabase/phase5-financial-adjustment-rpc.sql` only when you are ready to test compact pending settlement, pending write-off, and issued-bill void/refund writes.
+11. Keep `VITE_BACKEND_RPC_OPERATIONAL_WRITES`, `VITE_BACKEND_NORMALIZED_LIVE_READS`, and `VITE_BACKEND_RPC_FINANCIAL_WRITES` disabled until a deliberate staging smoke test.
 
 ## Frontend Smoke-Test Flags
 
@@ -56,10 +57,12 @@ where routine_schema = 'public'
     'resume_session',
     'add_session_item',
     'remove_session_item',
+    'reject_session',
     'open_customer_tab',
     'add_customer_tab_item',
     'update_customer_tab_item_quantity',
     'remove_customer_tab_item',
+    'reject_customer_tab',
     'repeat_session_combo',
     'apply_customer_tab_combo',
     'save_live_session_details',
@@ -80,10 +83,12 @@ Expected:
 - `resume_session` exists.
 - `add_session_item` exists.
 - `remove_session_item` exists.
+- `reject_session` exists.
 - `open_customer_tab` exists.
 - `add_customer_tab_item` exists.
 - `update_customer_tab_item_quantity` exists.
 - `remove_customer_tab_item` exists.
+- `reject_customer_tab` exists.
 - `repeat_session_combo` exists.
 - `apply_customer_tab_combo` exists.
 - `save_live_session_details` exists.
@@ -97,10 +102,12 @@ Expected:
 - `resume_session` is `DEFINER`.
 - `add_session_item` is `DEFINER`.
 - `remove_session_item` is `DEFINER`.
+- `reject_session` is `DEFINER`.
 - `open_customer_tab` is `DEFINER`.
 - `add_customer_tab_item` is `DEFINER`.
 - `update_customer_tab_item_quantity` is `DEFINER`.
 - `remove_customer_tab_item` is `DEFINER`.
+- `reject_customer_tab` is `DEFINER`.
 - `repeat_session_combo` is `DEFINER`.
 - `apply_customer_tab_combo` is `DEFINER`.
 - `save_live_session_details` is `DEFINER`.
@@ -125,6 +132,8 @@ select
   has_function_privilege('authenticated', 'public.add_session_item(jsonb)', 'execute') as authenticated_can_add_session_item,
   has_function_privilege('anon', 'public.remove_session_item(jsonb)', 'execute') as anon_can_remove_session_item,
   has_function_privilege('authenticated', 'public.remove_session_item(jsonb)', 'execute') as authenticated_can_remove_session_item,
+  has_function_privilege('anon', 'public.reject_session(jsonb)', 'execute') as anon_can_reject_session,
+  has_function_privilege('authenticated', 'public.reject_session(jsonb)', 'execute') as authenticated_can_reject_session,
   has_function_privilege('anon', 'public.open_customer_tab(jsonb)', 'execute') as anon_can_open_customer_tab,
   has_function_privilege('authenticated', 'public.open_customer_tab(jsonb)', 'execute') as authenticated_can_open_customer_tab,
   has_function_privilege('anon', 'public.add_customer_tab_item(jsonb)', 'execute') as anon_can_add_customer_tab_item,
@@ -133,6 +142,8 @@ select
   has_function_privilege('authenticated', 'public.update_customer_tab_item_quantity(jsonb)', 'execute') as authenticated_can_update_customer_tab_item_quantity,
   has_function_privilege('anon', 'public.remove_customer_tab_item(jsonb)', 'execute') as anon_can_remove_customer_tab_item,
   has_function_privilege('authenticated', 'public.remove_customer_tab_item(jsonb)', 'execute') as authenticated_can_remove_customer_tab_item,
+  has_function_privilege('anon', 'public.reject_customer_tab(jsonb)', 'execute') as anon_can_reject_customer_tab,
+  has_function_privilege('authenticated', 'public.reject_customer_tab(jsonb)', 'execute') as authenticated_can_reject_customer_tab,
   has_function_privilege('anon', 'public.repeat_session_combo(jsonb)', 'execute') as anon_can_repeat_session_combo,
   has_function_privilege('authenticated', 'public.repeat_session_combo(jsonb)', 'execute') as authenticated_can_repeat_session_combo,
   has_function_privilege('anon', 'public.apply_customer_tab_combo(jsonb)', 'execute') as anon_can_apply_customer_tab_combo,
@@ -163,6 +174,8 @@ Expected:
 - `authenticated_can_add_session_item = true`
 - `anon_can_remove_session_item = false`
 - `authenticated_can_remove_session_item = true`
+- `anon_can_reject_session = false`
+- `authenticated_can_reject_session = true`
 - `anon_can_open_customer_tab = false`
 - `authenticated_can_open_customer_tab = true`
 - `anon_can_add_customer_tab_item = false`
@@ -171,6 +184,8 @@ Expected:
 - `authenticated_can_update_customer_tab_item_quantity = true`
 - `anon_can_remove_customer_tab_item = false`
 - `authenticated_can_remove_customer_tab_item = true`
+- `anon_can_reject_customer_tab = false`
+- `authenticated_can_reject_customer_tab = true`
 - `anon_can_repeat_session_combo = false`
 - `authenticated_can_repeat_session_combo = true`
 - `anon_can_apply_customer_tab_combo = false`
@@ -203,10 +218,12 @@ where routine_schema = 'public'
     'resume_session',
     'add_session_item',
     'remove_session_item',
+    'reject_session',
     'open_customer_tab',
     'add_customer_tab_item',
     'update_customer_tab_item_quantity',
     'remove_customer_tab_item',
+    'reject_customer_tab',
     'repeat_session_combo',
     'apply_customer_tab_combo',
     'save_live_session_details',
@@ -274,6 +291,16 @@ The `open_customer_tab`, `add_customer_tab_item`, `update_customer_tab_item_quan
 - validate inventory availability before adding or increasing tab item quantity
 - write customer, tab, item, audit, and compact operational event rows atomically
 - return compact changed-row ids and event metadata
+
+The `reject_session` and `reject_customer_tab` RPCs:
+
+- validate organization membership through `current_user_has_org_access`
+- lock the target live session or customer tab plus the compatibility `app_state` row for a short transaction
+- reject closed/missing live records with `session_not_open` or `customer_tab_not_open`
+- update the normalized live row to closed/rejected
+- patch only the affected legacy `sessions` or `customerTabs`, optional `sessionPauseLogs`, and `auditLogs` arrays in `app_state`
+- increment and return the next `app_state.version` so later compatibility writes do not retry against a stale version
+- avoid the old full app-state upload path for rejected sessions/tabs
 
 The `repeat_session_combo` and `apply_customer_tab_combo` RPCs:
 
