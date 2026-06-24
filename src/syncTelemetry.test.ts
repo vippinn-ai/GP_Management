@@ -5,6 +5,7 @@ import {
   getAppDataCollectionCounts,
   readStoredSyncTelemetrySamples,
   recordAppStateSaveTelemetry,
+  recordCompactRealtimeTelemetry,
   recordRealtimeSnapshotTelemetry,
   SYNC_TELEMETRY_STORAGE_KEY
 } from "./syncTelemetry";
@@ -12,6 +13,10 @@ import {
 describe("sync telemetry", () => {
   beforeEach(() => {
     clearStoredSyncTelemetrySamples();
+  });
+
+  it("initializes the debug API before the first sample is recorded", () => {
+    expect(window.__GP_SYNC_TELEMETRY__?.storageKey).toBe(SYNC_TELEMETRY_STORAGE_KEY);
   });
 
   it("estimates utf-8 JSON byte size", () => {
@@ -75,6 +80,33 @@ describe("sync telemetry", () => {
     });
     expect(sample.collectionCounts.customerTabs).toBe(1);
     expect(sample.collectionCounts.payments).toBe(1);
+  });
+
+  it("stores compact realtime event samples", () => {
+    recordCompactRealtimeTelemetry({
+      eventPayload: { event_type: "add_customer_tab_item", entity_id: "tab-1" },
+      eventType: "add_customer_tab_item",
+      entityType: "customer_tab",
+      entityId: "tab-1",
+      refreshedSlices: ["live"],
+      startedAt: 2_000,
+      completedAt: 2_060,
+      status: "success",
+      skippedFullSnapshot: true
+    });
+
+    const [sample] = readStoredSyncTelemetrySamples();
+    expect(sample).toMatchObject({
+      type: "compact_realtime_event",
+      source: "realtime",
+      eventType: "add_customer_tab_item",
+      entityType: "customer_tab",
+      entityId: "tab-1",
+      refreshedSlices: ["live"],
+      durationMs: 60,
+      skippedFullSnapshot: true
+    });
+    expect(sample.payloadBytes).toBeGreaterThan(0);
   });
 
   it("keeps only the most recent telemetry samples", () => {

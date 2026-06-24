@@ -24,7 +24,13 @@ import {
   type ReportRow
 } from "./exporters";
 import { calculateSessionCharge } from "./pricing";
-import { hasStoredAppData, loadAppData, saveAppData } from "./storage";
+import {
+  clearStoredAppData,
+  hasStoredAppData,
+  loadAppData,
+  saveAppData,
+  setFullAppDataCacheEnabled
+} from "./storage";
 import {
   adminChangePasswordRemote,
   changeOwnPasswordRemote,
@@ -33,6 +39,7 @@ import {
   adminUpdateUserRemote,
   fetchCurrentProfile,
   isBackendConfigured,
+  type RemoteAppDataSnapshot,
   signInWithUsername,
   signOutRemote
 } from "./backend";
@@ -330,8 +337,9 @@ function showLiveSyncAlert(message: string) {
 
 export default function App() {
   const backendConfigured = isBackendConfigured();
+  setFullAppDataCacheEnabled(!backendConfigured);
   const [appData, setAppData] = useState<AppData>(() =>
-    normalizeAppDataCustomers(loadAppData())
+    normalizeAppDataCustomers(loadAppData({ useStoredCache: !backendConfigured }))
   );
   const [activeUserId, setActiveUserId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<TabId>("dashboard");
@@ -343,7 +351,7 @@ export default function App() {
   const [remoteLoading, setRemoteLoading] = useState(backendConfigured);
   const [remoteRestoreState, setRemoteRestoreState] = useState<RemoteRestoreState>(backendConfigured ? "checking" : "ready");
   const [restoreRetrySignal, setRestoreRetrySignal] = useState(0);
-  const [hasCachedAppData] = useState(() => hasStoredAppData());
+  const [hasCachedAppData] = useState(() => hasStoredAppData({ useStoredCache: !backendConfigured }));
   const [remoteError, setRemoteError] = useState("");
   const [remoteVersion, setRemoteVersion] = useState(0);
   const [remoteSaving, setRemoteSaving] = useState(false);
@@ -699,8 +707,10 @@ export default function App() {
     return nextAppData;
   }
 
-  const applyRemoteSnapshotWithPending = useCallback((snapshot: { appData: AppData; version: number }) => {
-    const activePending = pendingOperationalMutationsRef.current.filter((mutation) => mutation.status !== "conflict");
+  const applyRemoteSnapshotWithPending = useCallback((snapshot: RemoteAppDataSnapshot) => {
+    const activePending = pendingOperationalMutationsRef.current.filter(
+      (mutation) => mutation.status !== "conflict" && mutation.id !== snapshot.sourceMutationId
+    );
     const normalizedRemoteData = normalizeAppDataCustomers(snapshot.appData);
     const rebased = rebasePendingMutations(normalizedRemoteData, activePending);
     const nextMutations = [
@@ -721,6 +731,13 @@ export default function App() {
       setRemoteError(getOperationalConflictMessages(rebased.conflicts).join(" "));
     }
   }, []);
+
+  useEffect(() => {
+    setFullAppDataCacheEnabled(!backendConfigured);
+    if (backendConfigured) {
+      clearStoredAppData();
+    }
+  }, [backendConfigured]);
 
   useEffect(() => {
     appDataRef.current = appData;

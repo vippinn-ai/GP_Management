@@ -87,10 +87,14 @@
 
 ## 8. Phase 6: Retire Full-State Sync
 
-- [ ] 8.1 Disable full `app_state` writes after normalized/RPC production stability
-- [ ] 8.2 Remove `app_state` realtime subscription from normal runtime
-- [ ] 8.3 Keep a read-only migration snapshot for rollback/audit period
-- [ ] 8.4 Archive or remove old full-state sync code after rollback window
+- [ ] 8.1 Add compact realtime subscription through `operational_events` behind `VITE_BACKEND_NORMALIZED_REALTIME`
+- [ ] 8.2 Add SQL to publish `operational_events` to Supabase realtime while keeping `app_state` publication for rollback
+- [ ] 8.3 Stop full business-state `localStorage` caching in backend mode and clear the legacy cache key after remote load
+- [ ] 8.4 Add compact realtime telemetry and monitoring queries for app-state size, realtime publication, and event counts
+- [ ] 8.5 Validate compact realtime in staging with two-browser live sync, checkout, financial adjustments, and no `QuotaExceededError`
+- [ ] 8.6 Enable compact realtime in production only after staging soak passes
+- [ ] 8.7 Keep full `app_state` writes and rollback snapshot active until compact realtime is stable
+- [ ] 8.8 Later phase: remove full startup `app_state` load and retire full `app_state` writes after a separate cutover
 
 ## 9. Verification
 

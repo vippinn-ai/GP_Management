@@ -62,6 +62,12 @@ export interface NormalizedBillRegisterPage {
   hasMore: boolean;
 }
 
+export interface NormalizedBillPatchQuery {
+  organizationId?: string;
+  billIds?: string[];
+  paymentIds?: string[];
+}
+
 interface BillRow {
   id: string;
   bill_number: string;
@@ -201,6 +207,10 @@ function clampPageSize(value?: number): number {
     return DEFAULT_BILL_REGISTER_PAGE_SIZE;
   }
   return Math.max(1, Math.min(MAX_BILL_REGISTER_PAGE_SIZE, Math.floor(value)));
+}
+
+function uniqueStrings(values: Array<string | null | undefined>): string[] {
+  return Array.from(new Set(values.map((value) => value?.trim() ?? "").filter(Boolean)));
 }
 
 async function withBillRegisterReadTimeout<T>(request: PromiseLike<T>, action: string): Promise<T> {
@@ -542,4 +552,98 @@ export async function loadNormalizedBillRegisterPage(
     paymentRows,
     pageSize
   });
+}
+
+export async function loadNormalizedBillsByIds(
+  query: NormalizedBillPatchQuery,
+  client: SupabaseClient = getSupabaseClient()
+): Promise<Pick<NormalizedBillRegisterPage, "bills" | "payments">> {
+  const organizationId = query.organizationId ?? (await resolveNormalizedBillRegisterOrganizationId(client));
+  const requestedBillIds = uniqueStrings(query.billIds ?? []);
+  const requestedPaymentIds = uniqueStrings(query.paymentIds ?? []);
+
+  const directPaymentRows =
+    requestedPaymentIds.length > 0
+      ? await readMany<PaymentRow>(
+          client
+            .from("payments")
+            .select(PAYMENT_SELECT_COLUMNS)
+            .eq("organization_id", organizationId)
+            .in("id", requestedPaymentIds)
+            .order("paid_at", { ascending: true }),
+          "loading changed payments"
+        )
+      : [];
+  const billIds = uniqueStrings([...requestedBillIds, ...directPaymentRows.map((payment) => payment.bill_id)]);
+
+  if (billIds.length === 0) {
+    return {
+      bills: [],
+      payments: directPaymentRows.map(mapNormalizedPayment)
+    };
+  }
+
+  const [billRows, lineRows, billDiscountRows, lineDiscountRows, relatedPaymentRows] = await Promise.all([
+    readMany<BillRow>(
+      client
+        .from("bills")
+        .select(BILL_SELECT_COLUMNS)
+        .eq("organization_id", organizationId)
+        .in("id", billIds)
+        .order("issued_at", { ascending: false })
+        .order("id", { ascending: false }),
+      "loading changed bills"
+    ),
+    readMany<BillLineRow>(
+      client
+        .from("bill_lines")
+        .select(BILL_LINE_SELECT_COLUMNS)
+        .eq("organization_id", organizationId)
+        .in("bill_id", billIds)
+        .order("created_at", { ascending: true }),
+      "loading changed bill lines"
+    ),
+    readMany<BillDiscountRow>(
+      client
+        .from("bill_discounts")
+        .select(BILL_DISCOUNT_SELECT_COLUMNS)
+        .eq("organization_id", organizationId)
+        .in("bill_id", billIds)
+        .order("created_at", { ascending: true }),
+      "loading changed bill discounts"
+    ),
+    readMany<BillLineDiscountRow>(
+      client
+        .from("bill_line_discounts")
+        .select(BILL_LINE_DISCOUNT_SELECT_COLUMNS)
+        .eq("organization_id", organizationId)
+        .in("bill_id", billIds)
+        .order("created_at", { ascending: true }),
+      "loading changed bill line discounts"
+    ),
+    readMany<PaymentRow>(
+      client
+        .from("payments")
+        .select(PAYMENT_SELECT_COLUMNS)
+        .eq("organization_id", organizationId)
+        .in("bill_id", billIds)
+        .order("paid_at", { ascending: true }),
+      "loading changed bill payments"
+    )
+  ]);
+
+  const paymentRowsById = new Map<string, PaymentRow>();
+  [...relatedPaymentRows, ...directPaymentRows].forEach((payment) => paymentRowsById.set(payment.id, payment));
+  const page = buildNormalizedBillRegisterPage({
+    billRows,
+    lineRows,
+    billDiscountRows,
+    lineDiscountRows,
+    paymentRows: Array.from(paymentRowsById.values()),
+    pageSize: Math.max(1, billRows.length)
+  });
+  return {
+    bills: page.bills,
+    payments: page.payments
+  };
 }

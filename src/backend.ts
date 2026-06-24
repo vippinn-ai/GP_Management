@@ -49,6 +49,7 @@ export interface RemoteProfile {
 export interface RemoteAppDataSnapshot {
   appData: AppData;
   version: number;
+  sourceMutationId?: string;
 }
 
 export interface SaveRemoteTelemetryOptions {

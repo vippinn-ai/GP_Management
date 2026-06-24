@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { loadAppData, saveAppData } from "./storage";
+import { hasStoredAppData, loadAppData, saveAppData, setFullAppDataCacheEnabled } from "./storage";
 import type { AppData } from "./types";
 
 function createAppData(): AppData {
@@ -27,6 +27,7 @@ function createAppData(): AppData {
 
 describe("storage", () => {
   afterEach(() => {
+    setFullAppDataCacheEnabled(true);
     window.localStorage.clear();
     vi.restoreAllMocks();
   });
@@ -38,6 +39,26 @@ describe("storage", () => {
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
 
     expect(() => saveAppData(createAppData())).not.toThrow();
+  });
+
+  it("skips full app-data localStorage writes when the full cache is disabled", () => {
+    const data = createAppData();
+    data.businessProfile.name = "Remote only";
+
+    setFullAppDataCacheEnabled(false);
+    saveAppData(data);
+
+    expect(hasStoredAppData()).toBe(false);
+    expect(loadAppData().businessProfile.name).toBe("");
+  });
+
+  it("can ignore a legacy full cache while backend mode is loading", () => {
+    const data = createAppData();
+    data.businessProfile.name = "Legacy cache";
+    saveAppData(data);
+
+    expect(hasStoredAppData({ useStoredCache: false })).toBe(false);
+    expect(loadAppData({ useStoredCache: false }).businessProfile.name).toBe("");
   });
 
   it("hydrates legacy combos as game combos", () => {

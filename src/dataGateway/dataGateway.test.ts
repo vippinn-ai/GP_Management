@@ -388,12 +388,96 @@ describe("app_state data gateway", () => {
     expect(gateway.commitOperationalMutation).toBeUndefined();
   });
 
-  it("blocks normalized realtime until the compact event subscription exists", () => {
+  it("subscribes to operational_events when normalized realtime is enabled", () => {
+    const unsubscribe = vi.fn();
+    const channel = {
+      on: vi.fn().mockReturnThis(),
+      subscribe: vi.fn().mockReturnThis()
+    };
+    const client = {
+      channel: vi.fn(() => channel),
+      removeChannel: unsubscribe
+    };
+    backendMocks.getSupabaseClient.mockReturnValue(client);
     const gateway = createRemoteDataGateway({
       ...DEFAULT_BACKEND_FEATURE_FLAGS,
       normalizedRealtime: true
     });
+    const onChange = vi.fn();
 
-    expect(() => gateway.subscribeToAppData(vi.fn())).toThrow("Normalized RPC or realtime gateway is not implemented yet");
+    const dispose = gateway.subscribeToAppData(onChange);
+
+    expect(client.channel).toHaveBeenCalledWith("operational-events-sync");
+    expect(channel.on).toHaveBeenCalledWith(
+      "postgres_changes",
+      expect.objectContaining({
+        event: "INSERT",
+        schema: "public",
+        table: "operational_events"
+      }),
+      expect.any(Function)
+    );
+    expect(backendMocks.subscribeToRemoteAppData).not.toHaveBeenCalled();
+    dispose();
+    expect(unsubscribe).toHaveBeenCalledWith(channel);
+  });
+
+  it("applies compact realtime live overlays without loading app_state after the initial snapshot", async () => {
+    const baseSnapshot = createSnapshot(20);
+    const normalizedTab = {
+      id: "tab-1",
+      customerName: "Realtime Customer",
+      status: "open",
+      createdAt: "2026-06-24T10:00:00.000Z",
+      items: [],
+      comboApplications: []
+    };
+    let realtimeHandler: ((payload: { new: unknown }) => void) | undefined;
+    const channel = {
+      on: vi.fn((_kind, _config, handler) => {
+        realtimeHandler = handler;
+        return channel;
+      }),
+      subscribe: vi.fn().mockReturnThis()
+    };
+    const client = {
+      channel: vi.fn(() => channel),
+      removeChannel: vi.fn()
+    };
+    backendMocks.getSupabaseClient.mockReturnValue(client);
+    backendMocks.loadRemoteAppDataSnapshot.mockResolvedValue(baseSnapshot);
+    normalizedReadMocks.loadNormalizedAppDataOverlay
+      .mockResolvedValueOnce({ appData: {}, organizationId: "org-primary" })
+      .mockResolvedValueOnce({ appData: { customerTabs: [normalizedTab] }, organizationId: "org-primary" });
+    const gateway = createRemoteDataGateway({
+      ...DEFAULT_BACKEND_FEATURE_FLAGS,
+      normalizedRealtime: true
+    });
+    const onChange = vi.fn();
+
+    await gateway.loadAppDataSnapshot();
+    gateway.subscribeToAppData(onChange);
+    realtimeHandler?.({
+      new: {
+        organization_id: "org-primary",
+        id: "event-1",
+        event_type: "open_customer_tab",
+        entity_type: "customer_tab",
+        entity_id: "tab-1",
+        created_at: "2026-06-24T10:00:01.000Z",
+        metadata: { app_state_version: 21, changed_rows: { customer_tabs: ["tab-1"] } }
+      }
+    });
+
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(onChange.mock.calls[0][0]).toMatchObject({
+      version: 21,
+      appData: {
+        customerTabs: [expect.objectContaining({ id: "tab-1", customerName: "Realtime Customer" })]
+      }
+    });
+    expect(backendMocks.loadRemoteAppDataSnapshot).toHaveBeenCalledTimes(1);
   });
 });

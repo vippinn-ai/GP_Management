@@ -81,6 +81,10 @@ function ensureDebugApi() {
   };
 }
 
+export function ensureCheckoutTelemetryDebugApi() {
+  ensureDebugApi();
+}
+
 export function recordCheckoutTelemetrySample(
   params: Omit<CheckoutTelemetrySample, "id" | "createdAt"> & { completedAt?: number }
 ) {
@@ -102,3 +106,5 @@ export function recordCheckoutTelemetrySample(
     // Telemetry must never interrupt checkout.
   }
 }
+
+ensureDebugApi();

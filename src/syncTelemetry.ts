@@ -3,7 +3,7 @@ import type { AppData } from "./types";
 export const SYNC_TELEMETRY_STORAGE_KEY = "game-parlour-management-system/sync-telemetry/v1";
 const MAX_STORED_SYNC_TELEMETRY_SAMPLES = 100;
 
-export type SyncTelemetryEventType = "app_state_save" | "app_state_realtime_snapshot";
+export type SyncTelemetryEventType = "app_state_save" | "app_state_realtime_snapshot" | "compact_realtime_event";
 export type SyncTelemetrySource = "blocking" | "operational_queue" | "auto_persist" | "realtime";
 export type SyncTelemetryStatus = "success" | "conflict" | "error";
 
@@ -41,6 +41,11 @@ export interface SyncTelemetrySample {
   status?: SyncTelemetryStatus;
   errorMessage?: string;
   pendingOperationCount?: number;
+  eventType?: string;
+  entityType?: string;
+  entityId?: string;
+  refreshedSlices?: string[];
+  skippedFullSnapshot?: boolean;
 }
 
 type AppDataCollectionKey = keyof AppDataCollectionCounts;
@@ -145,6 +150,10 @@ function ensureDebugApi() {
   };
 }
 
+export function ensureSyncTelemetryDebugApi() {
+  ensureDebugApi();
+}
+
 export function recordSyncTelemetrySample(sample: SyncTelemetrySample) {
   if (typeof window === "undefined") {
     return;
@@ -203,3 +212,36 @@ export function recordRealtimeSnapshotTelemetry(params: {
     status: "success"
   });
 }
+
+export function recordCompactRealtimeTelemetry(params: {
+  eventPayload: unknown;
+  eventType: string;
+  entityType: string;
+  entityId: string;
+  refreshedSlices: string[];
+  startedAt: number;
+  completedAt?: number;
+  status: SyncTelemetryStatus;
+  errorMessage?: string;
+  skippedFullSnapshot: boolean;
+}) {
+  const completedAt = params.completedAt ?? Date.now();
+  recordSyncTelemetrySample({
+    id: createTelemetryId(),
+    type: "compact_realtime_event",
+    source: "realtime",
+    createdAt: new Date(completedAt).toISOString(),
+    payloadBytes: estimateJsonBytes(params.eventPayload),
+    collectionCounts: getAppDataCollectionCounts({}),
+    durationMs: Math.max(0, completedAt - params.startedAt),
+    status: params.status,
+    errorMessage: params.errorMessage,
+    eventType: params.eventType,
+    entityType: params.entityType,
+    entityId: params.entityId,
+    refreshedSlices: params.refreshedSlices,
+    skippedFullSnapshot: params.skippedFullSnapshot
+  });
+}
+
+ensureDebugApi();

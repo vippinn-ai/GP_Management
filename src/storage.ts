@@ -2,6 +2,7 @@ import { cloneValue } from "./utils";
 import type { AppData } from "./types";
 
 const STORAGE_KEY = "game-parlour-management-system/v1";
+let fullAppDataCacheEnabled = true;
 
 const emptyAppData: AppData = {
   users: [],
@@ -24,7 +25,22 @@ const emptyAppData: AppData = {
   expenseTemplateOverrides: []
 };
 
-export function loadAppData(): AppData {
+export function setFullAppDataCacheEnabled(enabled: boolean): void {
+  fullAppDataCacheEnabled = enabled;
+}
+
+export function clearStoredAppData(): void {
+  try {
+    window.localStorage.removeItem(STORAGE_KEY);
+  } catch {
+    // Best-effort cache cleanup only.
+  }
+}
+
+export function loadAppData(options: { useStoredCache?: boolean } = {}): AppData {
+  if (options.useStoredCache === false) {
+    return cloneValue(emptyAppData);
+  }
   const storedValue = window.localStorage.getItem(STORAGE_KEY);
   if (!storedValue) {
     return cloneValue(emptyAppData);
@@ -39,6 +55,10 @@ export function loadAppData(): AppData {
 }
 
 export function saveAppData(value: AppData): void {
+  if (!fullAppDataCacheEnabled) {
+    clearStoredAppData();
+    return;
+  }
   try {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(value));
   } catch (error) {
@@ -46,7 +66,10 @@ export function saveAppData(value: AppData): void {
   }
 }
 
-export function hasStoredAppData(): boolean {
+export function hasStoredAppData(options: { useStoredCache?: boolean } = {}): boolean {
+  if (options.useStoredCache === false) {
+    return false;
+  }
   return window.localStorage.getItem(STORAGE_KEY) !== null;
 }
 

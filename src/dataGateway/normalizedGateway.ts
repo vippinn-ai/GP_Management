@@ -1,17 +1,17 @@
 import type { BackendFeatureFlags } from "./featureFlags";
 import { appStateRemoteDataGateway } from "./appStateGateway";
 import { invokeFinancialAdjustmentRpc, invokeFinancialCheckoutRpc } from "./financialRpcClient";
+import {
+  emitGenericAppStateSaveEvent,
+  loadNormalizedRealtimeOverlay,
+  subscribeToOperationalEvents
+} from "./normalizedRealtime";
 import { loadNormalizedAppDataOverlay } from "./normalizedReads";
 import { invokeOperationalMutationRpc } from "./rpcClient";
 import type { RemoteDataGateway } from "./types";
-import type { AppData, CustomerTab, Session, SessionPauseLog } from "../types";
-
-const NOT_IMPLEMENTED_MESSAGE =
-  "Normalized RPC or realtime gateway is not implemented yet. Disable RPC/realtime backend feature flags until those adapters are available.";
-
-function unsupportedGatewayCall(): never {
-  throw new Error(NOT_IMPLEMENTED_MESSAGE);
-}
+import { getSupabaseClient, type RemoteAppDataSnapshot } from "../backend";
+import { recordCompactRealtimeTelemetry } from "../syncTelemetry";
+import type { AppData, Bill, CustomerTab, Payment, Session, SessionPauseLog } from "../types";
 
 function mergeLiveSessions(baseSessions: Session[], normalizedSessions: Session[]): Session[] {
   const closedBaseSessionIds = new Set(
@@ -54,11 +54,27 @@ function mergeLiveSessionPauseLogs(
   ];
 }
 
+function mergeRecordsById<T extends { id: string }>(baseRecords: T[], overlayRecords: T[]): T[] {
+  if (overlayRecords.length === 0) {
+    return baseRecords;
+  }
+  const overlayById = new Map(overlayRecords.map((record) => [record.id, record]));
+  const merged = baseRecords.map((record) => overlayById.get(record.id) ?? record);
+  const existingIds = new Set(baseRecords.map((record) => record.id));
+  return [...overlayRecords.filter((record) => !existingIds.has(record.id)), ...merged];
+}
+
 function mergeNormalizedAppDataOverlay(baseAppData: AppData, overlayAppData: Partial<AppData>): AppData {
   const merged = {
     ...baseAppData,
     ...overlayAppData
   };
+  if (overlayAppData.bills) {
+    merged.bills = mergeRecordsById<Bill>(baseAppData.bills, overlayAppData.bills);
+  }
+  if (overlayAppData.payments) {
+    merged.payments = mergeRecordsById<Payment>(baseAppData.payments, overlayAppData.payments);
+  }
   if (overlayAppData.sessions) {
     merged.sessions = mergeLiveSessions(baseAppData.sessions, overlayAppData.sessions);
   }
@@ -76,6 +92,7 @@ function mergeNormalizedAppDataOverlay(baseAppData: AppData, overlayAppData: Par
 }
 
 export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): RemoteDataGateway {
+  let lastSnapshot: RemoteAppDataSnapshot | null = null;
   const gateway: RemoteDataGateway = {
     async loadAppDataSnapshot() {
       const snapshot = await appStateRemoteDataGateway.loadAppDataSnapshot();
@@ -85,17 +102,74 @@ export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): 
         normalizedComboReads: _flags.normalizedComboReads,
         normalizedLiveReads: _flags.normalizedLiveReads
       });
-      return {
+      lastSnapshot = {
         ...snapshot,
         appData: mergeNormalizedAppDataOverlay(snapshot.appData, overlay.appData)
       };
+      return lastSnapshot;
     },
-    saveAppData(appData, activeUserId, expectedVersion, telemetryOptions) {
-      return appStateRemoteDataGateway.saveAppData(appData, activeUserId, expectedVersion, telemetryOptions);
+    async saveAppData(appData, activeUserId, expectedVersion, telemetryOptions) {
+      const nextVersion = await appStateRemoteDataGateway.saveAppData(appData, activeUserId, expectedVersion, telemetryOptions);
+      if (_flags.normalizedRealtime) {
+        try {
+          await emitGenericAppStateSaveEvent({
+            client: getSupabaseClient(),
+            activeUserId,
+            appStateVersion: nextVersion,
+            actionLabel: telemetryOptions?.actionLabel
+          });
+        } catch (error) {
+          console.warn("Unable to publish compact app-state save event.", error);
+        }
+      }
+      return nextVersion;
     },
     subscribeToAppData(onChange) {
       if (_flags.normalizedRealtime) {
-        return unsupportedGatewayCall();
+        const client = getSupabaseClient();
+        return subscribeToOperationalEvents(client, async (event) => {
+          const startedAt = Date.now();
+          try {
+            if (!lastSnapshot) {
+              lastSnapshot = await gateway.loadAppDataSnapshot();
+            }
+            const overlay = await loadNormalizedRealtimeOverlay(event, _flags, client);
+            if (overlay.requiresFullRefresh) {
+              lastSnapshot = await gateway.loadAppDataSnapshot();
+            } else {
+              lastSnapshot = {
+                ...lastSnapshot,
+                appData: mergeNormalizedAppDataOverlay(lastSnapshot.appData, overlay.appData),
+                version: overlay.appStateVersion ?? lastSnapshot.version,
+                sourceMutationId: overlay.sourceMutationId
+              };
+            }
+            recordCompactRealtimeTelemetry({
+              eventPayload: event,
+              eventType: event.event_type,
+              entityType: event.entity_type,
+              entityId: event.entity_id,
+              refreshedSlices: overlay.refreshedSlices,
+              startedAt,
+              status: "success",
+              skippedFullSnapshot: !overlay.requiresFullRefresh
+            });
+            onChange(lastSnapshot);
+          } catch (error) {
+            recordCompactRealtimeTelemetry({
+              eventPayload: event,
+              eventType: event.event_type,
+              entityType: event.entity_type,
+              entityId: event.entity_id,
+              refreshedSlices: [],
+              startedAt,
+              status: "error",
+              errorMessage: error instanceof Error ? error.message : "Unable to refresh compact realtime event.",
+              skippedFullSnapshot: true
+            });
+            console.warn("Unable to apply compact realtime event.", error);
+          }
+        });
       }
       return appStateRemoteDataGateway.subscribeToAppData(onChange);
     }

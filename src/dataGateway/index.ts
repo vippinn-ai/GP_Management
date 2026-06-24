@@ -37,14 +37,25 @@ export {
   buildNormalizedBillRegisterPage,
   getBusinessDayIssuedAtRange,
   loadNormalizedBillRegisterPage,
+  loadNormalizedBillsByIds,
   mapNormalizedBill,
   mapNormalizedBillLine,
   mapNormalizedPayment,
   resolveNormalizedBillRegisterOrganizationId,
   type NormalizedBillRegisterCursor,
   type NormalizedBillRegisterPage,
+  type NormalizedBillPatchQuery,
   type NormalizedBillRegisterQuery
 } from "./normalizedBillRegister";
+export {
+  getNormalizedRealtimeRefreshPlan,
+  getOperationalEventChangedRows,
+  getOperationalEventMetadata,
+  loadNormalizedRealtimeOverlay,
+  subscribeToOperationalEvents,
+  type NormalizedRealtimeOverlay,
+  type OperationalEventRow
+} from "./normalizedRealtime";
 export {
   buildFinancialAdjustmentPatch,
   buildFinancialCheckoutPatch,
