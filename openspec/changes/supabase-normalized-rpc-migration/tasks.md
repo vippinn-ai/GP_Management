@@ -221,6 +221,8 @@
 - [x] 10.9.3 Staging telemetry verified compact realtime samples only after clearing telemetry
   - Examples observed: `compact_realtime_event`, payloads roughly `537-1146` bytes, `skippedFullSnapshot: true`
 - [x] 10.9.4 Staging browser cache cleanup verified `game-parlour-management-system/v1` returns `null`
+- [x] 10.9.4a Staging deployed with targeted changed live-row compact realtime refresh
+  - Staging Worker version: `22c5a991-5a1e-419a-b84b-70c128281f2d` on 2026-06-25
 - [x] 10.9.5 Production SQL publication verified `public.operational_events` is in `supabase_realtime` while `public.app_state` remains for rollback
 - [x] 10.9.6 Production deployed with `VITE_BACKEND_NORMALIZED_REALTIME=true`
   - Production Worker version: `dd2e3f1e-f2c4-430c-a1e0-59b36014b2ce`
