@@ -87,13 +87,13 @@
 
 ## 8. Phase 6: Retire Full-State Sync
 
-- [ ] 8.1 Add compact realtime subscription through `operational_events` behind `VITE_BACKEND_NORMALIZED_REALTIME`
-- [ ] 8.2 Add SQL to publish `operational_events` to Supabase realtime while keeping `app_state` publication for rollback
-- [ ] 8.3 Stop full business-state `localStorage` caching in backend mode and clear the legacy cache key after remote load
-- [ ] 8.4 Add compact realtime telemetry and monitoring queries for app-state size, realtime publication, and event counts
-- [ ] 8.5 Validate compact realtime in staging with two-browser live sync, checkout, financial adjustments, and no `QuotaExceededError`
-- [ ] 8.6 Enable compact realtime in production only after staging soak passes
-- [ ] 8.7 Keep full `app_state` writes and rollback snapshot active until compact realtime is stable
+- [x] 8.1 Add compact realtime subscription through `operational_events` behind `VITE_BACKEND_NORMALIZED_REALTIME`
+- [x] 8.2 Add SQL to publish `operational_events` to Supabase realtime while keeping `app_state` publication for rollback
+- [x] 8.3 Stop full business-state `localStorage` caching in backend mode and clear the legacy cache key after remote load
+- [x] 8.4 Add compact realtime telemetry and monitoring queries for app-state size, realtime publication, and event counts
+- [x] 8.5 Validate compact realtime in staging with two-browser live sync, checkout, financial adjustments, and no `QuotaExceededError`
+- [x] 8.6 Enable compact realtime in production only after staging validation passes
+- [x] 8.7 Keep full `app_state` writes and rollback snapshot active until compact realtime is stable
 - [ ] 8.8 Later phase: remove full startup `app_state` load and retire full `app_state` writes after a separate cutover
 
 ## 9. Verification
@@ -109,6 +109,8 @@
   - [x] 9.7.2 Compare void/refund RPC timings in staging
   - [x] 9.7.3 Compare pending settlement/write-off RPC timings in staging
   - [x] 9.7.4 Compare replacement RPC timings in staging
+- [x] 9.8 Verify compact realtime telemetry in staging and production shows `compact_realtime_event` with `skippedFullSnapshot: true`
+- [x] 9.9 Verify backend-mode browser cache cleanup returns `null` for `game-parlour-management-system/v1`
 
 ## 10. Production Rollout Checklist
 
@@ -205,3 +207,23 @@
 - [ ] 10.8.3 Record production smoke test results with tester name and timestamp
 - [ ] 10.8.4 Record first-day egress observation and compare against baseline
 - [ ] 10.8.5 Mark production rollout complete only after one normal business day without rollback-triggering defects
+
+### 10.9 Compact Realtime / Minimal Cache Production Rollout
+
+- [x] 10.9.1 Staging SQL publication verified `public.operational_events` and `public.app_state` are both in `supabase_realtime`
+- [x] 10.9.2 Staging deployed with `VITE_BACKEND_NORMALIZED_REALTIME=true`
+  - Staging Worker version: `90af4d7b-c5d5-4dce-a9b3-3e5737876c69`
+- [x] 10.9.3 Staging telemetry verified compact realtime samples only after clearing telemetry
+  - Examples observed: `compact_realtime_event`, payloads roughly `537-1146` bytes, `skippedFullSnapshot: true`
+- [x] 10.9.4 Staging browser cache cleanup verified `game-parlour-management-system/v1` returns `null`
+- [x] 10.9.5 Production SQL publication verified `public.operational_events` is in `supabase_realtime` while `public.app_state` remains for rollback
+- [x] 10.9.6 Production deployed with `VITE_BACKEND_NORMALIZED_REALTIME=true`
+  - Production Worker version: `dd2e3f1e-f2c4-430c-a1e0-59b36014b2ce`
+- [x] 10.9.7 Production telemetry verified compact realtime samples after hard refresh
+  - Examples observed: `start_session`, `add_session_item`, `remove_session_item`, `pause_session`, `resume_session`
+  - Payloads roughly `537-623` bytes and `skippedFullSnapshot: true`
+- [x] 10.9.8 Production browser cache cleanup verified `game-parlour-management-system/v1` returns blank/`null`
+- [ ] 10.9.9 Confirm all staff production browsers have hard refreshed after rollout
+- [ ] 10.9.10 Monitor production for one normal business day with no rollback-triggering defects
+- [ ] 10.9.11 Capture next-day Supabase Postgres egress and compare with baseline
+- [ ] 10.9.12 Close compact realtime rollout only if daily Postgres egress trends down and no unresolved sync or billing issues are reported
