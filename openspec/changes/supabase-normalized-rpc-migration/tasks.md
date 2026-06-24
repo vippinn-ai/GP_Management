@@ -223,6 +223,9 @@
 - [x] 10.9.4 Staging browser cache cleanup verified `game-parlour-management-system/v1` returns `null`
 - [x] 10.9.4a Staging deployed with targeted changed live-row compact realtime refresh
   - Staging Worker version: `22c5a991-5a1e-419a-b84b-70c128281f2d` on 2026-06-25
+- [x] 10.9.4b Staging telemetry verified targeted changed live-row refresh after hard refresh and telemetry clear
+  - Examples observed: `start_session`, `add_session_item`, `remove_session_item`, `pause_session`, `resume_session`, `reject_session`
+  - Refreshed slices were `changed_live_rows`, payloads roughly `537-632` bytes, and `skippedFullSnapshot: true`
 - [x] 10.9.5 Production SQL publication verified `public.operational_events` is in `supabase_realtime` while `public.app_state` remains for rollback
 - [x] 10.9.6 Production deployed with `VITE_BACKEND_NORMALIZED_REALTIME=true`
   - Production Worker version: `dd2e3f1e-f2c4-430c-a1e0-59b36014b2ce`
