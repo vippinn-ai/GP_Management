@@ -175,6 +175,62 @@ describe("operational sync", () => {
     expect(nextData.auditLogs[0].id).toBe("audit-reject-session");
   });
 
+  it("applies a hopped session operation and preserves the hopped close disposition", () => {
+    const appData = createAppData();
+    appData.sessions.push({
+      id: "session-1",
+      stationId: "station-1",
+      stationNameSnapshot: "Pool 1",
+      mode: "timed",
+      startedAt: "2026-06-09T09:00:00.000Z",
+      status: "paused",
+      playMode: "group",
+      ltpEligible: false,
+      pricingSnapshot: [],
+      items: [],
+      comboApplications: [],
+      pauseLogIds: ["pause-1"]
+    });
+    appData.sessionPauseLogs.push({
+      id: "pause-1",
+      sessionId: "session-1",
+      pausedAt: "2026-06-09T09:30:00.000Z"
+    });
+
+    const nextData = applyOperationalMutation(
+      appData,
+      mutation("hopSession", "session", "session-1", {
+        session: {
+          ...appData.sessions[0],
+          status: "closed",
+          endedAt: "2026-06-09T10:00:00.000Z",
+          closeDisposition: "hopped"
+        },
+        pauseLog: {
+          ...appData.sessionPauseLogs[0],
+          resumedAt: "2026-06-09T10:00:00.000Z"
+        },
+        auditLog: {
+          id: "audit-hop-session",
+          action: "session_hopped",
+          entityType: "session",
+          entityId: "session-1",
+          message: "Game hop: closed Pool 1 without billing.",
+          createdAt: "2026-06-09T10:00:00.000Z",
+          userId: "user-1"
+        }
+      })
+    );
+
+    expect(nextData.sessions[0]).toMatchObject({
+      status: "closed",
+      closeDisposition: "hopped",
+      endedAt: "2026-06-09T10:00:00.000Z"
+    });
+    expect(nextData.sessionPauseLogs[0].resumedAt).toBe("2026-06-09T10:00:00.000Z");
+    expect(nextData.auditLogs[0].id).toBe("audit-hop-session");
+  });
+
   it("applies a rejected customer tab operation immediately to local app data", () => {
     const appData = createAppData();
     appData.customerTabs.push({

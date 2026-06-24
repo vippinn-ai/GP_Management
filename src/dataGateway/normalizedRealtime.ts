@@ -1,7 +1,7 @@
 import type { RealtimePostgresChangesPayload, SupabaseClient } from "@supabase/supabase-js";
 import type { BackendFeatureFlags } from "./featureFlags";
 import { loadNormalizedBillsByIds, resolveNormalizedBillRegisterOrganizationId } from "./normalizedBillRegister";
-import { loadNormalizedAppDataOverlay } from "./normalizedReads";
+import { loadNormalizedAppDataOverlay, loadNormalizedLiveDataByIds } from "./normalizedReads";
 import type { AppData } from "../types";
 
 export interface OperationalEventRow {
@@ -119,6 +119,8 @@ export function getNormalizedRealtimeRefreshPlan(event: OperationalEventRow): {
   normalizedCatalogReads: boolean;
   normalizedComboReads: boolean;
   normalizedLiveReads: boolean;
+  changedSessionIds: string[];
+  changedCustomerTabIds: string[];
   billIds: string[];
   paymentIds: string[];
 } {
@@ -128,6 +130,16 @@ export function getNormalizedRealtimeRefreshPlan(event: OperationalEventRow): {
     changedRowsHasAny(changedRows, BILL_COLLECTIONS) ||
     event.event_type.startsWith("financial_") ||
     event.entity_type === "bill";
+  const changedSessionIds = uniqueStrings([
+    ...changedRowIds(changedRows, "sessions"),
+    event.entity_type === "session" ? event.entity_id : undefined
+  ]);
+  const changedCustomerTabIds = uniqueStrings([
+    ...changedRowIds(changedRows, "customer_tabs"),
+    event.entity_type === "customer_tab" ? event.entity_id : undefined
+  ]);
+  const hasLiveChanges = needsLiveRefresh(event, changedRows);
+  const canPatchChangedLiveRows = changedSessionIds.length > 0 || changedCustomerTabIds.length > 0;
   const requiresFullRefresh =
     metadata.requires_full_refresh === true ||
     event.entity_type === "app_state" ||
@@ -138,10 +150,22 @@ export function getNormalizedRealtimeRefreshPlan(event: OperationalEventRow): {
     normalizedConfigReads: false,
     normalizedCatalogReads: changedRowsHasAny(changedRows, CATALOG_COLLECTIONS),
     normalizedComboReads: changedRowsHasAny(changedRows, COMBO_COLLECTIONS),
-    normalizedLiveReads: needsLiveRefresh(event, changedRows),
+    normalizedLiveReads: hasLiveChanges && !canPatchChangedLiveRows,
+    changedSessionIds,
+    changedCustomerTabIds,
     billIds: hasBillChanges ? getBillIdsForEvent(event, changedRows) : [],
     paymentIds: hasBillChanges ? changedRowIds(changedRows, "payments") : []
   };
+}
+
+function mergeById<T extends { id: string }>(base: T[] | undefined, overlay: T[]): T[] {
+  if (overlay.length === 0) {
+    return base ?? [];
+  }
+  const overlayById = new Map(overlay.map((entry) => [entry.id, entry]));
+  const merged = (base ?? []).map((entry) => overlayById.get(entry.id) ?? entry);
+  const baseIds = new Set((base ?? []).map((entry) => entry.id));
+  return [...overlay.filter((entry) => !baseIds.has(entry.id)), ...merged];
 }
 
 export async function loadNormalizedRealtimeOverlay(
@@ -178,6 +202,21 @@ export async function loadNormalizedRealtimeOverlay(
     if (plan.normalizedCatalogReads) refreshedSlices.push("catalog");
     if (plan.normalizedComboReads) refreshedSlices.push("combos");
     if (plan.normalizedLiveReads) refreshedSlices.push("live");
+  }
+
+  if (plan.changedSessionIds.length > 0 || plan.changedCustomerTabIds.length > 0) {
+    const livePatch = await loadNormalizedLiveDataByIds(
+      event.organization_id,
+      {
+        sessionIds: plan.changedSessionIds,
+        customerTabIds: plan.changedCustomerTabIds
+      },
+      client
+    );
+    appData.sessions = mergeById(appData.sessions, livePatch.sessions);
+    appData.sessionPauseLogs = mergeById(appData.sessionPauseLogs, livePatch.sessionPauseLogs);
+    appData.customerTabs = mergeById(appData.customerTabs, livePatch.customerTabs);
+    refreshedSlices.push("changed_live_rows");
   }
 
   if (plan.billIds.length > 0 || plan.paymentIds.length > 0) {

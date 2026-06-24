@@ -51,6 +51,7 @@ describe("operational RPC client", () => {
     expect(getOperationalRpcFunctionName("resumeSession")).toBe("resume_session");
     expect(getOperationalRpcFunctionName("addSessionItem")).toBe("add_session_item");
     expect(getOperationalRpcFunctionName("removeSessionItem")).toBe("remove_session_item");
+    expect(getOperationalRpcFunctionName("hopSession")).toBe("hop_session");
     expect(getOperationalRpcFunctionName("rejectSession")).toBe("reject_session");
     expect(getOperationalRpcFunctionName("repeatSessionCombo")).toBe("repeat_session_combo");
     expect(getOperationalRpcFunctionName("openCustomerTab")).toBe("open_customer_tab");

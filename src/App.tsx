@@ -3833,62 +3833,61 @@ export default function App() {
       window.alert("Session end time cannot be in the future.");
       return;
     }
-    let baseAppData = appData;
-    let baseVersion = remoteVersion;
-    if (backendConfigured) {
-      const snapshot = await defaultRemoteDataGateway.loadAppDataSnapshot();
-      baseAppData = snapshot.appData;
-      baseVersion = snapshot.version;
-      setRemoteVersion(baseVersion);
-      const remoteSession = baseAppData.sessions.find((s) => s.id === sessionId);
-      if (!remoteSession || remoteSession.status === "closed") {
-        skipRemotePersistRef.current = true;
-        setAppData(normalizeAppDataCustomers(baseAppData));
-        setCheckoutState(null);
-        setIsHopMode(false);
-        window.alert("This session was already closed from another browser. Latest data has been loaded.");
-        return;
-      }
-      skipRemotePersistRef.current = true;
-      setAppData(normalizeAppDataCustomers(baseAppData));
-    }
-    const nextAppData = cloneValue(baseAppData);
-    const draft = nextAppData;
-    const targetSession = draft.sessions.find((s) => s.id === sessionId);
+    const targetSession = getSessionById(sessionId);
     if (!targetSession || targetSession.status === "closed") {
       return;
     }
+    const hoppedAt = new Date().toISOString();
+    const hoppedSession = cloneValue(targetSession);
+    const openPause =
+      hoppedSession.status === "paused"
+        ? appData.sessionPauseLogs.find((entry) => entry.sessionId === sessionId && !entry.resumedAt)
+        : undefined;
+    const hoppedPause = openPause ? cloneValue(openPause) : undefined;
     if (targetSession.status === "paused") {
-      const openPause = draft.sessionPauseLogs.find((entry) => entry.sessionId === sessionId && !entry.resumedAt);
-      if (openPause) {
-        openPause.resumedAt = effectiveEndAt;
+      if (hoppedPause) {
+        hoppedPause.resumedAt = effectiveEndAt;
       }
     }
-    targetSession.status = "closed";
-    targetSession.endedAt = effectiveEndAt;
-    targetSession.closeDisposition = "hopped";
-    addAuditLog(draft, activeUser.id, "session_hopped", "session", sessionId, `Game hop: closed ${targetSession.stationNameSnapshot} without billing. Station released for next customer.`);
-    if (backendConfigured) {
-      await saveRemoteSnapshot(nextAppData, baseVersion, false, "Closing session for game hop");
-      skipRemotePersistRef.current = true;
-      setAppData(normalizeAppDataCustomers(nextAppData));
-    } else {
-      setAppData(normalizeAppDataCustomers(nextAppData));
+    hoppedSession.status = "closed";
+    hoppedSession.endedAt = effectiveEndAt;
+    hoppedSession.closeDisposition = "hopped";
+    const committed = commitOperationalChange(createOperationalMutation(
+      "hopSession",
+      "Closing session for game hop",
+      "session",
+      sessionId,
+      {
+        session: hoppedSession,
+        pauseLog: hoppedPause,
+        auditLog: {
+          id: createId("audit"),
+          action: "session_hopped",
+          entityType: "session",
+          entityId: sessionId,
+          message: `Game hop: closed ${hoppedSession.stationNameSnapshot} without billing. Station released for next customer.`,
+          createdAt: hoppedAt,
+          userId: activeUser.id
+        }
+      }
+    ), () => {
+      setCheckoutState(null);
+      setIsHopMode(false);
+      setLastHoppedSessionId(sessionId);
+      setPostHopContinuationMode("gaming");
+      setPostHopCustomerLocked(true);
+      setManageSessionId((previous) => (previous === sessionId ? null : previous));
+      setStartSessionDraft((prev) => ({
+        ...prev,
+        customerId: hopCustomerId,
+        customerName: hopCustomerName,
+        customerPhone: hopCustomerPhone
+      }));
+      window.setTimeout(() => setShowStartSessionModal(true), 0);
+    });
+    if (!committed) {
+      window.alert(remoteError || "Unable to close this session for game hop.");
     }
-    setCheckoutState(null);
-    setIsHopMode(false);
-    setLastHoppedSessionId(sessionId);
-    setPostHopContinuationMode("gaming");
-    setPostHopCustomerLocked(true);
-    setManageSessionId((previous) => (previous === sessionId ? null : previous));
-    // Immediately prompt to start a new session for this customer
-    setStartSessionDraft((prev) => ({
-      ...prev,
-      customerId: hopCustomerId,
-      customerName: hopCustomerName,
-      customerPhone: hopCustomerPhone
-    }));
-    setShowStartSessionModal(true);
   }
 
   function handleSetShowStartSessionModal(show: boolean) {

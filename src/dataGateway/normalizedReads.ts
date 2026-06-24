@@ -1097,6 +1097,127 @@ export async function loadNormalizedLiveData(
   });
 }
 
+export async function loadNormalizedLiveDataByIds(
+  organizationId: string,
+  ids: { sessionIds?: string[]; customerTabIds?: string[] },
+  client: SupabaseClient = getSupabaseClient()
+): Promise<NormalizedLiveData> {
+  const sessionIds = Array.from(new Set((ids.sessionIds ?? []).filter(Boolean)));
+  const customerTabIds = Array.from(new Set((ids.customerTabIds ?? []).filter(Boolean)));
+
+  const [sessions, customerTabs] = await Promise.all([
+    sessionIds.length > 0
+      ? readMany<SessionRow>(
+          client
+            .from("sessions")
+            .select(
+              "id, station_id, station_name_snapshot, mode, started_at, ended_at, status, customer_id, customer_name, customer_phone, play_mode, ltp_eligible, ltp_outcome, ltp_discount_applied, pricing_snapshot, pause_log_ids, continued_from_session_ids, closed_bill_id, close_disposition, close_reason, raw_data, created_at"
+            )
+            .eq("organization_id", organizationId)
+            .in("id", sessionIds),
+          "loading normalized changed sessions"
+        )
+      : Promise.resolve([]),
+    customerTabIds.length > 0
+      ? readMany<CustomerTabRow>(
+          client
+            .from("customer_tabs")
+            .select(
+              "id, customer_id, customer_name, customer_phone, status, opened_at, closed_at, continued_from_session_ids, closed_bill_id, close_disposition, close_reason, raw_data, created_at"
+            )
+            .eq("organization_id", organizationId)
+            .in("id", customerTabIds),
+          "loading normalized changed customer tabs"
+        )
+      : Promise.resolve([])
+  ]);
+
+  const loadedSessionIds = sessions.map((session) => session.id);
+  const loadedCustomerTabIds = customerTabs.map((tab) => tab.id);
+
+  const [sessionPauseLogs, sessionItems, sessionComboApplications, customerTabItems, customerTabComboApplications] =
+    await Promise.all([
+      loadedSessionIds.length > 0
+        ? readMany<SessionPauseLogRow>(
+            client
+              .from("session_pause_logs")
+              .select("id, session_id, paused_at, resumed_at, raw_data, created_at")
+              .eq("organization_id", organizationId)
+              .in("session_id", loadedSessionIds)
+              .order("paused_at", { ascending: true })
+              .order("id", { ascending: true }),
+            "loading normalized changed session pause logs"
+          )
+        : Promise.resolve([]),
+      loadedSessionIds.length > 0
+        ? readMany<SessionItemRow>(
+            client
+              .from("session_items")
+              .select(
+                "session_id, id, inventory_item_id, name, quantity, unit_price, added_at, sold_as_pack_of, sale_variant_id, stock_units_per_sale, combo_application_id, combo_id, raw_data, created_at"
+              )
+              .eq("organization_id", organizationId)
+              .in("session_id", loadedSessionIds)
+              .order("added_at", { ascending: true })
+              .order("id", { ascending: true }),
+            "loading normalized changed session items"
+          )
+        : Promise.resolve([]),
+      loadedSessionIds.length > 0
+        ? readMany<SessionComboApplicationRow>(
+            client
+              .from("session_combo_applications")
+              .select(
+                "session_id, id, combo_id, combo_name, price, included_minutes, applied_at, fixed_items, choices, raw_data, created_at"
+              )
+              .eq("organization_id", organizationId)
+              .in("session_id", loadedSessionIds)
+              .order("applied_at", { ascending: true })
+              .order("id", { ascending: true }),
+            "loading normalized changed session combo applications"
+          )
+        : Promise.resolve([]),
+      loadedCustomerTabIds.length > 0
+        ? readMany<CustomerTabItemRow>(
+            client
+              .from("customer_tab_items")
+              .select(
+                "customer_tab_id, id, inventory_item_id, name, quantity, unit_price, added_at, sold_as_pack_of, sale_variant_id, stock_units_per_sale, combo_application_id, combo_id, raw_data, created_at"
+              )
+              .eq("organization_id", organizationId)
+              .in("customer_tab_id", loadedCustomerTabIds)
+              .order("added_at", { ascending: true })
+              .order("id", { ascending: true }),
+            "loading normalized changed customer tab items"
+          )
+        : Promise.resolve([]),
+      loadedCustomerTabIds.length > 0
+        ? readMany<CustomerTabComboApplicationRow>(
+            client
+              .from("customer_tab_combo_applications")
+              .select(
+                "customer_tab_id, id, combo_id, combo_name, price, included_minutes, applied_at, fixed_items, choices, raw_data, created_at"
+              )
+              .eq("organization_id", organizationId)
+              .in("customer_tab_id", loadedCustomerTabIds)
+              .order("applied_at", { ascending: true })
+              .order("id", { ascending: true }),
+            "loading normalized changed customer tab combo applications"
+          )
+        : Promise.resolve([])
+    ]);
+
+  return buildNormalizedLiveData({
+    sessions,
+    sessionPauseLogs,
+    sessionItems,
+    sessionComboApplications,
+    customerTabs,
+    customerTabItems,
+    customerTabComboApplications
+  });
+}
+
 export async function loadNormalizedAppDataOverlay(params: {
   normalizedConfigReads: boolean;
   normalizedCatalogReads: boolean;

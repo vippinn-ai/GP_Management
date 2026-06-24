@@ -12,7 +12,8 @@ const backendMocks = vi.hoisted(() => ({
 vi.mock("../backend", () => backendMocks);
 
 const normalizedReadMocks = vi.hoisted(() => ({
-  loadNormalizedAppDataOverlay: vi.fn()
+  loadNormalizedAppDataOverlay: vi.fn(),
+  loadNormalizedLiveDataByIds: vi.fn()
 }));
 
 vi.mock("./normalizedReads", () => normalizedReadMocks);
@@ -103,6 +104,11 @@ describe("data gateway feature flags", () => {
 describe("app_state data gateway", () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    normalizedReadMocks.loadNormalizedLiveDataByIds.mockResolvedValue({
+      sessions: [],
+      sessionPauseLogs: [],
+      customerTabs: []
+    });
   });
 
   it("delegates load, save, and realtime subscription to the existing backend functions", async () => {
@@ -446,9 +452,12 @@ describe("app_state data gateway", () => {
     };
     backendMocks.getSupabaseClient.mockReturnValue(client);
     backendMocks.loadRemoteAppDataSnapshot.mockResolvedValue(baseSnapshot);
-    normalizedReadMocks.loadNormalizedAppDataOverlay
-      .mockResolvedValueOnce({ appData: {}, organizationId: "org-primary" })
-      .mockResolvedValueOnce({ appData: { customerTabs: [normalizedTab] }, organizationId: "org-primary" });
+    normalizedReadMocks.loadNormalizedAppDataOverlay.mockResolvedValueOnce({ appData: {}, organizationId: "org-primary" });
+    normalizedReadMocks.loadNormalizedLiveDataByIds.mockResolvedValueOnce({
+      sessions: [],
+      sessionPauseLogs: [],
+      customerTabs: [normalizedTab]
+    });
     const gateway = createRemoteDataGateway({
       ...DEFAULT_BACKEND_FEATURE_FLAGS,
       normalizedRealtime: true
@@ -469,9 +478,7 @@ describe("app_state data gateway", () => {
       }
     });
 
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(onChange).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(onChange).toHaveBeenCalledTimes(1));
     expect(onChange.mock.calls[0][0]).toMatchObject({
       version: 21,
       appData: {
@@ -479,5 +486,86 @@ describe("app_state data gateway", () => {
       }
     });
     expect(backendMocks.loadRemoteAppDataSnapshot).toHaveBeenCalledTimes(1);
+    expect(normalizedReadMocks.loadNormalizedAppDataOverlay).toHaveBeenCalledTimes(1);
+    expect(normalizedReadMocks.loadNormalizedLiveDataByIds).toHaveBeenCalledWith(
+      "org-primary",
+      { sessionIds: [], customerTabIds: ["tab-1"] },
+      client
+    );
+  });
+
+  it("applies compact realtime changed session rows when a live event closes a session", async () => {
+    const baseSnapshot = createSnapshot(30);
+    baseSnapshot.appData.sessions.push({
+      id: "session-1",
+      stationId: "station-1",
+      stationNameSnapshot: "Pool 1",
+      mode: "timed",
+      startedAt: "2026-06-24T09:00:00.000Z",
+      status: "active",
+      playMode: "group",
+      ltpEligible: false,
+      pricingSnapshot: [],
+      items: [],
+      comboApplications: [],
+      pauseLogIds: []
+    });
+    let realtimeHandler: ((payload: { new: unknown }) => void) | undefined;
+    const channel = {
+      on: vi.fn((_kind, _config, handler) => {
+        realtimeHandler = handler;
+        return channel;
+      }),
+      subscribe: vi.fn().mockReturnThis()
+    };
+    const client = {
+      channel: vi.fn(() => channel),
+      removeChannel: vi.fn()
+    };
+    backendMocks.getSupabaseClient.mockReturnValue(client);
+    backendMocks.loadRemoteAppDataSnapshot.mockResolvedValue(baseSnapshot);
+    normalizedReadMocks.loadNormalizedAppDataOverlay.mockResolvedValueOnce({ appData: {}, organizationId: "org-primary" });
+    normalizedReadMocks.loadNormalizedLiveDataByIds.mockResolvedValueOnce({
+      sessions: [{
+        ...baseSnapshot.appData.sessions[0],
+        status: "closed",
+        endedAt: "2026-06-24T10:00:00.000Z",
+        closeDisposition: "hopped"
+      }],
+      sessionPauseLogs: [],
+      customerTabs: []
+    });
+    const gateway = createRemoteDataGateway({
+      ...DEFAULT_BACKEND_FEATURE_FLAGS,
+      normalizedRealtime: true
+    });
+    const onChange = vi.fn();
+
+    await gateway.loadAppDataSnapshot();
+    gateway.subscribeToAppData(onChange);
+    realtimeHandler?.({
+      new: {
+        organization_id: "org-primary",
+        id: "event-hop",
+        event_type: "hop_session",
+        entity_type: "session",
+        entity_id: "session-1",
+        created_at: "2026-06-24T10:00:01.000Z",
+        metadata: { app_state_version: 31, changed_rows: { sessions: ["session-1"] } }
+      }
+    });
+
+    await vi.waitFor(() => expect(onChange).toHaveBeenCalledTimes(1));
+    expect(onChange.mock.calls[0][0].appData.sessions[0]).toMatchObject({
+      id: "session-1",
+      status: "closed",
+      closeDisposition: "hopped"
+    });
+    expect(backendMocks.loadRemoteAppDataSnapshot).toHaveBeenCalledTimes(1);
+    expect(normalizedReadMocks.loadNormalizedLiveDataByIds).toHaveBeenCalledWith(
+      "org-primary",
+      { sessionIds: ["session-1"], customerTabIds: [] },
+      client
+    );
   });
 });

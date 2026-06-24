@@ -67,6 +67,7 @@
   - [x] 6.9.3 Add popup alerts for failed/conflict live actions and pending-sync checkout blocks
 - [x] 6.10 Implement compact reject session/customer-tab RPCs so reject actions do not fall back to full `app_state` upload
 - [x] 6.11 Optimize the shared `app_state` JSON array patch helper after production reject-session timeout evidence
+- [x] 6.12 Implement compact hop-session RPC and closed live-row realtime refresh so game hop does not fall back to full `app_state` snapshot saves
 
 ## 7. Phase 5: Financial RPC Writes
 
@@ -95,6 +96,7 @@
 - [x] 8.6 Enable compact realtime in production only after staging validation passes
 - [x] 8.7 Keep full `app_state` writes and rollback snapshot active until compact realtime is stable
 - [x] 8.8 Disable `app_state` realtime publication after all production browsers hard refresh onto compact realtime
+- [x] 8.8a Reduce compact realtime live refresh egress by fetching changed session/tab rows by ID when event metadata includes target IDs
 - [ ] 8.9 Later phase: remove full startup `app_state` load and retire full `app_state` writes after a separate cutover
 
 ## 9. Verification
@@ -143,6 +145,7 @@
 - [x] 10.3.4 Run `supabase/phase1-parity-checks-single-result.sql` in production and confirm every `delta` is `0`
 - [x] 10.3.5 Run `supabase/phase3-read-performance-indexes.sql` in production before enabling normalized history/report reads
 - [x] 10.3.6 Run Phase 4 RPC scripts in order: start session, pause/resume, session items, customer tabs, combos, live details, reject session/tab
+- [x] 10.3.6a Run `supabase/phase4-hop-session-rpc.sql` in staging and production before deploying the hop-session frontend fix
 - [x] 10.3.7 Run Phase 5 RPC scripts in order: `phase5-financial-checkout-rpc.sql`, then `phase5-financial-adjustment-rpc.sql`
 - [x] 10.3.8 Run the function install and execute-grant checks from `supabase/phase4-rpc-runbook.md`
 - [x] 10.3.9 Confirm `anon` cannot execute browser-facing RPCs or helper functions
@@ -160,6 +163,7 @@
 - [x] 10.4.6 Build production with `npx tsc -b` and `npx vite build --mode production`
 - [x] 10.4.7 Deploy production with `npx wrangler deploy --name management`
 - [x] 10.4.8 Record the new production Worker version ID immediately after deploy
+  - Hop-session hotfix production Worker version: `ec9cae12-43be-4927-b820-0163d255a48e` on 2026-06-25
 - [x] 10.4.9 Ask all staff browsers to hard refresh after the production deploy before continuing normal work
 
 ### 10.5 Immediate Production Smoke Test

@@ -12,6 +12,7 @@ export const OPERATIONAL_RPC_FUNCTION_NAMES: Record<OperationalMutationKind, str
   resumeSession: "resume_session",
   addSessionItem: "add_session_item",
   removeSessionItem: "remove_session_item",
+  hopSession: "hop_session",
   rejectSession: "reject_session",
   repeatSessionCombo: "repeat_session_combo",
   openCustomerTab: "open_customer_tab",

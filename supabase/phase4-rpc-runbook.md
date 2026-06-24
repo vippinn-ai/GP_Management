@@ -14,10 +14,11 @@ Run in staging first.
 6. Run `supabase/phase4-combo-rpcs.sql`.
 7. Run `supabase/phase4-live-detail-rpcs.sql`.
 8. Run `supabase/phase4-reject-rpcs.sql`.
-9. Run `supabase/phase4-fast-app-state-patch-helper.sql` if this environment was already on an older helper or if reject/financial RPCs show statement-timeout errors on production-sized `app_state` arrays.
-10. Run `supabase/phase5-financial-checkout-rpc.sql` only when you are ready to test compact issue-bill writes.
-11. Run `supabase/phase5-financial-adjustment-rpc.sql` only when you are ready to test compact pending settlement, pending write-off, and issued-bill void/refund writes.
-12. Keep `VITE_BACKEND_RPC_OPERATIONAL_WRITES`, `VITE_BACKEND_NORMALIZED_LIVE_READS`, and `VITE_BACKEND_RPC_FINANCIAL_WRITES` disabled until a deliberate staging smoke test.
+9. Run `supabase/phase4-hop-session-rpc.sql`.
+10. Run `supabase/phase4-fast-app-state-patch-helper.sql` if this environment was already on an older helper or if reject/financial RPCs show statement-timeout errors on production-sized `app_state` arrays.
+11. Run `supabase/phase5-financial-checkout-rpc.sql` only when you are ready to test compact issue-bill writes.
+12. Run `supabase/phase5-financial-adjustment-rpc.sql` only when you are ready to test compact pending settlement, pending write-off, and issued-bill void/refund writes.
+13. Keep `VITE_BACKEND_RPC_OPERATIONAL_WRITES`, `VITE_BACKEND_NORMALIZED_LIVE_READS`, and `VITE_BACKEND_RPC_FINANCIAL_WRITES` disabled until a deliberate staging smoke test.
 
 ## Frontend Smoke-Test Flags
 
@@ -58,6 +59,7 @@ where routine_schema = 'public'
     'resume_session',
     'add_session_item',
     'remove_session_item',
+    'hop_session',
     'reject_session',
     'open_customer_tab',
     'add_customer_tab_item',
@@ -84,6 +86,7 @@ Expected:
 - `resume_session` exists.
 - `add_session_item` exists.
 - `remove_session_item` exists.
+- `hop_session` exists.
 - `reject_session` exists.
 - `open_customer_tab` exists.
 - `add_customer_tab_item` exists.
@@ -103,6 +106,7 @@ Expected:
 - `resume_session` is `DEFINER`.
 - `add_session_item` is `DEFINER`.
 - `remove_session_item` is `DEFINER`.
+- `hop_session` is `DEFINER`.
 - `reject_session` is `DEFINER`.
 - `open_customer_tab` is `DEFINER`.
 - `add_customer_tab_item` is `DEFINER`.
@@ -133,6 +137,8 @@ select
   has_function_privilege('authenticated', 'public.add_session_item(jsonb)', 'execute') as authenticated_can_add_session_item,
   has_function_privilege('anon', 'public.remove_session_item(jsonb)', 'execute') as anon_can_remove_session_item,
   has_function_privilege('authenticated', 'public.remove_session_item(jsonb)', 'execute') as authenticated_can_remove_session_item,
+  has_function_privilege('anon', 'public.hop_session(jsonb)', 'execute') as anon_can_hop_session,
+  has_function_privilege('authenticated', 'public.hop_session(jsonb)', 'execute') as authenticated_can_hop_session,
   has_function_privilege('anon', 'public.reject_session(jsonb)', 'execute') as anon_can_reject_session,
   has_function_privilege('authenticated', 'public.reject_session(jsonb)', 'execute') as authenticated_can_reject_session,
   has_function_privilege('anon', 'public.open_customer_tab(jsonb)', 'execute') as anon_can_open_customer_tab,
@@ -175,6 +181,8 @@ Expected:
 - `authenticated_can_add_session_item = true`
 - `anon_can_remove_session_item = false`
 - `authenticated_can_remove_session_item = true`
+- `anon_can_hop_session = false`
+- `authenticated_can_hop_session = true`
 - `anon_can_reject_session = false`
 - `authenticated_can_reject_session = true`
 - `anon_can_open_customer_tab = false`
@@ -219,6 +227,7 @@ where routine_schema = 'public'
     'resume_session',
     'add_session_item',
     'remove_session_item',
+    'hop_session',
     'reject_session',
     'open_customer_tab',
     'add_customer_tab_item',

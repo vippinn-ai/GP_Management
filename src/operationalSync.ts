@@ -28,6 +28,7 @@ export type OperationalMutationKind =
   | "resumeSession"
   | "addSessionItem"
   | "removeSessionItem"
+  | "hopSession"
   | "rejectSession"
   | "repeatSessionCombo"
   | "openCustomerTab"
@@ -394,6 +395,11 @@ export function validateOperationalMutation(appData: AppData, mutation: Operatio
       const session = appData.sessions.find((entry) => entry.id === payload.sessionId && entry.status !== "closed");
       return session ? { ok: true } : { ok: false, reason: "The session is no longer open." };
     }
+    case "hopSession": {
+      const payload = mutation.payload as RejectSessionPayload;
+      const session = appData.sessions.find((entry) => entry.id === payload.session.id && entry.status !== "closed");
+      return session ? { ok: true } : { ok: false, reason: "The session is no longer open." };
+    }
     case "rejectSession": {
       const payload = mutation.payload as RejectSessionPayload;
       const session = appData.sessions.find((entry) => entry.id === payload.session.id && entry.status !== "closed");
@@ -553,6 +559,23 @@ export function applyOperationalMutation(source: AppData, mutation: OperationalM
       if (payload.auditLog) {
         insertFirstUnique(appData.auditLogs, payload.auditLog);
       }
+      break;
+    }
+    case "hopSession": {
+      const payload = mutation.payload as RejectSessionPayload;
+      const sessionIndex = appData.sessions.findIndex((entry) => entry.id === payload.session.id);
+      if (sessionIndex >= 0) {
+        appData.sessions[sessionIndex] = cloneValue(payload.session);
+      }
+      if (payload.pauseLog) {
+        const pauseIndex = appData.sessionPauseLogs.findIndex((entry) => entry.id === payload.pauseLog?.id);
+        if (pauseIndex >= 0) {
+          appData.sessionPauseLogs[pauseIndex] = cloneValue(payload.pauseLog);
+        } else {
+          pushUnique(appData.sessionPauseLogs, payload.pauseLog);
+        }
+      }
+      insertFirstUnique(appData.auditLogs, payload.auditLog);
       break;
     }
     case "rejectSession": {
