@@ -94,7 +94,7 @@
 - [x] 8.5 Validate compact realtime in staging with two-browser live sync, checkout, financial adjustments, and no `QuotaExceededError`
 - [x] 8.6 Enable compact realtime in production only after staging validation passes
 - [x] 8.7 Keep full `app_state` writes and rollback snapshot active until compact realtime is stable
-- [ ] 8.8 Disable `app_state` realtime publication after all production browsers hard refresh onto compact realtime
+- [x] 8.8 Disable `app_state` realtime publication after all production browsers hard refresh onto compact realtime
 - [ ] 8.9 Later phase: remove full startup `app_state` load and retire full `app_state` writes after a separate cutover
 
 ## 9. Verification
@@ -224,7 +224,11 @@
   - Examples observed: `start_session`, `add_session_item`, `remove_session_item`, `pause_session`, `resume_session`
   - Payloads roughly `537-623` bytes and `skippedFullSnapshot: true`
 - [x] 10.9.8 Production browser cache cleanup verified `game-parlour-management-system/v1` returns blank/`null`
-- [ ] 10.9.9 Confirm all staff production browsers have hard refreshed after rollout
-- [ ] 10.9.10 Monitor production for one normal business day with no rollback-triggering defects
-- [ ] 10.9.11 Capture next-day Supabase Postgres egress and compare with baseline
-- [ ] 10.9.12 Close compact realtime rollout only if daily Postgres egress trends down and no unresolved sync or billing issues are reported
+- [x] 10.9.9 Production `app_state` realtime publication disabled; publication now returns only `public.operational_events`
+- [x] 10.9.10 Production telemetry after publication cutoff still shows compact realtime only
+  - Examples observed: `start_session`, `add_session_item`, `remove_session_item`, `pause_session`, `resume_session`, `reject_session`
+  - Payloads roughly `537-634` bytes and `skippedFullSnapshot: true`
+- [ ] 10.9.11 Confirm all staff production browsers have hard refreshed after rollout
+- [ ] 10.9.12 Monitor production for one normal business day with no rollback-triggering defects
+- [ ] 10.9.13 Capture next-day Supabase Postgres egress and compare with baseline
+- [ ] 10.9.14 Close compact realtime rollout only if daily Postgres egress trends down and no unresolved sync or billing issues are reported
