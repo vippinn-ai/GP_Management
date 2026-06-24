@@ -94,7 +94,8 @@
 - [x] 8.5 Validate compact realtime in staging with two-browser live sync, checkout, financial adjustments, and no `QuotaExceededError`
 - [x] 8.6 Enable compact realtime in production only after staging validation passes
 - [x] 8.7 Keep full `app_state` writes and rollback snapshot active until compact realtime is stable
-- [ ] 8.8 Later phase: remove full startup `app_state` load and retire full `app_state` writes after a separate cutover
+- [ ] 8.8 Disable `app_state` realtime publication after all production browsers hard refresh onto compact realtime
+- [ ] 8.9 Later phase: remove full startup `app_state` load and retire full `app_state` writes after a separate cutover
 
 ## 9. Verification
 
