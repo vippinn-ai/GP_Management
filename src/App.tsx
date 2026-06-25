@@ -45,6 +45,8 @@ import {
 } from "./backend";
 import {
   defaultRemoteDataGateway,
+  adminDataChangePatchHasChanges,
+  buildAdminDataChangePatch,
   buildFinancialAdjustmentPatch,
   buildFinancialCheckoutPatch,
   loadNormalizedCustomerSearch,
@@ -1591,18 +1593,39 @@ export default function App() {
     }
     try {
       await runBlockingAction(label, async () => {
-        if (backendConfigured) {
+        if (
+          backendConfigured &&
+          BACKEND_FEATURE_FLAGS.normalizedBootstrap &&
+          defaultRemoteDataGateway.commitAdminDataChange
+        ) {
+          const patch = buildAdminDataChangePatch({
+            baseAppData: appData,
+            nextAppData,
+            baseVersion: remoteVersionRef.current,
+            createdAt: new Date().toISOString(),
+            userId: activeUser?.id ?? activeUserId ?? "",
+            mutationId: createId("admin-change"),
+            actionLabel: label
+          });
+          if (adminDataChangePatchHasChanges(patch)) {
+            const commitResult = await defaultRemoteDataGateway.commitAdminDataChange(patch);
+            const nextVersion = commitResult.appStateVersion ?? remoteVersionRef.current + 1;
+            remoteVersionRef.current = nextVersion;
+            setRemoteVersion(nextVersion);
+            setRemoteError("");
+            setPendingRetryData(null);
+          }
+          skipRemotePersistRef.current = true;
+        } else if (backendConfigured) {
           await saveRemoteSnapshot(nextAppData, remoteVersion, false, label);
           skipRemotePersistRef.current = true;
         }
-        setAppData(nextAppData);
+        setAppData(normalizeAppDataCustomers(nextAppData));
         onSuccess?.(nextAppData);
       });
       return true;
     } catch (error) {
-      if (!backendConfigured) {
-        setRemoteError(error instanceof Error ? error.message : "Unable to save changes.");
-      }
+      setRemoteError(error instanceof Error ? error.message : "Unable to save changes.");
       return false;
     }
   }

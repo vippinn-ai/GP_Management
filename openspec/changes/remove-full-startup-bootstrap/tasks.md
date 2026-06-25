@@ -18,7 +18,8 @@
 - [x] 3.1 Track snapshot source as `app_state` or `normalized_bootstrap`
 - [x] 3.2 Block generic full-state app-state saves when current data came from normalized bootstrap
 - [x] 3.3 Keep operational RPC and financial RPC writes enabled
-- [ ] 3.4 Ensure admin/settings/full-state fallback writes either use `app_state` startup or purpose-built RPCs
+- [x] 3.4 Ensure admin/settings/full-state fallback writes either use `app_state` startup or purpose-built RPCs
+  - Implemented `commit_admin_data_change` RPC path for normalized-bootstrap admin/catalog saves; staging SQL application is required before testing.
 
 ## 4. UI And Data Fallbacks
 
@@ -46,6 +47,7 @@
 ## 7. Staging Rollout
 
 - [ ] 7.1 Deploy staging with `VITE_BACKEND_NORMALIZED_BOOTSTRAP=true`
+- [ ] 7.1a Apply `supabase/phase6-admin-data-change-rpc.sql` in staging and verify grants
 - [ ] 7.2 Hard refresh staging browsers
 - [ ] 7.3 Confirm startup telemetry skips full `app_state.data`
 - [ ] 7.4 Smoke test normal live operations and financial flows

@@ -34,6 +34,12 @@ const normalizedBillRegisterMocks = vi.hoisted(() => ({
 
 vi.mock("./normalizedBillRegister", () => normalizedBillRegisterMocks);
 
+const adminDataRpcMocks = vi.hoisted(() => ({
+  invokeAdminDataChangeRpc: vi.fn()
+}));
+
+vi.mock("./adminDataRpcClient", () => adminDataRpcMocks);
+
 import {
   DEFAULT_BACKEND_FEATURE_FLAGS,
   appStateRemoteDataGateway,
@@ -534,6 +540,51 @@ describe("app_state data gateway", () => {
     expect(gateway.commitOperationalMutation).toEqual(expect.any(Function));
     expect(gateway.commitFinancialCheckout).toEqual(expect.any(Function));
     expect(gateway.commitFinancialAdjustment).toEqual(expect.any(Function));
+    expect(gateway.commitAdminDataChange).toEqual(expect.any(Function));
+  });
+
+  it("exposes admin data RPC commits when normalized bootstrap is enabled", async () => {
+    const gateway = createRemoteDataGateway({
+      ...DEFAULT_BACKEND_FEATURE_FLAGS,
+      normalizedBootstrap: true
+    });
+    const patch = {
+      mutationId: "admin-change-1",
+      entityType: "admin_data" as const,
+      entityId: "Saving expense...",
+      userId: "user-1",
+      createdAt: "2026-06-25T10:00:00.000Z",
+      baseAppStateVersion: 44,
+      inventoryItems: [],
+      inventoryItemIdsToDelete: [],
+      combos: [],
+      comboIdsToDelete: [],
+      stockMovements: [],
+      auditLogs: [],
+      expenses: [],
+      expenseIdsToDelete: [],
+      expenseTemplates: [],
+      expenseTemplateIdsToDelete: [],
+      expenseTemplateOverrides: [],
+      expenseTemplateOverrideIdsToDelete: [],
+      stations: [],
+      stationIdsToDelete: [],
+      pricingRules: [],
+      pricingRuleIdsToDelete: [],
+      customers: [],
+      customerIdsToDelete: []
+    };
+    adminDataRpcMocks.invokeAdminDataChangeRpc.mockResolvedValue({
+      mutationId: patch.mutationId,
+      rpcName: "commit_admin_data_change",
+      organizationId: "org-primary",
+      entityType: "admin_data",
+      entityId: patch.entityId,
+      appStateVersion: 45
+    });
+
+    await expect(gateway.commitAdminDataChange?.(patch)).resolves.toMatchObject({ appStateVersion: 45 });
+    expect(adminDataRpcMocks.invokeAdminDataChangeRpc).toHaveBeenCalledWith(patch);
   });
 
   it("keeps saves on app_state until RPC write flags are enabled", async () => {

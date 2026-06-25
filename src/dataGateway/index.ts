@@ -17,6 +17,17 @@ export {
 } from "./featureFlags";
 export { appStateRemoteDataGateway } from "./appStateGateway";
 export {
+  adminDataChangePatchHasChanges,
+  buildAdminDataChangePatch
+} from "./adminDataPatches";
+export {
+  AdminDataRpcError,
+  buildAdminDataChangeRpcPayload,
+  invokeAdminDataChangeRpc,
+  mapAdminDataChangeRpcResult,
+  type AdminDataChangeRpcPayloadEnvelope
+} from "./adminDataRpcClient";
+export {
   buildCustomerSearchFilter,
   loadNormalizedCustomerSearch,
   mapNormalizedCustomer,
@@ -84,6 +95,8 @@ export {
   type OperationalRpcPayloadEnvelope
 } from "./rpcClient";
 export type {
+  AdminDataChangeCommitResult,
+  AdminDataChangePatch,
   FinancialAdjustmentCommitResult,
   FinancialAdjustmentKind,
   FinancialAdjustmentPatch,

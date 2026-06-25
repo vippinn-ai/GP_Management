@@ -1,6 +1,23 @@
 import type { RemoteAppDataSnapshot, SaveRemoteTelemetryOptions } from "../backend";
 import type { OperationalMutation } from "../operationalSync";
-import type { AppData, AuditLog, Bill, Customer, CustomerTab, InventoryItem, Payment, Session, StockMovement } from "../types";
+import type {
+  AppData,
+  AuditLog,
+  Bill,
+  BusinessProfile,
+  ComboPackage,
+  Customer,
+  CustomerTab,
+  Expense,
+  ExpenseTemplate,
+  ExpenseTemplateOverride,
+  InventoryItem,
+  Payment,
+  PricingRule,
+  Session,
+  Station,
+  StockMovement
+} from "../types";
 
 export interface OperationalRpcCommitResult {
   mutationId: string;
@@ -86,6 +103,49 @@ export interface FinancialAdjustmentCommitResult {
   raw?: unknown;
 }
 
+export interface AdminDataChangePatch {
+  mutationId: string;
+  entityType: "admin_data";
+  entityId: string;
+  userId: string;
+  createdAt: string;
+  baseAppStateVersion: number;
+  inventoryCategories?: string[];
+  inventoryItems: InventoryItem[];
+  inventoryItemIdsToDelete: string[];
+  combos: ComboPackage[];
+  comboIdsToDelete: string[];
+  stockMovements: StockMovement[];
+  auditLogs: AuditLog[];
+  expenses: Expense[];
+  expenseIdsToDelete: string[];
+  expenseTemplates: ExpenseTemplate[];
+  expenseTemplateIdsToDelete: string[];
+  expenseTemplateOverrides: ExpenseTemplateOverride[];
+  expenseTemplateOverrideIdsToDelete: string[];
+  stations: Station[];
+  stationIdsToDelete: string[];
+  pricingRules: PricingRule[];
+  pricingRuleIdsToDelete: string[];
+  customers: Customer[];
+  customerIdsToDelete: string[];
+  businessProfile?: BusinessProfile;
+}
+
+export interface AdminDataChangeCommitResult {
+  mutationId: string;
+  rpcName: string;
+  organizationId: string;
+  entityType: AdminDataChangePatch["entityType"];
+  entityId: string;
+  appStateVersion?: number;
+  eventId?: string;
+  serverTime?: string;
+  serverDurationMs?: number;
+  changedRows?: Record<string, unknown>;
+  raw?: unknown;
+}
+
 export interface RemoteDataGateway {
   loadAppDataSnapshot(): Promise<RemoteAppDataSnapshot>;
   saveAppData(
@@ -97,5 +157,6 @@ export interface RemoteDataGateway {
   commitOperationalMutation?(mutation: OperationalMutation): Promise<OperationalRpcCommitResult>;
   commitFinancialCheckout?(patch: FinancialCheckoutPatch): Promise<FinancialCheckoutCommitResult>;
   commitFinancialAdjustment?(patch: FinancialAdjustmentPatch): Promise<FinancialAdjustmentCommitResult>;
+  commitAdminDataChange?(patch: AdminDataChangePatch): Promise<AdminDataChangeCommitResult>;
   subscribeToAppData(onChange: (snapshot: RemoteAppDataSnapshot) => void): () => void;
 }
