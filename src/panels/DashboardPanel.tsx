@@ -274,7 +274,7 @@ export function DashboardPanel(props: {
           </div>
           <div className="dashboard-tile-body panel-scroll">
             <div className="activity-list">
-              {props.auditLogs.slice(0, 8).map((entry) => (
+              {props.auditLogs.slice(0, 20).map((entry) => (
                 <div key={entry.id} className="activity-row">
                   <strong>{entry.message}</strong>
                   <span className="muted">{formatDateTime(entry.createdAt)}</span>

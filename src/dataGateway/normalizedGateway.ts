@@ -15,6 +15,7 @@ import {
 } from "./normalizedRealtime";
 import {
   loadNormalizedAppDataOverlay,
+  loadNormalizedAuditLogs,
   loadNormalizedExpenseAdminData,
   loadNormalizedStockMovements
 } from "./normalizedReads";
@@ -37,6 +38,7 @@ const NORMALIZED_BOOTSTRAP_PAGE_SIZE = 200;
 const NORMALIZED_BOOTSTRAP_MAX_RECENT_BILLS = 1_000;
 const NORMALIZED_BOOTSTRAP_MAX_PENDING_BILLS = 500;
 const NORMALIZED_BOOTSTRAP_MAX_STOCK_MOVEMENTS = 5_000;
+const NORMALIZED_BOOTSTRAP_RECENT_AUDIT_LOGS = 20;
 
 function mergeLiveSessions(baseSessions: Session[], normalizedSessions: Session[]): Session[] {
   const closedBaseSessionIds = new Set(
@@ -296,22 +298,29 @@ async function loadNormalizedBootstrapSnapshot(): Promise<RemoteAppDataSnapshot>
         client
       })
     ]);
-    const [history, expenses, stockMovements] = overlay.organizationId
+    const [history, expenses, stockMovements, auditLogs] = overlay.organizationId
       ? await Promise.all([
           loadNormalizedBootstrapHistory(overlay.organizationId, client),
           loadNormalizedExpenseAdminData(overlay.organizationId, client),
-          loadNormalizedBootstrapStockMovements(overlay.organizationId, client)
+          loadNormalizedBootstrapStockMovements(overlay.organizationId, client),
+          loadNormalizedAuditLogs(
+            overlay.organizationId,
+            { limit: NORMALIZED_BOOTSTRAP_RECENT_AUDIT_LOGS },
+            client
+          )
         ])
       : [
           { bills: [], payments: [] },
           { expenses: [], expenseTemplates: [], expenseTemplateOverrides: [] },
+          [],
           []
         ];
     const startupAppData = {
       ...overlay.appData,
       ...history,
       ...expenses,
-      stockMovements
+      stockMovements,
+      auditLogs
     };
     const appData = hydrateAppData({
       ...startupAppData,

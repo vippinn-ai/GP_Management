@@ -2,6 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { getSupabaseClient } from "../backend";
 import type {
   AppData,
+  AuditLog,
   BusinessProfile,
   ComboChoiceGroup,
   ComboFixedItem,
@@ -264,6 +265,18 @@ interface ExpenseTemplateOverrideRow {
   created_by_user_id: string | null;
   updated_at_source: string | null;
   raw_data: Record<string, unknown> | null;
+}
+
+interface AuditLogRow {
+  id: string;
+  action: string;
+  entity_type: string | null;
+  entity_id: string | null;
+  message: string | null;
+  audit_at: string | null;
+  user_id: string | null;
+  raw_data: Record<string, unknown> | null;
+  created_at: string;
 }
 
 interface StockMovementRow {
@@ -893,6 +906,19 @@ export function mapNormalizedStockMovement(row: StockMovementRow): StockMovement
   };
 }
 
+export function mapNormalizedAuditLog(row: AuditLogRow): AuditLog {
+  const raw = toRecord(row.raw_data);
+  return {
+    id: row.id,
+    action: toStringValue(raw.action, row.action),
+    entityType: toStringValue(raw.entityType, row.entity_type ?? ""),
+    entityId: toStringValue(raw.entityId, row.entity_id ?? ""),
+    message: toStringValue(raw.message, row.message ?? ""),
+    createdAt: toStringValue(raw.createdAt, row.audit_at ?? row.created_at),
+    userId: toStringValue(raw.userId, row.user_id ?? "")
+  };
+}
+
 export function buildNormalizedConfigData(params: {
   organization: OrganizationRow;
   inventoryCategories: InventoryCategoryRow[];
@@ -1207,6 +1233,24 @@ export async function loadNormalizedStockMovements(
 
   const rows = await readMany<StockMovementRow>(request, "loading normalized stock movements");
   return rows.map(mapNormalizedStockMovement);
+}
+
+export async function loadNormalizedAuditLogs(
+  organizationId: string,
+  query: { limit?: number } = {},
+  client: SupabaseClient = getSupabaseClient()
+): Promise<AuditLog[]> {
+  const rows = await readMany<AuditLogRow>(
+    client
+      .from("audit_logs")
+      .select("id, action, entity_type, entity_id, message, audit_at, user_id, raw_data, created_at")
+      .eq("organization_id", organizationId)
+      .order("audit_at", { ascending: false })
+      .order("id", { ascending: false })
+      .limit(Math.max(1, Math.min(100, Math.trunc(query.limit ?? 20)))),
+    "loading normalized audit logs"
+  );
+  return rows.map(mapNormalizedAuditLog);
 }
 
 export async function loadNormalizedLiveData(

@@ -15,6 +15,7 @@ vi.mock("../backend", () => backendMocks);
 
 const normalizedReadMocks = vi.hoisted(() => ({
   loadNormalizedAppDataOverlay: vi.fn(),
+  loadNormalizedAuditLogs: vi.fn(),
   loadNormalizedExpenseAdminData: vi.fn(),
   loadNormalizedStockMovements: vi.fn(),
   loadNormalizedLiveDataByIds: vi.fn()
@@ -469,6 +470,17 @@ describe("app_state data gateway", () => {
         userId: "user-1"
       }
     ]);
+    normalizedReadMocks.loadNormalizedAuditLogs.mockResolvedValue([
+      {
+        id: "audit-1",
+        action: "bill_issued",
+        entityType: "bill",
+        entityId: "bill-recent",
+        message: "Issued recent bill.",
+        createdAt: "2026-06-24T10:01:00.000Z",
+        userId: "user-1"
+      }
+    ]);
 
     const gateway = createRemoteDataGateway({
       ...DEFAULT_BACKEND_FEATURE_FLAGS,
@@ -496,7 +508,7 @@ describe("app_state data gateway", () => {
         expenseTemplates: [expect.objectContaining({ id: "template-1", title: "Rent" })],
         expenseTemplateOverrides: [expect.objectContaining({ id: "override-1", templateId: "template-1" })],
         stockMovements: [expect.objectContaining({ id: "movement-1", itemId: "item-1" })],
-        auditLogs: []
+        auditLogs: [expect.objectContaining({ id: "audit-1", message: "Issued recent bill." })]
       }
     });
     expect(backendMocks.loadRemoteAppDataSnapshot).not.toHaveBeenCalled();
@@ -515,6 +527,7 @@ describe("app_state data gateway", () => {
       expect.objectContaining({ limit: 5000 }),
       client
     );
+    expect(normalizedReadMocks.loadNormalizedAuditLogs).toHaveBeenCalledWith("org-primary", { limit: 20 }, client);
   });
 
   it("blocks generic full app-state saves after normalized bootstrap is enabled", async () => {
