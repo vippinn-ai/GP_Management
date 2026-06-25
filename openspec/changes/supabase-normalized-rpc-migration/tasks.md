@@ -237,6 +237,8 @@
 - [x] 10.9.10 Production telemetry after publication cutoff still shows compact realtime only
   - Examples observed: `start_session`, `add_session_item`, `remove_session_item`, `pause_session`, `resume_session`, `reject_session`
   - Payloads roughly `537-634` bytes and `skippedFullSnapshot: true`
+- [x] 10.9.10a Production deployed with targeted changed live-row compact realtime refresh
+  - Production Worker version: `ef102f4b-81fd-4323-b254-915595d5130b` on 2026-06-25
 - [ ] 10.9.11 Confirm all staff production browsers have hard refreshed after rollout
 - [ ] 10.9.12 Monitor production for one normal business day with no rollback-triggering defects
 - [ ] 10.9.13 Capture next-day Supabase Postgres egress and compare with baseline
