@@ -64,7 +64,8 @@ function profileToUser(profile: RemoteProfile) {
 function snapshot(name: string, version = 1): RemoteAppDataSnapshot {
   return {
     appData: createAppData(name),
-    version
+    version,
+    source: "app_state"
   };
 }
 

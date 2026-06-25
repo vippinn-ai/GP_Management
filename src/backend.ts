@@ -38,6 +38,12 @@ interface RemoteAppStateRow {
   version?: number | null;
 }
 
+interface RemoteAppStateMetadataRow {
+  id: string;
+  version?: number | null;
+  updated_at?: string | null;
+}
+
 export interface RemoteProfile {
   id: string;
   name: string;
@@ -46,10 +52,18 @@ export interface RemoteProfile {
   active: boolean;
 }
 
+export type RemoteAppDataSnapshotSource = "app_state" | "normalized_bootstrap";
+
 export interface RemoteAppDataSnapshot {
   appData: AppData;
   version: number;
+  source: RemoteAppDataSnapshotSource;
   sourceMutationId?: string;
+}
+
+export interface RemoteAppStateMetadata {
+  version: number;
+  updatedAt?: string;
 }
 
 export interface SaveRemoteTelemetryOptions {
@@ -128,7 +142,8 @@ function snapshotFromAppStateRow(row: RemoteAppStateRow | null): RemoteAppDataSn
       ...(row?.data ?? {}),
       users: cachedProfiles.map(mapProfileToUser)
     }),
-    version: row?.version ?? 0
+    version: row?.version ?? 0,
+    source: "app_state"
   };
 }
 
@@ -255,6 +270,22 @@ export async function loadRemoteAppDataSnapshot(): Promise<RemoteAppDataSnapshot
     active: user.active
   }));
   return snapshotFromAppStateRow(row);
+}
+
+export async function loadRemoteAppStateMetadata(): Promise<RemoteAppStateMetadata> {
+  const supabase = getSupabase();
+  const { data, error } = await withRemoteTimeout(
+    supabase.from("app_state").select("id, version, updated_at").eq("id", "primary").maybeSingle(),
+    "loading app data version"
+  );
+  if (error && error.code !== "PGRST116") {
+    throw error;
+  }
+  const row = data as RemoteAppStateMetadataRow | null;
+  return {
+    version: row?.version ?? 0,
+    updatedAt: row?.updated_at ?? undefined
+  };
 }
 
 export async function saveRemoteAppData(

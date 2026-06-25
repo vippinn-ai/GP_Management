@@ -1,4 +1,5 @@
 export interface BackendFeatureFlags {
+  normalizedBootstrap: boolean;
   normalizedConfigReads: boolean;
   normalizedCatalogReads: boolean;
   normalizedComboReads: boolean;
@@ -12,6 +13,7 @@ export interface BackendFeatureFlags {
 }
 
 export const DEFAULT_BACKEND_FEATURE_FLAGS: BackendFeatureFlags = Object.freeze({
+  normalizedBootstrap: false,
   normalizedConfigReads: false,
   normalizedCatalogReads: false,
   normalizedComboReads: false,
@@ -27,6 +29,7 @@ export const DEFAULT_BACKEND_FEATURE_FLAGS: BackendFeatureFlags = Object.freeze(
 type BackendFeatureFlagKey = keyof BackendFeatureFlags;
 
 const ENV_FLAG_NAMES: Record<BackendFeatureFlagKey, keyof ImportMetaEnv> = {
+  normalizedBootstrap: "VITE_BACKEND_NORMALIZED_BOOTSTRAP",
   normalizedConfigReads: "VITE_BACKEND_NORMALIZED_CONFIG_READS",
   normalizedCatalogReads: "VITE_BACKEND_NORMALIZED_CATALOG_READS",
   normalizedComboReads: "VITE_BACKEND_NORMALIZED_COMBO_READS",
@@ -62,6 +65,7 @@ export function resolveBackendFeatureFlags(
 
 export function hasNormalizedGatewayFlag(flags: BackendFeatureFlags): boolean {
   return (
+    flags.normalizedBootstrap ||
     flags.normalizedConfigReads ||
     flags.normalizedCatalogReads ||
     flags.normalizedComboReads ||

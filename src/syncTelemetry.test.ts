@@ -7,6 +7,7 @@ import {
   recordAppStateSaveTelemetry,
   recordCompactRealtimeTelemetry,
   recordRealtimeSnapshotTelemetry,
+  recordStartupBootstrapTelemetry,
   SYNC_TELEMETRY_STORAGE_KEY
 } from "./syncTelemetry";
 
@@ -107,6 +108,33 @@ describe("sync telemetry", () => {
       skippedFullSnapshot: true
     });
     expect(sample.payloadBytes).toBeGreaterThan(0);
+  });
+
+  it("stores normalized startup bootstrap samples", () => {
+    recordStartupBootstrapTelemetry({
+      appData: { users: [{ id: "user-1" }], inventoryItems: [{ id: "item-1" }] } as never,
+      source: "normalized_bootstrap",
+      version: 44,
+      startedAt: 3_000,
+      completedAt: 3_140,
+      status: "success",
+      skippedFullAppStateData: true
+    });
+
+    const [sample] = readStoredSyncTelemetrySamples();
+    expect(sample).toMatchObject({
+      type: "startup_bootstrap",
+      source: "blocking",
+      actionLabel: "Normalized startup bootstrap",
+      bootstrapSource: "normalized_bootstrap",
+      skippedFullAppStateData: true,
+      skippedFullSnapshot: true,
+      nextVersion: 44,
+      durationMs: 140,
+      status: "success"
+    });
+    expect(sample.collectionCounts.users).toBe(1);
+    expect(sample.collectionCounts.inventoryItems).toBe(1);
   });
 
   it("keeps only the most recent telemetry samples", () => {

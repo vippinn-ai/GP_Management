@@ -3,6 +3,8 @@ import type { RemoteAppDataSnapshot } from "../backend";
 import type { AppData } from "../types";
 
 const backendMocks = vi.hoisted(() => ({
+  fetchProfiles: vi.fn(),
+  loadRemoteAppStateMetadata: vi.fn(),
   loadRemoteAppDataSnapshot: vi.fn(),
   saveRemoteAppData: vi.fn(),
   subscribeToRemoteAppData: vi.fn(),
@@ -13,10 +15,24 @@ vi.mock("../backend", () => backendMocks);
 
 const normalizedReadMocks = vi.hoisted(() => ({
   loadNormalizedAppDataOverlay: vi.fn(),
+  loadNormalizedExpenseAdminData: vi.fn(),
+  loadNormalizedStockMovements: vi.fn(),
   loadNormalizedLiveDataByIds: vi.fn()
 }));
 
 vi.mock("./normalizedReads", () => normalizedReadMocks);
+
+const normalizedBillRegisterMocks = vi.hoisted(() => ({
+  getBusinessDayIssuedAtRange: vi.fn(() => ({
+    fromIso: "2026-06-01T01:30:00.000Z",
+    toIsoExclusive: "2026-07-01T01:30:00.000Z"
+  })),
+  loadNormalizedBillRegisterPage: vi.fn(),
+  loadNormalizedBillsByIds: vi.fn(),
+  resolveNormalizedBillRegisterOrganizationId: vi.fn()
+}));
+
+vi.mock("./normalizedBillRegister", () => normalizedBillRegisterMocks);
 
 import {
   DEFAULT_BACKEND_FEATURE_FLAGS,
@@ -57,13 +73,15 @@ function createAppData(): AppData {
 function createSnapshot(version = 1): RemoteAppDataSnapshot {
   return {
     appData: createAppData(),
-    version
+    version,
+    source: "app_state"
   };
 }
 
 describe("data gateway feature flags", () => {
   it("defaults every normalized and RPC feature flag to disabled", () => {
     expect(DEFAULT_BACKEND_FEATURE_FLAGS).toEqual({
+      normalizedBootstrap: false,
       normalizedConfigReads: false,
       normalizedCatalogReads: false,
       normalizedComboReads: false,
@@ -82,6 +100,7 @@ describe("data gateway feature flags", () => {
       { rpcFinancialWrites: true },
       {
         VITE_BACKEND_NORMALIZED_CONFIG_READS: "true",
+        VITE_BACKEND_NORMALIZED_BOOTSTRAP: "true",
         VITE_BACKEND_NORMALIZED_CATALOG_READS: "0",
         VITE_BACKEND_NORMALIZED_COMBO_READS: "yes",
         VITE_BACKEND_NORMALIZED_LIVE_READS: "true",
@@ -92,6 +111,7 @@ describe("data gateway feature flags", () => {
     );
 
     expect(flags.normalizedConfigReads).toBe(true);
+    expect(flags.normalizedBootstrap).toBe(true);
     expect(flags.normalizedCatalogReads).toBe(false);
     expect(flags.normalizedComboReads).toBe(true);
     expect(flags.normalizedLiveReads).toBe(true);
@@ -108,6 +128,17 @@ describe("app_state data gateway", () => {
       sessions: [],
       sessionPauseLogs: [],
       customerTabs: []
+    });
+    normalizedReadMocks.loadNormalizedExpenseAdminData.mockResolvedValue({
+      expenses: [],
+      expenseTemplates: [],
+      expenseTemplateOverrides: []
+    });
+    normalizedReadMocks.loadNormalizedStockMovements.mockResolvedValue([]);
+    normalizedBillRegisterMocks.loadNormalizedBillRegisterPage.mockResolvedValue({
+      bills: [],
+      payments: [],
+      hasMore: false
     });
   });
 
@@ -343,6 +374,166 @@ describe("app_state data gateway", () => {
       normalizedComboReads: false,
       normalizedLiveReads: true
     });
+  });
+
+  it("loads startup state from normalized tables without downloading full app_state data when bootstrap is enabled", async () => {
+    const client = { from: vi.fn() };
+    const profile = {
+      id: "user-1",
+      name: "QA Admin",
+      username: "qa_admin",
+      role: "admin" as const,
+      active: true
+    };
+    const normalizedItem = {
+      id: "item-1",
+      name: "Normalized Momo",
+      category: "Food",
+      price: 80,
+      stockQty: 12,
+      lowStockThreshold: 2,
+      unit: "piece",
+      isReusable: false,
+      active: true
+    };
+    backendMocks.getSupabaseClient.mockReturnValue(client);
+    backendMocks.fetchProfiles.mockResolvedValue([profile]);
+    backendMocks.loadRemoteAppStateMetadata.mockResolvedValue({ version: 44 });
+    normalizedBillRegisterMocks.loadNormalizedBillRegisterPage
+      .mockResolvedValueOnce({
+        bills: [
+          {
+            id: "bill-recent",
+            billNumber: "BILL-RECENT",
+            status: "issued",
+            issuedAt: "2026-06-24T10:00:00.000Z",
+            customerId: "customer-1",
+            customerName: "Recent Customer",
+            amountDue: 0
+          }
+        ],
+        payments: [{ id: "payment-1", billId: "bill-recent", mode: "cash", amount: 80 }],
+        hasMore: false
+      })
+      .mockResolvedValueOnce({
+        bills: [
+          {
+            id: "bill-pending",
+            billNumber: "BILL-PENDING",
+            status: "pending",
+            issuedAt: "2026-06-23T10:00:00.000Z",
+            customerId: "customer-2",
+            customerName: "Pending Customer",
+            amountDue: 50
+          }
+        ],
+        payments: [],
+        hasMore: false
+      });
+    normalizedReadMocks.loadNormalizedAppDataOverlay.mockResolvedValue({
+      organizationId: "org-primary",
+      appData: {
+        businessProfile: {
+          name: "BreakPerfect",
+          logoText: "",
+          address: "",
+          primaryPhone: "",
+          receiptFooter: ""
+        },
+        inventoryCategories: ["Food"],
+        inventoryItems: [normalizedItem],
+        sessions: [],
+        sessionPauseLogs: [],
+        customerTabs: []
+      }
+    });
+    normalizedReadMocks.loadNormalizedExpenseAdminData.mockResolvedValue({
+      expenses: [{ id: "expense-1", title: "Milk", category: "Food", amount: 120 }],
+      expenseTemplates: [{ id: "template-1", title: "Rent", category: "Rent", amount: 1000 }],
+      expenseTemplateOverrides: [{ id: "override-1", templateId: "template-1", monthKey: "2026-06", amount: null }]
+    });
+    normalizedReadMocks.loadNormalizedStockMovements.mockResolvedValue([
+      {
+        id: "movement-1",
+        itemId: "item-1",
+        type: "sale",
+        quantity: -2,
+        reason: "Sold",
+        createdAt: "2026-06-24T10:00:00.000Z",
+        userId: "user-1"
+      }
+    ]);
+
+    const gateway = createRemoteDataGateway({
+      ...DEFAULT_BACKEND_FEATURE_FLAGS,
+      normalizedBootstrap: true
+    });
+
+    await expect(gateway.loadAppDataSnapshot()).resolves.toMatchObject({
+      version: 44,
+      source: "normalized_bootstrap",
+      appData: {
+        users: [profile],
+        businessProfile: { name: "BreakPerfect" },
+        inventoryCategories: ["Food"],
+        inventoryItems: [normalizedItem],
+        bills: [
+          expect.objectContaining({ id: "bill-pending", customerName: "Pending Customer" }),
+          expect.objectContaining({ id: "bill-recent", customerName: "Recent Customer" })
+        ],
+        payments: [expect.objectContaining({ id: "payment-1" })],
+        customers: [
+          expect.objectContaining({ id: "customer-1", name: "Recent Customer" }),
+          expect.objectContaining({ id: "customer-2", name: "Pending Customer" })
+        ],
+        expenses: [expect.objectContaining({ id: "expense-1", title: "Milk" })],
+        expenseTemplates: [expect.objectContaining({ id: "template-1", title: "Rent" })],
+        expenseTemplateOverrides: [expect.objectContaining({ id: "override-1", templateId: "template-1" })],
+        stockMovements: [expect.objectContaining({ id: "movement-1", itemId: "item-1" })],
+        auditLogs: []
+      }
+    });
+    expect(backendMocks.loadRemoteAppDataSnapshot).not.toHaveBeenCalled();
+    expect(backendMocks.loadRemoteAppStateMetadata).toHaveBeenCalledTimes(1);
+    expect(normalizedReadMocks.loadNormalizedAppDataOverlay).toHaveBeenCalledWith({
+      normalizedConfigReads: true,
+      normalizedCatalogReads: true,
+      normalizedComboReads: true,
+      normalizedLiveReads: true,
+      client
+    });
+    expect(normalizedBillRegisterMocks.loadNormalizedBillRegisterPage).toHaveBeenCalledTimes(2);
+    expect(normalizedReadMocks.loadNormalizedExpenseAdminData).toHaveBeenCalledWith("org-primary", client);
+    expect(normalizedReadMocks.loadNormalizedStockMovements).toHaveBeenCalledWith(
+      "org-primary",
+      expect.objectContaining({ limit: 5000 }),
+      client
+    );
+  });
+
+  it("blocks generic full app-state saves after normalized bootstrap is enabled", async () => {
+    const gateway = createRemoteDataGateway({
+      ...DEFAULT_BACKEND_FEATURE_FLAGS,
+      normalizedBootstrap: true
+    });
+
+    await expect(gateway.saveAppData(createAppData(), "user-1", 44)).rejects.toThrow(
+      "Full app-state saves are disabled while normalized startup bootstrap is enabled"
+    );
+    expect(backendMocks.saveRemoteAppData).not.toHaveBeenCalled();
+  });
+
+  it("keeps RPC commit functions available when normalized bootstrap is enabled", () => {
+    const gateway = createRemoteDataGateway({
+      ...DEFAULT_BACKEND_FEATURE_FLAGS,
+      normalizedBootstrap: true,
+      rpcOperationalWrites: true,
+      rpcFinancialWrites: true
+    });
+
+    expect(gateway.commitOperationalMutation).toEqual(expect.any(Function));
+    expect(gateway.commitFinancialCheckout).toEqual(expect.any(Function));
+    expect(gateway.commitFinancialAdjustment).toEqual(expect.any(Function));
   });
 
   it("keeps saves on app_state until RPC write flags are enabled", async () => {

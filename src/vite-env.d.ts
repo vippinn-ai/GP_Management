@@ -3,6 +3,7 @@
 interface ImportMetaEnv {
   readonly VITE_SUPABASE_URL?: string;
   readonly VITE_SUPABASE_ANON_KEY?: string;
+  readonly VITE_BACKEND_NORMALIZED_BOOTSTRAP?: string;
   readonly VITE_BACKEND_NORMALIZED_CONFIG_READS?: string;
   readonly VITE_BACKEND_NORMALIZED_CATALOG_READS?: string;
   readonly VITE_BACKEND_NORMALIZED_COMBO_READS?: string;

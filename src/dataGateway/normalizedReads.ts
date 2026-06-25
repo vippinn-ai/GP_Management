@@ -9,6 +9,10 @@ import type {
   ComboType,
   ComboAppliedChoice,
   ComboInventorySelection,
+  Expense,
+  ExpensePaymentMode,
+  ExpenseTemplate,
+  ExpenseTemplateOverride,
   CustomerTab,
   CustomerTabItem,
   InventoryItem,
@@ -22,7 +26,9 @@ import type {
   PlayMode,
   SessionStatus,
   StationMode,
-  Station
+  Station,
+  StockMovement,
+  StockMovementType
 } from "../types";
 
 const NORMALIZED_READ_TIMEOUT_MS = 15_000;
@@ -221,6 +227,58 @@ interface CustomerTabComboApplicationRow extends ComboApplicationRow {
   customer_tab_id: string;
 }
 
+interface ExpenseRow {
+  id: string;
+  title: string;
+  category: string | null;
+  amount: number | string;
+  payment_mode: string | null;
+  cash_amount: number | string | null;
+  upi_amount: number | string | null;
+  spent_at: string | null;
+  notes: string | null;
+  created_by_user_id: string | null;
+  raw_data: Record<string, unknown> | null;
+}
+
+interface ExpenseTemplateRow {
+  id: string;
+  title: string;
+  category: string | null;
+  amount: number | string;
+  frequency: string;
+  start_month: string | null;
+  active: boolean;
+  notes: string | null;
+  created_by_user_id: string | null;
+  raw_data: Record<string, unknown> | null;
+}
+
+interface ExpenseTemplateOverrideRow {
+  id: string;
+  template_id: string | null;
+  month_key: string | null;
+  amount: number | string | null;
+  skip_reason: string | null;
+  notes: string | null;
+  created_by_user_id: string | null;
+  updated_at_source: string | null;
+  raw_data: Record<string, unknown> | null;
+}
+
+interface StockMovementRow {
+  id: string;
+  item_id: string | null;
+  type: string;
+  quantity: number | string;
+  reason: string | null;
+  movement_at: string | null;
+  user_id: string | null;
+  related_bill_id: string | null;
+  raw_data: Record<string, unknown> | null;
+  created_at: string;
+}
+
 interface NormalizedQueryResult<T> {
   data: T | null;
   error: Error | { message: string } | null;
@@ -246,6 +304,18 @@ export interface NormalizedLiveData {
   sessions: Session[];
   sessionPauseLogs: SessionPauseLog[];
   customerTabs: CustomerTab[];
+}
+
+export interface NormalizedExpenseAdminData {
+  expenses: Expense[];
+  expenseTemplates: ExpenseTemplate[];
+  expenseTemplateOverrides: ExpenseTemplateOverride[];
+}
+
+export interface NormalizedStockMovementQuery {
+  fromIso?: string;
+  toIsoExclusive?: string;
+  limit?: number;
 }
 
 function toRecord(value: unknown): Record<string, unknown> {
@@ -728,6 +798,101 @@ function mapNormalizedCustomerTab(
   };
 }
 
+function toExpensePaymentMode(value: unknown): ExpensePaymentMode | undefined {
+  return value === "cash" || value === "upi" || value === "split" ? value : undefined;
+}
+
+export function mapNormalizedExpense(row: ExpenseRow): Expense {
+  const raw = toRecord(row.raw_data);
+  return {
+    id: row.id,
+    title: toStringValue(raw.title, row.title),
+    category: toStringValue(raw.category, row.category ?? "Miscellaneous"),
+    amount: toNumberValue(raw.amount, row.amount),
+    paymentMode: toExpensePaymentMode(raw.paymentMode) ?? toExpensePaymentMode(row.payment_mode),
+    cashAmount:
+      raw.cashAmount !== undefined || row.cash_amount !== null
+        ? toNumberValue(raw.cashAmount, row.cash_amount)
+        : undefined,
+    upiAmount:
+      raw.upiAmount !== undefined || row.upi_amount !== null
+        ? toNumberValue(raw.upiAmount, row.upi_amount)
+        : undefined,
+    spentAt: toStringValue(raw.spentAt, row.spent_at ?? ""),
+    notes: toOptionalString(raw.notes) ?? toOptionalString(row.notes),
+    createdByUserId: toStringValue(raw.createdByUserId, row.created_by_user_id ?? "")
+  };
+}
+
+export function mapNormalizedExpenseTemplate(row: ExpenseTemplateRow): ExpenseTemplate {
+  const raw = toRecord(row.raw_data);
+  return {
+    id: row.id,
+    title: toStringValue(raw.title, row.title),
+    category: toStringValue(raw.category, row.category ?? "Miscellaneous"),
+    amount: toNumberValue(raw.amount, row.amount),
+    frequency: "monthly",
+    startMonth: toStringValue(raw.startMonth, row.start_month ?? ""),
+    active: toBooleanValue(raw.active, row.active),
+    notes: toOptionalString(raw.notes) ?? toOptionalString(row.notes),
+    createdByUserId: toStringValue(raw.createdByUserId, row.created_by_user_id ?? "")
+  };
+}
+
+export function mapNormalizedExpenseTemplateOverride(row: ExpenseTemplateOverrideRow): ExpenseTemplateOverride {
+  const raw = toRecord(row.raw_data);
+  return {
+    id: row.id,
+    templateId: toStringValue(raw.templateId, row.template_id ?? ""),
+    monthKey: toStringValue(raw.monthKey, row.month_key ?? ""),
+    amount:
+      raw.amount === null || row.amount === null
+        ? null
+        : toNumberValue(raw.amount, row.amount),
+    skipReason: toOptionalString(raw.skipReason) ?? toOptionalString(row.skip_reason),
+    notes: toOptionalString(raw.notes) ?? toOptionalString(row.notes),
+    createdByUserId: toStringValue(raw.createdByUserId, row.created_by_user_id ?? ""),
+    updatedAt: toStringValue(raw.updatedAt, row.updated_at_source ?? "")
+  };
+}
+
+export function buildNormalizedExpenseAdminData(params: {
+  expenses: ExpenseRow[];
+  expenseTemplates: ExpenseTemplateRow[];
+  expenseTemplateOverrides: ExpenseTemplateOverrideRow[];
+}): NormalizedExpenseAdminData {
+  return {
+    expenses: params.expenses.map(mapNormalizedExpense),
+    expenseTemplates: params.expenseTemplates.map(mapNormalizedExpenseTemplate),
+    expenseTemplateOverrides: params.expenseTemplateOverrides.map(mapNormalizedExpenseTemplateOverride)
+  };
+}
+
+function toStockMovementType(value: unknown): StockMovementType {
+  return value === "restock" ||
+    value === "sale" ||
+    value === "adjustment" ||
+    value === "void_refund_reversal" ||
+    value === "session_reservation" ||
+    value === "session_reservation_void"
+    ? value
+    : "adjustment";
+}
+
+export function mapNormalizedStockMovement(row: StockMovementRow): StockMovement {
+  const raw = toRecord(row.raw_data);
+  return {
+    id: row.id,
+    itemId: toStringValue(raw.itemId, row.item_id ?? ""),
+    type: toStockMovementType(raw.type ?? row.type),
+    quantity: toNumberValue(raw.quantity, row.quantity),
+    reason: toStringValue(raw.reason, row.reason ?? ""),
+    createdAt: toStringValue(raw.createdAt, row.movement_at ?? row.created_at),
+    userId: toStringValue(raw.userId, row.user_id ?? ""),
+    relatedBillId: toOptionalString(raw.relatedBillId) ?? toOptionalString(row.related_bill_id)
+  };
+}
+
 export function buildNormalizedConfigData(params: {
   organization: OrganizationRow;
   inventoryCategories: InventoryCategoryRow[];
@@ -978,6 +1143,70 @@ export async function loadNormalizedComboData(
   ]);
 
   return buildNormalizedComboData({ combos, stationTargets, fixedItems, choiceGroups, choiceOptions });
+}
+
+export async function loadNormalizedExpenseAdminData(
+  organizationId: string,
+  client: SupabaseClient = getSupabaseClient()
+): Promise<NormalizedExpenseAdminData> {
+  const [expenses, expenseTemplates, expenseTemplateOverrides] = await Promise.all([
+    readMany<ExpenseRow>(
+      client
+        .from("expenses")
+        .select(
+          "id, title, category, amount, payment_mode, cash_amount, upi_amount, spent_at, notes, created_by_user_id, raw_data"
+        )
+        .eq("organization_id", organizationId)
+        .order("spent_at", { ascending: false })
+        .order("id", { ascending: false })
+        .limit(200),
+      "loading normalized expenses"
+    ),
+    readMany<ExpenseTemplateRow>(
+      client
+        .from("expense_templates")
+        .select("id, title, category, amount, frequency, start_month, active, notes, created_by_user_id, raw_data")
+        .eq("organization_id", organizationId)
+        .order("title", { ascending: true })
+        .order("id", { ascending: true }),
+      "loading normalized expense templates"
+    ),
+    readMany<ExpenseTemplateOverrideRow>(
+      client
+        .from("expense_template_overrides")
+        .select("id, template_id, month_key, amount, skip_reason, notes, created_by_user_id, updated_at_source, raw_data")
+        .eq("organization_id", organizationId)
+        .order("month_key", { ascending: false })
+        .order("id", { ascending: true }),
+      "loading normalized expense template overrides"
+    )
+  ]);
+
+  return buildNormalizedExpenseAdminData({ expenses, expenseTemplates, expenseTemplateOverrides });
+}
+
+export async function loadNormalizedStockMovements(
+  organizationId: string,
+  query: NormalizedStockMovementQuery = {},
+  client: SupabaseClient = getSupabaseClient()
+): Promise<StockMovement[]> {
+  let request = client
+    .from("stock_movements")
+    .select("id, item_id, type, quantity, reason, movement_at, user_id, related_bill_id, raw_data, created_at")
+    .eq("organization_id", organizationId)
+    .order("movement_at", { ascending: false })
+    .order("id", { ascending: false })
+    .limit(Math.max(1, Math.min(5_000, Math.trunc(query.limit ?? 5_000))));
+
+  if (query.fromIso) {
+    request = request.gte("movement_at", query.fromIso);
+  }
+  if (query.toIsoExclusive) {
+    request = request.lt("movement_at", query.toIsoExclusive);
+  }
+
+  const rows = await readMany<StockMovementRow>(request, "loading normalized stock movements");
+  return rows.map(mapNormalizedStockMovement);
 }
 
 export async function loadNormalizedLiveData(

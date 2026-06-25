@@ -3,9 +3,14 @@ import type { AppData } from "./types";
 export const SYNC_TELEMETRY_STORAGE_KEY = "game-parlour-management-system/sync-telemetry/v1";
 const MAX_STORED_SYNC_TELEMETRY_SAMPLES = 100;
 
-export type SyncTelemetryEventType = "app_state_save" | "app_state_realtime_snapshot" | "compact_realtime_event";
+export type SyncTelemetryEventType =
+  | "app_state_save"
+  | "app_state_realtime_snapshot"
+  | "compact_realtime_event"
+  | "startup_bootstrap";
 export type SyncTelemetrySource = "blocking" | "operational_queue" | "auto_persist" | "realtime";
 export type SyncTelemetryStatus = "success" | "conflict" | "error";
+export type StartupBootstrapSource = "app_state" | "normalized_bootstrap";
 
 export interface AppDataCollectionCounts {
   users: number;
@@ -46,6 +51,8 @@ export interface SyncTelemetrySample {
   entityId?: string;
   refreshedSlices?: string[];
   skippedFullSnapshot?: boolean;
+  bootstrapSource?: StartupBootstrapSource;
+  skippedFullAppStateData?: boolean;
 }
 
 type AppDataCollectionKey = keyof AppDataCollectionCounts;
@@ -241,6 +248,38 @@ export function recordCompactRealtimeTelemetry(params: {
     entityId: params.entityId,
     refreshedSlices: params.refreshedSlices,
     skippedFullSnapshot: params.skippedFullSnapshot
+  });
+}
+
+export function recordStartupBootstrapTelemetry(params: {
+  appData: Partial<AppData>;
+  source: StartupBootstrapSource;
+  version?: number | null;
+  startedAt: number;
+  completedAt?: number;
+  status: SyncTelemetryStatus;
+  errorMessage?: string;
+  skippedFullAppStateData: boolean;
+}) {
+  const completedAt = params.completedAt ?? Date.now();
+  recordSyncTelemetrySample({
+    id: createTelemetryId(),
+    type: "startup_bootstrap",
+    source: "blocking",
+    createdAt: new Date(completedAt).toISOString(),
+    actionLabel:
+      params.source === "normalized_bootstrap"
+        ? "Normalized startup bootstrap"
+        : "App-state startup bootstrap",
+    payloadBytes: estimateJsonBytes(params.appData),
+    collectionCounts: getAppDataCollectionCounts(params.appData),
+    nextVersion: params.version ?? undefined,
+    durationMs: Math.max(0, completedAt - params.startedAt),
+    status: params.status,
+    errorMessage: params.errorMessage,
+    bootstrapSource: params.source,
+    skippedFullAppStateData: params.skippedFullAppStateData,
+    skippedFullSnapshot: params.skippedFullAppStateData
   });
 }
 
