@@ -113,6 +113,7 @@ describe("data gateway feature flags", () => {
         VITE_BACKEND_NORMALIZED_LIVE_READS: "true",
         VITE_BACKEND_NORMALIZED_CUSTOMER_SEARCH_READS: "on",
         VITE_BACKEND_NORMALIZED_REPORT_READS: "1",
+        VITE_BACKEND_NORMALIZED_BILL_HISTORY_READS: "true",
         VITE_BACKEND_RPC_FINANCIAL_WRITES: "false"
       }
     );
@@ -124,6 +125,7 @@ describe("data gateway feature flags", () => {
     expect(flags.normalizedLiveReads).toBe(true);
     expect(flags.normalizedCustomerSearchReads).toBe(true);
     expect(flags.normalizedReportReads).toBe(true);
+    expect(flags.normalizedBillHistoryReads).toBe(true);
     expect(flags.rpcFinancialWrites).toBe(true);
   });
 });
@@ -521,6 +523,25 @@ describe("app_state data gateway", () => {
       client
     });
     expect(normalizedBillRegisterMocks.loadNormalizedBillRegisterPage).toHaveBeenCalledTimes(2);
+    expect(normalizedBillRegisterMocks.loadNormalizedBillRegisterPage).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        organizationId: "org-primary",
+        businessDateFrom: expect.any(String),
+        businessDateTo: expect.any(String),
+        limit: 200
+      }),
+      client
+    );
+    expect(normalizedBillRegisterMocks.loadNormalizedBillRegisterPage).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        organizationId: "org-primary",
+        status: "pending",
+        limit: 200
+      }),
+      client
+    );
     expect(normalizedReadMocks.loadNormalizedExpenseAdminData).toHaveBeenCalledWith("org-primary", client);
     expect(normalizedReadMocks.loadNormalizedStockMovements).toHaveBeenCalledWith(
       "org-primary",
