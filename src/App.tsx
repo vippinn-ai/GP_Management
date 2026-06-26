@@ -52,6 +52,7 @@ import {
   loadNormalizedCustomerSearch,
   loadNormalizedReportData,
   loadNormalizedBillRegisterPage,
+  loadNormalizedPendingBills,
   resolveBackendFeatureFlags,
   type FinancialAdjustmentCommitResult,
   type FinancialAdjustmentKind,
@@ -2619,6 +2620,56 @@ export default function App() {
     return findPendingBillsForCustomer(appData.bills, customerId, name, phone);
   }
 
+  function replacePendingBillsForCustomer(
+    bills: Bill[],
+    pendingBills: Bill[],
+    customerId?: string,
+    name?: string,
+    phone?: string
+  ): Bill[] {
+    const localPendingIds = new Set(
+      findPendingBillsForCustomer(bills, customerId, name, phone).map((bill) => bill.id)
+    );
+    const freshPendingIds = new Set(pendingBills.map((bill) => bill.id));
+    const retainedBills = bills.filter((bill) => !localPendingIds.has(bill.id) || freshPendingIds.has(bill.id));
+    return mergeBillsById(pendingBills, retainedBills);
+  }
+
+  async function loadFreshPendingBillsForCustomerDetails(
+    customerId?: string,
+    name?: string,
+    phone?: string
+  ): Promise<Bill[]> {
+    const localPendingBills = getPendingBillsForCustomerDetails(customerId, name, phone);
+    if (!backendConfigured || !BACKEND_FEATURE_FLAGS.normalizedBootstrap) {
+      return localPendingBills;
+    }
+    if (!customerId && !normalizeCustomerName(name) && !normalizeCustomerPhone(phone)) {
+      return [];
+    }
+    try {
+      const freshPendingBills = await loadNormalizedPendingBills({
+        customerId,
+        customerName: name,
+        customerPhone: phone
+      });
+      setAppData((previous) => ({
+        ...previous,
+        bills: replacePendingBillsForCustomer(previous.bills, freshPendingBills, customerId, name, phone)
+      }));
+      return freshPendingBills;
+    } catch (error) {
+      if (localPendingBills.length > 0) {
+        return localPendingBills;
+      }
+      throw new Error(
+        error instanceof Error
+          ? `Unable to verify pending bills: ${error.message}`
+          : "Unable to verify pending bills from the backend."
+      );
+    }
+  }
+
   function applyPendingSettlementAmount(draft: PendingSettlementDraft, amount: number): PendingSettlementDraft {
     if (draft.paymentMode === "upi") {
       return { ...draft, cashAmount: 0, upiAmount: amount };
@@ -2798,7 +2849,7 @@ export default function App() {
     });
   }
 
-  function startSession(event: FormEvent<HTMLFormElement>) {
+  async function startSession(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!activeUser || !startSessionDraft.stationId) {
       return;
@@ -2809,7 +2860,15 @@ export default function App() {
     }
     const customerName = startSessionDraft.customerName;
     const customerPhone = startSessionDraft.customerPhone;
-    const pendingForCustomer = getPendingBillsForCustomerDetails(startSessionDraft.customerId, customerName, customerPhone);
+    let pendingForCustomer: Bill[];
+    try {
+      pendingForCustomer = await runBlockingAction("Checking pending bills...", () =>
+        loadFreshPendingBillsForCustomerDetails(startSessionDraft.customerId, customerName, customerPhone)
+      );
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "Unable to verify pending bills.");
+      return;
+    }
     if (pendingForCustomer.length > 0) {
       const label = customerPhone.trim() || customerName.trim();
       setPendingWarningDraft({ pendingBills: pendingForCustomer, customerLabel: label, intent: { type: "session" } });
@@ -3224,14 +3283,14 @@ export default function App() {
 
   function createOrSelectCustomerTab(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    openOrCreateCustomerTab(customerTabDraft, {
+    void openOrCreateCustomerTab(customerTabDraft, {
       updateSaleDraft: true,
       clearDraft: true,
       switchToSale: false
     });
   }
 
-  function openOrCreateCustomerTab(
+  async function openOrCreateCustomerTab(
     draftValue: CustomerTabDraft,
     options?: { updateSaleDraft?: boolean; clearDraft?: boolean; switchToSale?: boolean; continuedFromSessionIds?: string[]; onSuccess?: () => void }
   ) {
@@ -3307,7 +3366,15 @@ export default function App() {
       return;
     }
 
-    const pendingForCustomer = getPendingBillsForCustomerDetails(draftValue.customerId, customerName, customerPhone);
+    let pendingForCustomer: Bill[];
+    try {
+      pendingForCustomer = await runBlockingAction("Checking pending bills...", () =>
+        loadFreshPendingBillsForCustomerDetails(draftValue.customerId, customerName, customerPhone)
+      );
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "Unable to verify pending bills.");
+      return;
+    }
     if (pendingForCustomer.length > 0) {
       const label = customerPhone || customerName;
       setPendingWarningDraft({ pendingBills: pendingForCustomer, customerLabel: label, intent: { type: "tab", draftValue, options } });
@@ -3381,7 +3448,7 @@ export default function App() {
 
   function createDashboardCustomerTab(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    openOrCreateCustomerTab(dashboardCustomerTabDraft, {
+    void openOrCreateCustomerTab(dashboardCustomerTabDraft, {
       updateSaleDraft: true,
       clearDraft: true,
       switchToSale: false
@@ -3985,7 +4052,7 @@ export default function App() {
       window.alert("Customer name is required to start a consumables tab.");
       return;
     }
-    openOrCreateCustomerTab(draftValue, {
+    void openOrCreateCustomerTab(draftValue, {
       updateSaleDraft: true,
       clearDraft: false,
       switchToSale: true,

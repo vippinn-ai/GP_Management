@@ -30,6 +30,7 @@ const normalizedBillRegisterMocks = vi.hoisted(() => ({
   })),
   loadNormalizedBillRegisterPage: vi.fn(),
   loadNormalizedBillsByIds: vi.fn(),
+  loadNormalizedPendingBills: vi.fn(),
   resolveNormalizedBillRegisterOrganizationId: vi.fn()
 }));
 
@@ -149,6 +150,7 @@ describe("app_state data gateway", () => {
       payments: [],
       hasMore: false
     });
+    normalizedBillRegisterMocks.loadNormalizedPendingBills.mockResolvedValue([]);
   });
 
   it("delegates load, save, and realtime subscription to the existing backend functions", async () => {
@@ -408,37 +410,32 @@ describe("app_state data gateway", () => {
     backendMocks.getSupabaseClient.mockReturnValue(client);
     backendMocks.fetchProfiles.mockResolvedValue([profile]);
     backendMocks.loadRemoteAppStateMetadata.mockResolvedValue({ version: 44 });
-    normalizedBillRegisterMocks.loadNormalizedBillRegisterPage
-      .mockResolvedValueOnce({
-        bills: [
-          {
-            id: "bill-recent",
-            billNumber: "BILL-RECENT",
-            status: "issued",
-            issuedAt: "2026-06-24T10:00:00.000Z",
-            customerId: "customer-1",
-            customerName: "Recent Customer",
-            amountDue: 0
-          }
-        ],
-        payments: [{ id: "payment-1", billId: "bill-recent", mode: "cash", amount: 80 }],
-        hasMore: false
-      })
-      .mockResolvedValueOnce({
-        bills: [
-          {
-            id: "bill-pending",
-            billNumber: "BILL-PENDING",
-            status: "pending",
-            issuedAt: "2026-06-23T10:00:00.000Z",
-            customerId: "customer-2",
-            customerName: "Pending Customer",
-            amountDue: 50
-          }
-        ],
-        payments: [],
-        hasMore: false
-      });
+    normalizedBillRegisterMocks.loadNormalizedBillRegisterPage.mockResolvedValueOnce({
+      bills: [
+        {
+          id: "bill-recent",
+          billNumber: "BILL-RECENT",
+          status: "issued",
+          issuedAt: "2026-06-24T10:00:00.000Z",
+          customerId: "customer-1",
+          customerName: "Recent Customer",
+          amountDue: 0
+        }
+      ],
+      payments: [{ id: "payment-1", billId: "bill-recent", mode: "cash", amount: 80 }],
+      hasMore: false
+    });
+    normalizedBillRegisterMocks.loadNormalizedPendingBills.mockResolvedValue([
+      {
+        id: "bill-pending",
+        billNumber: "BILL-PENDING",
+        status: "pending",
+        issuedAt: "2026-06-23T10:00:00.000Z",
+        customerId: "customer-2",
+        customerName: "Pending Customer",
+        amountDue: 50
+      }
+    ]);
     normalizedReadMocks.loadNormalizedAppDataOverlay.mockResolvedValue({
       organizationId: "org-primary",
       appData: {
@@ -522,7 +519,7 @@ describe("app_state data gateway", () => {
       normalizedLiveReads: true,
       client
     });
-    expect(normalizedBillRegisterMocks.loadNormalizedBillRegisterPage).toHaveBeenCalledTimes(2);
+    expect(normalizedBillRegisterMocks.loadNormalizedBillRegisterPage).toHaveBeenCalledTimes(1);
     expect(normalizedBillRegisterMocks.loadNormalizedBillRegisterPage).toHaveBeenNthCalledWith(
       1,
       expect.objectContaining({
@@ -533,15 +530,7 @@ describe("app_state data gateway", () => {
       }),
       client
     );
-    expect(normalizedBillRegisterMocks.loadNormalizedBillRegisterPage).toHaveBeenNthCalledWith(
-      2,
-      expect.objectContaining({
-        organizationId: "org-primary",
-        status: "pending",
-        limit: 200
-      }),
-      client
-    );
+    expect(normalizedBillRegisterMocks.loadNormalizedPendingBills).toHaveBeenCalledWith({ organizationId: "org-primary" }, client);
     expect(normalizedReadMocks.loadNormalizedExpenseAdminData).toHaveBeenCalledWith("org-primary", client);
     expect(normalizedReadMocks.loadNormalizedStockMovements).toHaveBeenCalledWith(
       "org-primary",

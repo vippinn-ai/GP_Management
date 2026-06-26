@@ -5,6 +5,7 @@ import { invokeFinancialAdjustmentRpc, invokeFinancialCheckoutRpc } from "./fina
 import {
   getBusinessDayIssuedAtRange,
   loadNormalizedBillRegisterPage,
+  loadNormalizedPendingBills,
   type NormalizedBillRegisterCursor,
   type NormalizedBillRegisterQuery
 } from "./normalizedBillRegister";
@@ -36,7 +37,6 @@ const NORMALIZED_BOOTSTRAP_RECENT_BUSINESS_DAYS = 1;
 const NORMALIZED_BOOTSTRAP_STOCK_MOVEMENT_BUSINESS_DAYS = 30;
 const NORMALIZED_BOOTSTRAP_PAGE_SIZE = 200;
 const NORMALIZED_BOOTSTRAP_MAX_RECENT_BILLS = 200;
-const NORMALIZED_BOOTSTRAP_MAX_PENDING_BILLS = 200;
 const NORMALIZED_BOOTSTRAP_MAX_STOCK_MOVEMENTS = 5_000;
 const NORMALIZED_BOOTSTRAP_RECENT_AUDIT_LOGS = 20;
 
@@ -171,7 +171,7 @@ async function loadNormalizedBootstrapHistory(
   const { fromDate: recentFrom, toDate: currentBusinessDay } = getBusinessDayRangeForTrailingDays(
     NORMALIZED_BOOTSTRAP_RECENT_BUSINESS_DAYS
   );
-  const [recent, pending] = await Promise.all([
+  const [recent, pendingBills] = await Promise.all([
     loadNormalizedBillPages(
       {
         organizationId,
@@ -181,19 +181,12 @@ async function loadNormalizedBootstrapHistory(
       client,
       NORMALIZED_BOOTSTRAP_MAX_RECENT_BILLS
     ),
-    loadNormalizedBillPages(
-      {
-        organizationId,
-        status: "pending"
-      },
-      client,
-      NORMALIZED_BOOTSTRAP_MAX_PENDING_BILLS
-    )
+    loadNormalizedPendingBills({ organizationId }, client)
   ]);
 
   return {
-    bills: mergeRecordsById(recent.bills, pending.bills),
-    payments: mergeRecordsById(recent.payments, pending.payments)
+    bills: mergeRecordsById(recent.bills, pendingBills),
+    payments: recent.payments
   };
 }
 

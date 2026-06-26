@@ -1,6 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { getSupabaseClient } from "../backend";
-import { addDays } from "../utils";
+import { addDays, getPendingBillsForCustomer } from "../utils";
 import type {
   AppliedDiscount,
   Bill,
@@ -16,6 +16,7 @@ import type {
 const BILL_REGISTER_READ_TIMEOUT_MS = 15_000;
 const DEFAULT_BILL_REGISTER_PAGE_SIZE = 50;
 const MAX_BILL_REGISTER_PAGE_SIZE = 200;
+const PENDING_BILLS_PAGE_SIZE = 1_000;
 
 const BILL_SELECT_COLUMNS =
   "id, bill_number, status, created_at_source, issued_at, issued_by_user_id, customer_id, customer_name, customer_phone, payment_mode, station_id, session_id, amount_paid, amount_due, subtotal, total_discount_amount, bill_discount_amount, round_off_enabled, round_off_amount, total, receipt_type, replacement_of_bill_id, replaced_by_bill_id, replaced_at, replaced_by_user_id, replace_reason, voided_at, voided_by_user_id, void_reason, settled_at, settled_by_user_id, raw_data";
@@ -66,6 +67,13 @@ export interface NormalizedBillPatchQuery {
   organizationId?: string;
   billIds?: string[];
   paymentIds?: string[];
+}
+
+export interface NormalizedPendingBillsQuery {
+  organizationId?: string;
+  customerId?: string;
+  customerName?: string;
+  customerPhone?: string;
 }
 
 interface BillRow {
@@ -552,6 +560,39 @@ export async function loadNormalizedBillRegisterPage(
     paymentRows,
     pageSize
   });
+}
+
+export async function loadNormalizedPendingBills(
+  query: NormalizedPendingBillsQuery = {},
+  client: SupabaseClient = getSupabaseClient()
+): Promise<Bill[]> {
+  const organizationId = query.organizationId ?? (await resolveNormalizedBillRegisterOrganizationId(client));
+  let billRows: BillRow[] = [];
+  let offset = 0;
+  while (true) {
+    const pageRows = await readMany<BillRow>(
+      client
+        .from("bills")
+        .select(BILL_SELECT_COLUMNS)
+        .eq("organization_id", organizationId)
+        .eq("status", "pending")
+        .gt("amount_due", 0)
+        .order("issued_at", { ascending: false })
+        .order("id", { ascending: false })
+        .range(offset, offset + PENDING_BILLS_PAGE_SIZE - 1),
+      "loading pending bill summaries"
+    );
+    billRows = [...billRows, ...pageRows];
+    if (pageRows.length < PENDING_BILLS_PAGE_SIZE) {
+      break;
+    }
+    offset += PENDING_BILLS_PAGE_SIZE;
+  }
+  const pendingBills = billRows.map((row) => mapNormalizedBill(row));
+  if (query.customerId || query.customerName || query.customerPhone) {
+    return getPendingBillsForCustomer(pendingBills, query.customerId, query.customerName, query.customerPhone);
+  }
+  return pendingBills;
 }
 
 export async function loadNormalizedBillsByIds(

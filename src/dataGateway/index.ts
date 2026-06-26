@@ -49,6 +49,7 @@ export {
   getBusinessDayIssuedAtRange,
   loadNormalizedBillRegisterPage,
   loadNormalizedBillsByIds,
+  loadNormalizedPendingBills,
   mapNormalizedBill,
   mapNormalizedBillLine,
   mapNormalizedPayment,
@@ -56,7 +57,8 @@ export {
   type NormalizedBillRegisterCursor,
   type NormalizedBillRegisterPage,
   type NormalizedBillPatchQuery,
-  type NormalizedBillRegisterQuery
+  type NormalizedBillRegisterQuery,
+  type NormalizedPendingBillsQuery
 } from "./normalizedBillRegister";
 export {
   getNormalizedRealtimeRefreshPlan,
