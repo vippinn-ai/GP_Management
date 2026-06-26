@@ -34,6 +34,13 @@ export {
   type NormalizedCustomerSearchQuery
 } from "./normalizedCustomerSearch";
 export {
+  loadAnalyticsSummaryData,
+  mapAnalyticsSummaryData,
+  type AnalyticsSummaryData,
+  type AnalyticsSummaryMetrics,
+  type AnalyticsSummaryQuery
+} from "./analyticsSummary";
+export {
   buildNormalizedReportData,
   getLocalDateRange,
   getReportPaymentQueryRange,

@@ -163,10 +163,10 @@ export function ReportsPanel(props: {
             <div className={`read-only-banner compact ${props.normalizedReports.error ? "is-warning" : ""}`}>
               <span>
                 {props.normalizedReports.loading
-                  ? "Loading report rows from normalized tables..."
+                  ? "Loading report data from the backend..."
                   : props.normalizedReports.error
                     ? `Using current cached report data: ${props.normalizedReports.error}`
-                    : "Report range is loaded from normalized tables."}
+                    : "Report range is loaded from backend report data."}
               </span>
               <button className="secondary-button" type="button" onClick={props.normalizedReports.onRefresh} disabled={props.normalizedReports.loading}>
                 Refresh

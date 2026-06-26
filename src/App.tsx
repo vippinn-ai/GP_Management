@@ -49,6 +49,7 @@ import {
   buildAdminDataChangePatch,
   buildFinancialAdjustmentPatch,
   buildFinancialCheckoutPatch,
+  loadAnalyticsSummaryData,
   loadNormalizedCustomerSearch,
   loadNormalizedReportData,
   loadNormalizedBillRegisterPage,
@@ -59,6 +60,7 @@ import {
   type FinancialAdjustmentPatch,
   type FinancialCheckoutCommitResult,
   type FinancialCheckoutPatch,
+  type AnalyticsSummaryData,
   type NormalizedBillRegisterCursor,
   type NormalizedBillRegisterQuery,
   type NormalizedReportData,
@@ -238,6 +240,15 @@ interface NormalizedReportState extends NormalizedReportData {
   queryKey: string;
 }
 
+interface AnalyticsSummaryState {
+  data: AnalyticsSummaryData | null;
+  loading: boolean;
+  error: string;
+  loaded: boolean;
+  queryKey: string;
+  dataQueryKey: string;
+}
+
 function createEmptyNormalizedBillRegisterState(): NormalizedBillRegisterState {
   return {
     bills: [],
@@ -270,6 +281,17 @@ function createEmptyNormalizedReportState(): NormalizedReportState {
     error: "",
     loaded: false,
     queryKey: "{}"
+  };
+}
+
+function createEmptyAnalyticsSummaryState(): AnalyticsSummaryState {
+  return {
+    data: null,
+    loading: false,
+    error: "",
+    loaded: false,
+    queryKey: "{}",
+    dataQueryKey: "{}"
   };
 }
 
@@ -414,6 +436,9 @@ export default function App() {
   );
   const [normalizedReportState, setNormalizedReportState] = useState<NormalizedReportState>(
     createEmptyNormalizedReportState
+  );
+  const [analyticsSummaryState, setAnalyticsSummaryState] = useState<AnalyticsSummaryState>(
+    createEmptyAnalyticsSummaryState
   );
   const [normalizedReportRefreshSignal, setNormalizedReportRefreshSignal] = useState(0);
   const receiptPreviewBlockRef = useRef<HTMLDivElement | null>(null);
@@ -962,6 +987,7 @@ export default function App() {
   const normalizedBillHistoryReadsEnabled = backendConfigured && BACKEND_FEATURE_FLAGS.normalizedBillHistoryReads;
   const normalizedCustomerSearchReadsEnabled = backendConfigured && BACKEND_FEATURE_FLAGS.normalizedCustomerSearchReads;
   const normalizedReportReadsEnabled = backendConfigured && BACKEND_FEATURE_FLAGS.normalizedReportReads;
+  const analyticsSummaryReadsEnabled = backendConfigured && BACKEND_FEATURE_FLAGS.analyticsSummaryReads;
   const canEditInventory = activeUser?.role === "admin";
   const canCreateExpenses = activeUser?.role === "admin" || activeUser?.role === "manager";
   const canDeleteExpenses = activeUser?.role === "admin";
@@ -1040,10 +1066,17 @@ export default function App() {
     inventoryReportToDate
   );
   const normalizedReportDataReady =
+    !analyticsSummaryReadsEnabled &&
     normalizedReportReadsEnabled &&
     normalizedReportState.loaded &&
     !normalizedReportState.error &&
     normalizedReportState.queryKey === normalizedReportQueryKey;
+  const analyticsSummaryDataReady =
+    analyticsSummaryReadsEnabled &&
+    analyticsSummaryState.loaded &&
+    !!analyticsSummaryState.data &&
+    analyticsSummaryState.dataQueryKey === normalizedReportQueryKey;
+  const analyticsSummaryData = analyticsSummaryDataReady ? analyticsSummaryState.data : null;
   const reportSourceBills = normalizedReportDataReady ? normalizedReportState.bills : appData.bills;
   const reportSourcePayments = normalizedReportDataReady ? normalizedReportState.payments : appData.payments;
   const reportSourceExpenses = normalizedReportDataReady ? normalizedReportState.expenses : appData.expenses;
@@ -1376,7 +1409,75 @@ export default function App() {
   }, [normalizedCustomerSearchReadsEnabled, normalizedCustomerSearchState]);
 
   useEffect(() => {
-    if (!normalizedReportReadsEnabled || activeTab !== "reports" || !activeUserId || !canAccessTab("reports")) {
+    if (!analyticsSummaryReadsEnabled || activeTab !== "reports" || !activeUserId || !canAccessTab("reports")) {
+      return;
+    }
+
+    let cancelled = false;
+    setAnalyticsSummaryState((previous) => ({
+      ...previous,
+      loading: true,
+      error: "",
+      queryKey: normalizedReportQueryKey
+    }));
+
+    loadAnalyticsSummaryData({
+      fromDate: reportFromDate,
+      toDate: reportToDate,
+      previousFromDate: previousRange.from,
+      previousToDate: previousRange.to
+    })
+      .then((data) => {
+        if (cancelled) {
+          return;
+        }
+        setAnalyticsSummaryState({
+          data,
+          loading: false,
+          error: "",
+          loaded: true,
+          queryKey: normalizedReportQueryKey,
+          dataQueryKey: normalizedReportQueryKey
+        });
+      })
+      .catch((error: unknown) => {
+        if (cancelled) {
+          return;
+        }
+        setAnalyticsSummaryState((previous) => ({
+          ...previous,
+          loading: false,
+          error: error instanceof Error ? error.message : "Unable to load analytics summary data.",
+          loaded: previous.loaded,
+          queryKey: previous.queryKey,
+          dataQueryKey: previous.dataQueryKey
+        }));
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    activeTab,
+    activeUserId,
+    analyticsSummaryReadsEnabled,
+    canAccessTab,
+    normalizedReportQueryKey,
+    normalizedReportRefreshSignal,
+    previousRange.from,
+    previousRange.to,
+    reportFromDate,
+    reportToDate
+  ]);
+
+  useEffect(() => {
+    if (
+      analyticsSummaryReadsEnabled ||
+      !normalizedReportReadsEnabled ||
+      activeTab !== "reports" ||
+      !activeUserId ||
+      !canAccessTab("reports")
+    ) {
       return;
     }
 
@@ -1439,6 +1540,10 @@ export default function App() {
     setNormalizedReportState((previous) => ({
       ...previous,
       loaded: false,
+      queryKey: `${previous.queryKey}:refresh:${Date.now()}`
+    }));
+    setAnalyticsSummaryState((previous) => ({
+      ...previous,
       queryKey: `${previous.queryKey}:refresh:${Date.now()}`
     }));
     setNormalizedReportRefreshSignal((previous) => previous + 1);
@@ -6138,20 +6243,28 @@ export default function App() {
   const billById = new Map(reportSourceBills.map((bill) => [bill.id, bill]));
   const paidBillIds = new Set(filteredRevenuePayments.map((payment) => payment.billId));
   const paidBillsInRange = reportSourceBills.filter((bill) => paidBillIds.has(bill.id));
-  const grossRevenue = sumBy(filteredRevenuePayments, (payment) => payment.amount);
-  const deferredOutstanding = sumBy(
+  const analyticsSummary = analyticsSummaryData?.summary;
+  const clientGrossRevenue = sumBy(filteredRevenuePayments, (payment) => payment.amount);
+  const grossRevenue = analyticsSummary?.grossRevenue ?? clientGrossRevenue;
+  const clientDeferredOutstanding = sumBy(
     filteredBills.filter((b) => b.status === "pending" && b.amountDue > 0),
     (b) => b.amountDue
   );
+  const deferredOutstanding = analyticsSummary?.deferredOutstanding ?? clientDeferredOutstanding;
   const paymentAllocations = filteredRevenuePayments.map((payment) => {
     const bill = billById.get(payment.billId);
     return bill ? allocatePaymentRevenueToBill(bill, payment.amount) : { sessionRevenue: 0, itemRevenue: 0, totalDiscounts: 0 };
   });
-  const sessionRevenue = sumBy(paymentAllocations, (allocation) => allocation.sessionRevenue);
-  const itemRevenue = sumBy(paymentAllocations, (allocation) => allocation.itemRevenue);
-  const totalDiscounts = sumBy(paymentAllocations, (allocation) => allocation.totalDiscounts);
-  const oneTimeExpenses = sumBy(filteredExpenses, (expense) => expense.amount);
-  const expensePaymentModeTotals = computeExpensePaymentModeTotals(filteredExpenses);
+  const clientSessionRevenue = sumBy(paymentAllocations, (allocation) => allocation.sessionRevenue);
+  const clientItemRevenue = sumBy(paymentAllocations, (allocation) => allocation.itemRevenue);
+  const clientTotalDiscounts = sumBy(paymentAllocations, (allocation) => allocation.totalDiscounts);
+  const sessionRevenue = analyticsSummary?.sessionRevenue ?? clientSessionRevenue;
+  const itemRevenue = analyticsSummary?.itemRevenue ?? clientItemRevenue;
+  const totalDiscounts = analyticsSummary?.totalDiscounts ?? clientTotalDiscounts;
+  const clientOneTimeExpenses = sumBy(filteredExpenses, (expense) => expense.amount);
+  const oneTimeExpenses = analyticsSummary?.oneTimeExpenses ?? clientOneTimeExpenses;
+  const expensePaymentModeTotals =
+    analyticsSummary?.expensePaymentModeTotals ?? computeExpensePaymentModeTotals(filteredExpenses);
   const reportMonthKeys = getMonthKeysInRange(reportFromDate, reportToDate);
   const normalizedExpenseEntries = appData.expenseTemplates
     .filter((template) => template.active)
@@ -6177,14 +6290,16 @@ export default function App() {
   const normalizedExpenses = sumBy(normalizedExpenseEntries, (entry) => entry.proratedAmount);
   const netCashEarnings = grossRevenue - oneTimeExpenses;
   const normalizedNetProfit = grossRevenue - normalizedExpenses;
-  const previousRangeRevenue = sumBy(
+  const clientPreviousRangeRevenue = sumBy(
     filterPaymentsByBusinessDate(reportRevenueCountedPayments, previousRange.from, previousRange.to),
     (payment) => payment.amount
   );
+  const previousRangeRevenue = analyticsSummary?.previousRangeRevenue ?? clientPreviousRangeRevenue;
   const revenueGrowthPct =
     previousRangeRevenue > 0 ? ((grossRevenue - previousRangeRevenue) / previousRangeRevenue) * 100 : null;
-  const averageBillValue = paidBillsInRange.length > 0 ? grossRevenue / paidBillsInRange.length : 0;
-  const topStation =
+  const paidBillsInRangeCount = analyticsSummary?.paidBillCount ?? paidBillsInRange.length;
+  const averageBillValue = paidBillsInRangeCount > 0 ? grossRevenue / paidBillsInRangeCount : 0;
+  const clientTopStation =
     Object.entries(
       filteredRevenuePayments.reduce<Record<string, number>>((totals, payment) => {
         const bill = billById.get(payment.billId);
@@ -6198,7 +6313,8 @@ export default function App() {
         return totals;
       }, {})
     ).sort((left, right) => right[1] - left[1])[0] ?? null;
-  const paymentModeTotals = computePaymentModeTotals(reportSourceBills, filteredRevenuePayments);
+  const topStation = analyticsSummaryData?.topStation ?? clientTopStation;
+  const paymentModeTotals = analyticsSummary?.paymentModeTotals ?? computePaymentModeTotals(reportSourceBills, filteredRevenuePayments);
   const cashExpenseByCategory = Object.entries(
     filteredExpenses.reduce<Record<string, number>>((totals, expense) => {
       totals[expense.category] = (totals[expense.category] ?? 0) + expense.amount;
@@ -6211,25 +6327,27 @@ export default function App() {
       return totals;
     }, {})
   ).sort((left, right) => right[1] - left[1]);
-  const expenseByCategory = cashExpenseByCategory;
+  const expenseByCategory = analyticsSummaryData?.expenseByCategory ?? cashExpenseByCategory;
   const outOfStockItems = appData.inventoryItems.filter((item) => item.active && getInventoryState(item) === "out");
   const lowStockItems = appData.inventoryItems.filter((item) => item.active && getInventoryState(item) === "low");
   const occupiedItems = appData.inventoryItems.filter((item) => item.active && getInventoryState(item) === "occupied");
   const pendingBills = appData.bills.filter((b) => b.status === "pending");
   const totalAmountDue = pendingBills.reduce((sum, b) => sum + b.amountDue, 0);
   const pendingReceivableGroups = getPendingReceivableGroups(pendingBills, billBusinessDates, currentBusinessDay);
-  const pendingRevenue = sumBy(
+  const clientPendingRevenue = sumBy(
     filteredBills.filter((b) => b.status === "pending"),
     (b) => b.amountDue
   );
+  const pendingRevenue = analyticsSummary?.pendingRevenue ?? clientPendingRevenue;
   const todayMs = new Date(`${currentBusinessDay}T12:00:00`).getTime();
-  const allPendingReceivables = pendingBills
+  const clientAllPendingReceivables = pendingBills
     .map((b) => {
       const businessDate = billBusinessDates[b.id];
       const daysOverdue = Math.floor((todayMs - new Date(`${businessDate}T12:00:00`).getTime()) / 86400000);
       return { bill: b, businessDate, daysOverdue };
     })
     .sort((a, b) => b.daysOverdue - a.daysOverdue);
+  const allPendingReceivables = analyticsSummaryData?.pendingReceivables ?? clientAllPendingReceivables;
   const pendingOperationalCount = pendingOperationalMutations.filter(
     (mutation) => mutation.status === "pending" || mutation.status === "syncing" || mutation.status === "failed"
   ).length;
@@ -6674,7 +6792,7 @@ export default function App() {
               grossRevenue,
               netCashEarnings,
               normalizedNetProfit,
-              issuedBillsCount: paidBillsInRange.length,
+              issuedBillsCount: paidBillsInRangeCount,
               oneTimeExpenses,
               normalizedExpenses,
               sessionRevenue,
@@ -6702,7 +6820,14 @@ export default function App() {
             canManageExpenseTemplates={canManageExpenseTemplates}
             isManagerReadOnly={isManagerReadOnly}
             normalizedReports={
-              normalizedReportReadsEnabled
+              analyticsSummaryReadsEnabled
+                ? {
+                    enabled: true,
+                    loading: analyticsSummaryState.loading,
+                    error: analyticsSummaryState.error,
+                    onRefresh: refreshNormalizedReport
+                  }
+                : normalizedReportReadsEnabled
                 ? {
                     enabled: true,
                     loading: normalizedReportState.loading,
