@@ -98,6 +98,7 @@
 - [x] 8.8 Disable `app_state` realtime publication after all production browsers hard refresh onto compact realtime
 - [x] 8.8a Reduce compact realtime live refresh egress by fetching changed session/tab rows by ID when event metadata includes target IDs
 - [ ] 8.9 Later phase: remove full startup `app_state` load and retire full `app_state` writes after a separate cutover
+  - Decision on 2026-06-27: keep `VITE_BACKEND_NORMALIZED_BOOTSTRAP=false` in production because post-Analytics-summary egress is acceptable at roughly 69 MB/day. Do not re-enable normalized startup bootstrap without a separate staging soak and explicit approval.
 
 ## 9. Verification
 
@@ -210,7 +211,7 @@
 - [ ] 10.8.1 Record production SQL script completion times and any warnings
 - [x] 10.8.2 Record production Worker version ID, Git commit, and deploy time
 - [ ] 10.8.3 Record production smoke test results with tester name and timestamp
-- [ ] 10.8.4 Record first-day egress observation and compare against baseline
+- [x] 10.8.4 Record first-day egress observation and compare against baseline
 - [ ] 10.8.5 Mark production rollout complete only after one normal business day without rollback-triggering defects
 
 ### 10.9 Compact Realtime / Minimal Cache Production Rollout
@@ -241,5 +242,18 @@
   - Production Worker version: `ef102f4b-81fd-4323-b254-915595d5130b` on 2026-06-25
 - [ ] 10.9.11 Confirm all staff production browsers have hard refreshed after rollout
 - [ ] 10.9.12 Monitor production for one normal business day with no rollback-triggering defects
-- [ ] 10.9.13 Capture next-day Supabase Postgres egress and compare with baseline
+- [x] 10.9.13 Capture next-day Supabase Postgres egress and compare with baseline
 - [ ] 10.9.14 Close compact realtime rollout only if daily Postgres egress trends down and no unresolved sync or billing issues are reported
+
+### 10.10 Analytics Summary Egress Reduction
+
+- [x] 10.10.1 Run `supabase/phase7-analytics-summary-rpc.sql` in staging and production
+- [x] 10.10.2 Backfill analytics summary tables in staging and production
+- [x] 10.10.3 Verify analytics summary RLS, function grants, summary row count, and dirty-date state
+- [x] 10.10.4 Deploy staging and production with `VITE_BACKEND_ANALYTICS_SUMMARY_READS=true`
+  - Production Worker version: `64ba24c2-06d0-43dc-a998-7b2eda3f165f`
+  - Git commit: `cbe0fb8`
+- [x] 10.10.5 Confirm Analytics Today behavior uses the 7 AM business-day boundary
+- [x] 10.10.6 Record post-rollout egress observation
+  - 2026-06-27: Supabase Postgres egress observed at roughly 69 MB, considered acceptable by the owner.
+- [x] 10.10.7 Keep normalized startup bootstrap disabled in production after egress improved to an acceptable range
