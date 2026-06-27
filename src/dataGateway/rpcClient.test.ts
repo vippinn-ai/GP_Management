@@ -55,6 +55,7 @@ describe("operational RPC client", () => {
     expect(getOperationalRpcFunctionName("rejectSession")).toBe("reject_session");
     expect(getOperationalRpcFunctionName("repeatSessionCombo")).toBe("repeat_session_combo");
     expect(getOperationalRpcFunctionName("openCustomerTab")).toBe("open_customer_tab");
+    expect(getOperationalRpcFunctionName("linkCustomerTabContinuation")).toBe("link_customer_tab_continuation");
     expect(getOperationalRpcFunctionName("applyCustomerTabCombo")).toBe("apply_customer_tab_combo");
     expect(getOperationalRpcFunctionName("addCustomerTabItem")).toBe("add_customer_tab_item");
     expect(getOperationalRpcFunctionName("updateCustomerTabItemQuantity")).toBe("update_customer_tab_item_quantity");

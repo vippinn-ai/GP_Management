@@ -32,6 +32,7 @@ export type OperationalMutationKind =
   | "rejectSession"
   | "repeatSessionCombo"
   | "openCustomerTab"
+  | "linkCustomerTabContinuation"
   | "applyCustomerTabCombo"
   | "addCustomerTabItem"
   | "updateCustomerTabItemQuantity"
@@ -103,6 +104,12 @@ interface OpenCustomerTabPayload {
   auditLog: AuditLog;
 }
 
+interface LinkCustomerTabContinuationPayload {
+  customerTabId: string;
+  continuedFromSessionIds: string[];
+  auditLogs: AuditLog[];
+}
+
 interface ApplyCustomerTabComboPayload {
   customerTabId: string;
   comboApplication: SessionComboApplication;
@@ -160,6 +167,7 @@ export type OperationalMutationPayload =
   | RejectSessionPayload
   | RepeatSessionComboPayload
   | OpenCustomerTabPayload
+  | LinkCustomerTabContinuationPayload
   | ApplyCustomerTabComboPayload
   | AddCustomerTabItemPayload
   | UpdateCustomerTabItemQuantityPayload
@@ -425,6 +433,28 @@ export function validateOperationalMutation(appData: AppData, mutation: Operatio
         ? { ok: false, reason: "A matching customer tab is already open." }
         : { ok: true };
     }
+    case "linkCustomerTabContinuation": {
+      const payload = mutation.payload as LinkCustomerTabContinuationPayload;
+      const tab = appData.customerTabs.find((entry) => entry.id === payload.customerTabId && entry.status === "open");
+      if (!tab) {
+        return { ok: false, reason: "The customer tab is no longer open." };
+      }
+      const continuationIds = Array.from(new Set(payload.continuedFromSessionIds.filter(Boolean)));
+      if (continuationIds.length === 0) {
+        return { ok: false, reason: "No hopped session was selected for this customer tab." };
+      }
+      const alreadyLinked = new Set(tab.continuedFromSessionIds ?? []);
+      for (const sessionId of continuationIds) {
+        if (alreadyLinked.has(sessionId)) {
+          continue;
+        }
+        const session = appData.sessions.find((entry) => entry.id === sessionId);
+        if (!session || session.closeDisposition !== "hopped" || session.closedBillId) {
+          return { ok: false, reason: "The hopped session is no longer available for this customer tab." };
+        }
+      }
+      return { ok: true };
+    }
     case "applyCustomerTabCombo": {
       const payload = mutation.payload as ApplyCustomerTabComboPayload;
       const tab = appData.customerTabs.find((entry) => entry.id === payload.customerTabId && entry.status === "open");
@@ -623,6 +653,20 @@ export function applyOperationalMutation(source: AppData, mutation: OperationalM
         appData.customerTabs.unshift(tab);
       }
       insertFirstUnique(appData.auditLogs, payload.auditLog);
+      break;
+    }
+    case "linkCustomerTabContinuation": {
+      const payload = mutation.payload as LinkCustomerTabContinuationPayload;
+      const tab = appData.customerTabs.find((entry) => entry.id === payload.customerTabId && entry.status === "open");
+      if (tab) {
+        tab.continuedFromSessionIds = Array.from(new Set([
+          ...(tab.continuedFromSessionIds ?? []),
+          ...payload.continuedFromSessionIds.filter(Boolean)
+        ]));
+      }
+      for (const auditLog of payload.auditLogs) {
+        insertFirstUnique(appData.auditLogs, auditLog);
+      }
       break;
     }
     case "applyCustomerTabCombo": {

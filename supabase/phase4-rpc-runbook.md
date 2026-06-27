@@ -15,7 +15,8 @@ Run in staging first.
 7. Run `supabase/phase4-live-detail-rpcs.sql`.
 8. Run `supabase/phase4-reject-rpcs.sql`.
 9. Run `supabase/phase4-hop-session-rpc.sql`.
-10. Run `supabase/phase4-fast-app-state-patch-helper.sql` if this environment was already on an older helper or if reject/financial RPCs show statement-timeout errors on production-sized `app_state` arrays.
+10. Run `supabase/phase4-link-customer-tab-continuation-rpc.sql`.
+11. Run `supabase/phase4-fast-app-state-patch-helper.sql` if this environment was already on an older helper or if reject/financial RPCs show statement-timeout errors on production-sized `app_state` arrays.
 11. Run `supabase/phase5-financial-checkout-rpc.sql` only when you are ready to test compact issue-bill writes.
 12. Run `supabase/phase5-financial-adjustment-rpc.sql` only when you are ready to test compact pending settlement, pending write-off, and issued-bill void/refund writes.
 13. Keep `VITE_BACKEND_RPC_OPERATIONAL_WRITES`, `VITE_BACKEND_NORMALIZED_LIVE_READS`, and `VITE_BACKEND_RPC_FINANCIAL_WRITES` disabled until a deliberate staging smoke test.
@@ -62,6 +63,7 @@ where routine_schema = 'public'
     'hop_session',
     'reject_session',
     'open_customer_tab',
+    'link_customer_tab_continuation',
     'add_customer_tab_item',
     'update_customer_tab_item_quantity',
     'remove_customer_tab_item',
@@ -89,6 +91,7 @@ Expected:
 - `hop_session` exists.
 - `reject_session` exists.
 - `open_customer_tab` exists.
+- `link_customer_tab_continuation` exists.
 - `add_customer_tab_item` exists.
 - `update_customer_tab_item_quantity` exists.
 - `remove_customer_tab_item` exists.
@@ -109,6 +112,7 @@ Expected:
 - `hop_session` is `DEFINER`.
 - `reject_session` is `DEFINER`.
 - `open_customer_tab` is `DEFINER`.
+- `link_customer_tab_continuation` is `DEFINER`.
 - `add_customer_tab_item` is `DEFINER`.
 - `update_customer_tab_item_quantity` is `DEFINER`.
 - `remove_customer_tab_item` is `DEFINER`.
@@ -143,6 +147,8 @@ select
   has_function_privilege('authenticated', 'public.reject_session(jsonb)', 'execute') as authenticated_can_reject_session,
   has_function_privilege('anon', 'public.open_customer_tab(jsonb)', 'execute') as anon_can_open_customer_tab,
   has_function_privilege('authenticated', 'public.open_customer_tab(jsonb)', 'execute') as authenticated_can_open_customer_tab,
+  has_function_privilege('anon', 'public.link_customer_tab_continuation(jsonb)', 'execute') as anon_can_link_customer_tab_continuation,
+  has_function_privilege('authenticated', 'public.link_customer_tab_continuation(jsonb)', 'execute') as authenticated_can_link_customer_tab_continuation,
   has_function_privilege('anon', 'public.add_customer_tab_item(jsonb)', 'execute') as anon_can_add_customer_tab_item,
   has_function_privilege('authenticated', 'public.add_customer_tab_item(jsonb)', 'execute') as authenticated_can_add_customer_tab_item,
   has_function_privilege('anon', 'public.update_customer_tab_item_quantity(jsonb)', 'execute') as anon_can_update_customer_tab_item_quantity,
@@ -187,6 +193,8 @@ Expected:
 - `authenticated_can_reject_session = true`
 - `anon_can_open_customer_tab = false`
 - `authenticated_can_open_customer_tab = true`
+- `anon_can_link_customer_tab_continuation = false`
+- `authenticated_can_link_customer_tab_continuation = true`
 - `anon_can_add_customer_tab_item = false`
 - `authenticated_can_add_customer_tab_item = true`
 - `anon_can_update_customer_tab_item_quantity = false`
@@ -230,6 +238,7 @@ where routine_schema = 'public'
     'hop_session',
     'reject_session',
     'open_customer_tab',
+    'link_customer_tab_continuation',
     'add_customer_tab_item',
     'update_customer_tab_item_quantity',
     'remove_customer_tab_item',
@@ -289,12 +298,14 @@ The `add_session_item` and `remove_session_item` RPCs:
 - write session item, reservation/release stock movement, audit, and compact operational event rows atomically
 - return compact changed-row ids and event metadata
 
-The `open_customer_tab`, `add_customer_tab_item`, `update_customer_tab_item_quantity`, and
+The `open_customer_tab`, `link_customer_tab_continuation`, `add_customer_tab_item`, `update_customer_tab_item_quantity`, and
 `remove_customer_tab_item` RPCs:
 
 - validate organization membership through `current_user_has_org_access`
 - serialize matching customer-tab opens with a transaction-scoped advisory lock
 - reject duplicate open tabs for the same customer name or phone with `matching_customer_tab_open`
+- link hopped sessions into an existing open customer tab without duplicating `continuedFromSessionIds`
+- reject closed/missing tabs or already billed hopped sessions before linking
 - lock the target customer tab row for item mutations
 - reject closed/missing tabs with `customer_tab_not_open`
 - reject direct edits/removals for included combo lines with `combo_item_locked`

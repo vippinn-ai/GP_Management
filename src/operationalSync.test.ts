@@ -118,6 +118,95 @@ describe("operational sync", () => {
     expect(nextData.auditLogs[0].id).toBe("audit-1");
   });
 
+  it("links a hopped session to an open customer tab without duplicating session ids", () => {
+    const appData = createAppData();
+    appData.sessions.push({
+      id: "session-hop-1",
+      stationId: "station-1",
+      stationNameSnapshot: "Pool 1",
+      mode: "timed",
+      startedAt: "2026-06-09T09:00:00.000Z",
+      endedAt: "2026-06-09T10:00:00.000Z",
+      status: "closed",
+      customerName: "Vipin",
+      playMode: "group",
+      ltpEligible: false,
+      pricingSnapshot: [],
+      items: [],
+      pauseLogIds: [],
+      closeDisposition: "hopped"
+    });
+    appData.customerTabs.push({
+      id: "tab-1",
+      customerName: "Vipin",
+      status: "open",
+      createdAt: "2026-06-09T10:05:00.000Z",
+      items: [],
+      continuedFromSessionIds: ["session-hop-1"]
+    });
+
+    const nextData = applyOperationalMutation(
+      appData,
+      mutation("linkCustomerTabContinuation", "customer_tab", "tab-1", {
+        customerTabId: "tab-1",
+        continuedFromSessionIds: ["session-hop-1"],
+        auditLogs: [{
+          id: "audit-link-1",
+          action: "customer_tab_continuation_linked",
+          entityType: "customer_tab",
+          entityId: "tab-1",
+          message: "Linked previous session.",
+          createdAt: "2026-06-09T10:06:00.000Z",
+          userId: "user-1"
+        }]
+      })
+    );
+
+    expect(nextData.customerTabs[0].continuedFromSessionIds).toEqual(["session-hop-1"]);
+    expect(nextData.auditLogs[0].id).toBe("audit-link-1");
+  });
+
+  it("rejects customer tab continuation links for closed tabs or already billed sessions", () => {
+    const appData = createAppData();
+    appData.sessions.push({
+      id: "session-hop-1",
+      stationId: "station-1",
+      stationNameSnapshot: "Pool 1",
+      mode: "timed",
+      startedAt: "2026-06-09T09:00:00.000Z",
+      endedAt: "2026-06-09T10:00:00.000Z",
+      status: "closed",
+      customerName: "Vipin",
+      playMode: "group",
+      ltpEligible: false,
+      pricingSnapshot: [],
+      items: [],
+      pauseLogIds: [],
+      closeDisposition: "hopped",
+      closedBillId: "bill-1"
+    });
+    appData.customerTabs.push({
+      id: "tab-1",
+      customerName: "Vipin",
+      status: "open",
+      createdAt: "2026-06-09T10:05:00.000Z",
+      items: []
+    });
+
+    const pending = mutation("linkCustomerTabContinuation", "customer_tab", "tab-1", {
+      customerTabId: "tab-1",
+      continuedFromSessionIds: ["session-hop-1"],
+      auditLogs: []
+    });
+
+    expect(validateOperationalMutation(appData, pending)).toMatchObject({ ok: false });
+
+    appData.customerTabs[0].status = "closed";
+    appData.sessions[0].closedBillId = undefined;
+
+    expect(validateOperationalMutation(appData, pending)).toMatchObject({ ok: false });
+  });
+
   it("applies a rejected session operation and resumes any open pause log", () => {
     const appData = createAppData();
     appData.sessions.push({

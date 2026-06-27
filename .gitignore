@@ -19,3 +19,6 @@ supabase/.temp/
 openwhispr/
 test-artifacts/
 production-recent-activity-*
+Backup_*.txt
+app_state_baseline*.txt
+appp_state_baseline.txt

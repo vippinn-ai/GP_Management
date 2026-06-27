@@ -21,16 +21,15 @@ export function CustomerAutocompleteFields(props: {
   nameFieldClassName?: string;
   phoneFieldClassName?: string;
 } & CustomerAutocompleteSuggestionProps) {
-  const [suggestionsOpen, setSuggestionsOpen] = useState(false);
-  const normalizedQuery = props.customerName.trim().replace(/\s+/g, " ").toLowerCase();
-  const normalizedPhoneQuery = (props.customerName.match(/[\d+]+/g)?.join("") ?? "").replace(/(?!^)\+/g, "");
-  const serverSuggestionsMatch = props.suggestionQuery?.trim() === props.customerName.trim();
+  const [activeSuggestionField, setActiveSuggestionField] = useState<"name" | "phone" | null>(null);
+  const activeQuery = activeSuggestionField === "phone" ? props.customerPhone : props.customerName;
+  const normalizedQuery = activeQuery.trim().replace(/\s+/g, " ").toLowerCase();
+  const normalizedPhoneQuery = (activeQuery.match(/[\d+]+/g)?.join("") ?? "").replace(/(?!^)\+/g, "");
+  const serverSuggestionsMatch = props.suggestionQuery?.trim() === activeQuery.trim();
   const suggestions = (() => {
     if (props.suggestionCustomers && serverSuggestionsMatch) {
       return props.suggestionCustomers;
     }
-    const normalizedQuery = props.customerName.trim().replace(/\s+/g, " ").toLowerCase();
-    const normalizedPhoneQuery = (props.customerName.match(/[\d+]+/g)?.join("") ?? "").replace(/(?!^)\+/g, "");
     if (!normalizedQuery && !normalizedPhoneQuery) {
       return [] as Customer[];
     }
@@ -56,8 +55,32 @@ export function CustomerAutocompleteFields(props: {
       .slice(0, 6);
   })();
   const canShowLoadingState = Boolean(
-    props.suggestionsLoading && serverSuggestionsMatch && suggestionsOpen && (normalizedQuery || normalizedPhoneQuery)
+    props.suggestionsLoading && serverSuggestionsMatch && activeSuggestionField && (normalizedQuery || normalizedPhoneQuery)
   );
+  const suggestionList = activeSuggestionField && (suggestions.length > 0 || canShowLoadingState) ? (
+    <div className="customer-suggestion-list">
+      {canShowLoadingState && <div className="customer-suggestion muted">Searching customers...</div>}
+      {suggestions.map((customer) => (
+        <button
+          key={customer.id}
+          className="customer-suggestion"
+          type="button"
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={() => {
+            props.onChange({
+              customerId: customer.id,
+              customerName: customer.name,
+              customerPhone: customer.phone ?? ""
+            });
+            setActiveSuggestionField(null);
+          }}
+        >
+          <strong>{customer.name}</strong>
+          <span>{customer.phone || "No phone"}</span>
+        </button>
+      ))}
+    </div>
+  ) : null;
 
   return (
     <>
@@ -70,10 +93,10 @@ export function CustomerAutocompleteFields(props: {
             value={props.customerName}
             placeholder={props.namePlaceholder}
             onFocus={() => {
-              setSuggestionsOpen(true);
+              setActiveSuggestionField("name");
               props.onSuggestionQueryChange?.(props.customerName);
             }}
-            onBlur={() => window.setTimeout(() => setSuggestionsOpen(false), 120)}
+            onBlur={() => window.setTimeout(() => setActiveSuggestionField(null), 120)}
             onChange={(event) => {
               props.onSuggestionQueryChange?.(event.target.value);
               props.onChange({
@@ -83,46 +106,32 @@ export function CustomerAutocompleteFields(props: {
               });
             }}
           />
-          {suggestionsOpen && (suggestions.length > 0 || canShowLoadingState) && (
-            <div className="customer-suggestion-list">
-              {canShowLoadingState && <div className="customer-suggestion muted">Searching customers...</div>}
-              {suggestions.map((customer) => (
-                <button
-                  key={customer.id}
-                  className="customer-suggestion"
-                  type="button"
-                  onMouseDown={(event) => event.preventDefault()}
-                  onClick={() => {
-                    props.onChange({
-                      customerId: customer.id,
-                      customerName: customer.name,
-                      customerPhone: customer.phone ?? ""
-                    });
-                    setSuggestionsOpen(false);
-                  }}
-                >
-                  <strong>{customer.name}</strong>
-                  <span>{customer.phone || "No phone"}</span>
-                </button>
-              ))}
-            </div>
-          )}
+          {activeSuggestionField === "name" && suggestionList}
         </div>
       </label>
       <label className={props.phoneFieldClassName}>
         <span>Customer Phone</span>
-        <input
-          disabled={props.disabled}
-          value={props.customerPhone}
-          placeholder={props.phonePlaceholder}
-          onChange={(event) =>
-            props.onChange({
-              customerId: props.customerId,
-              customerName: props.customerName,
-              customerPhone: event.target.value
-            })
-          }
-        />
+        <div className="customer-autocomplete">
+          <input
+            disabled={props.disabled}
+            value={props.customerPhone}
+            placeholder={props.phonePlaceholder}
+            onFocus={() => {
+              setActiveSuggestionField("phone");
+              props.onSuggestionQueryChange?.(props.customerPhone);
+            }}
+            onBlur={() => window.setTimeout(() => setActiveSuggestionField(null), 120)}
+            onChange={(event) => {
+              props.onSuggestionQueryChange?.(event.target.value);
+              props.onChange({
+                customerId: undefined,
+                customerName: props.customerName,
+                customerPhone: event.target.value
+              });
+            }}
+          />
+          {activeSuggestionField === "phone" && suggestionList}
+        </div>
       </label>
     </>
   );

@@ -16,6 +16,7 @@ export const OPERATIONAL_RPC_FUNCTION_NAMES: Record<OperationalMutationKind, str
   rejectSession: "reject_session",
   repeatSessionCombo: "repeat_session_combo",
   openCustomerTab: "open_customer_tab",
+  linkCustomerTabContinuation: "link_customer_tab_continuation",
   applyCustomerTabCombo: "apply_customer_tab_combo",
   addCustomerTabItem: "add_customer_tab_item",
   updateCustomerTabItemQuantity: "update_customer_tab_item_quantity",

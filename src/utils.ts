@@ -1031,6 +1031,27 @@ export function normalizeCustomerPhone(value?: string) {
   return digits.replace(/(?!^)\+/g, "");
 }
 
+export function getCustomerTabContinuationCandidates(
+  customerTabs: CustomerTab[],
+  customer: { customerId?: string; customerName?: string; customerPhone?: string }
+) {
+  const normalizedName = normalizeCustomerName(customer.customerName);
+  const normalizedPhone = normalizeCustomerPhone(customer.customerPhone);
+
+  return customerTabs.filter((tab) => {
+    if (tab.status !== "open") {
+      return false;
+    }
+    if (customer.customerId && tab.customerId === customer.customerId) {
+      return true;
+    }
+    if (normalizedPhone && normalizeCustomerPhone(tab.customerPhone) === normalizedPhone) {
+      return true;
+    }
+    return normalizedName !== "" && normalizeCustomerName(tab.customerName) === normalizedName;
+  });
+}
+
 export function getCustomerDisplayName(name?: string, phone?: string) {
   return name?.trim() || phone?.trim() || "Walk-in";
 }
@@ -1132,6 +1153,19 @@ export function findCustomerProfileMatch(appData: AppData, customerName?: string
       !normalizeCustomerPhone(customer.phone) &&
       normalizeCustomerName(customer.name) === normalizedName
   );
+}
+
+export function findExactCustomerProfileMatch(customers: Customer[], customerName?: string, customerPhone?: string) {
+  const normalizedPhone = normalizeCustomerPhone(customerPhone);
+  if (normalizedPhone) {
+    return customers.find((customer) => normalizeCustomerPhone(customer.phone) === normalizedPhone);
+  }
+  const normalizedName = normalizeCustomerName(customerName);
+  if (!normalizedName) {
+    return undefined;
+  }
+  const matches = customers.filter((customer) => normalizeCustomerName(customer.name) === normalizedName);
+  return matches.length === 1 ? matches[0] : undefined;
 }
 
 export function resolveCustomerProfile(

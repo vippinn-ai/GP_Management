@@ -10,6 +10,8 @@ import {
   getRevenueCountedPayments,
   getCustomerTabCheckoutLines,
   getDirectlyLinkedHoppedSessions,
+  findExactCustomerProfileMatch,
+  getCustomerTabContinuationCandidates,
   getMostRecentHoppedSession,
   getUnbilledHoppedSessionsForCustomer,
   formatBillNumber,
@@ -26,7 +28,7 @@ import {
   resolveComboChoiceSelections,
   getSessionCheckoutLines
 } from "./utils";
-import type { AppData, Bill, ComboPackage, CustomerTab, CustomerTabItem, DraftBillLine, Expense, ExpenseTemplate, ExpenseTemplateOverride, InventoryItem, Payment, PricingRule, SellableInventoryOption, Session, StockMovement } from "./types";
+import type { AppData, Bill, ComboPackage, Customer, CustomerTab, CustomerTabItem, DraftBillLine, Expense, ExpenseTemplate, ExpenseTemplateOverride, InventoryItem, Payment, PricingRule, SellableInventoryOption, Session, StockMovement } from "./types";
 
 // ─── toLocalDateKey ─────────────────────────────────────────────────────────
 
@@ -74,6 +76,80 @@ describe("resolveCustomerTabWorkspaceSelection", () => {
   it("does not silently pick the first tab when multiple tabs are open", () => {
     const tabs = [tab("tab-a", "A"), tab("tab-b", "B")];
     expect(resolveCustomerTabWorkspaceSelection(tabs, null)).toBeNull();
+  });
+});
+
+describe("findExactCustomerProfileMatch", () => {
+  const customer = (id: string, name: string, phone?: string): Customer => ({
+    id,
+    name,
+    phone,
+    createdAt: "2026-06-01T07:00:00.000Z",
+    lastVisitAt: "2026-06-01T07:00:00.000Z"
+  });
+
+  it("matches by exact normalized phone before name", () => {
+    const customers = [
+      customer("customer-name", "Vipin Kumar", "9999"),
+      customer("customer-phone", "Different Name", "8800")
+    ];
+
+    expect(findExactCustomerProfileMatch(customers, "Vipin Kumar", "8800")?.id).toBe("customer-phone");
+  });
+
+  it("matches a unique exact normalized name when phone is blank", () => {
+    const customers = [
+      customer("customer-one", "Vipin   Kumar", "8800"),
+      customer("customer-two", "Vipin Singh", "9900")
+    ];
+
+    expect(findExactCustomerProfileMatch(customers, " vipin kumar ")?.id).toBe("customer-one");
+  });
+
+  it("does not auto-resolve duplicate exact names without a phone", () => {
+    const customers = [
+      customer("customer-one", "Yash"),
+      customer("customer-two", "yash", "9900")
+    ];
+
+    expect(findExactCustomerProfileMatch(customers, "YASH")).toBeUndefined();
+  });
+});
+
+describe("getCustomerTabContinuationCandidates", () => {
+  const tab = (overrides: Partial<CustomerTab>): CustomerTab => ({
+    id: "tab-1",
+    customerName: "Walk In",
+    status: "open",
+    createdAt: "2026-06-21T10:00:00.000Z",
+    items: [],
+    ...overrides
+  });
+
+  it("matches open tabs by customer id, normalized phone, and exact normalized name", () => {
+    const tabs = [
+      tab({ id: "by-id", customerId: "customer-1", customerName: "Different" }),
+      tab({ id: "by-phone", customerName: "Another", customerPhone: "98765 43210" }),
+      tab({ id: "by-name", customerName: "  Yash   Kumar " }),
+      tab({ id: "closed", customerId: "customer-1", status: "closed" })
+    ];
+
+    expect(getCustomerTabContinuationCandidates(tabs, {
+      customerId: "customer-1",
+      customerName: "Yash Kumar",
+      customerPhone: "9876543210"
+    }).map((entry) => entry.id)).toEqual(["by-id", "by-phone", "by-name"]);
+  });
+
+  it("returns multiple exact-name matches so the UI can ask staff to choose", () => {
+    const tabs = [
+      tab({ id: "tab-a", customerName: "Same Customer" }),
+      tab({ id: "tab-b", customerName: " same   customer " })
+    ];
+
+    expect(getCustomerTabContinuationCandidates(tabs, {
+      customerName: "Same Customer"
+    }).map((entry) => entry.id)).toEqual(["tab-a", "tab-b"]);
   });
 });
 

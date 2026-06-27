@@ -8,6 +8,7 @@ import { LoginScreen } from "./components/LoginScreen";
 import { MetricCard, TodayMetricCard } from "./components/MetricCard";
 import { NumericInput } from "./components/NumericInput";
 import { CustomerAutocompleteFields, type CustomerAutocompleteSuggestionProps } from "./components/CustomerAutocompleteFields";
+import { SellableInventoryPicker } from "./components/SellableInventoryPicker";
 import { UsersPanel } from "./panels/UsersPanel";
 import { SettingsPanel } from "./panels/SettingsPanel";
 import { InventoryPanel } from "./panels/InventoryPanel";
@@ -129,6 +130,7 @@ import {
   cloneValue,
   createId,
   currency,
+  findExactCustomerProfileMatch,
   findCustomerProfileMatch,
   formatAuditValue,
   formatBillNumber,
@@ -165,6 +167,7 @@ import {
   filterPaymentsByBusinessDate,
   getRevenueCountedPayments,
   getDirectlyLinkedHoppedSessions,
+  getCustomerTabContinuationCandidates,
   getPendingBillsForCustomer as findPendingBillsForCustomer,
   getPendingReceivableGroups,
   buildInventoryReportModel,
@@ -202,6 +205,11 @@ type PostHopContinuationMode = "gaming" | "consumables";
 type SessionItemFormState = Record<string, { sellableOptionId: string; quantity: number; sellAsPackOf?: number }>;
 type InventoryArchiveView = "active" | "archived";
 type BillRegisterServerQuery = Omit<NormalizedBillRegisterQuery, "organizationId" | "cursor" | "limit">;
+type CustomerIdentityDraft = {
+  customerId?: string;
+  customerName: string;
+  customerPhone: string;
+};
 
 const BACKEND_FEATURE_FLAGS = resolveBackendFeatureFlags();
 const BILL_REGISTER_PAGE_SIZE = 50;
@@ -212,6 +220,12 @@ interface InventoryArchiveDraft {
   itemId: string;
   reason: string;
   remainingStock: number;
+}
+
+interface PostHopTabLinkDraft {
+  continuedFromSessionIds: string[];
+  candidateTabIds: string[];
+  selectedTabId: string;
 }
 
 interface NormalizedBillRegisterState {
@@ -402,6 +416,7 @@ export default function App() {
   const [lastHoppedSessionId, setLastHoppedSessionId] = useState<string | null>(null);
   const [postHopContinuationMode, setPostHopContinuationMode] = useState<PostHopContinuationMode>("gaming");
   const [postHopCustomerLocked, setPostHopCustomerLocked] = useState(true);
+  const [postHopTabLinkDraft, setPostHopTabLinkDraft] = useState<PostHopTabLinkDraft | null>(null);
   const [customerTabSearch, setCustomerTabSearch] = useState("");
   const [customerProfileSearch, setCustomerProfileSearch] = useState("");
   const [customerProfileSort, setCustomerProfileSort] = useState<"last_visit" | "total_spend" | "visit_count">("last_visit");
@@ -521,7 +536,7 @@ export default function App() {
     pendingBills: Bill[];
     customerLabel: string;
     intent:
-      | { type: "session" }
+      | { type: "session"; draftValue: StartSessionDraft }
       | { type: "tab"; draftValue: CustomerTabDraft; options?: { updateSaleDraft?: boolean; clearDraft?: boolean; switchToSale?: boolean; continuedFromSessionIds?: string[]; onSuccess?: () => void } };
   } | null>(null);
   const [expenseForm, setExpenseForm] = useState({
@@ -2388,6 +2403,60 @@ export default function App() {
     return customerId ? appData.customers.find((customer) => customer.id === customerId) : undefined;
   }
 
+  function getExactCustomerFromSearchState(customerName: string, customerPhone: string) {
+    const query = (customerPhone.trim() || customerName.trim()).trim();
+    if (!query || normalizedCustomerSearchState.query.trim() !== query) {
+      return undefined;
+    }
+    return findExactCustomerProfileMatch(normalizedCustomerSearchState.customers, customerName, customerPhone);
+  }
+
+  async function resolveExactCustomerDraft<T extends CustomerIdentityDraft>(draftValue: T): Promise<T> {
+    if (draftValue.customerId) {
+      return draftValue;
+    }
+
+    const customerName = draftValue.customerName.trim();
+    const customerPhone = draftValue.customerPhone.trim();
+    if (!customerName && !customerPhone) {
+      return draftValue;
+    }
+
+    const localMatch = findExactCustomerProfileMatch(appData.customers, customerName, customerPhone);
+    const searchStateMatch = localMatch ?? getExactCustomerFromSearchState(customerName, customerPhone);
+    if (searchStateMatch) {
+      return {
+        ...draftValue,
+        customerId: searchStateMatch.id,
+        customerName: searchStateMatch.name,
+        customerPhone: searchStateMatch.phone ?? customerPhone
+      };
+    }
+
+    if (!normalizedCustomerSearchReadsEnabled) {
+      return draftValue;
+    }
+
+    try {
+      const customers = await loadNormalizedCustomerSearch({
+        search: customerPhone || customerName,
+        limit: 25
+      });
+      const remoteMatch = findExactCustomerProfileMatch(customers, customerName, customerPhone);
+      if (!remoteMatch) {
+        return draftValue;
+      }
+      return {
+        ...draftValue,
+        customerId: remoteMatch.id,
+        customerName: remoteMatch.name,
+        customerPhone: remoteMatch.phone ?? customerPhone
+      };
+    } catch {
+      return draftValue;
+    }
+  }
+
   function getBillById(billId: string) {
     return appData.bills.find((bill) => bill.id === billId) ??
       normalizedBillRegisterState.bills.find((bill) => bill.id === billId);
@@ -2635,6 +2704,14 @@ export default function App() {
     return `${sellableQuantity} available (${sourceAvailable} ${option.sourceName} in stock, ${option.stockUnitsPerSale} per sale${leftover > 0 ? `, ${leftover} leftover` : ""})`;
   }
 
+  function isSellableOptionUnavailable(
+    option: SellableInventoryOption,
+    ignoreSessionId?: string,
+    ignoreCustomerTabId?: string
+  ) {
+    return getAvailableStock(option.item, ignoreSessionId, ignoreCustomerTabId) < option.stockUnitsPerSale;
+  }
+
   function handleLogin(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const trimmedUsername = loginUsername.trim();
@@ -2822,21 +2899,21 @@ export default function App() {
     setActiveTab("bills");
   }
 
-  function doStartSessionDirect() {
-    if (!activeUser || !startSessionDraft.stationId) {
+  function doStartSessionDirect(draftValue: StartSessionDraft = startSessionDraft) {
+    if (!activeUser || !draftValue.stationId) {
       return;
     }
-    const station = appData.stations.find((entry) => entry.id === startSessionDraft.stationId);
+    const station = appData.stations.find((entry) => entry.id === draftValue.stationId);
     if (!station || getActiveSessionForStation(station.id)) {
       return;
     }
     const pricingSnapshot = appData.pricingRules.filter((rule) => rule.stationId === station.id);
-    const sessionPlayMode = station.ltpEnabled ? startSessionDraft.playMode : "group";
+    const sessionPlayMode = station.ltpEnabled ? draftValue.playMode : "group";
     const initialItems: SessionItem[] = [];
-    const combo = startSessionDraft.comboId
-      ? appData.combos.find((entry) => entry.id === startSessionDraft.comboId && (entry.type ?? "game") === "game" && entry.active && entry.stationIds.includes(station.id))
+    const combo = draftValue.comboId
+      ? appData.combos.find((entry) => entry.id === draftValue.comboId && (entry.type ?? "game") === "game" && entry.active && entry.stationIds.includes(station.id))
       : undefined;
-    const comboApplication = combo ? buildComboApplication(combo, startSessionDraft.comboChoices) : null;
+    const comboApplication = combo ? buildComboApplication(combo, draftValue.comboChoices) : null;
     if (combo && !comboApplication) {
       window.alert("Select all required combo choices before starting this session.");
       return;
@@ -2852,13 +2929,13 @@ export default function App() {
     }
     if (station.mode === "unit_sale") {
       const arcadeItem = appData.inventoryItems.find(
-        (entry) => entry.id === startSessionDraft.arcadeItemId && entry.active
+        (entry) => entry.id === draftValue.arcadeItemId && entry.active
       );
       if (!arcadeItem) {
         window.alert("Select an arcade coin pack before starting this session.");
         return;
       }
-      const upfrontQuantity = clampNumber(startSessionDraft.arcadeQuantity, 1);
+      const upfrontQuantity = clampNumber(draftValue.arcadeQuantity, 1);
       if (getAvailableStock(arcadeItem) < upfrontQuantity) {
         window.alert("Not enough arcade coin packs available.");
         return;
@@ -2897,7 +2974,8 @@ export default function App() {
       items: initialItems,
       comboApplications: comboApplication ? [comboApplication] : [],
       pauseLogIds: [],
-      continuedFromSessionIds
+      continuedFromSessionIds,
+      customerId: draftValue.customerId
     };
     const comboReservationMovements = comboApplication
       ? initialItems
@@ -2932,7 +3010,7 @@ export default function App() {
       {
         session,
         customer: customerName.trim() || customerPhone.trim()
-          ? { id: createId("customer"), name: customerName, phone: customerPhone, visitAt: startedAt }
+          ? { id: draftValue.customerId ?? createId("customer"), name: customerName, phone: customerPhone, visitAt: startedAt }
           : undefined,
         stockMovements: comboReservationMovements,
         auditLogs: [{
@@ -2963,23 +3041,30 @@ export default function App() {
     if (!station || getActiveSessionForStation(station.id)) {
       return;
     }
-    const customerName = startSessionDraft.customerName;
-    const customerPhone = startSessionDraft.customerPhone;
+    let resolvedDraft: StartSessionDraft;
     let pendingForCustomer: Bill[];
     try {
-      pendingForCustomer = await runBlockingAction("Checking pending bills...", () =>
-        loadFreshPendingBillsForCustomerDetails(startSessionDraft.customerId, customerName, customerPhone)
-      );
+      const result = await runBlockingAction("Checking customer details...", async () => {
+        const nextDraft = await resolveExactCustomerDraft(startSessionDraft);
+        const pendingBills = await loadFreshPendingBillsForCustomerDetails(
+          nextDraft.customerId,
+          nextDraft.customerName,
+          nextDraft.customerPhone
+        );
+        return { nextDraft, pendingBills };
+      });
+      resolvedDraft = result.nextDraft;
+      pendingForCustomer = result.pendingBills;
     } catch (error) {
       window.alert(error instanceof Error ? error.message : "Unable to verify pending bills.");
       return;
     }
     if (pendingForCustomer.length > 0) {
-      const label = customerPhone.trim() || customerName.trim();
-      setPendingWarningDraft({ pendingBills: pendingForCustomer, customerLabel: label, intent: { type: "session" } });
+      const label = resolvedDraft.customerPhone.trim() || resolvedDraft.customerName.trim();
+      setPendingWarningDraft({ pendingBills: pendingForCustomer, customerLabel: label, intent: { type: "session", draftValue: resolvedDraft } });
       return;
     }
-    doStartSessionDirect();
+    doStartSessionDirect(resolvedDraft);
   }
 
   function toggleSessionPause(sessionId: string, shouldPause: boolean) {
@@ -3147,7 +3232,7 @@ export default function App() {
     ), () => {
       setSessionItemForm((previous) => ({
         ...previous,
-        [sessionId]: { sellableOptionId: form.sellableOptionId, quantity: 1, sellAsPackOf: packOf }
+        [sessionId]: { sellableOptionId: "", quantity: 1, sellAsPackOf: undefined }
       }));
     });
   }
@@ -3395,6 +3480,69 @@ export default function App() {
     });
   }
 
+  function completePostHopConsumablesTabSelection(tab: CustomerTab) {
+    setSelectedCustomerTabId(tab.id);
+    setCustomerTabDraft({
+      customerId: tab.customerId,
+      customerName: tab.customerName,
+      customerPhone: tab.customerPhone ?? ""
+    });
+    setActiveTab("sale");
+    setShowStartSessionModal(false);
+    setPostHopTabLinkDraft(null);
+    setLastHoppedSessionId(null);
+    setPostHopContinuationMode("gaming");
+    setPostHopCustomerLocked(true);
+    setStartSessionDraft(createStartSessionDraft());
+  }
+
+  function linkCustomerTabContinuation(
+    customerTabId: string,
+    continuedFromSessionIds: string[],
+    onSuccess?: (tab: CustomerTab) => void
+  ) {
+    if (!activeUser) {
+      return false;
+    }
+    const targetTab = getCustomerTabById(customerTabId);
+    if (!targetTab || targetTab.status !== "open") {
+      window.alert("The selected customer tab is no longer open.");
+      return false;
+    }
+    const continuationIds = Array.from(new Set(continuedFromSessionIds.filter(Boolean)));
+    const linkedAt = new Date().toISOString();
+    const auditLogs = continuationIds.map((sessionId) => {
+      const hoppedSession = getSessionById(sessionId);
+      return {
+        id: createId("audit"),
+        action: "customer_tab_continuation_linked",
+        entityType: "customer_tab" as const,
+        entityId: targetTab.id,
+        message: `Linked ${targetTab.customerName}'s tab to hopped session from ${hoppedSession?.stationNameSnapshot ?? "previous session"}.`,
+        createdAt: linkedAt,
+        userId: activeUser.id
+      };
+    });
+    const committed = commitOperationalChange(createOperationalMutation(
+      "linkCustomerTabContinuation",
+      "Linking customer tab...",
+      "customer_tab",
+      targetTab.id,
+      {
+        customerTabId: targetTab.id,
+        continuedFromSessionIds: continuationIds,
+        auditLogs
+      }
+    ), (nextAppData) => {
+      const updatedTab = nextAppData.customerTabs.find((tab) => tab.id === targetTab.id) ?? targetTab;
+      onSuccess?.(updatedTab);
+    });
+    if (!committed) {
+      window.alert(remoteError || "Unable to link the hopped session to this customer tab.");
+    }
+    return committed;
+  }
+
   async function openOrCreateCustomerTab(
     draftValue: CustomerTabDraft,
     options?: { updateSaleDraft?: boolean; clearDraft?: boolean; switchToSale?: boolean; continuedFromSessionIds?: string[]; onSuccess?: () => void }
@@ -3402,39 +3550,31 @@ export default function App() {
     if (!activeUser) {
       return;
     }
-    const customerName = draftValue.customerName.trim();
-    const customerPhone = draftValue.customerPhone.trim();
+    const resolvedDraft = await runBlockingAction("Checking customer details...", () => resolveExactCustomerDraft(draftValue));
+    const customerName = resolvedDraft.customerName.trim();
+    const customerPhone = resolvedDraft.customerPhone.trim();
     if (!customerName) {
       window.alert("Customer name is required to open a tab.");
       return;
     }
-    const matchingCustomer = draftValue.customerId
-      ? getCustomerById(draftValue.customerId)
+    const matchingCustomer = resolvedDraft.customerId
+      ? getCustomerById(resolvedDraft.customerId)
       : findCustomerProfileMatch(appData, customerName, customerPhone);
+    const matchingCustomerId = resolvedDraft.customerId ?? matchingCustomer?.id;
     const isContinuation = Boolean(options?.continuedFromSessionIds?.length);
     const existing = appData.customerTabs.find(
       (tab) =>
         tab.status === "open" &&
         (isContinuation
-          ? ((matchingCustomer && tab.customerId === matchingCustomer.id) ||
+          ? ((matchingCustomerId && tab.customerId === matchingCustomerId) ||
             (customerPhone && tab.customerPhone?.trim() === customerPhone))
-          : ((matchingCustomer && tab.customerId === matchingCustomer.id) ||
+          : ((matchingCustomerId && tab.customerId === matchingCustomerId) ||
             tab.customerName.trim().toLowerCase() === customerName.toLowerCase() ||
             (customerPhone && tab.customerPhone?.trim() === customerPhone)))
     );
     if (existing) {
       if (options?.continuedFromSessionIds?.length) {
-        void commitAppDataChange("Linking customer tab...", (draft) => {
-          const targetTab = draft.customerTabs.find((tab) => tab.id === existing.id && tab.status === "open");
-          if (!targetTab) return false;
-          targetTab.continuedFromSessionIds = Array.from(new Set([...(targetTab.continuedFromSessionIds ?? []), ...options.continuedFromSessionIds!]));
-          for (const sessionId of options.continuedFromSessionIds!) {
-            const hoppedSession = draft.sessions.find((session) => session.id === sessionId);
-            if (hoppedSession) {
-              addAuditLog(draft, activeUser.id, "customer_tab_continuation_linked", "customer_tab", existing.id, `Linked ${existing.customerName}'s tab to hopped session from ${hoppedSession.stationNameSnapshot}.`);
-            }
-          }
-        }, () => {
+        linkCustomerTabContinuation(existing.id, options.continuedFromSessionIds, () => {
           setSelectedCustomerTabId(existing.id);
           if (options?.updateSaleDraft) {
             setCustomerTabDraft({
@@ -3474,7 +3614,7 @@ export default function App() {
     let pendingForCustomer: Bill[];
     try {
       pendingForCustomer = await runBlockingAction("Checking pending bills...", () =>
-        loadFreshPendingBillsForCustomerDetails(draftValue.customerId, customerName, customerPhone)
+        loadFreshPendingBillsForCustomerDetails(resolvedDraft.customerId, customerName, customerPhone)
       );
     } catch (error) {
       window.alert(error instanceof Error ? error.message : "Unable to verify pending bills.");
@@ -3482,10 +3622,10 @@ export default function App() {
     }
     if (pendingForCustomer.length > 0) {
       const label = customerPhone || customerName;
-      setPendingWarningDraft({ pendingBills: pendingForCustomer, customerLabel: label, intent: { type: "tab", draftValue, options } });
+      setPendingWarningDraft({ pendingBills: pendingForCustomer, customerLabel: label, intent: { type: "tab", draftValue: resolvedDraft, options } });
       return;
     }
-    doCommitTabDirect(draftValue, options);
+    doCommitTabDirect(resolvedDraft, options);
   }
 
   function doCommitTabDirect(
@@ -4090,6 +4230,7 @@ export default function App() {
       setLastHoppedSessionId(null);
       setPostHopContinuationMode("gaming");
       setPostHopCustomerLocked(true);
+      setPostHopTabLinkDraft(null);
     }
     if (show && lastHoppedSessionId) {
       const hoppedSession = appData.sessions.find((s) => s.id === lastHoppedSessionId);
@@ -4112,6 +4253,7 @@ export default function App() {
     // Keep lastHoppedSessionId alive - needed to loop back to "Start Next Game" if billing is cancelled
     setShowStartSessionModal(false);  // bypass handleSetShowStartSessionModal so the ID stays set
     setPostHopContinuationMode("gaming");
+    setPostHopTabLinkDraft(null);
     setStartSessionDraft(createStartSessionDraft());
     openSessionCheckout(sessionId);
   }
@@ -4135,6 +4277,7 @@ export default function App() {
       setLastHoppedSessionId(null);
       setPostHopContinuationMode("gaming");
       setPostHopCustomerLocked(false);
+      setPostHopTabLinkDraft(null);
       setStartSessionDraft((previous) => ({
         ...previous,
         customerId: undefined,
@@ -4157,19 +4300,63 @@ export default function App() {
       window.alert("Customer name is required to start a consumables tab.");
       return;
     }
+    const continuedFromSessionIds = getContinuationSessionIds(hoppedSession);
+    const matchingCustomer = draftValue.customerId
+      ? getCustomerById(draftValue.customerId)
+      : findCustomerProfileMatch(appData, draftValue.customerName, draftValue.customerPhone);
+    const candidateTabs = getCustomerTabContinuationCandidates(openCustomerTabs, {
+      customerId: matchingCustomer?.id ?? draftValue.customerId,
+      customerName: draftValue.customerName,
+      customerPhone: draftValue.customerPhone
+    });
+    if (candidateTabs.length > 0) {
+      setPostHopTabLinkDraft({
+        continuedFromSessionIds,
+        candidateTabIds: candidateTabs.map((tab) => tab.id),
+        selectedTabId: candidateTabs[0].id
+      });
+      return;
+    }
     void openOrCreateCustomerTab(draftValue, {
       updateSaleDraft: true,
       clearDraft: false,
       switchToSale: true,
-      continuedFromSessionIds: getContinuationSessionIds(hoppedSession),
+      continuedFromSessionIds,
       onSuccess: () => {
         setShowStartSessionModal(false);
+        setPostHopTabLinkDraft(null);
         setLastHoppedSessionId(null);
         setPostHopContinuationMode("gaming");
         setPostHopCustomerLocked(true);
         setStartSessionDraft(createStartSessionDraft());
       }
     });
+  }
+
+  function confirmPostHopCustomerTabLink() {
+    if (!postHopTabLinkDraft) {
+      return;
+    }
+    const selectedTab = getCustomerTabById(postHopTabLinkDraft.selectedTabId);
+    if (!selectedTab || selectedTab.status !== "open") {
+      window.alert("The selected customer tab is no longer open. Choose another tab or start a new consumables tab.");
+      setPostHopTabLinkDraft((previous) => {
+        if (!previous) return previous;
+        const remainingIds = previous.candidateTabIds.filter((tabId) => {
+          const tab = getCustomerTabById(tabId);
+          return tab?.status === "open";
+        });
+        return remainingIds.length > 0
+          ? { ...previous, candidateTabIds: remainingIds, selectedTabId: remainingIds[0] }
+          : null;
+      });
+      return;
+    }
+    linkCustomerTabContinuation(
+      selectedTab.id,
+      postHopTabLinkDraft.continuedFromSessionIds,
+      completePostHopConsumablesTabSelection
+    );
   }
 
   function returnToStartNextGame() {
@@ -6073,6 +6260,14 @@ export default function App() {
     : null;
   const postHopSession = lastHoppedSessionId ? getSessionById(lastHoppedSessionId) ?? null : null;
   const postHopSessionCharge = postHopSession ? getSessionChargeSummary(postHopSession, postHopSession.endedAt) : null;
+  const postHopTabLinkCandidates = postHopTabLinkDraft
+    ? postHopTabLinkDraft.candidateTabIds
+        .map((tabId) => getCustomerTabById(tabId))
+        .filter((tab): tab is CustomerTab => Boolean(tab && tab.status === "open"))
+    : [];
+  const selectedPostHopTabLinkCandidate = postHopTabLinkCandidates.find((tab) => tab.id === postHopTabLinkDraft?.selectedTabId)
+    ?? postHopTabLinkCandidates[0]
+    ?? null;
 
   useEffect(() => {
     if (activeTab !== "reports") {
@@ -6954,7 +7149,10 @@ export default function App() {
                   <span>Continue As</span>
                   <select
                     value={postHopContinuationMode}
-                    onChange={(event) => setPostHopContinuationMode(event.target.value as PostHopContinuationMode)}
+                    onChange={(event) => {
+                      setPostHopTabLinkDraft(null);
+                      setPostHopContinuationMode(event.target.value as PostHopContinuationMode);
+                    }}
                   >
                     <option value="gaming">Gaming Session</option>
                     <option value="consumables">Consumables Tab</option>
@@ -7003,8 +7201,58 @@ export default function App() {
               phoneFieldClassName="field-span-full"
               disabled={Boolean(lastHoppedSessionId && postHopCustomerLocked)}
               {...customerAutocompleteSuggestions}
-              onChange={(next) => setStartSessionDraft((previous) => ({ ...previous, ...next }))}
+              onChange={(next) => {
+                setPostHopTabLinkDraft(null);
+                setStartSessionDraft((previous) => ({ ...previous, ...next }));
+              }}
             />
+            {lastHoppedSessionId && postHopContinuationMode === "consumables" && postHopTabLinkDraft && (
+              <div className="field-span-full warning-banner">
+                <strong>
+                  {postHopTabLinkCandidates.length === 1
+                    ? "Existing consumables tab found"
+                    : `${postHopTabLinkCandidates.length} matching consumables tabs found`}
+                </strong>
+                <span>
+                  Link the hopped game to an existing open tab so the previous game appears in the live bill and checkout.
+                </span>
+                {postHopTabLinkCandidates.length > 1 && (
+                  <label>
+                    <span>Select tab</span>
+                    <select
+                      value={selectedPostHopTabLinkCandidate?.id ?? ""}
+                      onChange={(event) =>
+                        setPostHopTabLinkDraft((previous) =>
+                          previous ? { ...previous, selectedTabId: event.target.value } : previous
+                        )
+                      }
+                    >
+                      {postHopTabLinkCandidates.map((tab) => (
+                        <option key={tab.id} value={tab.id}>
+                          {tab.customerName} - {tab.customerPhone || "No phone"} - {currency(getCustomerTabTotal(tab))}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )}
+                {selectedPostHopTabLinkCandidate && (
+                  <div className="muted">
+                    Selected: {selectedPostHopTabLinkCandidate.customerName}
+                    {selectedPostHopTabLinkCandidate.customerPhone ? ` - ${selectedPostHopTabLinkCandidate.customerPhone}` : ""}
+                    {" - "}
+                    {selectedPostHopTabLinkCandidate.items.length + (selectedPostHopTabLinkCandidate.comboApplications?.length ?? 0)} current item
+                    {selectedPostHopTabLinkCandidate.items.length + (selectedPostHopTabLinkCandidate.comboApplications?.length ?? 0) === 1 ? "" : "s"}
+                    {" - "}
+                    {currency(getCustomerTabTotal(selectedPostHopTabLinkCandidate))}
+                  </div>
+                )}
+                <div className="button-row dense">
+                  <button className="secondary-button" type="button" onClick={() => setPostHopTabLinkDraft(null)}>
+                    Cancel Link
+                  </button>
+                </div>
+              </div>
+            )}
             {(!lastHoppedSessionId || postHopContinuationMode === "gaming") && selectedStartStation?.mode === "timed" && selectedStationCombos.length > 0 && (
               <>
                 <label className="field-span-full">
@@ -7139,10 +7387,18 @@ export default function App() {
               )}
               <button
                 className="primary-button"
-                type="submit"
-                disabled={postHopContinuationMode === "gaming" && selectedStartStation?.mode === "unit_sale" && arcadeInventoryItems.length === 0}
+                type={lastHoppedSessionId && postHopContinuationMode === "consumables" && postHopTabLinkDraft ? "button" : "submit"}
+                disabled={
+                  (postHopContinuationMode === "gaming" && selectedStartStation?.mode === "unit_sale" && arcadeInventoryItems.length === 0) ||
+                  Boolean(lastHoppedSessionId && postHopContinuationMode === "consumables" && postHopTabLinkDraft && !selectedPostHopTabLinkCandidate)
+                }
+                onClick={lastHoppedSessionId && postHopContinuationMode === "consumables" && postHopTabLinkDraft ? confirmPostHopCustomerTabLink : undefined}
               >
-                {lastHoppedSessionId && postHopContinuationMode === "consumables" ? "Start Consumables Tab" : "Start Session"}
+                {lastHoppedSessionId && postHopContinuationMode === "consumables" && postHopTabLinkDraft
+                  ? "Link Existing Tab"
+                  : lastHoppedSessionId && postHopContinuationMode === "consumables"
+                    ? "Start Consumables Tab"
+                    : "Start Session"}
               </button>
             </div>
           </form>
@@ -7289,10 +7545,22 @@ export default function App() {
             </div>
           </div>
           <div className="session-item-adder">
-            <select value={sessionItemForm[managedSession.id]?.sellableOptionId ?? ""} onChange={(event) => setSessionItemForm((p) => ({ ...p, [managedSession.id]: { sellableOptionId: event.target.value, quantity: p[managedSession.id]?.quantity ?? 1, sellAsPackOf: undefined } }))}>
-              <option value="">Select item</option>
-              {sellableInventoryOptions.map((option) => <option key={option.id} value={option.id}>{option.name} - {currency(option.price)} - {getSellableOptionPickerDetail(option, managedSession.id)}</option>)}
-            </select>
+            <SellableInventoryPicker
+              options={sellableInventoryOptions}
+              value={sessionItemForm[managedSession.id]?.sellableOptionId ?? ""}
+              onChange={(optionId) =>
+                setSessionItemForm((previous) => ({
+                  ...previous,
+                  [managedSession.id]: {
+                    sellableOptionId: optionId,
+                    quantity: previous[managedSession.id]?.quantity ?? 1,
+                    sellAsPackOf: undefined
+                  }
+                }))
+              }
+              getOptionDetail={(option) => getSellableOptionPickerDetail(option, managedSession.id)}
+              isOptionDisabled={(option) => isSellableOptionUnavailable(option, managedSession.id)}
+            />
             {(() => {
               const selectedOption = sellableOptionById.get(sessionItemForm[managedSession.id]?.sellableOptionId ?? "");
               const selectedItem = selectedOption?.item;
@@ -7842,28 +8110,23 @@ export default function App() {
                 </div>
               </div>
               <div className="session-item-adder">
-                <select
+                <SellableInventoryPicker
+                  options={sellableInventoryOptions}
                   value={sessionItemForm[checkoutSession.id]?.sellableOptionId ?? ""}
-                  onChange={(event) =>
-                    setSessionItemForm((p) => ({
-                      ...p,
+                  onChange={(optionId) =>
+                    setSessionItemForm((previous) => ({
+                      ...previous,
                       [checkoutSession.id]: {
-                        ...p[checkoutSession.id],
-                        sellableOptionId: event.target.value,
-                        quantity: p[checkoutSession.id]?.quantity ?? 1,
+                        ...previous[checkoutSession.id],
+                        sellableOptionId: optionId,
+                        quantity: previous[checkoutSession.id]?.quantity ?? 1,
                         sellAsPackOf: undefined
                       }
                     }))
                   }
-                >
-                  <option value="">Select item</option>
-                  {sellableInventoryOptions
-                    .map((option) => (
-                      <option key={option.id} value={option.id}>
-                        {option.name} - {currency(option.price)} - {getSellableOptionPickerDetail(option, checkoutSession.id)}
-                      </option>
-                    ))}
-                </select>
+                  getOptionDetail={(option) => getSellableOptionPickerDetail(option, checkoutSession.id)}
+                  isOptionDisabled={(option) => isSellableOptionUnavailable(option, checkoutSession.id)}
+                />
                 {(() => {
                   const selectedOption = sellableOptionById.get(sessionItemForm[checkoutSession.id]?.sellableOptionId ?? "");
                   const selectedItem = selectedOption?.item;
@@ -8356,7 +8619,7 @@ export default function App() {
                 const { intent } = pendingWarningDraft;
                 setPendingWarningDraft(null);
                 if (intent.type === "session") {
-                  doStartSessionDirect();
+                  doStartSessionDirect(intent.draftValue);
                 } else {
                   doCommitTabDirect(intent.draftValue, intent.options);
                 }
