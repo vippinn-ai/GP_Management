@@ -51,6 +51,7 @@ import {
   buildAdminDataChangePatch,
   buildFinancialAdjustmentPatch,
   buildFinancialCheckoutPatch,
+  clearCachedNormalizedOrganizationId,
   loadAnalyticsSummaryData,
   loadNormalizedCustomerSearch,
   loadNormalizedReportData,
@@ -2795,12 +2796,14 @@ export default function App() {
     if (backendConfigured) {
       void runBlockingAction("Signing out...", async () => {
         await signOutRemote();
+        clearCachedNormalizedOrganizationId();
         setActiveUserId(null);
         setRemoteError("");
         setRemoteRestoreState("ready");
       });
       return;
     }
+    clearCachedNormalizedOrganizationId();
     setActiveUserId(null);
   }
 

@@ -39,10 +39,12 @@ export function rememberNormalizedOrganizationId(organizationId: string | null |
   }
 }
 
-export function clearCachedNormalizedOrganizationIdForTests(): void {
+export function clearCachedNormalizedOrganizationId(): void {
   cachedOrganizationId = undefined;
   pendingOrganizationId = undefined;
 }
+
+export const clearCachedNormalizedOrganizationIdForTests = clearCachedNormalizedOrganizationId;
 
 export async function resolveNormalizedOrganizationId(client: SupabaseClient = getSupabaseClient()): Promise<string> {
   if (cachedOrganizationId) {

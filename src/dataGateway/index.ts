@@ -34,6 +34,7 @@ export {
   mapNormalizedCustomer,
   type NormalizedCustomerSearchQuery
 } from "./normalizedCustomerSearch";
+export { clearCachedNormalizedOrganizationId } from "./normalizedOrganization";
 export {
   loadAnalyticsSummaryData,
   mapAnalyticsSummaryData,
