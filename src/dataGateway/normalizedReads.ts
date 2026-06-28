@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { getSupabaseClient } from "../backend";
+import { rememberNormalizedOrganizationId } from "./normalizedOrganization";
 import type {
   AppData,
   AuditLog,
@@ -1034,7 +1035,7 @@ export function buildNormalizedLiveData(params: {
 }
 
 export async function loadNormalizedActiveOrganization(client: SupabaseClient = getSupabaseClient()): Promise<OrganizationRow> {
-  return assertNormalizedResult(
+  const organization = assertNormalizedResult(
     await withNormalizedReadTimeout(
       client
         .from("organizations")
@@ -1047,6 +1048,8 @@ export async function loadNormalizedActiveOrganization(client: SupabaseClient = 
     ),
     "loading the active organization"
   ) as OrganizationRow;
+  rememberNormalizedOrganizationId(organization.id);
+  return organization;
 }
 
 export async function loadNormalizedConfigData(client: SupabaseClient = getSupabaseClient()): Promise<NormalizedConfigData> {

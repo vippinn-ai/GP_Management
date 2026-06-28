@@ -1,6 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { getSupabaseClient } from "../backend";
-import { resolveNormalizedBillRegisterOrganizationId } from "./normalizedBillRegister";
+import { resolveNormalizedOrganizationId } from "./normalizedOrganization";
 import type { AdminDataChangeCommitResult, AdminDataChangePatch } from "./types";
 
 const ADMIN_DATA_RPC_TIMEOUT_MS = 15_000;
@@ -211,7 +211,7 @@ export async function invokeAdminDataChangeRpc(
   } = {}
 ): Promise<AdminDataChangeCommitResult> {
   const client = options.client ?? getSupabaseClient();
-  const organizationId = options.organizationId ?? (await resolveNormalizedBillRegisterOrganizationId(client));
+  const organizationId = options.organizationId ?? (await resolveNormalizedOrganizationId(client));
   const payload = buildAdminDataChangeRpcPayload(patch, organizationId);
 
   let result: RpcResult<unknown>;

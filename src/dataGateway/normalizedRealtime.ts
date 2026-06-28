@@ -1,6 +1,7 @@
 import type { RealtimePostgresChangesPayload, SupabaseClient } from "@supabase/supabase-js";
 import type { BackendFeatureFlags } from "./featureFlags";
-import { loadNormalizedBillsByIds, resolveNormalizedBillRegisterOrganizationId } from "./normalizedBillRegister";
+import { loadNormalizedBillsByIds } from "./normalizedBillRegister";
+import { resolveNormalizedOrganizationId } from "./normalizedOrganization";
 import { loadNormalizedAppDataOverlay, loadNormalizedLiveDataByIds } from "./normalizedReads";
 import type { AppData } from "../types";
 
@@ -272,7 +273,7 @@ export async function emitGenericAppStateSaveEvent(params: {
   appStateVersion: number;
   actionLabel?: string;
 }): Promise<void> {
-  const organizationId = await resolveNormalizedBillRegisterOrganizationId(params.client);
+  const organizationId = await resolveNormalizedOrganizationId(params.client);
   await params.client.from("operational_events").insert({
     organization_id: organizationId,
     event_type: "app_state_saved",

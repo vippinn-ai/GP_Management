@@ -1,6 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { getSupabaseClient } from "../backend";
-import { resolveNormalizedBillRegisterOrganizationId } from "./normalizedBillRegister";
+import { resolveNormalizedOrganizationId } from "./normalizedOrganization";
 import type {
   FinancialAdjustmentCommitResult,
   FinancialAdjustmentPatch,
@@ -287,7 +287,7 @@ export async function invokeFinancialCheckoutRpc(
   } = {}
 ): Promise<FinancialCheckoutCommitResult> {
   const client = options.client ?? getSupabaseClient();
-  const organizationId = options.organizationId ?? (await resolveNormalizedBillRegisterOrganizationId(client));
+  const organizationId = options.organizationId ?? (await resolveNormalizedOrganizationId(client));
   const payload = buildFinancialCheckoutRpcPayload(patch, organizationId);
 
   let result: RpcResult<unknown>;
@@ -324,7 +324,7 @@ export async function invokeFinancialAdjustmentRpc(
   } = {}
 ): Promise<FinancialAdjustmentCommitResult> {
   const client = options.client ?? getSupabaseClient();
-  const organizationId = options.organizationId ?? (await resolveNormalizedBillRegisterOrganizationId(client));
+  const organizationId = options.organizationId ?? (await resolveNormalizedOrganizationId(client));
   const payload = buildFinancialAdjustmentRpcPayload(patch, organizationId);
 
   let result: RpcResult<unknown>;

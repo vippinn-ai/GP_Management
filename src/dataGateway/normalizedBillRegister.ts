@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { getSupabaseClient } from "../backend";
+import { resolveNormalizedOrganizationId } from "./normalizedOrganization";
 import { addDays, getPendingBillsForCustomer } from "../utils";
 import type {
   AppliedDiscount,
@@ -159,10 +160,6 @@ interface PaymentRow {
   raw_data: Record<string, unknown> | null;
 }
 
-interface OrganizationIdRow {
-  id: string;
-}
-
 function toRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 }
@@ -246,29 +243,8 @@ async function readMany<T>(request: PromiseLike<NormalizedQueryResult<T[]>>, act
   return result.data ?? [];
 }
 
-async function readSingle<T>(request: PromiseLike<NormalizedQueryResult<T>>, action: string): Promise<T> {
-  const result = await withBillRegisterReadTimeout(request, action);
-  if (result.error) {
-    throw result.error;
-  }
-  if (result.data === null) {
-    throw new Error(`Normalized bill register data was unavailable while ${action}.`);
-  }
-  return result.data;
-}
-
 export async function resolveNormalizedBillRegisterOrganizationId(client: SupabaseClient = getSupabaseClient()): Promise<string> {
-  const row = await readSingle<OrganizationIdRow>(
-    client
-      .from("organizations")
-      .select("id")
-      .eq("active", true)
-      .order("created_at", { ascending: true })
-      .limit(1)
-      .maybeSingle(),
-    "resolving the active organization"
-  );
-  return row.id;
+  return resolveNormalizedOrganizationId(client);
 }
 
 function groupBy<T>(values: T[], getKey: (value: T) => string): Map<string, T[]> {

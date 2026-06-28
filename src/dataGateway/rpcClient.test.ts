@@ -1,5 +1,6 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { OperationalMutation } from "../operationalSync";
+import { clearCachedNormalizedOrganizationIdForTests } from "./normalizedOrganization";
 import {
   buildOperationalRpcPayload,
   getOperationalRpcFunctionName,
@@ -45,6 +46,10 @@ function createMutation(overrides: Partial<OperationalMutation> = {}): Operation
 }
 
 describe("operational RPC client", () => {
+  beforeEach(() => {
+    clearCachedNormalizedOrganizationIdForTests();
+  });
+
   it("maps operational mutation kinds to stable RPC function names", () => {
     expect(getOperationalRpcFunctionName("startSession")).toBe("start_session");
     expect(getOperationalRpcFunctionName("pauseSession")).toBe("pause_session");
@@ -129,6 +134,36 @@ describe("operational RPC client", () => {
       }
     });
     expect(rpc).toHaveBeenCalledWith("add_customer_tab_item", {
+      payload: buildOperationalRpcPayload(mutation, "org-primary")
+    });
+  });
+
+  it("resolves organization once when the caller does not provide an organization id", async () => {
+    const mutation = createMutation();
+    const maybeSingle = vi.fn().mockResolvedValue({ data: { id: "org-primary" }, error: null });
+    const limit = vi.fn(() => ({ maybeSingle }));
+    const order = vi.fn(() => ({ limit }));
+    const eq = vi.fn(() => ({ order }));
+    const select = vi.fn(() => ({ eq }));
+    const from = vi.fn(() => ({ select }));
+    const rpc = vi.fn().mockResolvedValue({
+      data: {
+        mutation_id: "op-1",
+        organization_id: "org-primary",
+        entity_type: "customer_tab",
+        entity_id: "tab-1"
+      },
+      error: null
+    });
+    const client = { from, rpc };
+
+    await invokeOperationalMutationRpc(mutation, { client: client as never });
+    await invokeOperationalMutationRpc(mutation, { client: client as never });
+
+    expect(from).toHaveBeenCalledTimes(1);
+    expect(from).toHaveBeenCalledWith("organizations");
+    expect(rpc).toHaveBeenCalledTimes(2);
+    expect(rpc).toHaveBeenLastCalledWith("add_customer_tab_item", {
       payload: buildOperationalRpcPayload(mutation, "org-primary")
     });
   });

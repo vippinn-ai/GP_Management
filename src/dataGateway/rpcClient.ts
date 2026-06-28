@@ -1,7 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { getSupabaseClient } from "../backend";
 import type { OperationalMutation, OperationalMutationKind } from "../operationalSync";
-import { resolveNormalizedBillRegisterOrganizationId } from "./normalizedBillRegister";
+import { resolveNormalizedOrganizationId } from "./normalizedOrganization";
 import type { OperationalRpcCommitResult } from "./types";
 
 const OPERATIONAL_RPC_TIMEOUT_MS = 15_000;
@@ -218,7 +218,7 @@ export async function invokeOperationalMutationRpc(
   } = {}
 ): Promise<OperationalRpcCommitResult> {
   const client = options.client ?? getSupabaseClient();
-  const organizationId = options.organizationId ?? (await resolveNormalizedBillRegisterOrganizationId(client));
+  const organizationId = options.organizationId ?? (await resolveNormalizedOrganizationId(client));
   const rpcName = getOperationalRpcFunctionName(mutation.kind);
   const payload = buildOperationalRpcPayload(mutation, organizationId);
 
