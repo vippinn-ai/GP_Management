@@ -445,8 +445,6 @@ export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): 
     gateway.commitFinancialCheckout = (patch) => invokeFinancialCheckoutRpc(patch);
     gateway.commitFinancialAdjustment = (patch) => invokeFinancialAdjustmentRpc(patch);
   }
-  if (_flags.normalizedBootstrap) {
-    gateway.commitAdminDataChange = (patch) => invokeAdminDataChangeRpc(patch);
-  }
+  gateway.commitAdminDataChange = (patch) => invokeAdminDataChangeRpc(patch);
   return gateway;
 }

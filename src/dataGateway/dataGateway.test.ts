@@ -613,6 +613,16 @@ describe("app_state data gateway", () => {
     expect(adminDataRpcMocks.invokeAdminDataChangeRpc).toHaveBeenCalledWith(patch);
   });
 
+  it("exposes admin data RPC commits when normalized realtime is enabled without normalized bootstrap", () => {
+    const gateway = createRemoteDataGateway({
+      ...DEFAULT_BACKEND_FEATURE_FLAGS,
+      normalizedBootstrap: false,
+      normalizedRealtime: true
+    });
+
+    expect(gateway.commitAdminDataChange).toEqual(expect.any(Function));
+  });
+
   it("keeps saves on app_state until RPC write flags are enabled", async () => {
     const appData = createAppData();
     backendMocks.saveRemoteAppData.mockResolvedValue(8);

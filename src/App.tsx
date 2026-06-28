@@ -47,6 +47,7 @@ import {
 import {
   defaultRemoteDataGateway,
   adminDataChangePatchHasChanges,
+  adminDataChangePatchHasUnsupportedChanges,
   buildAdminDataChangePatch,
   buildFinancialAdjustmentPatch,
   buildFinancialCheckoutPatch,
@@ -1714,11 +1715,8 @@ export default function App() {
     }
     try {
       await runBlockingAction(label, async () => {
-        if (
-          backendConfigured &&
-          BACKEND_FEATURE_FLAGS.normalizedBootstrap &&
-          defaultRemoteDataGateway.commitAdminDataChange
-        ) {
+        let handledByAdminDataRpc = false;
+        if (backendConfigured && defaultRemoteDataGateway.commitAdminDataChange) {
           const patch = buildAdminDataChangePatch({
             baseAppData: appData,
             nextAppData,
@@ -1728,16 +1726,24 @@ export default function App() {
             mutationId: createId("admin-change"),
             actionLabel: label
           });
-          if (adminDataChangePatchHasChanges(patch)) {
+          const hasAdminPatchChanges = adminDataChangePatchHasChanges(patch);
+          const hasUnsupportedChanges = adminDataChangePatchHasUnsupportedChanges(appData, nextAppData);
+          if (hasAdminPatchChanges && !hasUnsupportedChanges) {
             const commitResult = await defaultRemoteDataGateway.commitAdminDataChange(patch);
             const nextVersion = commitResult.appStateVersion ?? remoteVersionRef.current + 1;
             remoteVersionRef.current = nextVersion;
             setRemoteVersion(nextVersion);
             setRemoteError("");
             setPendingRetryData(null);
+            handledByAdminDataRpc = true;
+          } else if (!hasAdminPatchChanges && !hasUnsupportedChanges) {
+            handledByAdminDataRpc = true;
           }
-          skipRemotePersistRef.current = true;
-        } else if (backendConfigured) {
+          if (handledByAdminDataRpc) {
+            skipRemotePersistRef.current = true;
+          }
+        }
+        if (backendConfigured && !handledByAdminDataRpc) {
           await saveRemoteSnapshot(nextAppData, remoteVersion, false, label);
           skipRemotePersistRef.current = true;
         }

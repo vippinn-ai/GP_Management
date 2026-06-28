@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
-import type { AppData, ComboPackage, Expense, InventoryItem } from "../types";
-import { adminDataChangePatchHasChanges, buildAdminDataChangePatch } from "./adminDataPatches";
+import type { AppData, ComboPackage, Expense, InventoryItem, User } from "../types";
+import {
+  adminDataChangePatchHasChanges,
+  adminDataChangePatchHasUnsupportedChanges,
+  buildAdminDataChangePatch
+} from "./adminDataPatches";
 
 function createAppData(overrides: Partial<AppData> = {}): AppData {
   return {
@@ -103,6 +107,90 @@ describe("admin data change patches", () => {
     expect(patch.inventoryCategories).toEqual(["Snacks", "Food"]);
     expect(patch.inventoryItems).toEqual([item]);
     expect(patch.inventoryItemIdsToDelete).toEqual([]);
+    expect(adminDataChangePatchHasUnsupportedChanges(createAppData(), createAppData({ inventoryItems: [item] }))).toBe(false);
+  });
+
+  it("captures inventory restocks with stock movements and audit logs", () => {
+    const baseItem: InventoryItem = {
+      id: "item-1",
+      name: "Paneer Momo",
+      category: "Food",
+      price: 160,
+      stockQty: 0,
+      lowStockThreshold: 5,
+      unit: "piece",
+      isReusable: false,
+      active: true,
+      sellBaseItem: false,
+      saleVariants: [{ id: "steam", name: "Steam Paneer Momo", price: 160, stockUnitsPerSale: 8, active: true }]
+    };
+    const nextItem: InventoryItem = { ...baseItem, stockQty: 100 };
+    const nextAppData = createAppData({
+      inventoryItems: [nextItem],
+      stockMovements: [
+        {
+          id: "stock-1",
+          itemId: "item-1",
+          type: "restock",
+          quantity: 100,
+          reason: "Restock",
+          createdAt: "2026-06-28T08:00:00.000Z",
+          userId: "user-1"
+        }
+      ],
+      auditLogs: [
+        {
+          id: "audit-1",
+          action: "stock_movement",
+          entityType: "inventory_item",
+          entityId: "item-1",
+          message: "restock for Paneer Momo.",
+          createdAt: "2026-06-28T08:00:00.000Z",
+          userId: "user-1"
+        }
+      ]
+    });
+
+    const patch = buildAdminDataChangePatch({
+      baseAppData: createAppData({ inventoryItems: [baseItem] }),
+      nextAppData,
+      baseVersion: 13,
+      createdAt: "2026-06-28T08:00:01.000Z",
+      userId: "user-1",
+      mutationId: "admin-change-restock",
+      actionLabel: "Recording stock movement..."
+    });
+
+    expect(adminDataChangePatchHasChanges(patch)).toBe(true);
+    expect(adminDataChangePatchHasUnsupportedChanges(createAppData({ inventoryItems: [baseItem] }), nextAppData)).toBe(false);
+    expect(patch.inventoryItems).toEqual([nextItem]);
+    expect(patch.stockMovements).toEqual(nextAppData.stockMovements);
+    expect(patch.auditLogs).toEqual(nextAppData.auditLogs);
+  });
+
+  it("flags unsupported user changes so they fall back to the full save path", () => {
+    const user: User = {
+      id: "user-1",
+      name: "Admin",
+      username: "admin",
+      role: "admin",
+      password: "hash",
+      active: true
+    };
+    const baseAppData = createAppData();
+    const nextAppData = createAppData({ users: [user] });
+    const patch = buildAdminDataChangePatch({
+      baseAppData,
+      nextAppData,
+      baseVersion: 14,
+      createdAt: "2026-06-28T08:00:01.000Z",
+      userId: "user-1",
+      mutationId: "admin-change-user",
+      actionLabel: "Creating user..."
+    });
+
+    expect(adminDataChangePatchHasChanges(patch)).toBe(false);
+    expect(adminDataChangePatchHasUnsupportedChanges(baseAppData, nextAppData)).toBe(true);
   });
 
   it("captures combo changes and deleted combo ids", () => {

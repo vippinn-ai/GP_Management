@@ -40,6 +40,17 @@ export function adminDataChangePatchHasChanges(patch: AdminDataChangePatch): boo
   );
 }
 
+export function adminDataChangePatchHasUnsupportedChanges(baseAppData: AppData, nextAppData: AppData): boolean {
+  return (
+    !arraysEqual(baseAppData.users, nextAppData.users) ||
+    !arraysEqual(baseAppData.sessions, nextAppData.sessions) ||
+    !arraysEqual(baseAppData.sessionPauseLogs, nextAppData.sessionPauseLogs) ||
+    !arraysEqual(baseAppData.customerTabs, nextAppData.customerTabs) ||
+    !arraysEqual(baseAppData.bills, nextAppData.bills) ||
+    !arraysEqual(baseAppData.payments, nextAppData.payments)
+  );
+}
+
 export function buildAdminDataChangePatch(params: {
   baseAppData: AppData;
   nextAppData: AppData;

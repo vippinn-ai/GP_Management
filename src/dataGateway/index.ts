@@ -18,6 +18,7 @@ export {
 export { appStateRemoteDataGateway } from "./appStateGateway";
 export {
   adminDataChangePatchHasChanges,
+  adminDataChangePatchHasUnsupportedChanges,
   buildAdminDataChangePatch
 } from "./adminDataPatches";
 export {
