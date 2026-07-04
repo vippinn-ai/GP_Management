@@ -277,6 +277,23 @@ function getAvailableStockFromData(
   );
 }
 
+function sameOptionalValue(left: string | number | undefined, right: string | number | undefined) {
+  return (left ?? null) === (right ?? null);
+}
+
+function isSameInventorySaleLine(
+  left: Pick<CustomerTabItem | SessionItem, "inventoryItemId" | "soldAsPackOf" | "saleVariantId" | "comboApplicationId" | "comboId">,
+  right: Pick<CustomerTabItem | SessionItem, "inventoryItemId" | "soldAsPackOf" | "saleVariantId" | "comboApplicationId" | "comboId">
+) {
+  return (
+    left.inventoryItemId === right.inventoryItemId &&
+    sameOptionalValue(left.soldAsPackOf, right.soldAsPackOf) &&
+    sameOptionalValue(left.saleVariantId, right.saleVariantId) &&
+    sameOptionalValue(left.comboApplicationId, right.comboApplicationId) &&
+    sameOptionalValue(left.comboId, right.comboId)
+  );
+}
+
 function getRequiredStockByItem(lines: Array<{ inventoryItemId: string; quantity: number; soldAsPackOf?: number; stockUnitsPerSale?: number }>) {
   return lines.reduce<Record<string, number>>((totals, line) => {
     totals[line.inventoryItemId] = (totals[line.inventoryItemId] ?? 0) + getLineStockQuantity(line);
@@ -396,7 +413,7 @@ export function validateOperationalMutation(appData: AppData, mutation: Operatio
       if (session.items.some((item) => item.id === payload.item.id)) {
         return { ok: true };
       }
-      return validateStockRequirements(appData, [payload.item], { ignoreSessionId: payload.sessionId });
+      return validateStockRequirements(appData, [payload.item]);
     }
     case "removeSessionItem": {
       const payload = mutation.payload as RemoveSessionItemPayload;
@@ -422,7 +439,7 @@ export function validateOperationalMutation(appData: AppData, mutation: Operatio
       if ((session.comboApplications ?? []).some((combo) => combo.id === payload.comboApplication.id)) {
         return { ok: true };
       }
-      return validateStockRequirements(appData, payload.items, { ignoreSessionId: payload.sessionId });
+      return validateStockRequirements(appData, payload.items);
     }
     case "openCustomerTab": {
       const payload = mutation.payload as OpenCustomerTabPayload;
@@ -691,10 +708,7 @@ export function applyOperationalMutation(source: AppData, mutation: OperationalM
       const tab = appData.customerTabs.find((entry) => entry.id === payload.customerTabId && entry.status === "open");
       if (tab && !tab.items.some((line) => line.id === payload.line.id)) {
         const existing = tab.items.find(
-          (line) =>
-            line.inventoryItemId === payload.line.inventoryItemId &&
-            line.soldAsPackOf === payload.line.soldAsPackOf &&
-            line.saleVariantId === payload.line.saleVariantId
+          (line) => isSameInventorySaleLine(line, payload.line)
         );
         if (existing) {
           existing.quantity += payload.quantityDelta;

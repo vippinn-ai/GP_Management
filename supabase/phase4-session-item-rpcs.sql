@@ -212,8 +212,7 @@ begin
      and sessions.id = session_items.session_id
     where session_items.organization_id = v_organization_id
       and session_items.inventory_item_id = v_inventory_item_id
-      and sessions.status <> 'closed'
-      and sessions.id <> v_session_id;
+      and sessions.status <> 'closed';
 
     select coalesce(
       sum(customer_tab_items.quantity * coalesce(customer_tab_items.stock_units_per_sale, customer_tab_items.sold_as_pack_of, 1)),

@@ -785,6 +785,44 @@ describe("session combo helpers", () => {
       "Extra Coke"
     ]);
   });
+
+  it("includes a standalone paid item when the same item is also included in a customer tab combo", () => {
+    const lines = getCustomerTabCheckoutLines(
+      [{
+        id: "line-included",
+        inventoryItemId: "maggi-item",
+        name: "Maggi",
+        quantity: 2,
+        unitPrice: 0,
+        addedAt: "2026-06-08T10:00:00.000Z",
+        comboApplicationId: "combo-app-1",
+        comboId: "snack-combo"
+      }, {
+        id: "line-extra",
+        inventoryItemId: "maggi-item",
+        name: "Maggi",
+        quantity: 1,
+        unitPrice: 100,
+        addedAt: "2026-06-08T10:05:00.000Z"
+      }],
+      [{
+        id: "combo-app-1",
+        comboId: "snack-combo",
+        comboName: "Snack Combo",
+        price: 249,
+        includedMinutes: 0,
+        appliedAt: "2026-06-08T10:00:00.000Z",
+        fixedItems: [{ inventoryItemId: "maggi-item", name: "Maggi", sourceName: "Maggi", quantity: 2, unitPrice: 100, stockUnitsPerSale: 1 }],
+        choices: []
+      }]
+    );
+
+    expect(lines.map((line) => [line.type, line.description, line.quantity, line.unitPrice])).toEqual([
+      ["combo_package", "Snack Combo", 1, 249],
+      ["inventory_item", "Maggi (included in Snack Combo)", 2, 0],
+      ["inventory_item", "Maggi", 1, 100]
+    ]);
+  });
 });
 
 describe("inventory report ranges", () => {

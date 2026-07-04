@@ -645,6 +645,8 @@ begin
     and customer_tab_items.inventory_item_id is not distinct from v_inventory_item_id
     and customer_tab_items.sold_as_pack_of is not distinct from nullif(v_line->>'soldAsPackOf', '')::numeric
     and customer_tab_items.sale_variant_id is not distinct from nullif(v_line->>'saleVariantId', '')
+    and customer_tab_items.combo_application_id is not distinct from nullif(v_line->>'comboApplicationId', '')
+    and customer_tab_items.combo_id is not distinct from nullif(v_line->>'comboId', '')
   order by customer_tab_items.added_at nulls last, customer_tab_items.created_at
   limit 1
   for update;

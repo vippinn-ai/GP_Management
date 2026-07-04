@@ -413,6 +413,341 @@ describe("operational sync", () => {
     expect(nextData.auditLogs[0].id).toBe("audit-combo");
   });
 
+  it("keeps standalone customer tab items separate from combo-included lines", () => {
+    const appData = createAppData();
+    appData.customerTabs.push({
+      id: "tab-1",
+      customerName: "Vipin",
+      status: "open",
+      createdAt: "2026-06-09T09:00:00.000Z",
+      items: [{
+        id: "line-combo-1",
+        inventoryItemId: "coke",
+        name: "Coke",
+        quantity: 2,
+        unitPrice: 0,
+        addedAt: "2026-06-09T10:00:00.000Z",
+        comboApplicationId: "combo-app-1",
+        comboId: "combo-1"
+      }],
+      comboApplications: [{
+        id: "combo-app-1",
+        comboId: "combo-1",
+        comboName: "Snack Combo",
+        price: 249,
+        includedMinutes: 0,
+        appliedAt: "2026-06-09T10:00:00.000Z",
+        fixedItems: [{ inventoryItemId: "coke", name: "Coke", sourceName: "Coke", quantity: 2, unitPrice: 40, stockUnitsPerSale: 1 }],
+        choices: []
+      }]
+    });
+
+    const firstAdd = applyOperationalMutation(
+      appData,
+      mutation("addCustomerTabItem", "customer_tab", "tab-1", {
+        customerTabId: "tab-1",
+        quantityDelta: 1,
+        line: {
+          id: "line-extra-1",
+          inventoryItemId: "coke",
+          name: "Coke",
+          quantity: 1,
+          unitPrice: 40,
+          addedAt: "2026-06-09T10:05:00.000Z"
+        },
+        auditLog: {
+          id: "audit-extra-1",
+          action: "customer_tab_item_added",
+          entityType: "customer_tab",
+          entityId: "tab-1",
+          message: "Added Coke.",
+          createdAt: "2026-06-09T10:05:00.000Z",
+          userId: "user-1"
+        }
+      })
+    );
+
+    const secondAdd = applyOperationalMutation(
+      firstAdd,
+      mutation("addCustomerTabItem", "customer_tab", "tab-1", {
+        customerTabId: "tab-1",
+        quantityDelta: 1,
+        line: {
+          id: "line-extra-2",
+          inventoryItemId: "coke",
+          name: "Coke",
+          quantity: 1,
+          unitPrice: 40,
+          addedAt: "2026-06-09T10:06:00.000Z"
+        },
+        auditLog: {
+          id: "audit-extra-2",
+          action: "customer_tab_item_added",
+          entityType: "customer_tab",
+          entityId: "tab-1",
+          message: "Added Coke.",
+          createdAt: "2026-06-09T10:06:00.000Z",
+          userId: "user-1"
+        }
+      })
+    );
+
+    expect(secondAdd.customerTabs[0].items).toEqual([
+      expect.objectContaining({ id: "line-combo-1", quantity: 2, unitPrice: 0, comboApplicationId: "combo-app-1" }),
+      expect.objectContaining({ id: "line-extra-1", quantity: 2, unitPrice: 40 })
+    ]);
+    expect(secondAdd.customerTabs[0].items[1].comboApplicationId).toBeUndefined();
+  });
+
+  it("counts customer tab combo reservations when validating standalone additions", () => {
+    const appData = createAppData();
+    appData.inventoryItems[0].stockQty = 2;
+    appData.customerTabs.push({
+      id: "tab-1",
+      customerName: "Vipin",
+      status: "open",
+      createdAt: "2026-06-09T09:00:00.000Z",
+      items: [{
+        id: "line-combo-1",
+        inventoryItemId: "coke",
+        name: "Coke",
+        quantity: 2,
+        unitPrice: 0,
+        addedAt: "2026-06-09T10:00:00.000Z",
+        comboApplicationId: "combo-app-1",
+        comboId: "combo-1"
+      }]
+    });
+
+    const pending = mutation("addCustomerTabItem", "customer_tab", "tab-1", {
+      customerTabId: "tab-1",
+      quantityDelta: 1,
+      line: {
+        id: "line-extra-1",
+        inventoryItemId: "coke",
+        name: "Coke",
+        quantity: 1,
+        unitPrice: 40,
+        addedAt: "2026-06-09T10:05:00.000Z"
+      },
+      auditLog: {
+        id: "audit-extra-1",
+        action: "customer_tab_item_added",
+        entityType: "customer_tab",
+        entityId: "tab-1",
+        message: "Added Coke.",
+        createdAt: "2026-06-09T10:05:00.000Z",
+        userId: "user-1"
+      }
+    });
+
+    expect(validateOperationalMutation(appData, pending)).toMatchObject({
+      ok: false,
+      reason: expect.stringContaining("Coke")
+    });
+
+    appData.inventoryItems[0].stockQty = 3;
+    expect(validateOperationalMutation(appData, pending)).toEqual({ ok: true });
+  });
+
+  it("keeps standalone sale variant rows separate from combo-included variant rows", () => {
+    const appData = createAppData();
+    appData.inventoryItems[0].name = "Momo";
+    appData.inventoryItems[0].stockQty = 16;
+    appData.inventoryItems[0].saleVariants = [
+      { id: "fried", name: "Momo Fried", price: 80, stockUnitsPerSale: 4, active: true }
+    ];
+    appData.customerTabs.push({
+      id: "tab-1",
+      customerName: "Vipin",
+      status: "open",
+      createdAt: "2026-06-09T09:00:00.000Z",
+      items: [{
+        id: "line-combo-1",
+        inventoryItemId: "coke",
+        saleVariantId: "fried",
+        stockUnitsPerSale: 4,
+        name: "Momo Fried",
+        quantity: 1,
+        unitPrice: 0,
+        addedAt: "2026-06-09T10:00:00.000Z",
+        comboApplicationId: "combo-app-1",
+        comboId: "combo-1"
+      }]
+    });
+
+    const nextData = applyOperationalMutation(
+      appData,
+      mutation("addCustomerTabItem", "customer_tab", "tab-1", {
+        customerTabId: "tab-1",
+        quantityDelta: 1,
+        line: {
+          id: "line-extra-1",
+          inventoryItemId: "coke",
+          saleVariantId: "fried",
+          stockUnitsPerSale: 4,
+          name: "Momo Fried",
+          quantity: 1,
+          unitPrice: 80,
+          addedAt: "2026-06-09T10:05:00.000Z"
+        },
+        auditLog: {
+          id: "audit-extra-1",
+          action: "customer_tab_item_added",
+          entityType: "customer_tab",
+          entityId: "tab-1",
+          message: "Added Momo Fried.",
+          createdAt: "2026-06-09T10:05:00.000Z",
+          userId: "user-1"
+        }
+      })
+    );
+
+    expect(nextData.customerTabs[0].items).toEqual([
+      expect.objectContaining({ id: "line-combo-1", saleVariantId: "fried", quantity: 1, unitPrice: 0, comboApplicationId: "combo-app-1" }),
+      expect.objectContaining({ id: "line-extra-1", saleVariantId: "fried", quantity: 1, unitPrice: 80 })
+    ]);
+  });
+
+  it("requires extra stock when adding a session item already reserved by a combo", () => {
+    const appData = createAppData();
+    appData.inventoryItems[0].stockQty = 2;
+    appData.sessions.push({
+      id: "session-1",
+      stationId: "station-1",
+      stationNameSnapshot: "Pool 1",
+      mode: "timed",
+      startedAt: "2026-06-09T09:00:00.000Z",
+      status: "active",
+      playMode: "group",
+      ltpEligible: false,
+      pricingSnapshot: [],
+      items: [{
+        id: "line-combo-1",
+        inventoryItemId: "coke",
+        name: "Coke",
+        quantity: 2,
+        unitPrice: 0,
+        addedAt: "2026-06-09T09:00:00.000Z",
+        comboApplicationId: "combo-app-1",
+        comboId: "combo-1"
+      }],
+      comboApplications: [{
+        id: "combo-app-1",
+        comboId: "combo-1",
+        comboName: "Pool Combo",
+        price: 799,
+        includedMinutes: 60,
+        appliedAt: "2026-06-09T09:00:00.000Z",
+        fixedItems: [{ inventoryItemId: "coke", name: "Coke", sourceName: "Coke", quantity: 2, unitPrice: 40, stockUnitsPerSale: 1 }],
+        choices: []
+      }],
+      pauseLogIds: []
+    });
+
+    const pending = mutation("addSessionItem", "session", "session-1", {
+      sessionId: "session-1",
+      item: {
+        id: "line-extra-1",
+        inventoryItemId: "coke",
+        name: "Coke",
+        quantity: 1,
+        unitPrice: 40,
+        addedAt: "2026-06-09T10:00:00.000Z"
+      },
+      auditLog: {
+        id: "audit-extra",
+        action: "session_item_added",
+        entityType: "session",
+        entityId: "session-1",
+        message: "Added Coke.",
+        createdAt: "2026-06-09T10:00:00.000Z",
+        userId: "user-1"
+      }
+    });
+
+    expect(validateOperationalMutation(appData, pending)).toMatchObject({
+      ok: false,
+      reason: expect.stringContaining("Coke")
+    });
+  });
+
+  it("requires extra stock when repeating a session combo", () => {
+    const appData = createAppData();
+    appData.inventoryItems[0].stockQty = 3;
+    appData.sessions.push({
+      id: "session-1",
+      stationId: "station-1",
+      stationNameSnapshot: "Pool 1",
+      mode: "timed",
+      startedAt: "2026-06-09T09:00:00.000Z",
+      status: "active",
+      playMode: "group",
+      ltpEligible: false,
+      pricingSnapshot: [],
+      items: [{
+        id: "line-combo-1",
+        inventoryItemId: "coke",
+        name: "Coke",
+        quantity: 2,
+        unitPrice: 0,
+        addedAt: "2026-06-09T09:00:00.000Z",
+        comboApplicationId: "combo-app-1",
+        comboId: "combo-1"
+      }],
+      comboApplications: [{
+        id: "combo-app-1",
+        comboId: "combo-1",
+        comboName: "Pool Combo",
+        price: 799,
+        includedMinutes: 60,
+        appliedAt: "2026-06-09T09:00:00.000Z",
+        fixedItems: [{ inventoryItemId: "coke", name: "Coke", sourceName: "Coke", quantity: 2, unitPrice: 40, stockUnitsPerSale: 1 }],
+        choices: []
+      }],
+      pauseLogIds: []
+    });
+
+    const pending = mutation("repeatSessionCombo", "session", "session-1", {
+      sessionId: "session-1",
+      comboApplication: {
+        id: "combo-app-2",
+        comboId: "combo-1",
+        comboName: "Pool Combo",
+        price: 799,
+        includedMinutes: 60,
+        appliedAt: "2026-06-09T10:00:00.000Z",
+        fixedItems: [{ inventoryItemId: "coke", name: "Coke", sourceName: "Coke", quantity: 2, unitPrice: 40, stockUnitsPerSale: 1 }],
+        choices: []
+      },
+      items: [{
+        id: "line-combo-2",
+        inventoryItemId: "coke",
+        name: "Coke",
+        quantity: 2,
+        unitPrice: 0,
+        addedAt: "2026-06-09T10:00:00.000Z",
+        comboApplicationId: "combo-app-2",
+        comboId: "combo-1"
+      }],
+      stockMovements: [],
+      auditLog: {
+        id: "audit-repeat",
+        action: "combo_repeated",
+        entityType: "session",
+        entityId: "session-1",
+        message: "Repeated combo.",
+        createdAt: "2026-06-09T10:00:00.000Z",
+        userId: "user-1"
+      }
+    });
+
+    expect(validateOperationalMutation(appData, pending)).toMatchObject({
+      ok: false,
+      reason: expect.stringContaining("Coke")
+    });
+  });
+
   it("rebases a safe pending operation onto the latest remote state", () => {
     const remoteData = createAppData();
     remoteData.customerTabs.push({

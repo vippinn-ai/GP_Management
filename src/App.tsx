@@ -3184,9 +3184,9 @@ export default function App() {
     const packOf = form.sellAsPackOf;
     const stockUnitsPerSale = packOf ?? option?.stockUnitsPerSale ?? 1;
     const stockNeeded = form.quantity * stockUnitsPerSale;
-    if (!option || !item || getAvailableStock(item, sessionId) < stockNeeded) {
-      if (packOf && item && getAvailableStock(item, sessionId) < stockNeeded) {
-        window.alert(`Cannot sell as pack - only ${getAvailableStock(item, sessionId)} cigarettes in stock (need ${stockNeeded} for ${form.quantity} pack${form.quantity !== 1 ? "s" : ""}). Please restock first or sell as singles.`);
+    if (!option || !item || getAvailableStock(item) < stockNeeded) {
+      if (packOf && item && getAvailableStock(item) < stockNeeded) {
+        window.alert(`Cannot sell as pack - only ${getAvailableStock(item)} cigarettes in stock (need ${stockNeeded} for ${form.quantity} pack${form.quantity !== 1 ? "s" : ""}). Please restock first or sell as singles.`);
       } else {
         window.alert(item?.isReusable ? `${item.name} is currently occupied.` : `Not enough stock available for ${option?.name ?? "that item"}.`);
       }
@@ -3267,7 +3267,7 @@ export default function App() {
       }))
     };
     const selections = getComboInventorySelections(repeatedApplication);
-    const unavailable = findUnavailableComboSelection(selections, session.id);
+    const unavailable = findUnavailableComboSelection(selections);
     if (unavailable) {
       const item = appData.inventoryItems.find((entry) => entry.id === unavailable[0]);
       window.alert(`Not enough stock available to repeat combo item ${item?.name ?? ""}.`);
