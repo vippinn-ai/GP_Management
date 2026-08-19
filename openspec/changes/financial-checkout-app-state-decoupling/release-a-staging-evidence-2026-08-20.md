@@ -3,10 +3,19 @@
 ## Scope
 
 - Project: `test/staging` (`tkbdyzxwwbhkpztgjjxh`), Southeast Asia (Singapore).
-- Reviewed deployment commit: `0af9c7b0cb35e521fd35bff9ba7980d792cf100e`.
+- Current reviewed deployment commit: `60ba75c07cebf6a5e12bc52096b8158917cbbcdc` (the initial Release A deployment was built from application commit `0af9c7b0cb35e521fd35bff9ba7980d792cf100e`).
 - Financial v2 remained disabled; phase 10 was not applied.
 - No production project, production database, or production deployment was accessed.
 - Staging was resumed from its paused state. The initial investigation was read-only. After the user explicitly approved the staging-only destructive reconstruction, a verified backup was retained and normalized `org-primary` was rebuilt from authoritative `app_state`.
+
+## Evidence metadata
+
+- Execution window: `2026-08-19T19:28:17Z` through `2026-08-19T20:56:52Z` (`2026-08-20 00:58` through `02:26` IST) for the recorded active run; the required business-day soak remains open.
+- Operator: Codex primary agent using the user-authorized authenticated staging sessions.
+- Independent reviewer: separate read-only checkout test agent.
+- Browser surface: authenticated Codex in-app browser; an independent Chrome profile was unavailable because its local native-host integration was not connected.
+- Previous accepted staging frontend version: `8bd7fd6d-9084-428f-859d-26b04123135c`.
+- Current staging frontend version: `c76b06d6-3cab-408f-a32c-d1937b14b562`.
 
 ## Project and compatibility baseline
 
@@ -142,6 +151,13 @@ The reviewed staging build was then repeated successfully from evidence checkpoi
 
 A fresh, uncached in-app browser tab loaded the deployed staging URL successfully with title `Game Parlour Management System` and the expected BreakPerfect sign-in screen.
 
+During extended functional verification, the application source was updated only to correct a staging-discovered customer-identity defect. Commit `249e898` first preserved missing canonical customer IDs and reconciled optimistic IDs with the server response. The independent reviewer then found a duplicate-name/phone edge case; commit `60ba75c` made IDs referenced by sessions, tabs, or bills authoritative and added both failure-shape tests. The intermediate Cloudflare version `f6456e7c-e506-43d5-a13a-6902c39b7c84` was superseded before acceptance. The final staging-only deployment is:
+
+- Commit: `60ba75c07cebf6a5e12bc52096b8158917cbbcdc`.
+- Cloudflare version: `c76b06d6-3cab-408f-a32c-d1937b14b562`.
+- Local gates: 30 test files / 376 tests passed; production and staging builds passed; lint exited zero with five pre-existing warnings; generated manifest contains 242 files with zero missing/hash/line mismatches.
+- Financial v2 remained `false`; production was not targeted.
+
 ## Authenticated application smoke and realtime evidence
 
 The staging application login was exercised with an active admin profile. No credential, resolved email address, access token, or password was written to this evidence or the repository.
@@ -172,14 +188,53 @@ A controlled realtime mutation was then run from the deployed staging UI:
 
 This is a same-browser, two-tab realtime check. A genuinely independent Chrome profile could not be connected because the local Chrome native-host integration is unavailable. The required independent two-browser gate therefore remains open; it is not represented as passed here.
 
+## Extended v1 financial and downstream verification
+
+Four controlled v1 bills/adjustments were completed without a client timeout or SQLSTATE `57014`:
+
+1. Timed session checkout: `BILL-20260819-001` (`bill-2ff891f7-139d-426f-91c1-c8e8639678f0`), Rs 36 cash, correctly closed the timed session after pause/resume/edit/delete-pause and item add/remove checks. The receipt showed the 8 Ball Pool timed charge, and payment/bill/audit actors agreed.
+2. Unit-sale checkout: `BILL-20260819-002` (`bill-63ed71d6-d04e-4dc9-ac97-d464f616bac0`), Rs 5 deferred, followed by a full Rs 5 cash settlement. The Bill Register refetched to zero due; bill settlement, payment receiver, and audit actor agreed.
+3. Customer-tab checkout: `BILL-20260819-003` (`bill-b0cfabc0-1b3e-431b-b19a-1ec322dd6f20`), Rs 10 cash for one Coke. The tab closed, stock decreased once, receipt and actors agreed, and the bill survived hard refresh.
+4. Customer-identity regression checkout: `BILL-20260819-004` (`bill-5dc1cab1-c927-4bf0-ab50-31e830cf70a1`), Rs 10 cash for one Coke. It completed inside the bounded browser observation window; its database financial event reports `190.959 ms` server duration.
+
+Analytics after the first three bills showed Rs 51 gross revenue, three bills, Rs 35.76 session revenue, Rs 15 consumables revenue, and Rs 51 cash, matching the controlled bills. Bill Register rows and receipts remained available after hard refresh.
+
+The first customer-tab case exposed a real Release A blocker: the tab and bill referenced `customer-ee251663-5e04-4188-9ea8-29afe587aa7b`, while the normalized customer row created at tab-open was `customer-24d8c529-ae9f-4e93-957e-858fb0068817`. Customer Profiles therefore showed the valid Rs 10 bill as zero visits/zero spend. This was retained as failure evidence and not silently rewritten.
+
+After the two-step fix and final redeployment, the exact scenario was repeated with `QA Customer ID Fix 20260820 0219`. Database evidence for `BILL-20260819-004` proves:
+
+- Bill and closed tab both reference `customer-c0673d07-9760-467a-bd11-88b73ac0e1cd`.
+- Exactly one customer row exists for that ID and exactly one customer has the test name.
+- Exactly one bill, one payment, one financial event, and zero open rows for the test tab exist.
+- Bill issuer, payment receiver, bill audit actor, stock-movement actor, and financial-event actor are the same authenticated profile.
+- The one related stock movement is a sale of `-1`; staging has zero negative inventory rows.
+- Customer Profiles shows one visit and Rs 10 spend with `BILL-20260819-004`, both immediately and after a full hard refresh.
+- Compatibility `app_state.version` is `493`, final SHA-256 is `507a92a179f5baf6a6e8c426f29a783f566e76c88e23480731c89a472e4b4a63`, and `updated_at` is the checkout time `2026-08-19T20:50:12.692763+00:00`; later read-only history navigation did not advance it.
+- `financial_mutations` and `commit_checkout_bill_v2(jsonb)` remain absent.
+
+The independent reviewer re-read the strengthened identity logic, ran the focused 131-test pair and full 376-test suite, verified the 242-row manifest, and reported no remaining blocker specific to customer identity.
+
+## Post-functional parity reconciliation
+
+The repository 36-row parity query returned three nonzero collection-count rows and zero financial-total or live-summary deltas:
+
+| Collection | `app_state` | Normalized | Delta | Reconciliation |
+| --- | ---: | ---: | ---: | --- |
+| audit logs | 538 | 551 | +13 | Exactly the controlled purpose-RPC audit IDs: session start/pause/resume/pause edit/pause delete/item add/item remove, unit-session start, and the two tab-open/item-add pairs. |
+| customers | 62 | 66 | +4 | Exactly the four normalized QA customer rows created through purpose-built operational RPCs. |
+| stock movements | 275 | 277 | +2 | Exactly the Coke session reservation `-1` and reservation release `+1`, net zero. |
+
+These deltas are explained normalized-only operational history, not missing normalized data. They demonstrate why Release A must not roll reads back to the compatibility snapshot. They do not satisfy the complete Gate 6 by themselves; the remaining verification scripts, second-browser matrix, and soak evidence are still required.
+
 ## Current gate decision
 
-Database reconstruction, additive Release A installation, staging frontend deployment, authenticated normalized-read smoke, controlled start/reject cleanup, same-browser realtime, and hard-refresh non-resurrection checks are complete and clean. The independent-browser, exhaustive functional, performance, and full-business-day soak gates remain open. No production promotion claim is made.
+Database reconstruction, additive Release A installation, staging frontend deployment, authenticated normalized-read smoke, controlled operational lifecycle checks, representative timed/unit/tab v1 checkout, settlement, customer-history correction, actor/stock verification, same-browser realtime, and hard-refresh non-resurrection checks are complete. The independent-browser, remaining Gate 5 adjustment/downstream/fail-closed matrix, complete Gate 6 capture, performance, and full-business-day soak gates remain open. No production promotion claim is made.
 
 ## Remaining gated work
 
 1. Connect a genuinely independent second staging browser and execute the remaining Gate 5 functional/two-browser cases.
-2. Repeat post-functional parity, actors, errors, hashes, and deployment captures.
-3. Complete the full representative staging business-day soak and independent sign-off.
+2. Complete the remaining Bill Register adjustment, older-history receipt, receivables, permissions, controlled fail-closed, reports/export, and inventory matrix.
+3. Complete the remaining Gate 6 definitions/grants/indexes/publication/error/duplicate captures and performance probes.
+4. Complete the full representative staging business-day soak and independent sign-off.
 
 No production action is authorized by this evidence.
