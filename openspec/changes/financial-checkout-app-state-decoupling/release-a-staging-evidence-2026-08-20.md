@@ -1,12 +1,12 @@
-# Release A staging preflight evidence — 2026-08-20
+# Release A staging execution evidence — 2026-08-20
 
 ## Scope
 
 - Project: `test/staging` (`tkbdyzxwwbhkpztgjjxh`), Southeast Asia (Singapore).
-- Reviewed commit: `79434b34dc83066554c2845a81e334cd906b37a9`.
+- Reviewed deployment commit: `0af9c7b0cb35e521fd35bff9ba7980d792cf100e`.
 - Financial v2 remained disabled; phase 10 was not applied.
 - No production project, production database, or production deployment was accessed.
-- Staging was resumed from its paused state. All database statements executed in this preflight were read-only.
+- Staging was resumed from its paused state. The initial investigation was read-only. After the user explicitly approved the staging-only destructive reconstruction, a verified backup was retained and normalized `org-primary` was rebuilt from authoritative `app_state`.
 
 ## Project and compatibility baseline
 
@@ -21,10 +21,10 @@ Captured at `2026-08-19T19:28:17.526161+00:00` (`2026-08-20 00:58:17 IST`):
 - `app_state` and `operational_events` are both in `supabase_realtime`.
 - `profiles.tab_permissions` is absent.
 - `edit_pause_log`, `delete_pause_log`, and `record_session_audit` are absent.
-- `get_analytics_summary` and `get_inventory_report_summary` are absent even though the intended staging build enables those read flags.
+- `load_analytics_summary(text,date,date,date,date)` and `load_inventory_report_summary(text,date,date,text,integer)` were present, denied to `anon`, and granted to `authenticated`. The earlier probe used incorrect `get_*` names; the frontend and repository use these `load_*` signatures.
 - Existing public operational/financial/admin RPCs are granted to `authenticated`; the internal inventory resolver is not granted to `authenticated` or `anon`.
 
-## Parity result
+## Pre-reconstruction parity result
 
 The repository `phase1-parity-checks-single-result.sql` returned 36 rows. The following non-zero deltas block normalized-source promotion:
 
@@ -82,18 +82,66 @@ The normalized tables retain rows that are absent from the current `app_state` l
 
 Their start/open/pause operational events exist, but the later state represented in `app_state` is not reflected in those normalized rows.
 
-## Gate decision
+## Backup and reconstruction
 
-Release A installation and frontend deployment stopped before any schema or application mutation. Installing only the missing RPCs would make the UI read incomplete/stale financial and operational data.
+The user explicitly approved deletion and reconstruction of staging normalized `org-primary`; production remained out of scope.
 
-The repository phase-1 backfill is intentionally destructive: it deletes the normalized `org-primary` organization and cascade-dependent rows, then reconstructs them from authoritative `app_state`. It must not be run without an explicit deletion confirmation and a retained staging backup/evidence export.
+- Backup schema: `release_a_backup_20260820_0af9c7b`.
+- Backup capture: `2026-08-19T19:34:38.400815+00:00`.
+- Backup contents: 46 captured data/metadata tables and 4,564 rows, plus the backup row-count table.
+- Backup includes every public `organization_id` table for `org-primary`, primary `app_state`, all profiles, public function definitions and grants, indexes, and realtime publication membership.
+- Backup `app_state`: version `487`, updated at `2026-07-27T05:33:35.017281+00:00`, SHA-256 `cf5e87672491da73d41db3565218c79f9b98a1e938c2b1ad4c2c934a12d670d5`; all three fields exactly matched live staging before reconstruction.
+- No other active non-system staging database connection was present immediately before reconstruction.
 
-## Proposed recovery requiring explicit approval
+The first direct phase-1 backfill attempt failed on `analytics_dirty_dates_organization_id_fkey`: an existing analytics trigger fired during the organization cascade. PostgreSQL rolled the statement back. A follow-up query proved the organization and pre-attempt counts remained present (`bills=112`, `payments=118`, `sessions=111`, `audit_logs=769`, `operational_events=416`) and the `app_state` version/hash were unchanged.
 
-1. Export/backup the complete current normalized `org-primary` data and relevant function/grant definitions.
-2. Reconstruct normalized staging from the current authoritative `app_state` using the reviewed phase-1 backfill.
-3. Rerun all 36 parity rows and require zero unexplained delta.
-4. Apply only the required additive Release A prerequisites: read indexes/APIs, normalized inventory helper, phase-11 maintenance RPCs/profile column, and the admin-user edge update.
-5. Re-run definitions, grants, hashes, parity, and staging browser checks before any frontend deployment.
+The approved backfill was then run in one explicit transaction. Public user-trigger modes were captured in a temporary table, user triggers were disabled only for the reconstruction, and each trigger was restored to its original `O`, `D`, `R`, or `A` mode before commit. The reviewed repository backfill SHA-256 was `967da7e9c7f06e9ae1e6b5a10321b7562f249f7deb18fecb133b53d49e98aa3e`; the transaction wrapper SHA-256 was `2d2fcc56d7190dee25c77991a6847bcf44be9a4bb6c142b7e869788a29b69b50`.
+
+Post-reconstruction evidence:
+
+- All 36 repository parity rows returned delta `0`.
+- Core normalized counts became `bills=119`, `payments=127`, `sessions=110`, `customer_tabs=58`, `audit_logs=531`, and `stock_movements=272`.
+- Stale normalized open sessions, tabs, and pending bills became `0`, matching `app_state`.
+- The reconstructed compatibility baseline intentionally contains `0` historical `operational_events`; the former 416 normalized-only events remain retained in the backup schema.
+- All public user triggers were restored to normal enabled mode; no nonstandard trigger mode remained.
+- `app_state` remained version `487` with the same updated timestamp and SHA-256.
+
+## Additive Release A database and edge installation
+
+Applied to staging, in reviewed order:
+
+1. `supabase/phase4-customer-tab-rpcs.sql`, SHA-256 `b0857f508914499fdd71fbc367681de39259a5b283d3e35e3f55012d32165822`.
+2. `supabase/phase11-operational-maintenance-rpcs.sql`, SHA-256 `161d9b2374d3b12b84a96e9e338d48cf7bd9bb8da1f4acaa0c39e5f8f02f42a3`.
+3. Repository `admin-update-user` edge function.
+
+Verification proved:
+
+- `resolve_operational_inventory_item` reads `public.inventory_items`, contains no `app_state` reference, and is executable by neither `anon` nor `authenticated`.
+- `open_customer_tab`, tab-item add/update/remove, `edit_pause_log`, `delete_pause_log`, and `record_session_audit` are denied to `anon` and granted to `authenticated`.
+- `profiles.tab_permissions` exists as nullable `jsonb`.
+- Analytics and inventory summary tables retain RLS; their read RPCs are denied to `anon` and granted to `authenticated`.
+- `app_state` and `operational_events` remain in `supabase_realtime`.
+- `commit_checkout_bill_v2`, `commit_financial_adjustment_v2`, and `financial_mutations` remain absent.
+- A second 36-row parity run after installation again returned no non-zero delta.
+- `app_state` remained version `487` and SHA-256 `cf5e87672491da73d41db3565218c79f9b98a1e938c2b1ad4c2c934a12d670d5`.
+
+The previously deployed edge source was retained in evidence with SHA-256 `5b0610cffe75858ebc8ec931c918517ac3dae203d3a6bc32138ffc3bba471a31`. Shared `cors.ts` and `admin.ts` matched the repository. A post-deploy source verification caught that a dashboard-editor search had appended a stray token to the first staged update; the file was immediately replaced and redeployed before functional testing. The final deployed normalized source SHA-256 is `68141c5f0851c05e618e3c5db35b1d24ecd8c86a169574d38c8a311db60b110b`, exactly matching the repository-normalized source and ending at `});` with no trailing token.
+
+## Frontend deployment state
+
+The actual ignored `.env.staging` boolean flag capture was reviewed and hashed. Its SHA-256 is `cc6cf00348ed6f4e61971438d04b24254a36e3fbf8c301d4847a49fb6d537942`; all required normalized/operational read and write flags are `true`, while `VITE_BACKEND_FINANCIAL_RPC_V2=false`.
+
+The staging frontend build passed from clean commit `0af9c7b0cb35e521fd35bff9ba7980d792cf100e` with the existing large-chunk warning. The Cloudflare upload did not start because the non-interactive shell has no `CLOUDFLARE_API_TOKEN`; Wrangler exited before changing the deployment. The in-app Cloudflare dashboard is open at its login page for the operator to authenticate. Functional, two-browser, and soak gates remain pending until the frontend is deployed.
+
+## Current gate decision
+
+Database reconstruction and additive Release A installation are complete and clean. Frontend deployment is blocked only on Cloudflare authentication. No functional/soak claim and no production promotion claim is made.
+
+## Remaining gated work
+
+1. Authenticate the in-app Cloudflare staging account and deploy the already-built Release A frontend with the reviewed flags.
+2. Hard-refresh independent staging browsers and execute Gate 5 functional/two-browser cases.
+3. Repeat post-functional parity, actors, errors, hashes, and deployment captures.
+4. Complete the full representative staging business-day soak and independent sign-off.
 
 No production action is authorized by this evidence.
