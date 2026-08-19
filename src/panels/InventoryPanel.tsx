@@ -1,8 +1,9 @@
-import { type FormEvent, useState } from "react";
+import { type FormEvent, useEffect, useState } from "react";
 import type {
   InventoryItem,
   InventoryReportFilterState,
   InventoryReportModel,
+  InventoryPanelView,
   InventoryReportPreset,
   InventoryState,
   ComboPackage,
@@ -25,7 +26,15 @@ interface InventoryAction {
 }
 
 type InventoryArchiveView = "active" | "archived";
-type InventoryPanelView = "catalog" | "report" | "combos";
+
+interface InventoryReportBackendStatus {
+  enabled: boolean;
+  loading: boolean;
+  error: string;
+  usingCachedData: boolean;
+  usingFallback: boolean;
+  onRefresh: () => void;
+}
 
 interface InventoryArchiveDraft {
   itemId: string;
@@ -168,6 +177,8 @@ export function InventoryPanel(props: {
   inventoryReportFromDate: string;
   inventoryReportToDate: string;
   inventoryReportRangeLabel: string;
+  inventoryReportSearch: string;
+  inventoryReportBackend?: InventoryReportBackendStatus;
   combos: ComboPackage[];
   comboDraft: ComboPackage;
   stations: Station[];
@@ -189,6 +200,8 @@ export function InventoryPanel(props: {
   onInventoryItemSearchChange: (value: string) => void;
   onInventoryArchiveViewChange: (value: InventoryArchiveView) => void;
   onInventoryReportFilterChange: (next: InventoryReportFilterState) => void;
+  onInventoryReportSearchChange: (value: string) => void;
+  onInventoryPanelViewChange: (value: InventoryPanelView) => void;
   onComboDraftChange: (next: ComboPackage) => void;
   onSaveCombo: (event: FormEvent<HTMLFormElement>) => void;
   onEditCombo: (combo: ComboPackage) => void;
@@ -211,6 +224,9 @@ export function InventoryPanel(props: {
     canEditInventory, isManagerReadOnly, inventoryReport, inventoryReportFilter, comboDraft
   } = props;
   const [inventoryPanelView, setInventoryPanelView] = useState<InventoryPanelView>("catalog");
+  useEffect(() => {
+    props.onInventoryPanelViewChange(inventoryPanelView);
+  }, [inventoryPanelView, props.onInventoryPanelViewChange]);
   const isItemFormCigarette = itemForm.category === "Cigarettes";
   const isEditItemFormCigarette = editItemForm?.category === "Cigarettes";
   const isArchivedView = inventoryArchiveView === "archived";
@@ -263,7 +279,28 @@ export function InventoryPanel(props: {
   function updateComboDraft(patch: Partial<ComboPackage>) {
     props.onComboDraftChange({ ...comboDraft, ...patch });
   }
+
+  function changeInventoryPanelView(nextView: InventoryPanelView) {
+    setInventoryPanelView(nextView);
+  }
+
+  function inventoryReportBackendMessage() {
+    const backend = props.inventoryReportBackend;
+    if (!backend?.enabled) return "";
+    if (backend.loading) return "Loading inventory report data from the backend...";
+    if (backend.error) {
+      return backend.usingFallback
+        ? `Using local cached inventory report data: ${backend.error}`
+        : `Using current cached inventory report data: ${backend.error}`;
+    }
+    if (backend.usingFallback) return "Showing local cached inventory report data until backend data loads.";
+    if (backend.usingCachedData) return "Showing the last loaded inventory report while the selected range refreshes.";
+    return "Inventory report range is loaded from backend report data.";
+  }
+
   const comboType = comboDraft.type ?? "game";
+  const inventoryReportSearch = props.inventoryReportSearch;
+  const hasInventoryReportSearch = inventoryReportSearch.trim().length > 0;
 
   return (
     <>
@@ -271,21 +308,21 @@ export function InventoryPanel(props: {
         <button
           type="button"
           className={inventoryPanelView === "catalog" ? "is-active" : ""}
-          onClick={() => setInventoryPanelView("catalog")}
+          onClick={() => changeInventoryPanelView("catalog")}
         >
           Catalog
         </button>
         <button
           type="button"
           className={inventoryPanelView === "report" ? "is-active" : ""}
-          onClick={() => setInventoryPanelView("report")}
+          onClick={() => changeInventoryPanelView("report")}
         >
           Inventory Report
         </button>
         <button
           type="button"
           className={inventoryPanelView === "combos" ? "is-active" : ""}
-          onClick={() => setInventoryPanelView("combos")}
+          onClick={() => changeInventoryPanelView("combos")}
         >
           Combos
         </button>
@@ -522,8 +559,39 @@ export function InventoryPanel(props: {
                   </div>
                   <div className="muted">{props.inventoryReportFromDate} to {props.inventoryReportToDate}</div>
                 </div>
+                <label>
+                  <span>Search</span>
+                  <input
+                    type="search"
+                    value={inventoryReportSearch}
+                    onChange={(event) => props.onInventoryReportSearchChange(event.target.value)}
+                    placeholder="Item, category, bill, reason"
+                  />
+                </label>
+                {hasInventoryReportSearch && (
+                  <button
+                    className="ghost-button"
+                    type="button"
+                    onClick={() => props.onInventoryReportSearchChange("")}
+                  >
+                    Clear Search
+                  </button>
+                )}
               </div>
             </div>
+            {props.inventoryReportBackend?.enabled && (
+              <div className={`read-only-banner compact ${props.inventoryReportBackend.error ? "is-warning" : ""}`}>
+                <span>{inventoryReportBackendMessage()}</span>
+                <button
+                  className="secondary-button"
+                  type="button"
+                  onClick={props.inventoryReportBackend.onRefresh}
+                  disabled={props.inventoryReportBackend.loading}
+                >
+                  Refresh
+                </button>
+              </div>
+            )}
 
             <div className="reports-kpi-grid inventory-report-kpis">
               <div className="report-kpi-card is-primary">
@@ -555,7 +623,10 @@ export function InventoryPanel(props: {
             <div className="section-block section-block-muted">
               <div className="section-block-header">
                 <h3>Item Summary</h3>
-                <p>{inventoryReport.summary.touchedItems} item{inventoryReport.summary.touchedItems !== 1 ? "s" : ""} with movement in this period.</p>
+                <p>
+                  {inventoryReport.summary.touchedItems} item{inventoryReport.summary.touchedItems !== 1 ? "s" : ""} with
+                  {hasInventoryReportSearch ? " matching movement or reservation in this period." : " movement in this period."}
+                </p>
               </div>
               <div className="table-wrap inventory-report-table-wrap">
                 <table>
@@ -565,7 +636,13 @@ export function InventoryPanel(props: {
                   <tbody>
                     {inventoryReport.rows.length === 0 && (
                       <tr>
-                        <td colSpan={10}><div className="empty-state">No inventory movements or open reservations found for this range.</div></td>
+                        <td colSpan={10}>
+                          <div className="empty-state">
+                            {hasInventoryReportSearch
+                              ? "No matching inventory movements or open reservations found for this range."
+                              : "No inventory movements or open reservations found for this range."}
+                          </div>
+                        </td>
                       </tr>
                     )}
                     {inventoryReport.rows.map((row) => (
@@ -590,7 +667,11 @@ export function InventoryPanel(props: {
             <div className="section-block">
               <div className="section-block-header">
                 <h3>Movement Details</h3>
-                <p>Audit trail for stock movements within the selected business-day range.</p>
+                <p>
+                  {inventoryReport.detailsTruncated
+                    ? `Showing the latest ${inventoryReport.detailLimit ?? 500} matching stock movements. Narrow the range or search for more detail.`
+                    : "Audit trail for stock movements within the selected business-day range."}
+                </p>
               </div>
               <div className="table-wrap inventory-report-table-wrap">
                 <table>
@@ -600,7 +681,13 @@ export function InventoryPanel(props: {
                   <tbody>
                     {inventoryReport.details.length === 0 && (
                       <tr>
-                        <td colSpan={7}><div className="empty-state">No movement details found for this range.</div></td>
+                        <td colSpan={7}>
+                          <div className="empty-state">
+                            {hasInventoryReportSearch
+                              ? "No matching movement details found for this range."
+                              : "No movement details found for this range."}
+                          </div>
+                        </td>
                       </tr>
                     )}
                     {inventoryReport.details.map((detail) => (

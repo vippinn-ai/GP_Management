@@ -22,6 +22,7 @@ import {
   getPendingReceivableGroups,
   getInventoryReportRange,
   buildInventoryReportModel,
+  filterInventoryReportModel,
   getCombosForStation,
   getConsumablesCombos,
   resolveComboFixedSelections,
@@ -962,6 +963,54 @@ describe("buildInventoryReportModel", () => {
 
     expect(model.rows).toHaveLength(1);
     expect(model.rows[0]).toMatchObject({ itemName: "Old Chips", active: false, deducted: 5 });
+  });
+
+  it("filters inventory report totals, rows, and details together", () => {
+    const momo = inventoryItem({ id: "item-momo", name: "Momo", category: "Food" });
+    const coke = inventoryItem({ id: "item-coke", name: "Coke", category: "Drinks" });
+    const model = buildInventoryReportModel(
+      [momo, coke],
+      [
+        movement({ id: "momo-sale", itemId: momo.id, type: "sale", quantity: -8, relatedBillId: "bill-1", reason: "BILL-001 Momo plate" }),
+        movement({ id: "coke-sale", itemId: coke.id, type: "sale", quantity: -2, relatedBillId: "bill-2", reason: "BILL-002 Coke" })
+      ],
+      [],
+      [],
+      [
+        { id: "bill-1", billNumber: "BILL-001" } as Bill,
+        { id: "bill-2", billNumber: "BILL-002" } as Bill
+      ],
+      "2026-06-08",
+      "2026-06-08"
+    );
+
+    const filtered = filterInventoryReportModel(model, "BILL-001");
+
+    expect(filtered.rows).toHaveLength(1);
+    expect(filtered.rows[0]).toMatchObject({ itemId: momo.id, deducted: 8, movementCount: 1 });
+    expect(filtered.summary.deducted).toBe(8);
+    expect(filtered.summary.touchedItems).toBe(1);
+    expect(filtered.details.map((detail) => detail.id)).toEqual(["momo-sale"]);
+  });
+
+  it("keeps reserved-only rows when the search matches item text", () => {
+    const item = inventoryItem({ name: "Momo" });
+    const model = buildInventoryReportModel(
+      [item],
+      [],
+      [openSession(item.id, 1)],
+      [],
+      [],
+      "2026-06-08",
+      "2026-06-08"
+    );
+
+    const filtered = filterInventoryReportModel(model, "momo");
+
+    expect(filtered.rows).toHaveLength(1);
+    expect(filtered.summary.reserved).toBe(8);
+    expect(filtered.summary.touchedItems).toBe(0);
+    expect(filtered.details).toHaveLength(0);
   });
 });
 

@@ -44,8 +44,37 @@ declare
   v_customer jsonb := payload #> '{payload,customer}';
   v_stock_movements jsonb := coalesce(payload #> '{payload,stockMovements}', '[]'::jsonb);
   v_audit_logs jsonb := coalesce(payload #> '{payload,auditLogs}', '[]'::jsonb);
+  v_continued_from_session_ids_payload jsonb := v_session->'continuedFromSessionIds';
   v_session_id text := nullif(v_session->>'id', '');
   v_station_id text := nullif(v_session->>'stationId', '');
+  v_continued_from_session_ids text[] := array[]::text[];
+  v_invalid_continued_from_session_ids text[] := array[]::text[];
+  v_mismatched_continued_from_session_ids text[] := array[]::text[];
+  v_already_continued_session_ids text[] := array[]::text[];
+  v_target_customer_id text := coalesce(
+    nullif(v_session->>'customerId', ''),
+    nullif(v_customer->>'id', '')
+  );
+  v_target_customer_phone_key text := nullif(
+    regexp_replace(
+      coalesce(nullif(v_session->>'customerPhone', ''), nullif(v_customer->>'phone', ''), ''),
+      '\D',
+      '',
+      'g'
+    ),
+    ''
+  );
+  v_target_customer_name_key text := nullif(
+    lower(
+      regexp_replace(
+        trim(coalesce(nullif(v_session->>'customerName', ''), nullif(v_customer->>'name', ''), '')),
+        '\s+',
+        ' ',
+        'g'
+      )
+    ),
+    ''
+  );
   v_station_name text;
   v_customer_name text;
   v_customer_phone text;
@@ -131,6 +160,151 @@ begin
         'audit_logs', '[]'::jsonb,
         'operational_events', case when v_event_id is null then '[]'::jsonb else jsonb_build_array(v_event_id) end
       )
+    );
+  end if;
+
+  if v_continued_from_session_ids_payload is not null
+    and jsonb_typeof(v_continued_from_session_ids_payload) <> 'array'
+  then
+    perform public.raise_operational_rpc_error(
+      'invalid_payload',
+      'The continued session list is invalid.',
+      jsonb_build_object('session_id', v_session_id)
+    );
+  end if;
+
+  if jsonb_typeof(v_continued_from_session_ids_payload) = 'array' then
+    select coalesce(array_agg(session_id order by first_seen), array[]::text[])
+    into v_continued_from_session_ids
+    from (
+      select session_id, min(ordinality) as first_seen
+      from (
+        select nullif(trim(value), '') as session_id, ordinality
+        from jsonb_array_elements_text(v_continued_from_session_ids_payload)
+          with ordinality as continued_sessions(value, ordinality)
+      ) normalized_continued_sessions
+      where session_id is not null
+      group by session_id
+    ) distinct_continued_sessions;
+  end if;
+
+  if coalesce(array_length(v_continued_from_session_ids, 1), 0) > 0 then
+    perform 1
+    from public.sessions
+    join unnest(v_continued_from_session_ids) as requested(session_id)
+      on sessions.organization_id = v_organization_id
+      and sessions.id = requested.session_id
+    order by sessions.id
+    for update;
+
+    select coalesce(array_agg(requested.session_id order by requested.ordinality), array[]::text[])
+    into v_invalid_continued_from_session_ids
+    from unnest(v_continued_from_session_ids) with ordinality as requested(session_id, ordinality)
+    left join public.sessions
+      on sessions.organization_id = v_organization_id
+      and sessions.id = requested.session_id
+    where sessions.id is null
+      or sessions.status <> 'closed'
+      or sessions.close_disposition <> 'hopped'
+      or sessions.closed_bill_id is not null;
+
+    if coalesce(array_length(v_invalid_continued_from_session_ids, 1), 0) > 0 then
+      perform public.raise_operational_rpc_error(
+        'hopped_session_unavailable',
+        'A hopped session is no longer available for continuation.',
+        jsonb_build_object(
+          'session_id',
+          v_session_id,
+          'continued_from_session_ids',
+          v_invalid_continued_from_session_ids
+        )
+      );
+    end if;
+
+    select coalesce(array_agg(requested.session_id order by requested.ordinality), array[]::text[])
+    into v_already_continued_session_ids
+    from unnest(v_continued_from_session_ids) with ordinality as requested(session_id, ordinality)
+    where exists (
+      select 1
+      from public.sessions child
+      where child.organization_id = v_organization_id
+        and child.id <> v_session_id
+        and not (child.id = any(v_continued_from_session_ids))
+        and case
+          when jsonb_typeof(coalesce(child.continued_from_session_ids, '[]'::jsonb)) = 'array'
+            then coalesce(child.continued_from_session_ids, '[]'::jsonb) @> jsonb_build_array(requested.session_id)
+          else false
+        end
+    )
+    or exists (
+      select 1
+      from public.customer_tabs consumer_tab
+      where consumer_tab.organization_id = v_organization_id
+        and case
+          when jsonb_typeof(coalesce(consumer_tab.continued_from_session_ids, '[]'::jsonb)) = 'array'
+            then coalesce(consumer_tab.continued_from_session_ids, '[]'::jsonb) @> jsonb_build_array(requested.session_id)
+          else false
+        end
+    );
+
+    if coalesce(array_length(v_already_continued_session_ids, 1), 0) > 0 then
+      perform public.raise_operational_rpc_error(
+        'hopped_session_already_continued',
+        'A hopped session has already been linked to another continuation.',
+        jsonb_build_object(
+          'session_id',
+          v_session_id,
+          'continued_from_session_ids',
+          v_already_continued_session_ids
+        )
+      );
+    end if;
+
+    select coalesce(array_agg(requested.session_id order by requested.ordinality), array[]::text[])
+    into v_mismatched_continued_from_session_ids
+    from unnest(v_continued_from_session_ids) with ordinality as requested(session_id, ordinality)
+    join public.sessions
+      on sessions.organization_id = v_organization_id
+      and sessions.id = requested.session_id
+    where case
+      when nullif(sessions.customer_id, '') is not null then
+        v_target_customer_id is distinct from nullif(sessions.customer_id, '')
+      when nullif(regexp_replace(coalesce(sessions.customer_phone, ''), '\D', '', 'g'), '') is not null then
+        v_target_customer_phone_key is distinct from
+          nullif(regexp_replace(coalesce(sessions.customer_phone, ''), '\D', '', 'g'), '')
+      when nullif(
+        lower(regexp_replace(trim(coalesce(sessions.customer_name, '')), '\s+', ' ', 'g')),
+        ''
+      ) is not null then
+        v_target_customer_name_key is distinct from
+          nullif(
+            lower(regexp_replace(trim(coalesce(sessions.customer_name, '')), '\s+', ' ', 'g')),
+            ''
+          )
+      else
+        v_target_customer_id is not null
+        or v_target_customer_phone_key is not null
+        or v_target_customer_name_key is not null
+    end;
+
+    if coalesce(array_length(v_mismatched_continued_from_session_ids, 1), 0) > 0 then
+      perform public.raise_operational_rpc_error(
+        'hopped_session_customer_mismatch',
+        'The next session customer does not match the hopped session.',
+        jsonb_build_object(
+          'session_id',
+          v_session_id,
+          'continued_from_session_ids',
+          v_mismatched_continued_from_session_ids
+        )
+      );
+    end if;
+
+    v_session := jsonb_set(
+      v_session,
+      '{continuedFromSessionIds}',
+      to_jsonb(v_continued_from_session_ids),
+      true
     );
   end if;
 

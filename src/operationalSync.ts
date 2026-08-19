@@ -43,6 +43,87 @@ export type OperationalMutationKind =
 
 export type OperationalSyncStatus = "pending" | "syncing" | "failed" | "conflict";
 
+export type OperationalMutationAcknowledgement =
+  | { status: "synced" }
+  | { status: "failed" | "conflict"; failureReason: string };
+
+export function createOperationalMutationAcknowledgementRegistry() {
+  const settledOutcomes = new Map<string, OperationalMutationAcknowledgement>();
+  const waiters = new Map<
+    string,
+    {
+      promise: Promise<OperationalMutationAcknowledgement>;
+      resolve: (outcome: OperationalMutationAcknowledgement) => void;
+      timeoutId?: number;
+    }
+  >();
+
+  return {
+    waitFor(mutationId: string, timeoutMs?: number): Promise<OperationalMutationAcknowledgement> {
+      const settledOutcome = settledOutcomes.get(mutationId);
+      if (settledOutcome) {
+        settledOutcomes.delete(mutationId);
+        return Promise.resolve(settledOutcome);
+      }
+      const existing = waiters.get(mutationId);
+      if (existing) {
+        return existing.promise;
+      }
+      let resolveOutcome!: (outcome: OperationalMutationAcknowledgement) => void;
+      const promise = new Promise<OperationalMutationAcknowledgement>((resolve) => {
+        resolveOutcome = resolve;
+      });
+      const timeoutId = timeoutMs === undefined
+        ? undefined
+        : window.setTimeout(() => {
+            const waiter = waiters.get(mutationId);
+            if (!waiter) {
+              return;
+            }
+            waiters.delete(mutationId);
+            waiter.resolve({
+              status: "failed",
+              failureReason: "The server did not confirm this action in time. Review the latest state before retrying."
+            });
+          }, timeoutMs);
+      waiters.set(mutationId, { promise, resolve: resolveOutcome, timeoutId });
+      return promise;
+    },
+    settle(mutationId: string, outcome: OperationalMutationAcknowledgement) {
+      const waiter = waiters.get(mutationId);
+      if (!waiter) {
+        settledOutcomes.set(mutationId, outcome);
+        if (settledOutcomes.size > 100) {
+          const oldestMutationId = settledOutcomes.keys().next().value;
+          if (oldestMutationId) {
+            settledOutcomes.delete(oldestMutationId);
+          }
+        }
+        return;
+      }
+      waiters.delete(mutationId);
+      if (waiter.timeoutId !== undefined) {
+        window.clearTimeout(waiter.timeoutId);
+      }
+      waiter.resolve(outcome);
+    },
+    discard(mutationId: string) {
+      settledOutcomes.delete(mutationId);
+      const waiter = waiters.get(mutationId);
+      if (!waiter) {
+        return;
+      }
+      waiters.delete(mutationId);
+      if (waiter.timeoutId !== undefined) {
+        window.clearTimeout(waiter.timeoutId);
+      }
+    },
+    has(mutationId: string) {
+      return waiters.has(mutationId) || settledOutcomes.has(mutationId);
+    }
+  };
+}
+
 interface OperationalCustomerPayload {
   id: string;
   name?: string;
@@ -188,6 +269,9 @@ export interface OperationalMutation {
   entityId: string;
   payload: OperationalMutationPayload;
   failureReason?: string;
+  retryPolicy?: "automatic" | "manual";
+  optimistic?: boolean;
+  acknowledgementRequired?: boolean;
 }
 
 export interface OperationalValidationResult {
@@ -199,6 +283,27 @@ export interface OperationalRebaseResult {
   appData: AppData;
   pendingMutations: OperationalMutation[];
   conflicts: OperationalMutation[];
+}
+
+export function isOperationalMutationSyncable(mutation: OperationalMutation) {
+  return (
+    mutation.status === "pending" ||
+    (mutation.status === "failed" && mutation.retryPolicy !== "manual")
+  );
+}
+
+export function getOperationalMutationForDispatch(
+  mutations: OperationalMutation[],
+  mutationId: string
+) {
+  const mutation = mutations.find((entry) => entry.id === mutationId);
+  if (
+    !mutation ||
+    (mutation.status !== "syncing" && !isOperationalMutationSyncable(mutation))
+  ) {
+    return undefined;
+  }
+  return mutation;
 }
 
 function insertFirstUnique<T extends { id: string }>(collection: T[], entry: T) {
@@ -531,11 +636,17 @@ export function validateOperationalMutation(appData: AppData, mutation: Operatio
   }
 }
 
-export function applyOperationalMutation(source: AppData, mutation: OperationalMutation): AppData {
+export function applyOperationalMutation(
+  source: AppData,
+  mutation: OperationalMutation,
+  options?: { skipValidation?: boolean }
+): AppData {
   const appData = cloneValue(source);
-  const validation = validateOperationalMutation(appData, mutation);
-  if (!validation.ok) {
-    throw new Error(validation.reason ?? "Pending operation cannot be applied.");
+  if (!options?.skipValidation) {
+    const validation = validateOperationalMutation(appData, mutation);
+    if (!validation.ok) {
+      throw new Error(validation.reason ?? "Pending operation cannot be applied.");
+    }
   }
 
   switch (mutation.kind) {
@@ -798,11 +909,19 @@ export function rebasePendingMutations(remoteData: AppData, mutations: Operation
       });
       continue;
     }
-    appData = applyOperationalMutation(appData, mutation);
+    if (mutation.optimistic !== false) {
+      appData = applyOperationalMutation(appData, mutation);
+    }
     pendingMutations.push({
       ...mutation,
-      status: "pending",
-      failureReason: undefined
+      status:
+        mutation.retryPolicy === "manual" && mutation.status === "failed"
+          ? "failed"
+          : "pending",
+      failureReason:
+        mutation.retryPolicy === "manual" && mutation.status === "failed"
+          ? mutation.failureReason
+          : undefined
     });
   }
 

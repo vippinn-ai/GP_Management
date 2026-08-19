@@ -20,6 +20,7 @@ declare
   v_current_session_ids text[];
   v_unlinked_session_ids text[];
   v_invalid_session_ids text[];
+  v_already_continued_session_ids text[];
   v_next_continuation_ids jsonb;
   v_audit_log_ids jsonb := '[]'::jsonb;
   v_changed_rows jsonb;
@@ -142,6 +143,14 @@ begin
   where not (session_id = any(v_current_session_ids));
 
   if coalesce(array_length(v_unlinked_session_ids, 1), 0) > 0 then
+    perform 1
+    from public.sessions
+    join unnest(v_unlinked_session_ids) as requested(session_id)
+      on sessions.organization_id = v_organization_id
+      and sessions.id = requested.session_id
+    order by sessions.id
+    for update;
+
     select coalesce(array_agg(requested.session_id), array[]::text[])
     into v_invalid_session_ids
     from unnest(v_unlinked_session_ids) as requested(session_id)
@@ -149,6 +158,7 @@ begin
       on sessions.organization_id = v_organization_id
       and sessions.id = requested.session_id
     where sessions.id is null
+      or sessions.status <> 'closed'
       or sessions.close_disposition <> 'hopped'
       or sessions.closed_bill_id is not null;
 
@@ -157,6 +167,45 @@ begin
         'hopped_session_unavailable',
         'The hopped session is no longer available for this customer tab.',
         jsonb_build_object('customer_tab_id', v_customer_tab_id, 'session_ids', v_invalid_session_ids)
+      );
+    end if;
+
+    select coalesce(array_agg(requested.session_id), array[]::text[])
+    into v_already_continued_session_ids
+    from unnest(v_unlinked_session_ids) as requested(session_id)
+    where exists (
+      select 1
+      from public.sessions child
+      where child.organization_id = v_organization_id
+        and not (child.id = any(v_session_ids))
+        and case
+          when jsonb_typeof(coalesce(child.continued_from_session_ids, '[]'::jsonb)) = 'array'
+            then coalesce(child.continued_from_session_ids, '[]'::jsonb) @> jsonb_build_array(requested.session_id)
+          else false
+        end
+    )
+    or exists (
+      select 1
+      from public.customer_tabs consumer_tab
+      where consumer_tab.organization_id = v_organization_id
+        and consumer_tab.id <> v_customer_tab_id
+        and case
+          when jsonb_typeof(coalesce(consumer_tab.continued_from_session_ids, '[]'::jsonb)) = 'array'
+            then coalesce(consumer_tab.continued_from_session_ids, '[]'::jsonb) @> jsonb_build_array(requested.session_id)
+          else false
+        end
+    );
+
+    if coalesce(array_length(v_already_continued_session_ids, 1), 0) > 0 then
+      perform public.raise_operational_rpc_error(
+        'hopped_session_already_continued',
+        'A hopped session has already been linked to another continuation.',
+        jsonb_build_object(
+          'customer_tab_id',
+          v_customer_tab_id,
+          'session_ids',
+          v_already_continued_session_ids
+        )
       );
     end if;
   end if;

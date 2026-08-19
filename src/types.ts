@@ -543,6 +543,8 @@ export interface InventoryReportFilterState {
   toDate?: string;
 }
 
+export type InventoryPanelView = "catalog" | "report" | "combos";
+
 export interface InventoryReportSummary {
   added: number;
   deducted: number;
@@ -586,6 +588,9 @@ export interface InventoryReportModel {
   summary: InventoryReportSummary;
   rows: InventoryReportRow[];
   details: InventoryReportMovementDetail[];
+  detailLimit?: number;
+  detailsTruncated?: boolean;
+  payloadBytes?: number;
 }
 
 export interface SettlementDraft {

@@ -8,18 +8,19 @@ Run in staging first.
 
 1. Confirm Phase 1 schema/backfill/parity are already complete.
 2. Run `supabase/phase4-start-session-rpc.sql`.
-3. Run `supabase/phase4-pause-resume-session-rpcs.sql`.
-4. Run `supabase/phase4-session-item-rpcs.sql`.
-5. Run `supabase/phase4-customer-tab-rpcs.sql`.
-6. Run `supabase/phase4-combo-rpcs.sql`.
-7. Run `supabase/phase4-live-detail-rpcs.sql`.
-8. Run `supabase/phase4-reject-rpcs.sql`.
-9. Run `supabase/phase4-hop-session-rpc.sql`.
-10. Run `supabase/phase4-link-customer-tab-continuation-rpc.sql`.
-11. Run `supabase/phase4-fast-app-state-patch-helper.sql` if this environment was already on an older helper or if reject/financial RPCs show statement-timeout errors on production-sized `app_state` arrays.
-11. Run `supabase/phase5-financial-checkout-rpc.sql` only when you are ready to test compact issue-bill writes.
-12. Run `supabase/phase5-financial-adjustment-rpc.sql` only when you are ready to test compact pending settlement, pending write-off, and issued-bill void/refund writes.
-13. Keep `VITE_BACKEND_RPC_OPERATIONAL_WRITES`, `VITE_BACKEND_NORMALIZED_LIVE_READS`, and `VITE_BACKEND_RPC_FINANCIAL_WRITES` disabled until a deliberate staging smoke test.
+3. Run the read-only `supabase/phase4-hop-continuation-verification.sql` checks after updating `start_session`.
+4. Run `supabase/phase4-pause-resume-session-rpcs.sql`.
+5. Run `supabase/phase4-session-item-rpcs.sql`.
+6. Run `supabase/phase4-customer-tab-rpcs.sql`.
+7. Run `supabase/phase4-combo-rpcs.sql`.
+8. Run `supabase/phase4-live-detail-rpcs.sql`.
+9. Run `supabase/phase4-reject-rpcs.sql`.
+10. Run `supabase/phase4-hop-session-rpc.sql`.
+11. Run `supabase/phase4-link-customer-tab-continuation-rpc.sql`.
+12. Run `supabase/phase4-fast-app-state-patch-helper.sql` if this environment was already on an older helper or if reject/financial RPCs show statement-timeout errors on production-sized `app_state` arrays.
+13. Run `supabase/phase5-financial-checkout-rpc.sql` only when you are ready to test compact issue-bill writes.
+14. Run `supabase/phase5-financial-adjustment-rpc.sql` only when you are ready to test compact pending settlement, pending write-off, and issued-bill void/refund writes.
+15. Keep `VITE_BACKEND_RPC_OPERATIONAL_WRITES`, `VITE_BACKEND_NORMALIZED_LIVE_READS`, and `VITE_BACKEND_RPC_FINANCIAL_WRITES` disabled until a deliberate staging smoke test.
 
 ## Frontend Smoke-Test Flags
 
@@ -271,6 +272,9 @@ The `start_session` RPC:
 
 - validates organization membership through `current_user_has_org_access`
 - serializes starts for the same station with a transaction-scoped advisory lock
+- locks every referenced hopped source and rejects unavailable, billed, or already-consumed continuations
+- serializes competing game and consumables continuations so one hopped source cannot branch into two live consumers
+- requires the next session to retain the hopped source customer identity, falling back from customer id to normalized phone and then normalized name
 - rejects inactive/missing stations with `station_unavailable`
 - rejects already occupied stations with `station_occupied`
 - validates required stock against current stock minus open session and customer-tab reservations

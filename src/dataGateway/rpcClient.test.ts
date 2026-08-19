@@ -138,6 +138,62 @@ describe("operational RPC client", () => {
     });
   });
 
+  it("confirms a game hop with exactly one RPC request", async () => {
+    const mutation = createMutation({
+      kind: "hopSession",
+      entityType: "session",
+      entityId: "session-1",
+      payload: {
+        session: {
+          id: "session-1",
+          stationId: "station-1",
+          stationNameSnapshot: "Snooker Star",
+          mode: "timed",
+          startedAt: "2026-07-25T10:00:00.000Z",
+          endedAt: "2026-07-25T10:30:00.000Z",
+          status: "closed",
+          playMode: "group",
+          ltpEligible: false,
+          pricingSnapshot: [],
+          items: [],
+          comboApplications: [],
+          pauseLogIds: [],
+          closeDisposition: "hopped"
+        },
+        auditLog: {
+          id: "audit-hop-1",
+          action: "session_hopped",
+          entityType: "session",
+          entityId: "session-1",
+          message: "Game hop: closed Snooker Star without billing.",
+          createdAt: "2026-07-25T10:30:00.000Z",
+          userId: "user-1"
+        }
+      }
+    });
+    const rpc = vi.fn().mockResolvedValue({
+      data: {
+        mutation_id: "op-1",
+        organization_id: "org-primary",
+        entity_type: "session",
+        entity_id: "session-1",
+        event_id: "event-hop-1",
+        changed_rows: { sessions: ["session-1"] }
+      },
+      error: null
+    });
+
+    await invokeOperationalMutationRpc(mutation, {
+      organizationId: "org-primary",
+      client: { rpc } as never
+    });
+
+    expect(rpc).toHaveBeenCalledTimes(1);
+    expect(rpc).toHaveBeenCalledWith("hop_session", {
+      payload: buildOperationalRpcPayload(mutation, "org-primary")
+    });
+  });
+
   it("resolves organization once when the caller does not provide an organization id", async () => {
     const mutation = createMutation();
     const maybeSingle = vi.fn().mockResolvedValue({ data: { id: "org-primary" }, error: null });
@@ -244,5 +300,43 @@ describe("operational RPC client", () => {
         station_name: "Pool Table"
       })
     } satisfies Partial<OperationalRpcError>);
+  });
+
+  it("preserves the hopped-session-unavailable code from start_session", async () => {
+    const rpc = vi.fn().mockResolvedValue({
+      data: null,
+      error: {
+        code: "P0001",
+        message: "A hopped session is no longer available for continuation.",
+        details: JSON.stringify({
+          code: "hopped_session_unavailable",
+          message: "A hopped session is no longer available for continuation.",
+          details: {
+            session_id: "session-2",
+            continued_from_session_ids: ["session-1"]
+          }
+        })
+      }
+    });
+
+    await expect(
+      invokeOperationalMutationRpc(
+        createMutation({ kind: "startSession", entityType: "session", entityId: "session-2" }),
+        {
+          organizationId: "org-primary",
+          client: { rpc } as never
+        }
+      )
+    ).rejects.toMatchObject({
+      name: "OperationalRpcError",
+      code: "hopped_session_unavailable",
+      rpcName: "start_session",
+      mutationId: "op-1",
+      details: JSON.stringify({
+        session_id: "session-2",
+        continued_from_session_ids: ["session-1"]
+      })
+    } satisfies Partial<OperationalRpcError>);
+    expect(rpc).toHaveBeenCalledTimes(1);
   });
 });

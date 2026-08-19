@@ -2,6 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AppData } from "./types";
 import {
   applyOperationalMutation,
+  createOperationalMutationAcknowledgementRegistry,
+  getOperationalMutationForDispatch,
+  isOperationalMutationSyncable,
   loadPendingOperationalMutations,
   PENDING_OPERATION_STORAGE_KEY,
   rebasePendingMutations,
@@ -75,7 +78,83 @@ describe("operational sync", () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
+  });
+
+  it("acknowledges only the matching operational mutation", async () => {
+    const acknowledgements = createOperationalMutationAcknowledgementRegistry();
+    const firstOutcome = acknowledgements.waitFor("op-hop-1");
+    let firstSettled = false;
+    void firstOutcome.then(() => {
+      firstSettled = true;
+    });
+
+    acknowledgements.settle("op-hop-2", { status: "synced" });
+    await Promise.resolve();
+
+    expect(firstSettled).toBe(false);
+    expect(acknowledgements.has("op-hop-1")).toBe(true);
+
+    acknowledgements.settle("op-hop-1", { status: "synced" });
+
+    await expect(firstOutcome).resolves.toEqual({ status: "synced" });
+    expect(acknowledgements.has("op-hop-1")).toBe(false);
+  });
+
+  it("shares one waiter per mutation and preserves a conflict reason", async () => {
+    const acknowledgements = createOperationalMutationAcknowledgementRegistry();
+    const firstWaiter = acknowledgements.waitFor("op-hop-conflict");
+    const secondWaiter = acknowledgements.waitFor("op-hop-conflict");
+
+    expect(secondWaiter).toBe(firstWaiter);
+
+    acknowledgements.settle("op-hop-conflict", {
+      status: "conflict",
+      failureReason: "Remote data changed in another browser."
+    });
+
+    await expect(firstWaiter).resolves.toEqual({
+      status: "conflict",
+      failureReason: "Remote data changed in another browser."
+    });
+  });
+
+  it("preserves an acknowledgement that arrives before the waiter is registered", async () => {
+    const acknowledgements = createOperationalMutationAcknowledgementRegistry();
+
+    acknowledgements.settle("op-hop-early", { status: "synced" });
+
+    await expect(acknowledgements.waitFor("op-hop-early")).resolves.toEqual({ status: "synced" });
+    expect(acknowledgements.has("op-hop-early")).toBe(false);
+  });
+
+  it("bounds an acknowledgement wait and removes the timed-out waiter", async () => {
+    vi.useFakeTimers();
+    const acknowledgements = createOperationalMutationAcknowledgementRegistry();
+    const outcome = acknowledgements.waitFor("op-hop-timeout", 15_000);
+
+    await vi.advanceTimersByTimeAsync(15_000);
+
+    await expect(outcome).resolves.toEqual({
+      status: "failed",
+      failureReason: "The server did not confirm this action in time. Review the latest state before retrying."
+    });
+    expect(acknowledgements.has("op-hop-timeout")).toBe(false);
+  });
+
+  it("discards a stale outcome before an explicit retry waits again", async () => {
+    const acknowledgements = createOperationalMutationAcknowledgementRegistry();
+    acknowledgements.settle("op-hop-retry", {
+      status: "failed",
+      failureReason: "Previous attempt failed."
+    });
+
+    acknowledgements.discard("op-hop-retry");
+    const retryOutcome = acknowledgements.waitFor("op-hop-retry");
+    acknowledgements.settle("op-hop-retry", { status: "synced" });
+
+    await expect(retryOutcome).resolves.toEqual({ status: "synced" });
   });
 
   it("applies a customer tab item operation immediately to local app data", () => {
@@ -116,6 +195,154 @@ describe("operational sync", () => {
     expect(nextData.customerTabs[0].items).toHaveLength(1);
     expect(nextData.customerTabs[0].items[0].name).toBe("Coke");
     expect(nextData.auditLogs[0].id).toBe("audit-1");
+  });
+
+  it("keeps a non-optimistic critical mutation queued without applying it during rebase", () => {
+    const appData = createAppData();
+    appData.sessions.push({
+      id: "session-1",
+      stationId: "station-1",
+      stationNameSnapshot: "Pool 1",
+      mode: "timed",
+      startedAt: "2026-06-09T09:00:00.000Z",
+      status: "active",
+      playMode: "group",
+      ltpEligible: false,
+      pricingSnapshot: [],
+      items: [],
+      pauseLogIds: []
+    });
+    const hoppedSession = {
+      ...appData.sessions[0],
+      status: "closed" as const,
+      endedAt: "2026-06-09T10:00:00.000Z",
+      closeDisposition: "hopped" as const
+    };
+    const pendingHop = {
+      ...mutation("hopSession", "session", "session-1", {
+        session: hoppedSession,
+        auditLog: {
+          id: "audit-hop-1",
+          action: "session_hopped",
+          entityType: "session",
+          entityId: "session-1",
+          message: "Hopped Pool 1.",
+          createdAt: "2026-06-09T10:00:00.000Z",
+          userId: "user-1"
+        }
+      }),
+      retryPolicy: "manual" as const,
+      optimistic: false,
+      acknowledgementRequired: true
+    };
+
+    const rebased = rebasePendingMutations(appData, [pendingHop]);
+
+    expect(rebased.appData.sessions[0].status).toBe("active");
+    expect(rebased.appData.auditLogs).toHaveLength(0);
+    expect(rebased.pendingMutations).toHaveLength(1);
+    expect(rebased.pendingMutations[0]).toMatchObject({
+      id: pendingHop.id,
+      status: "pending",
+      retryPolicy: "manual",
+      optimistic: false,
+      acknowledgementRequired: true
+    });
+  });
+
+  it("does not re-arm a failed manual critical mutation during realtime rebase", () => {
+    const appData = createAppData();
+    appData.sessions.push({
+      id: "session-1",
+      stationId: "station-1",
+      stationNameSnapshot: "Pool 1",
+      mode: "timed",
+      startedAt: "2026-06-09T09:00:00.000Z",
+      status: "active",
+      playMode: "group",
+      ltpEligible: false,
+      pricingSnapshot: [],
+      items: [],
+      pauseLogIds: []
+    });
+    const failedHop: OperationalMutation = {
+      ...mutation("hopSession", "session", "session-1", {
+        session: {
+          ...appData.sessions[0],
+          status: "closed",
+          endedAt: "2026-06-09T10:00:00.000Z",
+          closeDisposition: "hopped"
+        },
+        auditLog: {
+          id: "audit-hop-failed",
+          action: "session_hopped",
+          entityType: "session",
+          entityId: "session-1",
+          message: "Hopped Pool 1.",
+          createdAt: "2026-06-09T10:00:00.000Z",
+          userId: "user-1"
+        }
+      }),
+      status: "failed",
+      failureReason: "Network request failed.",
+      retryPolicy: "manual",
+      optimistic: false,
+      acknowledgementRequired: true
+    };
+
+    const rebased = rebasePendingMutations(appData, [failedHop]);
+
+    expect(rebased.appData.sessions[0].status).toBe("active");
+    expect(rebased.pendingMutations[0]).toMatchObject({
+      status: "failed",
+      failureReason: "Network request failed.",
+      retryPolicy: "manual"
+    });
+    expect(isOperationalMutationSyncable(rebased.pendingMutations[0])).toBe(false);
+  });
+
+  it("does not dispatch a removed or failed manual mutation from a stale queue id", () => {
+    const pendingHop: OperationalMutation = {
+      ...mutation("hopSession", "session", "session-1", {
+        session: {
+          id: "session-1",
+          stationId: "station-1",
+          stationNameSnapshot: "Pool 1",
+          mode: "timed",
+          startedAt: "2026-06-09T09:00:00.000Z",
+          endedAt: "2026-06-09T10:00:00.000Z",
+          status: "closed",
+          playMode: "group",
+          ltpEligible: false,
+          pricingSnapshot: [],
+          items: [],
+          pauseLogIds: [],
+          closeDisposition: "hopped"
+        },
+        auditLog: {
+          id: "audit-hop-stale",
+          action: "session_hopped",
+          entityType: "session",
+          entityId: "session-1",
+          message: "Hopped Pool 1.",
+          createdAt: "2026-06-09T10:00:00.000Z",
+          userId: "user-1"
+        }
+      }),
+      status: "syncing",
+      retryPolicy: "manual",
+      optimistic: false,
+      acknowledgementRequired: true
+    };
+
+    expect(getOperationalMutationForDispatch([pendingHop], pendingHop.id)).toBe(pendingHop);
+    expect(getOperationalMutationForDispatch([], pendingHop.id)).toBeUndefined();
+    expect(
+      getOperationalMutationForDispatch(
+        [{ ...pendingHop, status: "failed", failureReason: "Timed out." }],
+        pendingHop.id
+      )
+    ).toBeUndefined();
   });
 
   it("links a hopped session to an open customer tab without duplicating session ids", () => {

@@ -24,7 +24,9 @@ import type {
   ReportFilterState,
   SellableInventoryOption,
   Session,
-  SessionChargeSummary
+  SessionChargeSummary,
+  StockMovement,
+  StockMovementType
 } from "./types";
 
 export function createId(prefix: string): string {
@@ -199,6 +201,149 @@ function createInventoryReportRow(item: InventoryItem): InventoryReportRow {
   };
 }
 
+function addInventoryMovementToReportRow(
+  row: InventoryReportRow,
+  movement: Pick<StockMovement, "type" | "quantity">
+) {
+  const absoluteQuantity = Math.abs(movement.quantity);
+
+  switch (movement.type) {
+    case "restock":
+      row.added += Math.max(0, movement.quantity);
+      row.netChange += movement.quantity;
+      break;
+    case "sale":
+      row.deducted += absoluteQuantity;
+      row.netChange += movement.quantity;
+      break;
+    case "adjustment":
+      row.manualAdjustments += movement.quantity;
+      row.netChange += movement.quantity;
+      break;
+    case "void_refund_reversal":
+      row.reversals += Math.max(0, movement.quantity);
+      row.netChange += movement.quantity;
+      break;
+    case "session_reservation":
+    case "session_reservation_void":
+      break;
+  }
+}
+
+function createInventoryReportRowFromExisting(row: InventoryReportRow): InventoryReportRow {
+  return {
+    itemId: row.itemId,
+    itemName: row.itemName,
+    category: row.category,
+    active: row.active,
+    added: 0,
+    deducted: 0,
+    manualAdjustments: 0,
+    reversals: 0,
+    netChange: 0,
+    currentStock: row.currentStock,
+    reserved: 0,
+    movementCount: 0
+  };
+}
+
+function getInventoryMovementTypeLabel(type: StockMovementType) {
+  switch (type) {
+    case "restock":
+      return "Restock";
+    case "sale":
+      return "Sale";
+    case "adjustment":
+      return "Adjustment";
+    case "void_refund_reversal":
+      return "Void/Refund Restore";
+    case "session_reservation":
+      return "Session Reserved";
+    case "session_reservation_void":
+      return "Reservation Released";
+  }
+}
+
+function inventoryReportTextMatches(values: Array<string | undefined>, query: string) {
+  return values.some((value) => (value ?? "").toLowerCase().includes(query));
+}
+
+export function filterInventoryReportModel(
+  report: InventoryReportModel,
+  search: string
+): InventoryReportModel {
+  const query = search.trim().toLowerCase();
+  if (!query) {
+    return report;
+  }
+
+  const baseRowsByItemId = new Map(report.rows.map((row) => [row.itemId, row]));
+  const filteredRowsByItemId = new Map<string, InventoryReportRow>();
+  const itemMatchedIds = new Set<string>();
+
+  for (const row of report.rows) {
+    if (inventoryReportTextMatches([row.itemName, row.category, row.active ? "active" : "archived"], query)) {
+      itemMatchedIds.add(row.itemId);
+      filteredRowsByItemId.set(row.itemId, { ...row });
+    }
+  }
+
+  const details = report.details.filter((detail) => {
+    if (itemMatchedIds.has(detail.itemId)) {
+      return true;
+    }
+    return inventoryReportTextMatches(
+      [
+        detail.itemName,
+        detail.category,
+        getInventoryMovementTypeLabel(detail.type),
+        detail.type,
+        detail.reason,
+        detail.relatedBillNumber,
+        detail.relatedBillId
+      ],
+      query
+    );
+  });
+
+  for (const detail of details) {
+    if (itemMatchedIds.has(detail.itemId)) {
+      continue;
+    }
+    const baseRow = baseRowsByItemId.get(detail.itemId);
+    if (!baseRow) {
+      continue;
+    }
+    const row = filteredRowsByItemId.get(detail.itemId) ?? createInventoryReportRowFromExisting(baseRow);
+    addInventoryMovementToReportRow(row, detail);
+    row.movementCount += 1;
+    filteredRowsByItemId.set(detail.itemId, row);
+  }
+
+  const rows = Array.from(filteredRowsByItemId.values()).sort((a, b) => {
+    const movementDelta = b.movementCount - a.movementCount;
+    if (movementDelta !== 0) return movementDelta;
+    return a.itemName.localeCompare(b.itemName);
+  });
+
+  return {
+    summary: {
+      added: sumBy(rows, (row) => row.added),
+      deducted: sumBy(rows, (row) => row.deducted),
+      manualAdjustments: sumBy(rows, (row) => row.manualAdjustments),
+      reversals: sumBy(rows, (row) => row.reversals),
+      netChange: sumBy(rows, (row) => row.netChange),
+      reserved: sumBy(rows, (row) => row.reserved),
+      touchedItems: rows.filter((row) => row.movementCount > 0).length
+    },
+    rows,
+    details,
+    detailLimit: report.detailLimit,
+    detailsTruncated: report.detailsTruncated,
+    payloadBytes: report.payloadBytes
+  };
+}
+
 export function buildInventoryReportModel(
   inventoryItems: InventoryItem[],
   stockMovements: AppData["stockMovements"],
@@ -235,30 +380,7 @@ export function buildInventoryReportModel(
       continue;
     }
     const row = rowsByItemId.get(item.id) ?? createInventoryReportRow(item);
-    const absoluteQuantity = Math.abs(movement.quantity);
-
-    switch (movement.type) {
-      case "restock":
-        row.added += Math.max(0, movement.quantity);
-        row.netChange += movement.quantity;
-        break;
-      case "sale":
-        row.deducted += absoluteQuantity;
-        row.netChange += movement.quantity;
-        break;
-      case "adjustment":
-        row.manualAdjustments += movement.quantity;
-        row.netChange += movement.quantity;
-        break;
-      case "void_refund_reversal":
-        row.reversals += Math.max(0, movement.quantity);
-        row.netChange += movement.quantity;
-        break;
-      case "session_reservation":
-      case "session_reservation_void":
-        break;
-    }
-
+    addInventoryMovementToReportRow(row, movement);
     row.movementCount += 1;
     rowsByItemId.set(item.id, row);
 

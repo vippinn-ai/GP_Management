@@ -52,6 +52,7 @@ import {
   buildFinancialAdjustmentPatch,
   buildFinancialCheckoutPatch,
   clearCachedNormalizedOrganizationId,
+  loadInventoryReportSummaryData,
   loadAnalyticsSummaryData,
   loadNormalizedCustomerSearch,
   loadNormalizedReportData,
@@ -92,6 +93,8 @@ import type {
   DraftLineDiscountMap,
   ExpensePaymentMode,
   InventoryReportFilterState,
+  InventoryReportModel,
+  InventoryPanelView,
   InventoryItem,
   InventoryState,
   SaleVariant,
@@ -146,6 +149,7 @@ import {
   getArchivedInventoryItems,
   getInventoryItemOpenUsage,
   getInventoryReportRange,
+  filterInventoryReportModel,
   getInventoryQuantityMap,
   getLineStockQuantity,
   getCombosForStation,
@@ -193,8 +197,11 @@ import {
 } from "./billing";
 import {
   applyOperationalMutation,
+  createOperationalMutationAcknowledgementRegistry,
+  getOperationalMutationForDispatch,
   getOperationalConflictMessages,
   hasPendingOperationalMutationForEntity,
+  isOperationalMutationSyncable,
   loadPendingOperationalMutations,
   rebasePendingMutations,
   savePendingOperationalMutations,
@@ -217,6 +224,7 @@ const BACKEND_FEATURE_FLAGS = resolveBackendFeatureFlags();
 const BILL_REGISTER_PAGE_SIZE = 50;
 const CUSTOMER_SEARCH_PAGE_SIZE = 8;
 const CUSTOMER_SEARCH_DEBOUNCE_MS = 180;
+const CRITICAL_OPERATION_ACK_TIMEOUT_MS = 20_000;
 
 interface InventoryArchiveDraft {
   itemId: string;
@@ -265,6 +273,15 @@ interface AnalyticsSummaryState {
   dataQueryKey: string;
 }
 
+interface InventoryReportSummaryState {
+  data: InventoryReportModel | null;
+  loading: boolean;
+  error: string;
+  loaded: boolean;
+  queryKey: string;
+  dataQueryKey: string;
+}
+
 function createEmptyNormalizedBillRegisterState(): NormalizedBillRegisterState {
   return {
     bills: [],
@@ -301,6 +318,17 @@ function createEmptyNormalizedReportState(): NormalizedReportState {
 }
 
 function createEmptyAnalyticsSummaryState(): AnalyticsSummaryState {
+  return {
+    data: null,
+    loading: false,
+    error: "",
+    loaded: false,
+    queryKey: "{}",
+    dataQueryKey: "{}"
+  };
+}
+
+function createEmptyInventoryReportSummaryState(): InventoryReportSummaryState {
   return {
     data: null,
     loading: false,
@@ -425,6 +453,9 @@ export default function App() {
   const [inventoryItemSearch, setInventoryItemSearch] = useState("");
   const [inventoryArchiveView, setInventoryArchiveView] = useState<InventoryArchiveView>("active");
   const [inventoryArchiveDraft, setInventoryArchiveDraft] = useState<InventoryArchiveDraft | null>(null);
+  const [activeInventoryPanelView, setActiveInventoryPanelView] = useState<InventoryPanelView>("catalog");
+  const [inventoryReportSearch, setInventoryReportSearch] = useState("");
+  const [debouncedInventoryReportSearch, setDebouncedInventoryReportSearch] = useState("");
   const [comboDraft, setComboDraft] = useState<ComboPackage>(() => createComboDraft());
   const [selectedCustomerTabId, setSelectedCustomerTabId] = useState<string | null>(null);
   const [selectedCustomerProfileId, setSelectedCustomerProfileId] = useState<string | null>(null);
@@ -457,7 +488,11 @@ export default function App() {
   const [analyticsSummaryState, setAnalyticsSummaryState] = useState<AnalyticsSummaryState>(
     createEmptyAnalyticsSummaryState
   );
+  const [inventoryReportSummaryState, setInventoryReportSummaryState] = useState<InventoryReportSummaryState>(
+    createEmptyInventoryReportSummaryState
+  );
   const [normalizedReportRefreshSignal, setNormalizedReportRefreshSignal] = useState(0);
+  const [inventoryReportRefreshSignal, setInventoryReportRefreshSignal] = useState(0);
   const receiptPreviewBlockRef = useRef<HTMLDivElement | null>(null);
   const [, setReceiptPreviewBlockHeight] = useState<number | null>(null);
   const skipRemotePersistRef = useRef(false);
@@ -467,6 +502,13 @@ export default function App() {
   const pendingOperationalMutationsRef = useRef(pendingOperationalMutations);
   const operationalSyncTimerRef = useRef<number | null>(null);
   const operationalSyncInFlightRef = useRef(false);
+  const criticalOperationalActionsRef = useRef<Set<string>>(new Set());
+  const operationalMutationAcknowledgementsRef = useRef<ReturnType<
+    typeof createOperationalMutationAcknowledgementRegistry
+  > | null>(null);
+  if (!operationalMutationAcknowledgementsRef.current) {
+    operationalMutationAcknowledgementsRef.current = createOperationalMutationAcknowledgementRegistry();
+  }
   const alertedOperationalMutationIdsRef = useRef<Set<string>>(new Set());
   const lastCheckoutPendingSyncAlertKeyRef = useRef<string | null>(null);
   const todayDateKey = toLocalDateKey(new Date());
@@ -798,9 +840,45 @@ export default function App() {
   }, [pendingOperationalMutations]);
 
   useEffect(() => {
+    if (!isHopMode || checkoutState?.mode !== "session" || !checkoutState.sessionId) {
+      return;
+    }
+    const hoppedSession = appData.sessions.find((session) => session.id === checkoutState.sessionId);
+    if (
+      !hoppedSession ||
+      hoppedSession.status !== "closed" ||
+      hoppedSession.closeDisposition !== "hopped" ||
+      hoppedSession.closedBillId
+    ) {
+      return;
+    }
+    const continuationConsumed =
+      appData.sessions.some((session) => session.continuedFromSessionIds?.includes(hoppedSession.id)) ||
+      appData.customerTabs.some((tab) => tab.continuedFromSessionIds?.includes(hoppedSession.id));
+    if (continuationConsumed) {
+      setCheckoutState(null);
+      setIsHopMode(false);
+      return;
+    }
+    setCheckoutState(null);
+    setIsHopMode(false);
+    setLastHoppedSessionId(hoppedSession.id);
+    setPostHopContinuationMode("gaming");
+    setPostHopCustomerLocked(true);
+    setStartSessionDraft((previous) => ({
+      ...previous,
+      customerId: hoppedSession.customerId,
+      customerName: hoppedSession.customerName ?? "",
+      customerPhone: hoppedSession.customerPhone ?? ""
+    }));
+    setShowStartSessionModal(true);
+  }, [appData.customerTabs, appData.sessions, checkoutState, isHopMode]);
+
+  useEffect(() => {
     const attentionMutations = pendingOperationalMutations.filter(
       (mutation) =>
         (mutation.status === "failed" || mutation.status === "conflict") &&
+        !mutation.acknowledgementRequired &&
         !alertedOperationalMutationIdsRef.current.has(mutation.id)
     );
     if (attentionMutations.length === 0) {
@@ -1005,6 +1083,7 @@ export default function App() {
   const normalizedCustomerSearchReadsEnabled = backendConfigured && BACKEND_FEATURE_FLAGS.normalizedCustomerSearchReads;
   const normalizedReportReadsEnabled = backendConfigured && BACKEND_FEATURE_FLAGS.normalizedReportReads;
   const analyticsSummaryReadsEnabled = backendConfigured && BACKEND_FEATURE_FLAGS.analyticsSummaryReads;
+  const inventoryReportReadsEnabled = backendConfigured && BACKEND_FEATURE_FLAGS.inventoryReportReads;
   const canEditInventory = activeUser?.role === "admin";
   const canCreateExpenses = activeUser?.role === "admin" || activeUser?.role === "manager";
   const canDeleteExpenses = activeUser?.role === "admin";
@@ -1073,7 +1152,7 @@ export default function App() {
   const resolvedInventoryReportRange = getInventoryReportRange(inventoryReportFilter, now);
   const inventoryReportFromDate = resolvedInventoryReportRange.from <= resolvedInventoryReportRange.to ? resolvedInventoryReportRange.from : resolvedInventoryReportRange.to;
   const inventoryReportToDate = resolvedInventoryReportRange.from <= resolvedInventoryReportRange.to ? resolvedInventoryReportRange.to : resolvedInventoryReportRange.from;
-  const inventoryReportModel = buildInventoryReportModel(
+  const clientInventoryReportModel = buildInventoryReportModel(
     appData.inventoryItems,
     appData.stockMovements,
     appData.sessions,
@@ -1082,6 +1161,29 @@ export default function App() {
     inventoryReportFromDate,
     inventoryReportToDate
   );
+  const filteredClientInventoryReportModel = filterInventoryReportModel(clientInventoryReportModel, inventoryReportSearch);
+  const inventoryReportQueryKey = useMemo(
+    () =>
+      JSON.stringify({
+        fromDate: inventoryReportFromDate,
+        toDate: inventoryReportToDate,
+        search: debouncedInventoryReportSearch.trim(),
+        refresh: inventoryReportRefreshSignal
+      }),
+    [debouncedInventoryReportSearch, inventoryReportFromDate, inventoryReportRefreshSignal, inventoryReportToDate]
+  );
+  const inventoryReportModel =
+    inventoryReportReadsEnabled && inventoryReportSummaryState.loaded && inventoryReportSummaryState.data
+      ? inventoryReportSummaryState.data
+      : filteredClientInventoryReportModel;
+  const inventoryReportBackendUsingCachedData =
+    inventoryReportReadsEnabled &&
+    inventoryReportSummaryState.loaded &&
+    !!inventoryReportSummaryState.data &&
+    inventoryReportSummaryState.dataQueryKey !== inventoryReportQueryKey;
+  const inventoryReportBackendUsingFallback =
+    inventoryReportReadsEnabled &&
+    (!inventoryReportSummaryState.loaded || !inventoryReportSummaryState.data);
   const normalizedReportDataReady =
     !analyticsSummaryReadsEnabled &&
     normalizedReportReadsEnabled &&
@@ -1488,6 +1590,79 @@ export default function App() {
   ]);
 
   useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      setDebouncedInventoryReportSearch(inventoryReportSearch.trim());
+    }, 180);
+    return () => window.clearTimeout(timeoutId);
+  }, [inventoryReportSearch]);
+
+  useEffect(() => {
+    if (
+      !inventoryReportReadsEnabled ||
+      activeTab !== "inventory" ||
+      activeInventoryPanelView !== "report" ||
+      !activeUserId ||
+      !canAccessTab("inventory")
+    ) {
+      return;
+    }
+
+    let cancelled = false;
+    setInventoryReportSummaryState((previous) => ({
+      ...previous,
+      loading: true,
+      error: "",
+      queryKey: inventoryReportQueryKey
+    }));
+
+    loadInventoryReportSummaryData({
+      fromDate: inventoryReportFromDate,
+      toDate: inventoryReportToDate,
+      searchQuery: debouncedInventoryReportSearch
+    })
+      .then((data) => {
+        if (cancelled) {
+          return;
+        }
+        setInventoryReportSummaryState({
+          data,
+          loading: false,
+          error: "",
+          loaded: true,
+          queryKey: inventoryReportQueryKey,
+          dataQueryKey: inventoryReportQueryKey
+        });
+      })
+      .catch((error: unknown) => {
+        if (cancelled) {
+          return;
+        }
+        setInventoryReportSummaryState((previous) => ({
+          ...previous,
+          loading: false,
+          error: error instanceof Error ? error.message : "Unable to load inventory report data.",
+          loaded: previous.loaded,
+          queryKey: previous.queryKey,
+          dataQueryKey: previous.dataQueryKey
+        }));
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    activeInventoryPanelView,
+    activeTab,
+    activeUserId,
+    canAccessTab,
+    debouncedInventoryReportSearch,
+    inventoryReportFromDate,
+    inventoryReportQueryKey,
+    inventoryReportReadsEnabled,
+    inventoryReportToDate
+  ]);
+
+  useEffect(() => {
     if (
       analyticsSummaryReadsEnabled ||
       !normalizedReportReadsEnabled ||
@@ -1564,6 +1739,14 @@ export default function App() {
       queryKey: `${previous.queryKey}:refresh:${Date.now()}`
     }));
     setNormalizedReportRefreshSignal((previous) => previous + 1);
+  }, []);
+
+  const refreshInventoryReport = useCallback(() => {
+    setInventoryReportSummaryState((previous) => ({
+      ...previous,
+      queryKey: `${previous.queryKey}:refresh:${Date.now()}`
+    }));
+    setInventoryReportRefreshSignal((previous) => previous + 1);
   }, []);
 
   useEffect(() => {
@@ -1875,7 +2058,8 @@ export default function App() {
     label: string,
     entityType: OperationalMutation["entityType"],
     entityId: string,
-    payload: OperationalMutationPayload
+    payload: OperationalMutationPayload,
+    options?: Pick<OperationalMutation, "retryPolicy" | "optimistic" | "acknowledgementRequired">
   ): OperationalMutation | null {
     if (!activeUser) {
       return null;
@@ -1890,8 +2074,18 @@ export default function App() {
       status: "pending",
       entityType,
       entityId,
-      payload
+      payload,
+      ...options
     };
+  }
+
+  function settleOperationalMutationAcknowledgement(
+    mutation: OperationalMutation | undefined,
+    outcome: Parameters<ReturnType<typeof createOperationalMutationAcknowledgementRegistry>["settle"]>[1]
+  ) {
+    if (mutation?.acknowledgementRequired) {
+      operationalMutationAcknowledgementsRef.current?.settle(mutation.id, outcome);
+    }
   }
 
   function scheduleOperationalSync(delayMs = 400) {
@@ -1908,7 +2102,7 @@ export default function App() {
       return;
     }
     let syncableMutations = pendingOperationalMutationsRef.current.filter(
-      (mutation) => mutation.status === "pending" || mutation.status === "failed"
+      isOperationalMutationSyncable
     );
     if (syncableMutations.length === 0) {
       return;
@@ -1929,11 +2123,20 @@ export default function App() {
         const failedMutations: OperationalMutation[] = [];
         const conflictMutations: OperationalMutation[] = [];
         for (let syncIndex = 0; syncIndex < syncableMutations.length; syncIndex += 1) {
-          const mutation = syncableMutations[syncIndex];
+          const mutation = getOperationalMutationForDispatch(
+            pendingOperationalMutationsRef.current,
+            syncableMutations[syncIndex].id
+          );
+          if (!mutation) {
+            continue;
+          }
           try {
             const result = await defaultRemoteDataGateway.commitOperationalMutation(mutation);
             const lineReconciliation = getCustomerTabLineIdReconciliation(mutation, result);
-            const reconciledData = reconcileOperationalRpcResult(appDataRef.current, mutation, result);
+            let reconciledData = reconcileOperationalRpcResult(appDataRef.current, mutation, result);
+            if (mutation.optimistic === false) {
+              reconciledData = applyOperationalMutation(reconciledData, mutation, { skipValidation: true });
+            }
             if (result.appStateVersion) {
               remoteVersionRef.current = result.appStateVersion;
               setRemoteVersion(result.appStateVersion);
@@ -2040,6 +2243,24 @@ export default function App() {
           const remainingConflicts = getOperationalConflictMessages(pendingOperationalMutationsRef.current);
           setRemoteError(failureMessage || (remainingConflicts.length > 0 ? remainingConflicts.join(" ") : ""));
         }
+        syncedIds.forEach((mutationId) => {
+          settleOperationalMutationAcknowledgement(
+            syncableMutations.find((mutation) => mutation.id === mutationId),
+            { status: "synced" }
+          );
+        });
+        failedMutations.forEach((mutation) => {
+          settleOperationalMutationAcknowledgement(mutation, {
+            status: "failed",
+            failureReason: mutation.failureReason ?? "Unable to sync this pending operation."
+          });
+        });
+        conflictMutations.forEach((mutation) => {
+          settleOperationalMutationAcknowledgement(mutation, {
+            status: "conflict",
+            failureReason: mutation.failureReason ?? "This operation conflicts with the latest server data."
+          });
+        });
         if (syncedIds.size > 0) {
           setLastOperationalSyncAt(new Date().toISOString());
         }
@@ -2053,6 +2274,12 @@ export default function App() {
         setRemoteVersion(nextVersion);
         updatePendingOperationalMutations((previous) => previous.filter((mutation) => !syncIds.has(mutation.id)));
         setLastOperationalSyncAt(new Date().toISOString());
+        syncIds.forEach((mutationId) => {
+          settleOperationalMutationAcknowledgement(
+            syncableMutations.find((mutation) => mutation.id === mutationId),
+            { status: "synced" }
+          );
+        });
         const remainingConflicts = getOperationalConflictMessages(pendingOperationalMutationsRef.current);
         setRemoteError(remainingConflicts.length > 0 ? remainingConflicts.join(" ") : "");
       }
@@ -2063,7 +2290,9 @@ export default function App() {
         try {
           const snapshot = await defaultRemoteDataGateway.loadAppDataSnapshot();
           const currentQueue = pendingOperationalMutationsRef.current.filter(
-            (mutation) => mutation.status === "syncing" || mutation.status === "pending" || mutation.status === "failed"
+            (mutation) =>
+              mutation.status === "syncing" ||
+              isOperationalMutationSyncable(mutation)
           );
           const rebased = rebasePendingMutations(normalizeAppDataCustomers(snapshot.appData), currentQueue);
           skipRemotePersistRef.current = true;
@@ -2086,6 +2315,18 @@ export default function App() {
               ...previous.filter((mutation) => !savedIds.has(mutation.id) && !conflictIds.has(mutation.id)),
               ...rebased.conflicts
             ]);
+            savedIds.forEach((mutationId) => {
+              settleOperationalMutationAcknowledgement(
+                rebased.pendingMutations.find((mutation) => mutation.id === mutationId),
+                { status: "synced" }
+              );
+            });
+            rebased.conflicts.forEach((mutation) => {
+              settleOperationalMutationAcknowledgement(mutation, {
+                status: "conflict",
+                failureReason: mutation.failureReason ?? "This operation conflicts with the latest server data."
+              });
+            });
             setLastOperationalSyncAt(new Date().toISOString());
           } else {
             const conflictIds = new Set(rebased.conflicts.map((mutation) => mutation.id));
@@ -2093,6 +2334,12 @@ export default function App() {
               ...previous.filter((mutation) => !conflictIds.has(mutation.id) && mutation.status === "conflict"),
               ...rebased.conflicts
             ]);
+            rebased.conflicts.forEach((mutation) => {
+              settleOperationalMutationAcknowledgement(mutation, {
+                status: "conflict",
+                failureReason: mutation.failureReason ?? "This operation conflicts with the latest server data."
+              });
+            });
           }
           setRemoteError(
             rebased.conflicts.length > 0
@@ -2119,6 +2366,18 @@ export default function App() {
               ? rebaseError.message
               : "Unable to sync pending operational changes."
           );
+          syncIds.forEach((mutationId) => {
+            settleOperationalMutationAcknowledgement(
+              syncableMutations.find((mutation) => mutation.id === mutationId),
+              {
+              status: "failed",
+              failureReason:
+                rebaseError instanceof Error
+                  ? rebaseError.message
+                  : "Unable to sync pending operational changes."
+              }
+            );
+          });
         }
       } else {
         updatePendingOperationalMutations((previous) =>
@@ -2140,13 +2399,25 @@ export default function App() {
             ? error.message
             : "Unable to sync pending operational changes."
         );
+        syncIds.forEach((mutationId) => {
+          settleOperationalMutationAcknowledgement(
+            syncableMutations.find((mutation) => mutation.id === mutationId),
+            {
+              status: "failed",
+              failureReason:
+                error instanceof Error
+                  ? error.message
+                  : "Unable to sync pending operational changes."
+            }
+          );
+        });
       }
     } finally {
       setRemoteSaving(false);
       operationalSyncInFlightRef.current = false;
       if (
         pendingOperationalMutationsRef.current.some(
-          (mutation) => mutation.status === "pending" || mutation.status === "failed"
+          isOperationalMutationSyncable
         )
       ) {
         scheduleOperationalSync(1200);
@@ -2156,7 +2427,8 @@ export default function App() {
 
   function commitOperationalChange(
     mutation: OperationalMutation | null,
-    onSuccess?: (nextAppData: AppData) => void
+    onSuccess?: (nextAppData: AppData) => void,
+    options?: { optimistic?: boolean }
   ) {
     if (!mutation) {
       return false;
@@ -2165,11 +2437,16 @@ export default function App() {
       return false;
     }
     try {
-      const nextAppData = applyOperationalMutation(appDataRef.current, mutation);
-      skipRemotePersistRef.current = true;
-      appDataRef.current = nextAppData;
-      setAppData(nextAppData);
-      saveAppData(nextAppData);
+      const shouldApplyOptimistically = options?.optimistic ?? mutation.optimistic !== false;
+      const nextAppData = shouldApplyOptimistically
+        ? applyOperationalMutation(appDataRef.current, mutation)
+        : appDataRef.current;
+      if (shouldApplyOptimistically) {
+        skipRemotePersistRef.current = true;
+        appDataRef.current = nextAppData;
+        setAppData(nextAppData);
+        saveAppData(nextAppData);
+      }
       if (backendConfigured) {
         updatePendingOperationalMutations((previous) => appendPendingOperationalMutation(previous, mutation));
         scheduleOperationalSync();
@@ -2182,13 +2459,115 @@ export default function App() {
     }
   }
 
+  async function commitCriticalOperationalChange(
+    mutation: OperationalMutation | null,
+    actionKey: string,
+    options?: { existingMutation?: boolean }
+  ) {
+    if (!mutation) {
+      return {
+        status: "failed" as const,
+        failureReason: "Unable to prepare this action."
+      };
+    }
+    if (criticalOperationalActionsRef.current.has(actionKey)) {
+      return {
+        status: "failed" as const,
+        failureReason: "This action is already being confirmed."
+      };
+    }
+    criticalOperationalActionsRef.current.add(actionKey);
+    try {
+      if (!backendConfigured) {
+        return commitOperationalChange(mutation, undefined, { optimistic: true })
+          ? { status: "synced" as const }
+          : {
+              status: "failed" as const,
+              failureReason: remoteError || "Unable to complete this action."
+            };
+      }
+
+      if (options?.existingMutation) {
+        operationalMutationAcknowledgementsRef.current?.discard(mutation.id);
+      }
+      const acknowledgement = operationalMutationAcknowledgementsRef.current!.waitFor(
+        mutation.id,
+        CRITICAL_OPERATION_ACK_TIMEOUT_MS
+      );
+      const committed = options?.existingMutation
+        ? (() => {
+            updatePendingOperationalMutations((previous) =>
+              previous.map((entry) =>
+                entry.id === mutation.id
+                  ? { ...entry, status: "pending", failureReason: undefined }
+                  : entry
+              )
+            );
+            return true;
+          })()
+        : commitOperationalChange(mutation, undefined, { optimistic: false });
+      if (!committed) {
+        operationalMutationAcknowledgementsRef.current?.discard(mutation.id);
+        return {
+          status: "failed" as const,
+          failureReason: remoteError || "Unable to queue this action."
+        };
+      }
+
+      scheduleOperationalSync(0);
+      const outcome = await acknowledgement;
+      if (outcome.status !== "synced") {
+        updatePendingOperationalMutations((previous) =>
+          previous.map((entry) =>
+            entry.id === mutation.id && entry.retryPolicy === "manual" && entry.status !== "conflict"
+              ? { ...entry, status: "failed", failureReason: outcome.failureReason }
+              : entry
+          )
+        );
+        return outcome;
+      }
+
+      const confirmedData = applyOperationalMutation(appDataRef.current, mutation, { skipValidation: true });
+      skipRemotePersistRef.current = true;
+      appDataRef.current = confirmedData;
+      setAppData(confirmedData);
+      saveAppData(confirmedData);
+      return outcome;
+    } finally {
+      criticalOperationalActionsRef.current.delete(actionKey);
+    }
+  }
+
+  function discardOperationalMutation(mutationId: string) {
+    operationalMutationAcknowledgementsRef.current?.discard(mutationId);
+    alertedOperationalMutationIdsRef.current.delete(mutationId);
+    updatePendingOperationalMutations((previous) =>
+      previous.filter((mutation) => mutation.id !== mutationId)
+    );
+  }
+
+  function discardFailedContinuationStart(sourceSessionId: string) {
+    const failedMutation = pendingOperationalMutationsRef.current.find((mutation) => {
+      const payload = mutation.payload as { session?: Session };
+      return (
+        mutation.kind === "startSession" &&
+        mutation.retryPolicy === "manual" &&
+        mutation.status === "failed" &&
+        payload.session?.continuedFromSessionIds?.includes(sourceSessionId)
+      );
+    });
+    if (failedMutation) {
+      discardOperationalMutation(failedMutation.id);
+    }
+  }
+
   function retryOperationalSyncNow() {
     pendingOperationalMutationsRef.current
-      .filter((mutation) => mutation.status === "failed")
+      .filter((mutation) => mutation.status === "failed" && mutation.retryPolicy !== "manual")
       .forEach((mutation) => alertedOperationalMutationIdsRef.current.delete(mutation.id));
     updatePendingOperationalMutations((previous) =>
       previous.map((mutation) =>
-        mutation.status === "failed"
+        mutation.status === "failed" && mutation.retryPolicy !== "manual"
           ? { ...mutation, status: "pending", failureReason: undefined }
           : mutation
       )
@@ -2908,7 +3287,7 @@ export default function App() {
     setActiveTab("bills");
   }
 
-  function doStartSessionDirect(draftValue: StartSessionDraft = startSessionDraft) {
+  async function doStartSessionDirect(draftValue: StartSessionDraft = startSessionDraft) {
     if (!activeUser || !draftValue.stationId) {
       return;
     }
@@ -2958,8 +3337,8 @@ export default function App() {
         addedAt: new Date().toISOString()
       });
     }
-    const customerName = startSessionDraft.customerName;
-    const customerPhone = startSessionDraft.customerPhone;
+    const customerName = draftValue.customerName;
+    const customerPhone = draftValue.customerPhone;
     const continuedFromSession = lastHoppedSessionId && postHopContinuationMode === "gaming"
       ? appData.sessions.find((session) => session.id === lastHoppedSessionId)
       : undefined;
@@ -3011,7 +3390,45 @@ export default function App() {
       : comboApplication
         ? `Started ${sessionPlayMode} session on ${station.name} with combo ${comboApplication.comboName}.`
         : `Started ${sessionPlayMode} session on ${station.name}${station.mode === "unit_sale" ? ` with ${initialItems[0]?.quantity ?? 0} ${initialItems[0]?.name ?? "coin pack(s)"}.` : station.ltpEnabled ? " with LTP enabled." : "."}`;
-    commitOperationalChange(createOperationalMutation(
+    let retryMutation = continuedFromSession
+      ? pendingOperationalMutationsRef.current.find((mutation) => {
+          const payload = mutation.payload as { session?: Session };
+          return (
+            mutation.kind === "startSession" &&
+            mutation.retryPolicy === "manual" &&
+            mutation.status === "failed" &&
+            payload.session?.continuedFromSessionIds?.includes(continuedFromSession.id)
+          );
+        })
+      : undefined;
+    if (retryMutation) {
+      const retryPayload = retryMutation.payload as { session?: Session };
+      const getStartRequestSignature = (value: Session | undefined) =>
+        JSON.stringify(
+          value
+            ? {
+                stationId: value.stationId,
+                mode: value.mode,
+                customerId: value.customerId,
+                customerName: value.customerName,
+                customerPhone: value.customerPhone,
+                playMode: value.playMode,
+                ltpEligible: value.ltpEligible,
+                pricingSnapshot: value.pricingSnapshot,
+                items: value.items.map(({ id: _id, addedAt: _addedAt, comboApplicationId: _comboApplicationId, ...item }) => item),
+                comboApplications: (value.comboApplications ?? []).map(
+                  ({ id: _id, appliedAt: _appliedAt, ...application }) => application
+                ),
+                continuedFromSessionIds: value.continuedFromSessionIds
+              }
+            : null
+        );
+      if (getStartRequestSignature(retryPayload.session) !== getStartRequestSignature(session)) {
+        discardOperationalMutation(retryMutation.id);
+        retryMutation = undefined;
+      }
+    }
+    const mutation = retryMutation ?? createOperationalMutation(
       "startSession",
       "Starting session",
       "session",
@@ -3031,14 +3448,43 @@ export default function App() {
           createdAt: startedAt,
           userId: activeUser.id
         }]
-      }
-    ), () => {
+      },
+      continuedFromSession
+        ? {
+            retryPolicy: "manual",
+            optimistic: false,
+            acknowledgementRequired: true
+          }
+        : undefined
+    );
+    const finishStart = () => {
       setStartSessionDraft(createStartSessionDraft());
       setLastHoppedSessionId(null);
       setPostHopContinuationMode("gaming");
       setPostHopCustomerLocked(true);
       setShowStartSessionModal(false);
-    });
+    };
+    if (continuedFromSession) {
+      const outcome = await commitCriticalOperationalChange(
+        mutation,
+        `hop-continuation:${continuedFromSession.id}`,
+        { existingMutation: Boolean(retryMutation) }
+      );
+      if (outcome.status !== "synced") {
+        if (mutation) {
+          alertedOperationalMutationIdsRef.current.add(mutation.id);
+        }
+        window.alert(
+          outcome.status === "conflict"
+            ? "The next game was not started because the latest server state changed. Review the continuation and try again."
+            : `The next game was not started. ${outcome.failureReason}`
+        );
+        return;
+      }
+      finishStart();
+      return;
+    }
+    commitOperationalChange(mutation, finishStart);
   }
 
   async function startSession(event: FormEvent<HTMLFormElement>) {
@@ -3073,7 +3519,7 @@ export default function App() {
       setPendingWarningDraft({ pendingBills: pendingForCustomer, customerLabel: label, intent: { type: "session", draftValue: resolvedDraft } });
       return;
     }
-    doStartSessionDirect(resolvedDraft);
+    await doStartSessionDirect(resolvedDraft);
   }
 
   function toggleSessionPause(sessionId: string, shouldPause: boolean) {
@@ -4163,7 +4609,18 @@ export default function App() {
       window.alert(remoteReadOnlyMessage);
       return;
     }
-    if (hasPendingOperationalForSession(sessionId)) {
+    if (backendConfigured && !online) {
+      window.alert("An internet connection is required to confirm a game hop safely.");
+      return;
+    }
+    const retryMutation = pendingOperationalMutationsRef.current.find(
+      (mutation) =>
+        mutation.kind === "hopSession" &&
+        mutation.entityId === sessionId &&
+        mutation.retryPolicy === "manual" &&
+        mutation.status === "failed"
+    );
+    if (hasPendingOperationalForSession(sessionId) && !retryMutation) {
       window.alert("This session has pending sync changes. Please wait for sync to finish before hopping.");
       scheduleOperationalSync(0);
       return;
@@ -4196,42 +4653,59 @@ export default function App() {
     hoppedSession.status = "closed";
     hoppedSession.endedAt = effectiveEndAt;
     hoppedSession.closeDisposition = "hopped";
-    const committed = commitOperationalChange(createOperationalMutation(
-      "hopSession",
-      "Closing session for game hop",
-      "session",
-      sessionId,
-      {
-        session: hoppedSession,
-        pauseLog: hoppedPause,
-        auditLog: {
-          id: createId("audit"),
-          action: "session_hopped",
-          entityType: "session",
-          entityId: sessionId,
-          message: `Game hop: closed ${hoppedSession.stationNameSnapshot} without billing. Station released for next customer.`,
-          createdAt: hoppedAt,
-          userId: activeUser.id
+    const mutation = retryMutation ?? createOperationalMutation(
+        "hopSession",
+        "Closing session for game hop",
+        "session",
+        sessionId,
+        {
+          session: hoppedSession,
+          pauseLog: hoppedPause,
+          auditLog: {
+            id: createId("audit"),
+            action: "session_hopped",
+            entityType: "session",
+            entityId: sessionId,
+            message: `Game hop: closed ${hoppedSession.stationNameSnapshot} without billing. Station released for next customer.`,
+            createdAt: hoppedAt,
+            userId: activeUser.id
+          }
+        },
+        {
+          retryPolicy: "manual",
+          optimistic: false,
+          acknowledgementRequired: true
         }
+      );
+    const outcome = await commitCriticalOperationalChange(
+      mutation,
+      `hop:${sessionId}`,
+      { existingMutation: Boolean(retryMutation) }
+    );
+    if (outcome.status !== "synced") {
+      if (mutation) {
+        alertedOperationalMutationIdsRef.current.add(mutation.id);
       }
-    ), () => {
-      setCheckoutState(null);
-      setIsHopMode(false);
-      setLastHoppedSessionId(sessionId);
-      setPostHopContinuationMode("gaming");
-      setPostHopCustomerLocked(true);
-      setManageSessionId((previous) => (previous === sessionId ? null : previous));
-      setStartSessionDraft((prev) => ({
-        ...prev,
-        customerId: hopCustomerId,
-        customerName: hopCustomerName,
-        customerPhone: hopCustomerPhone
-      }));
-      window.setTimeout(() => setShowStartSessionModal(true), 0);
-    });
-    if (!committed) {
-      window.alert(remoteError || "Unable to close this session for game hop.");
+      window.alert(
+        outcome.status === "conflict"
+          ? "The game hop was not completed. Latest data has been refreshed; review the session and try again."
+          : `The game hop was not completed. ${outcome.failureReason}`
+      );
+      return;
     }
+    setCheckoutState(null);
+    setIsHopMode(false);
+    setLastHoppedSessionId(sessionId);
+    setPostHopContinuationMode("gaming");
+    setPostHopCustomerLocked(true);
+    setManageSessionId((previous) => (previous === sessionId ? null : previous));
+    setStartSessionDraft((prev) => ({
+      ...prev,
+      customerId: hopCustomerId,
+      customerName: hopCustomerName,
+      customerPhone: hopCustomerPhone
+    }));
+    window.setTimeout(() => setShowStartSessionModal(true), 0);
   }
 
   function handleSetShowStartSessionModal(show: boolean) {
@@ -4256,9 +4730,24 @@ export default function App() {
     setShowStartSessionModal(show);
   }
 
+  function recoverHoppedSessionContinuation(session: Session) {
+    setLastHoppedSessionId(session.id);
+    setPostHopContinuationMode("gaming");
+    setPostHopCustomerLocked(true);
+    setPostHopTabLinkDraft(null);
+    setStartSessionDraft({
+      ...createStartSessionDraft(),
+      customerId: session.customerId,
+      customerName: session.customerName ?? "",
+      customerPhone: session.customerPhone ?? ""
+    });
+    setShowStartSessionModal(true);
+  }
+
   function billHoppedSession() {
     if (!lastHoppedSessionId) return;
     const sessionId = lastHoppedSessionId;
+    discardFailedContinuationStart(sessionId);
     // Keep lastHoppedSessionId alive - needed to loop back to "Start Next Game" if billing is cancelled
     setShowStartSessionModal(false);  // bypass handleSetShowStartSessionModal so the ID stays set
     setPostHopContinuationMode("gaming");
@@ -4272,6 +4761,7 @@ export default function App() {
       return;
     }
     const detachedSessionId = lastHoppedSessionId;
+    discardFailedContinuationStart(detachedSessionId);
     const hoppedSession = getSessionById(detachedSessionId);
     void commitAppDataChange("Detaching continuation...", (draft) => {
       addAuditLog(
@@ -6556,6 +7046,9 @@ export default function App() {
     (mutation) => mutation.status === "pending" || mutation.status === "syncing" || mutation.status === "failed"
   ).length;
   const failedOperationalCount = pendingOperationalMutations.filter((mutation) => mutation.status === "failed").length;
+  const retryableFailedOperationalCount = pendingOperationalMutations.filter(
+    (mutation) => mutation.status === "failed" && mutation.retryPolicy !== "manual"
+  ).length;
   const conflictOperationalCount = pendingOperationalMutations.filter((mutation) => mutation.status === "conflict").length;
   const operationalStatusLabel =
     conflictOperationalCount > 0
@@ -6565,9 +7058,47 @@ export default function App() {
         : lastOperationalSyncAt
           ? `Synced ${formatTime(lastOperationalSyncAt)}`
           : "Synced";
+  const checkoutRetryableHopMutation =
+    checkoutState?.mode === "session" && isHopMode
+      ? pendingOperationalMutations.find(
+          (mutation) =>
+            mutation.kind === "hopSession" &&
+            mutation.entityId === checkoutState.sessionId &&
+            mutation.retryPolicy === "manual" &&
+            mutation.status === "failed"
+        )
+      : undefined;
+  const retryableContinuationMutation = lastHoppedSessionId
+    ? pendingOperationalMutations.find((mutation) => {
+        const payload = mutation.payload as { session?: Session };
+        return (
+          mutation.kind === "startSession" &&
+          mutation.retryPolicy === "manual" &&
+          mutation.status === "failed" &&
+          payload.session?.continuedFromSessionIds?.includes(lastHoppedSessionId)
+        );
+      })
+    : undefined;
+  const consumedHoppedSessionIds = new Set([
+    ...appData.sessions.flatMap((session) => session.continuedFromSessionIds ?? []),
+    ...appData.customerTabs.flatMap((tab) => tab.continuedFromSessionIds ?? [])
+  ]);
+  const recoverableHoppedSessions = appData.sessions
+    .filter(
+      (session) =>
+        session.status === "closed" &&
+        session.closeDisposition === "hopped" &&
+        !session.closedBillId &&
+        !consumedHoppedSessionIds.has(session.id)
+    )
+    .sort(
+      (left, right) =>
+        new Date(right.endedAt ?? right.startedAt).getTime() -
+        new Date(left.endedAt ?? left.startedAt).getTime()
+    );
   const checkoutHasPendingOperational =
     checkoutState?.mode === "session"
-      ? hasPendingOperationalForSession(checkoutState.sessionId)
+      ? hasPendingOperationalForSession(checkoutState.sessionId) && !checkoutRetryableHopMutation
       : checkoutState?.mode === "customer_tab"
         ? hasPendingOperationalForCustomerTab(checkoutState.customerTabId)
         : false;
@@ -6669,7 +7200,7 @@ export default function App() {
             </div>
             {(failedOperationalCount > 0 || conflictOperationalCount > 0) && (
               <div className="button-row" style={{ gap: "0.4rem", marginTop: "0.4rem" }}>
-                {failedOperationalCount > 0 && (
+                {retryableFailedOperationalCount > 0 && (
                   <button type="button" className="secondary-button" onClick={retryOperationalSyncNow} disabled={remoteSaving}>
                     Retry
                   </button>
@@ -6764,6 +7295,27 @@ export default function App() {
             </div>
             <button className="secondary-button" type="button" onClick={retryRemoteRestore} disabled={remoteLoading}>
               {remoteLoading ? "Retrying..." : "Retry"}
+            </button>
+          </div>
+        )}
+
+        {recoverableHoppedSessions.length > 0 && (
+          <div className="remote-restore-banner" role="alert">
+            <div>
+              <strong>Game hop needs continuation</strong>
+              <span>
+                {recoverableHoppedSessions[0].stationNameSnapshot} was closed for a game hop but has not been linked to a next game, consumables tab, or bill.
+                {recoverableHoppedSessions.length > 1
+                  ? ` ${recoverableHoppedSessions.length - 1} more hopped session${recoverableHoppedSessions.length > 2 ? "s" : ""} also need review.`
+                  : ""}
+              </span>
+            </div>
+            <button
+              className="secondary-button"
+              type="button"
+              onClick={() => recoverHoppedSessionContinuation(recoverableHoppedSessions[0])}
+            >
+              Continue
             </button>
           </div>
         )}
@@ -6896,6 +7448,19 @@ export default function App() {
             inventoryReportFromDate={inventoryReportFromDate}
             inventoryReportToDate={inventoryReportToDate}
             inventoryReportRangeLabel={resolvedInventoryReportRange.label}
+            inventoryReportSearch={inventoryReportSearch}
+            inventoryReportBackend={
+              inventoryReportReadsEnabled
+                ? {
+                    enabled: true,
+                    loading: inventoryReportSummaryState.loading,
+                    error: inventoryReportSummaryState.error,
+                    usingCachedData: inventoryReportBackendUsingCachedData,
+                    usingFallback: inventoryReportBackendUsingFallback,
+                    onRefresh: refreshInventoryReport
+                  }
+                : undefined
+            }
             combos={appData.combos}
             comboDraft={comboDraft}
             stations={appData.stations}
@@ -6917,6 +7482,8 @@ export default function App() {
             onInventoryItemSearchChange={setInventoryItemSearch}
             onInventoryArchiveViewChange={setInventoryArchiveView}
             onInventoryReportFilterChange={setInventoryReportFilter}
+            onInventoryReportSearchChange={setInventoryReportSearch}
+            onInventoryPanelViewChange={setActiveInventoryPanelView}
             onComboDraftChange={setComboDraft}
             onSaveCombo={saveComboDraft}
             onEditCombo={editCombo}
@@ -7159,6 +7726,9 @@ export default function App() {
                   <select
                     value={postHopContinuationMode}
                     onChange={(event) => {
+                      if (lastHoppedSessionId && event.target.value !== "gaming") {
+                        discardFailedContinuationStart(lastHoppedSessionId);
+                      }
                       setPostHopTabLinkDraft(null);
                       setPostHopContinuationMode(event.target.value as PostHopContinuationMode);
                     }}
@@ -7398,6 +7968,8 @@ export default function App() {
                 className="primary-button"
                 type={lastHoppedSessionId && postHopContinuationMode === "consumables" && postHopTabLinkDraft ? "button" : "submit"}
                 disabled={
+                  remoteSaving ||
+                  Boolean(blockingActionLabel) ||
                   (postHopContinuationMode === "gaming" && selectedStartStation?.mode === "unit_sale" && arcadeInventoryItems.length === 0) ||
                   Boolean(lastHoppedSessionId && postHopContinuationMode === "consumables" && postHopTabLinkDraft && !selectedPostHopTabLinkCandidate)
                 }
@@ -7407,7 +7979,9 @@ export default function App() {
                   ? "Link Existing Tab"
                   : lastHoppedSessionId && postHopContinuationMode === "consumables"
                     ? "Start Consumables Tab"
-                    : "Start Session"}
+                    : retryableContinuationMutation
+                      ? "Retry Start Session"
+                      : "Start Session"}
               </button>
             </div>
           </form>
@@ -8360,11 +8934,22 @@ export default function App() {
               </div>
             )}
           </div>
+          {checkoutRetryableHopMutation && (
+            <div className="inline-sync-warning">
+              The previous hop attempt was not confirmed. No further retries will run automatically.
+            </div>
+          )}
           {checkoutHasPendingOperational && (
             <div className="inline-sync-warning">Pending live changes are still syncing. Billing will unlock after sync completes.</div>
           )}
           <div className="button-row">
             <button className="secondary-button" type="button" onClick={() => {
+              if (checkoutRetryableHopMutation) {
+                discardOperationalMutation(checkoutRetryableHopMutation.id);
+                setIsHopMode(false);
+                setRemoteError("");
+                return;
+              }
               if (checkoutSession?.closeDisposition === "hopped") {
                 returnToStartNextGame();
               } else {
@@ -8373,7 +8958,11 @@ export default function App() {
                 setReplacementItemForm({ sellableOptionId: "", quantity: 1 });
               }
             }}>
-              {checkoutSession?.closeDisposition === "hopped" ? "Start New Game Instead" : "Cancel"}
+              {checkoutRetryableHopMutation
+                ? "Cancel Hop & Bill"
+                : checkoutSession?.closeDisposition === "hopped"
+                  ? "Start New Game Instead"
+                  : "Cancel"}
             </button>
             {isHopMode ? (
               <button
@@ -8382,7 +8971,7 @@ export default function App() {
                 onClick={() => void runBlockingAction("Closing session for game hop...", hopSession)}
                 disabled={remoteSaving || Boolean(blockingActionLabel) || checkoutHasPendingOperational}
               >
-                Confirm Game Hop
+                {checkoutRetryableHopMutation ? "Retry Game Hop" : "Confirm Game Hop"}
               </button>
             ) : (
               <button
