@@ -1302,6 +1302,24 @@ export function resolveCustomerProfile(
   if (!trimmedName && !trimmedPhone) {
     return undefined;
   }
+  if (preferredCustomerId) {
+    const preferredCustomer = appData.customers.find((customer) => customer.id === preferredCustomerId);
+    if (preferredCustomer) {
+      preferredCustomer.name = getCustomerDisplayName(trimmedName, trimmedPhone);
+      preferredCustomer.phone = trimmedPhone || preferredCustomer.phone;
+      preferredCustomer.createdAt = preferredCustomer.createdAt || preferredCustomer.lastVisitAt || visitAt;
+      preferredCustomer.lastVisitAt = visitAt;
+      return preferredCustomer.id;
+    }
+    appData.customers.unshift({
+      id: preferredCustomerId,
+      name: getCustomerDisplayName(trimmedName, trimmedPhone),
+      phone: trimmedPhone || undefined,
+      createdAt: visitAt,
+      lastVisitAt: visitAt
+    });
+    return preferredCustomerId;
+  }
   const existing = findCustomerProfileMatch(appData, trimmedName, trimmedPhone);
   if (existing) {
     existing.name = getCustomerDisplayName(trimmedName, trimmedPhone);
@@ -1310,7 +1328,7 @@ export function resolveCustomerProfile(
     existing.lastVisitAt = visitAt;
     return existing.id;
   }
-  const customerId = preferredCustomerId || createId("customer");
+  const customerId = createId("customer");
   appData.customers.unshift({
     id: customerId,
     name: getCustomerDisplayName(trimmedName, trimmedPhone),
@@ -1325,16 +1343,25 @@ export function normalizeAppDataCustomers(source: AppData) {
   const appData = cloneValue(source);
   const normalizedCustomers: Customer[] = [];
   const customerIdMap = new Map<string, string>();
+  const referencedCustomerIds = new Set(
+    [
+      ...appData.sessions.map((session) => session.customerId),
+      ...appData.customerTabs.map((tab) => tab.customerId),
+      ...appData.bills.map((bill) => bill.customerId)
+    ].filter((customerId): customerId is string => Boolean(customerId))
+  );
 
   function upsertNormalizedCustomer(rawCustomer: Customer) {
     const createdAt = rawCustomer.createdAt || rawCustomer.lastVisitAt || new Date().toISOString();
     const lastVisitAt = rawCustomer.lastVisitAt || createdAt;
     const name = getCustomerDisplayName(rawCustomer.name, rawCustomer.phone);
-    const match = findCustomerProfileMatch(
-      { ...appData, customers: normalizedCustomers },
-      name,
-      rawCustomer.phone
-    );
+    const match = referencedCustomerIds.has(rawCustomer.id)
+      ? normalizedCustomers.find((customer) => customer.id === rawCustomer.id)
+      : findCustomerProfileMatch(
+          { ...appData, customers: normalizedCustomers },
+          name,
+          rawCustomer.phone
+        );
     if (match) {
       match.name = getCustomerDisplayName(name, rawCustomer.phone);
       match.phone = rawCustomer.phone?.trim() || match.phone;

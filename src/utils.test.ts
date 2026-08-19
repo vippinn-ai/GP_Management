@@ -26,6 +26,7 @@ import {
   getCombosForStation,
   getConsumablesCombos,
   normalizeAppDataCustomers,
+  resolveCustomerProfile,
   resolveComboFixedSelections,
   resolveComboChoiceSelections,
   getSessionCheckoutLines
@@ -162,6 +163,69 @@ describe("normalizeAppDataCustomers", () => {
     ]);
     expect(normalized.customerTabs[0].customerId).toBe("customer-canonical");
     expect(normalized.bills[0].customerId).toBe("customer-canonical");
+  });
+
+  it("does not deduplicate a referenced canonical id into a matching profile", () => {
+    const source = {
+      customers: [
+        {
+          id: "customer-duplicate",
+          name: "QA Customer",
+          createdAt: "2026-08-19T01:00:00.000Z",
+          lastVisitAt: "2026-08-19T01:00:00.000Z"
+        },
+        {
+          id: "customer-canonical",
+          name: "QA Customer",
+          createdAt: "2026-08-20T01:57:00.000Z",
+          lastVisitAt: "2026-08-20T01:57:00.000Z"
+        }
+      ],
+      sessions: [],
+      customerTabs: [{
+        id: "tab-1",
+        customerId: "customer-canonical",
+        customerName: "QA Customer",
+        status: "open",
+        createdAt: "2026-08-20T01:57:00.000Z",
+        items: []
+      }],
+      bills: []
+    } as unknown as AppData;
+
+    const normalized = normalizeAppDataCustomers(source);
+
+    expect(normalized.customerTabs[0].customerId).toBe("customer-canonical");
+    expect(normalized.customers.map((customer) => customer.id)).toEqual(
+      expect.arrayContaining(["customer-duplicate", "customer-canonical"])
+    );
+  });
+});
+
+describe("resolveCustomerProfile", () => {
+  it("honors a source entity customer id before matching duplicate identity fields", () => {
+    const appData = {
+      customers: [{
+        id: "customer-duplicate",
+        name: "QA Customer",
+        createdAt: "2026-08-19T01:00:00.000Z",
+        lastVisitAt: "2026-08-19T01:00:00.000Z"
+      }]
+    } as unknown as AppData;
+
+    const resolved = resolveCustomerProfile(
+      appData,
+      "QA Customer",
+      undefined,
+      "2026-08-20T01:57:00.000Z",
+      "customer-canonical"
+    );
+
+    expect(resolved).toBe("customer-canonical");
+    expect(appData.customers.map((customer) => customer.id)).toEqual([
+      "customer-canonical",
+      "customer-duplicate"
+    ]);
   });
 });
 
