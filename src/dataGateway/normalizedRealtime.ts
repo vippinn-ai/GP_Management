@@ -1,8 +1,14 @@
 import type { RealtimePostgresChangesPayload, SupabaseClient } from "@supabase/supabase-js";
 import type { BackendFeatureFlags } from "./featureFlags";
 import { loadNormalizedBillsByIds } from "./normalizedBillRegister";
+import { loadNormalizedCustomersByIds } from "./normalizedCustomerSearch";
 import { resolveNormalizedOrganizationId } from "./normalizedOrganization";
-import { loadNormalizedAppDataOverlay, loadNormalizedLiveDataByIds } from "./normalizedReads";
+import {
+  loadNormalizedAppDataOverlay,
+  loadNormalizedAuditLogsByIds,
+  loadNormalizedLiveDataByIds,
+  loadNormalizedStockMovementsByIds
+} from "./normalizedReads";
 import type { AppData } from "../types";
 
 export interface OperationalEventRow {
@@ -35,7 +41,7 @@ const LIVE_COLLECTIONS = new Set([
   "customer_tab_combo_applications"
 ]);
 
-const CATALOG_COLLECTIONS = new Set(["inventory_items", "sale_variants", "stock_movements"]);
+const CATALOG_COLLECTIONS = new Set(["inventory_items", "sale_variants"]);
 const COMBO_COLLECTIONS = new Set([
   "combos",
   "combo_station_targets",
@@ -124,6 +130,9 @@ export function getNormalizedRealtimeRefreshPlan(event: OperationalEventRow): {
   changedCustomerTabIds: string[];
   billIds: string[];
   paymentIds: string[];
+  customerIds: string[];
+  stockMovementIds: string[];
+  auditLogIds: string[];
 } {
   const metadata = getOperationalEventMetadata(event);
   const changedRows = getOperationalEventChangedRows(event);
@@ -155,7 +164,10 @@ export function getNormalizedRealtimeRefreshPlan(event: OperationalEventRow): {
     changedSessionIds,
     changedCustomerTabIds,
     billIds: hasBillChanges ? getBillIdsForEvent(event, changedRows) : [],
-    paymentIds: hasBillChanges ? changedRowIds(changedRows, "payments") : []
+    paymentIds: hasBillChanges ? changedRowIds(changedRows, "payments") : [],
+    customerIds: changedRowIds(changedRows, "customers"),
+    stockMovementIds: changedRowIds(changedRows, "stock_movements"),
+    auditLogIds: changedRowIds(changedRows, "audit_logs")
   };
 }
 
@@ -232,6 +244,24 @@ export async function loadNormalizedRealtimeOverlay(
     appData.bills = billPatch.bills;
     appData.payments = billPatch.payments;
     refreshedSlices.push("bills");
+  }
+
+  const [customers, stockMovements, auditLogs] = await Promise.all([
+    loadNormalizedCustomersByIds(event.organization_id, plan.customerIds, client),
+    loadNormalizedStockMovementsByIds(event.organization_id, plan.stockMovementIds, client),
+    loadNormalizedAuditLogsByIds(event.organization_id, plan.auditLogIds, client)
+  ]);
+  if (customers.length > 0) {
+    appData.customers = customers;
+    refreshedSlices.push("customers");
+  }
+  if (stockMovements.length > 0) {
+    appData.stockMovements = stockMovements;
+    refreshedSlices.push("stock_movements");
+  }
+  if (auditLogs.length > 0) {
+    appData.auditLogs = auditLogs;
+    refreshedSlices.push("audit_logs");
   }
 
   return {

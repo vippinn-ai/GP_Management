@@ -44,8 +44,38 @@ export function CustomersPanel(props: {
   onEditCustomerProfileDraftChange: (next: CustomerProfileEditDraft | null) => void;
   onBeginEditCustomerProfile: (customer: Customer) => void;
   onSaveCustomerProfile: (event: FormEvent<HTMLFormElement>) => void;
+  normalizedHistory?: {
+    enabled: boolean;
+    ready: boolean;
+    loading: boolean;
+    error: string;
+    onRefresh: () => void;
+  };
 }) {
   const { customerAnalytics, filteredCustomerProfiles, selectedCustomerProfile, selectedCustomerProfileStats, editCustomerProfileDraft } = props;
+
+  if (props.normalizedHistory?.enabled && !props.normalizedHistory.ready) {
+    return (
+      <section className="panel">
+        <div className="panel-header">
+          <div>
+            <h2>Customer History</h2>
+            <p>
+              {props.normalizedHistory.error
+                ? "Customer history is temporarily unavailable. Cached financial data is hidden to prevent stale totals."
+                : "Loading complete customer and billing history..."}
+            </p>
+          </div>
+          {props.normalizedHistory.error && (
+            <button type="button" className="secondary-button" onClick={props.normalizedHistory.onRefresh}>
+              Retry
+            </button>
+          )}
+        </div>
+        {props.normalizedHistory.error && <div className="form-error">{props.normalizedHistory.error}</div>}
+      </section>
+    );
+  }
 
   return (
     <>

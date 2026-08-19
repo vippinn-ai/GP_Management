@@ -81,6 +81,7 @@ function Harness(props: {
   online?: boolean;
   retryDelayMs?: number;
   applyRemoteSnapshot?: (snapshot: RemoteAppDataSnapshot) => void;
+  allowFullAppDataPersist?: boolean;
 }) {
   const [appData, setAppData] = useState(() => props.initialAppData ?? createAppData("Cached"));
   const [activeUserId, setActiveUserId] = useState<string | null>(props.initialActiveUserId ?? null);
@@ -108,6 +109,7 @@ function Harness(props: {
     restoreRetryDelayMs: props.retryDelayMs ?? 10_000,
     hasCachedAppData: props.hasCachedAppData ?? true,
     remoteVersion,
+    allowFullAppDataPersist: props.allowFullAppDataPersist,
     skipRemotePersistRef,
     remoteSaveTimerRef,
     setAppData,
@@ -298,6 +300,22 @@ describe("useAppSync session restore", () => {
       fireEvent.click(screen.getByText("mutate local data"));
     });
     act(() => {
+      vi.advanceTimersByTime(300);
+    });
+    await flushPromises();
+
+    expect(backendMocks.saveRemoteAppData).not.toHaveBeenCalled();
+  });
+
+  it("does not run generic full-state saves when normalized bootstrap owns persistence", async () => {
+    vi.useFakeTimers();
+    backendMocks.resolveRemoteSessionProfile.mockResolvedValue(activeSessionResult());
+    backendMocks.loadRemoteAppDataSnapshot.mockResolvedValue(snapshot("Normalized", 4));
+
+    render(<Harness allowFullAppDataPersist={false} />);
+    await flushPromises();
+    act(() => {
+      fireEvent.click(screen.getByText("mutate local data"));
       vi.advanceTimersByTime(300);
     });
     await flushPromises();

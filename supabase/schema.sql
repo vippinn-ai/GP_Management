@@ -15,6 +15,7 @@ create table if not exists public.profiles (
   name text not null,
   role public.app_role not null,
   active boolean not null default true,
+  tab_permissions jsonb,
   created_at timestamptz not null default timezone('utc', now()),
   updated_at timestamptz not null default timezone('utc', now())
 );

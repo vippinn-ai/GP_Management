@@ -1,11 +1,14 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { getSupabaseClient } from "../backend";
-import type { Customer } from "../types";
+import type { Bill, Customer, Payment } from "../types";
 import { loadNormalizedActiveOrganization } from "./normalizedReads";
+import { loadNormalizedBillRegisterPage, type NormalizedBillRegisterCursor } from "./normalizedBillRegister";
 
 const CUSTOMER_SEARCH_READ_TIMEOUT_MS = 15_000;
 const DEFAULT_CUSTOMER_SEARCH_LIMIT = 8;
 const MAX_CUSTOMER_SEARCH_LIMIT = 25;
+const CUSTOMER_DIRECTORY_PAGE_SIZE = 500;
+const MAX_CUSTOMER_DIRECTORY_ROWS = 20_000;
 
 const CUSTOMER_SELECT_COLUMNS = "id, name, phone, first_seen_at, last_visit_at, notes, raw_data, created_at, updated_at";
 
@@ -136,4 +139,84 @@ export async function loadNormalizedCustomerSearch(
   );
 
   return rows.map(mapNormalizedCustomer);
+}
+
+export async function loadNormalizedCustomersByIds(
+  organizationId: string,
+  customerIds: string[],
+  client: SupabaseClient = getSupabaseClient()
+): Promise<Customer[]> {
+  const ids = Array.from(new Set(customerIds.filter(Boolean)));
+  if (ids.length === 0) return [];
+  const rows = await readMany<CustomerRow>(
+    client
+      .from("customers")
+      .select(CUSTOMER_SELECT_COLUMNS)
+      .eq("organization_id", organizationId)
+      .in("id", ids),
+    "loading changed customers"
+  );
+  return rows.map(mapNormalizedCustomer);
+}
+
+export async function loadNormalizedCustomerDirectory(
+  organizationId: string,
+  client: SupabaseClient = getSupabaseClient()
+): Promise<Customer[]> {
+  const customers: Customer[] = [];
+  let exhaustedDirectory = false;
+  for (let from = 0; from < MAX_CUSTOMER_DIRECTORY_ROWS; from += CUSTOMER_DIRECTORY_PAGE_SIZE) {
+    const rows = await readMany<CustomerRow>(
+      client
+        .from("customers")
+        .select(CUSTOMER_SELECT_COLUMNS)
+        .eq("organization_id", organizationId)
+        .order("last_visit_at", { ascending: false })
+        .order("id", { ascending: false })
+        .range(from, from + CUSTOMER_DIRECTORY_PAGE_SIZE - 1),
+      "loading the normalized customer directory"
+    );
+    customers.push(...rows.map(mapNormalizedCustomer));
+    if (rows.length < CUSTOMER_DIRECTORY_PAGE_SIZE) {
+      exhaustedDirectory = true;
+      break;
+    }
+  }
+  if (!exhaustedDirectory) {
+    throw new Error(
+      `Normalized customer directory exceeded the safe ${MAX_CUSTOMER_DIRECTORY_ROWS.toLocaleString("en-IN")} row limit. Refine the server reader before showing partial customer history.`
+    );
+  }
+  return customers;
+}
+
+export interface NormalizedCustomerHistoryData {
+  customers: Customer[];
+  bills: Bill[];
+  payments: Payment[];
+}
+
+export async function loadNormalizedCustomerHistoryData(
+  organizationId?: string,
+  client: SupabaseClient = getSupabaseClient()
+): Promise<NormalizedCustomerHistoryData> {
+  const resolvedOrganizationId = organizationId ?? (await loadNormalizedActiveOrganization(client)).id;
+  const customersPromise = loadNormalizedCustomerDirectory(resolvedOrganizationId, client);
+  const bills: Bill[] = [];
+  const payments: Payment[] = [];
+  let cursor: NormalizedBillRegisterCursor | undefined;
+  do {
+    const page = await loadNormalizedBillRegisterPage({
+      organizationId: resolvedOrganizationId,
+      cursor,
+      limit: 200
+    }, client);
+    bills.push(...page.bills);
+    payments.push(...page.payments);
+    cursor = page.hasMore ? page.nextCursor : undefined;
+    if (page.hasMore && !cursor) {
+      throw new Error("Normalized customer history pagination stopped before all bills were loaded.");
+    }
+  } while (cursor);
+  return { customers: Array.from(new Map((await customersPromise).map((entry) => [entry.id, entry])).values()), bills, payments };
 }

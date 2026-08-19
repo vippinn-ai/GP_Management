@@ -11,6 +11,9 @@ import type {
 const FINANCIAL_RPC_TIMEOUT_MS = 15_000;
 const CHECKOUT_BILL_RPC_NAME = "commit_checkout_bill";
 const FINANCIAL_ADJUSTMENT_RPC_NAME = "commit_financial_adjustment";
+const CHECKOUT_BILL_V2_RPC_NAME = "commit_checkout_bill_v2";
+const FINANCIAL_ADJUSTMENT_V2_RPC_NAME = "commit_financial_adjustment_v2";
+const FINANCIAL_MUTATION_STATUS_RPC_NAME = "get_financial_mutation_result";
 
 interface RpcResult<T> {
   data: T | null;
@@ -67,6 +70,49 @@ export interface FinancialAdjustmentRpcPayloadEnvelope {
     stockMovements: FinancialAdjustmentPatch["stockMovements"];
     auditLogs: FinancialAdjustmentPatch["auditLogs"];
     inventoryItems: FinancialAdjustmentPatch["inventoryItems"];
+  };
+}
+
+export interface FinancialCheckoutV2RpcPayloadEnvelope {
+  organization_id: string;
+  mutation_id: string;
+  mutation_kind: "commitCheckoutBill";
+  entity_type: FinancialCheckoutPatch["entityType"];
+  entity_id: string;
+  client_created_at: string;
+  payload: {
+    mode: FinancialCheckoutPatch["mode"];
+    primary_bill: Record<string, unknown>;
+    bill_updates: Record<string, unknown>[];
+    payments: Record<string, unknown>[];
+    stock_movements: Record<string, unknown>[];
+    audit_logs: Record<string, unknown>[];
+    customers: FinancialCheckoutPatch["customers"];
+    session_updates: FinancialCheckoutPatch["sessions"];
+    customer_tab_updates: FinancialCheckoutPatch["customerTabs"];
+    inventory_updates: FinancialCheckoutPatch["inventoryItems"];
+    source_session_ids: string[];
+    source_customer_tab_ids: string[];
+    settlement_expectations: NonNullable<FinancialCheckoutPatch["settlementExpectations"]>;
+    inventory_expectations: NonNullable<FinancialCheckoutPatch["inventoryExpectations"]>;
+  };
+}
+
+export interface FinancialAdjustmentV2RpcPayloadEnvelope {
+  organization_id: string;
+  mutation_id: string;
+  mutation_kind: FinancialAdjustmentPatch["kind"];
+  entity_type: FinancialAdjustmentPatch["entityType"];
+  entity_id: string;
+  client_created_at: string;
+  payload: {
+    bill_updates: Record<string, unknown>[];
+    payments: Record<string, unknown>[];
+    stock_movements: Record<string, unknown>[];
+    audit_logs: Record<string, unknown>[];
+    inventory_updates: FinancialAdjustmentPatch["inventoryItems"];
+    bill_expectations: NonNullable<FinancialAdjustmentPatch["billExpectations"]>;
+    inventory_expectations: NonNullable<FinancialAdjustmentPatch["inventoryExpectations"]>;
   };
 }
 
@@ -128,6 +174,40 @@ function stringifyDetail(value: unknown): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+function withoutKeys(value: unknown, keys: string[]): Record<string, unknown> {
+  const record = { ...toRecord(value) };
+  keys.forEach((key) => delete record[key]);
+  return record;
+}
+
+function withoutBillActorFields(value: unknown): Record<string, unknown> {
+  const bill = withoutKeys(value, [
+    "issuedByUserId",
+    "replacedByUserId",
+    "voidedByUserId",
+    "settledByUserId"
+  ]);
+  if (Array.isArray(bill.lineDiscounts)) {
+    bill.lineDiscounts = bill.lineDiscounts.map((discount) => withoutKeys(discount, ["appliedByUserId"]));
+  }
+  if (bill.billDiscount) {
+    bill.billDiscount = withoutKeys(bill.billDiscount, ["appliedByUserId"]);
+  }
+  return bill;
+}
+
+function withoutPaymentActorFields(value: unknown): Record<string, unknown> {
+  return withoutKeys(value, ["receivedByUserId"]);
+}
+
+function withoutStockActorFields(value: unknown): Record<string, unknown> {
+  return withoutKeys(value, ["userId"]);
+}
+
+function withoutAuditActorFields(value: unknown): Record<string, unknown> {
+  return withoutKeys(value, ["userId"]);
 }
 
 async function withFinancialRpcTimeout<T>(request: PromiseLike<T>, rpcName: string): Promise<T> {
@@ -200,6 +280,36 @@ export function buildFinancialCheckoutRpcPayload(
   };
 }
 
+export function buildFinancialCheckoutV2RpcPayload(
+  patch: FinancialCheckoutPatch,
+  organizationId: string
+): FinancialCheckoutV2RpcPayloadEnvelope {
+  return {
+    organization_id: organizationId,
+    mutation_id: patch.mutationId,
+    mutation_kind: "commitCheckoutBill",
+    entity_type: patch.entityType,
+    entity_id: patch.entityId,
+    client_created_at: patch.createdAt,
+    payload: {
+      mode: patch.mode,
+      primary_bill: withoutBillActorFields(patch.bill),
+      bill_updates: patch.bills.map(withoutBillActorFields),
+      payments: patch.payments.map(withoutPaymentActorFields),
+      stock_movements: patch.stockMovements.map(withoutStockActorFields),
+      audit_logs: patch.auditLogs.map(withoutAuditActorFields),
+      customers: patch.customers,
+      session_updates: patch.sessions,
+      customer_tab_updates: patch.customerTabs,
+      inventory_updates: patch.inventoryItems,
+      source_session_ids: patch.sourceSessionIds ?? patch.sessions.map((session) => session.id).sort(),
+      source_customer_tab_ids: patch.sourceCustomerTabIds ?? patch.customerTabs.map((tab) => tab.id).sort(),
+      settlement_expectations: patch.settlementExpectations ?? [],
+      inventory_expectations: patch.inventoryExpectations ?? []
+    }
+  };
+}
+
 export function mapFinancialCheckoutRpcResult(params: {
   data: unknown;
   patch: FinancialCheckoutPatch;
@@ -207,6 +317,8 @@ export function mapFinancialCheckoutRpcResult(params: {
   rpcName?: string;
 }): FinancialCheckoutCommitResult {
   const row = toRecord(params.data);
+  const canonicalBill = toRecord(row.canonicalBill ?? row.canonical_bill);
+  const canonicalPayments = row.canonicalPayments ?? row.canonical_payments;
   return {
     mutationId: toOptionalString(row.mutationId) ?? toOptionalString(row.mutation_id) ?? params.patch.mutationId,
     rpcName: params.rpcName ?? CHECKOUT_BILL_RPC_NAME,
@@ -222,6 +334,8 @@ export function mapFinancialCheckoutRpcResult(params: {
     serverTime: toOptionalString(row.serverTime) ?? toOptionalString(row.server_time),
     serverDurationMs: toOptionalNumber(row.serverDurationMs ?? row.server_duration_ms),
     changedRows: toRecord(row.changedRows ?? row.changed_rows),
+    canonicalBill: Object.keys(canonicalBill).length > 0 ? (canonicalBill as unknown as FinancialCheckoutPatch["bill"]) : undefined,
+    canonicalPayments: Array.isArray(canonicalPayments) ? (canonicalPayments as FinancialCheckoutPatch["payments"]) : undefined,
     raw: params.data
   };
 }
@@ -245,6 +359,29 @@ export function buildFinancialAdjustmentRpcPayload(
       stockMovements: patch.stockMovements,
       auditLogs: patch.auditLogs,
       inventoryItems: patch.inventoryItems
+    }
+  };
+}
+
+export function buildFinancialAdjustmentV2RpcPayload(
+  patch: FinancialAdjustmentPatch,
+  organizationId: string
+): FinancialAdjustmentV2RpcPayloadEnvelope {
+  return {
+    organization_id: organizationId,
+    mutation_id: patch.mutationId,
+    mutation_kind: patch.kind,
+    entity_type: patch.entityType,
+    entity_id: patch.entityId,
+    client_created_at: patch.createdAt,
+    payload: {
+      bill_updates: patch.bills.map(withoutBillActorFields),
+      payments: patch.payments.map(withoutPaymentActorFields),
+      stock_movements: patch.stockMovements.map(withoutStockActorFields),
+      audit_logs: patch.auditLogs.map(withoutAuditActorFields),
+      inventory_updates: patch.inventoryItems,
+      bill_expectations: patch.billExpectations ?? [],
+      inventory_expectations: patch.inventoryExpectations ?? []
     }
   };
 }
@@ -279,40 +416,97 @@ export function mapFinancialAdjustmentRpcResult(params: {
   };
 }
 
+async function lookupFinancialMutationResult(params: {
+  client: SupabaseClient;
+  organizationId: string;
+  mutationId: string;
+  mutationKind: string;
+}): Promise<unknown | null> {
+  const result = await withFinancialRpcTimeout(
+    params.client.rpc(FINANCIAL_MUTATION_STATUS_RPC_NAME, {
+      payload: {
+        organization_id: params.organizationId,
+        mutation_id: params.mutationId,
+        mutation_kind: params.mutationKind
+      }
+    }) as unknown as PromiseLike<RpcResult<unknown>>,
+    FINANCIAL_MUTATION_STATUS_RPC_NAME
+  );
+  if (result.error || result.data === null) {
+    return null;
+  }
+  const row = toRecord(result.data);
+  return row.canonical_result ?? row.canonicalResult ?? result.data;
+}
+
 export async function invokeFinancialCheckoutRpc(
   patch: FinancialCheckoutPatch,
   options: {
     organizationId?: string;
     client?: SupabaseClient;
+    useV2?: boolean;
   } = {}
 ): Promise<FinancialCheckoutCommitResult> {
   const client = options.client ?? getSupabaseClient();
   const organizationId = options.organizationId ?? (await resolveNormalizedOrganizationId(client));
-  const payload = buildFinancialCheckoutRpcPayload(patch, organizationId);
+  const rpcName = options.useV2 ? CHECKOUT_BILL_V2_RPC_NAME : CHECKOUT_BILL_RPC_NAME;
+  const payload = options.useV2
+    ? buildFinancialCheckoutV2RpcPayload(patch, organizationId)
+    : buildFinancialCheckoutRpcPayload(patch, organizationId);
 
   let result: RpcResult<unknown>;
   try {
     result = await withFinancialRpcTimeout(
-      client.rpc(CHECKOUT_BILL_RPC_NAME, { payload }) as unknown as PromiseLike<RpcResult<unknown>>,
-      CHECKOUT_BILL_RPC_NAME
+      client.rpc(rpcName, { payload }) as unknown as PromiseLike<RpcResult<unknown>>,
+      rpcName
     );
   } catch (error) {
+    if (options.useV2) {
+      try {
+        const recovered = await lookupFinancialMutationResult({
+          client,
+          organizationId,
+          mutationId: patch.mutationId,
+          mutationKind: "commitCheckoutBill"
+        });
+        if (recovered !== null) {
+          return mapFinancialCheckoutRpcResult({ data: recovered, patch, organizationId, rpcName });
+        }
+      } catch {
+        // Preserve the original ambiguous transport error when status reconciliation is unavailable.
+      }
+    }
     throw createFinancialRpcError({
       error: error instanceof Error ? error : new Error("Unable to commit this checkout."),
-      rpcName: CHECKOUT_BILL_RPC_NAME,
+      rpcName,
       mutationId: patch.mutationId
     });
   }
 
   if (result.error) {
-    throw createFinancialRpcError({ error: result.error, rpcName: CHECKOUT_BILL_RPC_NAME, mutationId: patch.mutationId });
+    if (options.useV2) {
+      try {
+        const recovered = await lookupFinancialMutationResult({
+          client,
+          organizationId,
+          mutationId: patch.mutationId,
+          mutationKind: "commitCheckoutBill"
+        });
+        if (recovered !== null) {
+          return mapFinancialCheckoutRpcResult({ data: recovered, patch, organizationId, rpcName });
+        }
+      } catch {
+        // Fall through to the deterministic RPC error when status reconciliation is unavailable.
+      }
+    }
+    throw createFinancialRpcError({ error: result.error, rpcName, mutationId: patch.mutationId });
   }
 
   return mapFinancialCheckoutRpcResult({
     data: result.data,
     patch,
     organizationId,
-    rpcName: CHECKOUT_BILL_RPC_NAME
+    rpcName
   });
 }
 
@@ -321,34 +515,68 @@ export async function invokeFinancialAdjustmentRpc(
   options: {
     organizationId?: string;
     client?: SupabaseClient;
+    useV2?: boolean;
   } = {}
 ): Promise<FinancialAdjustmentCommitResult> {
   const client = options.client ?? getSupabaseClient();
   const organizationId = options.organizationId ?? (await resolveNormalizedOrganizationId(client));
-  const payload = buildFinancialAdjustmentRpcPayload(patch, organizationId);
+  const rpcName = options.useV2 ? FINANCIAL_ADJUSTMENT_V2_RPC_NAME : FINANCIAL_ADJUSTMENT_RPC_NAME;
+  const payload = options.useV2
+    ? buildFinancialAdjustmentV2RpcPayload(patch, organizationId)
+    : buildFinancialAdjustmentRpcPayload(patch, organizationId);
 
   let result: RpcResult<unknown>;
   try {
     result = await withFinancialRpcTimeout(
-      client.rpc(FINANCIAL_ADJUSTMENT_RPC_NAME, { payload }) as unknown as PromiseLike<RpcResult<unknown>>,
-      FINANCIAL_ADJUSTMENT_RPC_NAME
+      client.rpc(rpcName, { payload }) as unknown as PromiseLike<RpcResult<unknown>>,
+      rpcName
     );
   } catch (error) {
+    if (options.useV2) {
+      try {
+        const recovered = await lookupFinancialMutationResult({
+          client,
+          organizationId,
+          mutationId: patch.mutationId,
+          mutationKind: patch.kind
+        });
+        if (recovered !== null) {
+          return mapFinancialAdjustmentRpcResult({ data: recovered, patch, organizationId, rpcName });
+        }
+      } catch {
+        // Preserve the original ambiguous transport error when status reconciliation is unavailable.
+      }
+    }
     throw createFinancialRpcError({
       error: error instanceof Error ? error : new Error("Unable to commit this financial adjustment."),
-      rpcName: FINANCIAL_ADJUSTMENT_RPC_NAME,
+      rpcName,
       mutationId: patch.mutationId
     });
   }
 
   if (result.error) {
-    throw createFinancialRpcError({ error: result.error, rpcName: FINANCIAL_ADJUSTMENT_RPC_NAME, mutationId: patch.mutationId });
+    if (options.useV2) {
+      try {
+        const recovered = await lookupFinancialMutationResult({
+          client,
+          organizationId,
+          mutationId: patch.mutationId,
+          mutationKind: patch.kind
+        });
+        if (recovered !== null) {
+          return mapFinancialAdjustmentRpcResult({ data: recovered, patch, organizationId, rpcName });
+        }
+      } catch {
+        // Fall through to the deterministic RPC error when status reconciliation is unavailable.
+      }
+    }
+    throw createFinancialRpcError({ error: result.error, rpcName, mutationId: patch.mutationId });
   }
 
   return mapFinancialAdjustmentRpcResult({
     data: result.data,
     patch,
     organizationId,
-    rpcName: FINANCIAL_ADJUSTMENT_RPC_NAME
+    rpcName
   });
 }

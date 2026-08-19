@@ -31,10 +31,18 @@ export {
 export {
   buildCustomerSearchFilter,
   loadNormalizedCustomerSearch,
+  loadNormalizedCustomerDirectory,
+  loadNormalizedCustomerHistoryData,
   mapNormalizedCustomer,
+  type NormalizedCustomerHistoryData,
   type NormalizedCustomerSearchQuery
 } from "./normalizedCustomerSearch";
 export { clearCachedNormalizedOrganizationId } from "./normalizedOrganization";
+export {
+  loadNormalizedFinancialDelta,
+  type NormalizedFinancialDelta,
+  type NormalizedFinancialDeltaQuery
+} from "./financialDelta";
 export {
   loadAnalyticsSummaryData,
   mapAnalyticsSummaryData,

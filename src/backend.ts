@@ -50,6 +50,7 @@ export interface RemoteProfile {
   username: string;
   role: Role;
   active: boolean;
+  tabPermissions?: import("./types").TabId[] | null;
 }
 
 export type RemoteAppDataSnapshotSource = "app_state" | "normalized_bootstrap";
@@ -127,7 +128,8 @@ function mapProfileToUser(profile: RemoteProfile): User {
     name: profile.name,
     username: profile.username,
     role: profile.role,
-    active: profile.active
+    active: profile.active,
+    tabPermissions: Array.isArray(profile.tabPermissions) ? profile.tabPermissions : undefined
   };
 }
 
@@ -208,7 +210,7 @@ export async function resolveRemoteSessionProfile(): Promise<RemoteSessionProfil
     const { data, error } = await withRemoteTimeout(
       supabase
         .from("profiles")
-        .select("id, name, username, role, active")
+        .select("id, name, username, role, active, tabPermissions:tab_permissions")
         .eq("id", authUserId)
         .maybeSingle(),
       "loading your profile"
@@ -234,7 +236,7 @@ export async function fetchProfiles(): Promise<User[]> {
   const { data, error } = await withRemoteTimeout(
     supabase
       .from("profiles")
-      .select("id, name, username, role, active")
+      .select("id, name, username, role, active, tabPermissions:tab_permissions")
       .order("name", { ascending: true }),
     "loading staff profiles"
   );
@@ -267,7 +269,8 @@ export async function loadRemoteAppDataSnapshot(): Promise<RemoteAppDataSnapshot
     name: user.name,
     username: user.username,
     role: user.role,
-    active: user.active
+    active: user.active,
+    tabPermissions: user.tabPermissions
   }));
   return snapshotFromAppStateRow(row);
 }
@@ -386,7 +389,9 @@ export async function adminCreateUserRemote(payload: Required<Pick<AdminUserPayl
   await invokeProtectedFunction("admin-create-user", payload);
 }
 
-export async function adminUpdateUserRemote(payload: Required<Pick<AdminUserPayload, "id" | "name" | "username" | "role">>): Promise<void> {
+export async function adminUpdateUserRemote(
+  payload: Required<Pick<AdminUserPayload, "id" | "name" | "username" | "role">> & Pick<AdminUserPayload, "tabPermissions">
+): Promise<void> {
   await invokeProtectedFunction("admin-update-user", payload);
 }
 

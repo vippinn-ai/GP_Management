@@ -79,4 +79,22 @@ describe("CustomerAutocompleteFields", () => {
       customerPhone: "8800"
     });
   });
+
+  it("does not fall back to cached customers when normalized search fails", () => {
+    render(
+      <CustomerAutocompleteFields
+        customers={[customer("cached-customer", "Cached Vipin", "8800")]}
+        customerName="Vipin"
+        customerPhone=""
+        serverSuggestionsEnabled
+        suggestionsError="Backend read failed."
+        suggestionQuery="Vipin"
+        onChange={vi.fn()}
+      />
+    );
+
+    fireEvent.focus(screen.getByLabelText("Customer Name"));
+    expect(screen.getByText("Customer search unavailable. Please retry typing.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Cached Vipin/i })).not.toBeInTheDocument();
+  });
 });

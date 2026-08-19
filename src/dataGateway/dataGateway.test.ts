@@ -18,10 +18,19 @@ const normalizedReadMocks = vi.hoisted(() => ({
   loadNormalizedAuditLogs: vi.fn(),
   loadNormalizedExpenseAdminData: vi.fn(),
   loadNormalizedStockMovements: vi.fn(),
+  loadNormalizedStockMovementsByIds: vi.fn(),
+  loadNormalizedAuditLogsByIds: vi.fn(),
   loadNormalizedLiveDataByIds: vi.fn()
 }));
 
 vi.mock("./normalizedReads", () => normalizedReadMocks);
+
+const normalizedCustomerMocks = vi.hoisted(() => ({
+  loadNormalizedCustomerDirectory: vi.fn(),
+  loadNormalizedCustomersByIds: vi.fn()
+}));
+
+vi.mock("./normalizedCustomerSearch", () => normalizedCustomerMocks);
 
 const normalizedBillRegisterMocks = vi.hoisted(() => ({
   getBusinessDayIssuedAtRange: vi.fn(() => ({
@@ -36,6 +45,12 @@ const normalizedBillRegisterMocks = vi.hoisted(() => ({
 
 vi.mock("./normalizedBillRegister", () => normalizedBillRegisterMocks);
 
+const normalizedReportMocks = vi.hoisted(() => ({
+  loadNormalizedReportData: vi.fn()
+}));
+
+vi.mock("./normalizedReports", () => normalizedReportMocks);
+
 const adminDataRpcMocks = vi.hoisted(() => ({
   invokeAdminDataChangeRpc: vi.fn()
 }));
@@ -48,6 +63,11 @@ import {
   createRemoteDataGateway,
   resolveBackendFeatureFlags
 } from ".";
+import {
+  loadNormalizedBillPages,
+  loadNormalizedBootstrapStockMovements,
+  mergeNormalizedAppDataOverlay
+} from "./normalizedGateway";
 
 function createAppData(): AppData {
   return {
@@ -78,6 +98,88 @@ function createAppData(): AppData {
   };
 }
 
+describe("normalized overlay collection merging", () => {
+  it("merges changed customers, stock movements, and audits by ID without collapsing history", () => {
+    const base = createAppData();
+    base.customers = [
+      { id: "customer-old", name: "Old", createdAt: "2026-01-01T00:00:00.000Z", lastVisitAt: "2026-01-01T00:00:00.000Z" },
+      { id: "customer-change", name: "Before", createdAt: "2026-01-01T00:00:00.000Z", lastVisitAt: "2026-01-01T00:00:00.000Z" }
+    ];
+    base.stockMovements = [
+      { id: "stock-old", itemId: "item-1", type: "sale", quantity: -1, reason: "old", createdAt: "2026-01-01T00:00:00.000Z", userId: "user-1" },
+      { id: "stock-change", itemId: "item-1", type: "sale", quantity: -1, reason: "before", createdAt: "2026-01-01T00:00:00.000Z", userId: "user-1" }
+    ];
+    base.auditLogs = [
+      { id: "audit-old", action: "old", entityType: "bill", entityId: "bill-old", message: "old", createdAt: "2026-01-01T00:00:00.000Z", userId: "user-1" },
+      { id: "audit-change", action: "before", entityType: "bill", entityId: "bill-1", message: "before", createdAt: "2026-01-01T00:00:00.000Z", userId: "user-1" }
+    ];
+
+    const merged = mergeNormalizedAppDataOverlay(base, {
+      customers: [{ ...base.customers[1], name: "After" }],
+      stockMovements: [{ ...base.stockMovements[1], reason: "after" }],
+      auditLogs: [{ ...base.auditLogs[1], action: "after", message: "after" }]
+    });
+
+    expect(merged.customers).toHaveLength(2);
+    expect(merged.customers.find((entry) => entry.id === "customer-old")).toBeDefined();
+    expect(merged.customers.find((entry) => entry.id === "customer-change")?.name).toBe("After");
+    expect(merged.stockMovements).toHaveLength(2);
+    expect(merged.stockMovements.find((entry) => entry.id === "stock-old")).toBeDefined();
+    expect(merged.stockMovements.find((entry) => entry.id === "stock-change")?.reason).toBe("after");
+    expect(merged.auditLogs).toHaveLength(2);
+    expect(merged.auditLogs.find((entry) => entry.id === "audit-old")).toBeDefined();
+    expect(merged.auditLogs.find((entry) => entry.id === "audit-change")?.action).toBe("after");
+  });
+
+  it("replaces the complete pause-log set for each refreshed session", () => {
+    const base = createAppData();
+    base.sessions = [
+      { id: "session-1", stationId: "station-1", status: "paused" } as never,
+      { id: "session-2", stationId: "station-2", status: "active" } as never
+    ];
+    base.sessionPauseLogs = [
+      { id: "pause-deleted", sessionId: "session-1", pausedAt: "2026-08-19T10:00:00.000Z" },
+      { id: "pause-remaining", sessionId: "session-1", pausedAt: "2026-08-19T11:00:00.000Z" },
+      { id: "pause-other", sessionId: "session-2", pausedAt: "2026-08-19T12:00:00.000Z" }
+    ];
+
+    const merged = mergeNormalizedAppDataOverlay(base, {
+      sessions: [{ id: "session-1", stationId: "station-1", status: "active" } as never],
+      sessionPauseLogs: [{ ...base.sessionPauseLogs[1], resumedAt: "2026-08-19T11:05:00.000Z" }]
+    });
+
+    expect(merged.sessionPauseLogs.map((entry) => entry.id).sort()).toEqual(["pause-other", "pause-remaining"]);
+    expect(merged.sessionPauseLogs.find((entry) => entry.id === "pause-remaining")?.resumedAt)
+      .toBe("2026-08-19T11:05:00.000Z");
+  });
+});
+
+describe("normalized bootstrap completeness", () => {
+  it("fails closed instead of returning a capped partial bill history", async () => {
+    normalizedBillRegisterMocks.loadNormalizedBillRegisterPage.mockResolvedValue({
+      bills: [
+        { id: "bill-1", billNumber: "BILL-1" },
+        { id: "bill-2", billNumber: "BILL-2" }
+      ],
+      payments: [],
+      hasMore: true,
+      nextCursor: { issuedAt: "2026-08-20T10:00:00.000Z", id: "bill-2" }
+    });
+
+    await expect(loadNormalizedBillPages({ organizationId: "org-primary" }, {} as never, 2))
+      .rejects.toThrow(/refusing to return partial financial data/i);
+  });
+
+  it("fails closed when the bounded stock audit context may be truncated", async () => {
+    normalizedReadMocks.loadNormalizedStockMovements.mockResolvedValue(
+      Array.from({ length: 5_000 }, (_, index) => ({ id: `movement-${index}` }))
+    );
+
+    await expect(loadNormalizedBootstrapStockMovements("org-primary", {} as never))
+      .rejects.toThrow(/refusing to return partial inventory audit data/i);
+  });
+});
+
 function createSnapshot(version = 1): RemoteAppDataSnapshot {
   return {
     appData: createAppData(),
@@ -101,7 +203,8 @@ describe("data gateway feature flags", () => {
       normalizedBillHistoryReads: false,
       normalizedRealtime: false,
       rpcOperationalWrites: false,
-      rpcFinancialWrites: false
+      rpcFinancialWrites: false,
+      financialRpcV2: false
     });
   });
 
@@ -119,7 +222,10 @@ describe("data gateway feature flags", () => {
         VITE_BACKEND_ANALYTICS_SUMMARY_READS: "true",
         VITE_BACKEND_INVENTORY_REPORT_READS: "true",
         VITE_BACKEND_NORMALIZED_BILL_HISTORY_READS: "true",
-        VITE_BACKEND_RPC_FINANCIAL_WRITES: "false"
+        VITE_BACKEND_NORMALIZED_REALTIME: "true",
+        VITE_BACKEND_RPC_OPERATIONAL_WRITES: "true",
+        VITE_BACKEND_RPC_FINANCIAL_WRITES: "false",
+        VITE_BACKEND_FINANCIAL_RPC_V2: "true"
       }
     );
 
@@ -134,6 +240,14 @@ describe("data gateway feature flags", () => {
     expect(flags.inventoryReportReads).toBe(true);
     expect(flags.normalizedBillHistoryReads).toBe(true);
     expect(flags.rpcFinancialWrites).toBe(true);
+    expect(flags.financialRpcV2).toBe(true);
+  });
+
+  it("fails closed when financial v2 is enabled before normalized source-of-truth prerequisites", () => {
+    expect(() => resolveBackendFeatureFlags({}, {
+      VITE_BACKEND_FINANCIAL_RPC_V2: "true",
+      VITE_BACKEND_RPC_FINANCIAL_WRITES: "true"
+    })).toThrow(/requires the normalized source-of-truth rollout first/i);
   });
 });
 
@@ -151,12 +265,23 @@ describe("app_state data gateway", () => {
       expenseTemplateOverrides: []
     });
     normalizedReadMocks.loadNormalizedStockMovements.mockResolvedValue([]);
+    normalizedReadMocks.loadNormalizedAuditLogs.mockResolvedValue([]);
+    normalizedReadMocks.loadNormalizedStockMovementsByIds.mockResolvedValue([]);
+    normalizedReadMocks.loadNormalizedAuditLogsByIds.mockResolvedValue([]);
+    normalizedCustomerMocks.loadNormalizedCustomerDirectory.mockResolvedValue([]);
+    normalizedCustomerMocks.loadNormalizedCustomersByIds.mockResolvedValue([]);
     normalizedBillRegisterMocks.loadNormalizedBillRegisterPage.mockResolvedValue({
       bills: [],
       payments: [],
       hasMore: false
     });
     normalizedBillRegisterMocks.loadNormalizedPendingBills.mockResolvedValue([]);
+    normalizedReportMocks.loadNormalizedReportData.mockResolvedValue({
+      bills: [],
+      payments: [],
+      expenses: [],
+      billBusinessDates: {}
+    });
   });
 
   it("delegates load, save, and realtime subscription to the existing backend functions", async () => {
@@ -442,6 +567,30 @@ describe("app_state data gateway", () => {
         amountDue: 50
       }
     ]);
+    normalizedReportMocks.loadNormalizedReportData.mockResolvedValue({
+      bills: [
+        {
+          id: "bill-paid-today",
+          billNumber: "BILL-OLDER-PAID-TODAY",
+          status: "pending",
+          issuedAt: "2026-05-17T10:00:00.000Z",
+          customerId: "customer-3",
+          customerName: "Older Customer",
+          amountDue: 119
+        }
+      ],
+      payments: [
+        {
+          id: "payment-today-older-bill",
+          billId: "bill-paid-today",
+          mode: "cash",
+          amount: 30,
+          paidAt: "2026-06-24T10:30:00.000Z"
+        }
+      ],
+      expenses: [],
+      billBusinessDates: { "bill-paid-today": "2026-05-17" }
+    });
     normalizedReadMocks.loadNormalizedAppDataOverlay.mockResolvedValue({
       organizationId: "org-primary",
       appData: {
@@ -500,14 +649,19 @@ describe("app_state data gateway", () => {
         businessProfile: { name: "BreakPerfect" },
         inventoryCategories: ["Food"],
         inventoryItems: [normalizedItem],
-        bills: [
+        bills: expect.arrayContaining([
           expect.objectContaining({ id: "bill-pending", customerName: "Pending Customer" }),
-          expect.objectContaining({ id: "bill-recent", customerName: "Recent Customer" })
-        ],
-        payments: [expect.objectContaining({ id: "payment-1" })],
+          expect.objectContaining({ id: "bill-recent", customerName: "Recent Customer" }),
+          expect.objectContaining({ id: "bill-paid-today", customerName: "Older Customer" })
+        ]),
+        payments: expect.arrayContaining([
+          expect.objectContaining({ id: "payment-1" }),
+          expect.objectContaining({ id: "payment-today-older-bill", billId: "bill-paid-today" })
+        ]),
         customers: [
           expect.objectContaining({ id: "customer-1", name: "Recent Customer" }),
-          expect.objectContaining({ id: "customer-2", name: "Pending Customer" })
+          expect.objectContaining({ id: "customer-2", name: "Pending Customer" }),
+          expect.objectContaining({ id: "customer-3", name: "Older Customer" })
         ],
         expenses: [expect.objectContaining({ id: "expense-1", title: "Milk" })],
         expenseTemplates: [expect.objectContaining({ id: "template-1", title: "Rent" })],
@@ -537,6 +691,14 @@ describe("app_state data gateway", () => {
       client
     );
     expect(normalizedBillRegisterMocks.loadNormalizedPendingBills).toHaveBeenCalledWith({ organizationId: "org-primary" }, client);
+    expect(normalizedReportMocks.loadNormalizedReportData).toHaveBeenCalledWith(
+      expect.objectContaining({
+        organizationId: "org-primary",
+        fromDate: expect.any(String),
+        toDate: expect.any(String)
+      }),
+      client
+    );
     expect(normalizedReadMocks.loadNormalizedExpenseAdminData).toHaveBeenCalledWith("org-primary", client);
     expect(normalizedReadMocks.loadNormalizedStockMovements).toHaveBeenCalledWith(
       "org-primary",

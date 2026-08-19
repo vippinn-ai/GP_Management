@@ -19,7 +19,8 @@ function remoteProfileToUser(profile: RemoteProfile): User {
     name: profile.name,
     username: profile.username,
     role: profile.role,
-    active: profile.active
+    active: profile.active,
+    tabPermissions: Array.isArray(profile.tabPermissions) ? profile.tabPermissions : undefined
   };
 }
 
@@ -55,6 +56,7 @@ export function useAppSync(params: {
   restoreRetryDelayMs?: number;
   hasCachedAppData: boolean;
   remoteVersion: number;
+  allowFullAppDataPersist?: boolean;
   skipRemotePersistRef: MutableRefObject<boolean>;
   remoteSaveTimerRef: MutableRefObject<number | null>;
   setAppData: (data: AppData) => void;
@@ -81,6 +83,7 @@ export function useAppSync(params: {
     restoreRetryDelayMs = DEFAULT_RESTORE_RETRY_DELAY_MS,
     hasCachedAppData,
     remoteVersion,
+    allowFullAppDataPersist = true,
     skipRemotePersistRef,
     remoteSaveTimerRef,
     setAppData,
@@ -229,6 +232,14 @@ export function useAppSync(params: {
       saveAppData(appData);
       return;
     }
+    if (!allowFullAppDataPersist) {
+      skipRemotePersistRef.current = false;
+      if (remoteSaveTimerRef.current) {
+        window.clearTimeout(remoteSaveTimerRef.current);
+        remoteSaveTimerRef.current = null;
+      }
+      return;
+    }
     if (!activeUserId || remoteLoading || remoteReadOnly) {
       return;
     }
@@ -277,5 +288,5 @@ export function useAppSync(params: {
         window.clearTimeout(remoteSaveTimerRef.current);
       }
     };
-  }, [activeUserId, appData, backendConfigured, dataGateway, remoteLoading, remoteReadOnly]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [activeUserId, allowFullAppDataPersist, appData, backendConfigured, dataGateway, remoteLoading, remoteReadOnly]); // eslint-disable-line react-hooks/exhaustive-deps
 }

@@ -75,6 +75,7 @@ export function ReportsPanel(props: {
   isManagerReadOnly: boolean;
   normalizedReports?: {
     enabled: boolean;
+    ready: boolean;
     loading: boolean;
     error: string;
     onRefresh: () => void;
@@ -148,6 +149,34 @@ export function ReportsPanel(props: {
     setSkippingCell(null);
   }
 
+  if (props.normalizedReports?.enabled && !props.normalizedReports.ready) {
+    return (
+      <div className="panel">
+        <div className="panel-header">
+          <div>
+            <h2>Operational Reports</h2>
+            <p>Range-based revenue, expense, and profit insights for owners.</p>
+          </div>
+        </div>
+        <div className={`read-only-banner ${props.normalizedReports.error ? "is-warning" : ""}`}>
+          <span>
+            {props.normalizedReports.loading
+              ? "Loading report data from the backend..."
+              : `Report data is temporarily unavailable. ${props.normalizedReports.error || "Please retry."}`}
+          </span>
+          <button
+            className="secondary-button"
+            type="button"
+            onClick={props.normalizedReports.onRefresh}
+            disabled={props.normalizedReports.loading}
+          >
+            Retry
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <>
       <div className="reports-toolbar">
@@ -165,7 +194,7 @@ export function ReportsPanel(props: {
                 {props.normalizedReports.loading
                   ? "Loading report data from the backend..."
                   : props.normalizedReports.error
-                    ? `Using current cached report data: ${props.normalizedReports.error}`
+                    ? `Report data is temporarily unavailable: ${props.normalizedReports.error}`
                     : "Report range is loaded from backend report data."}
               </span>
               <button className="secondary-button" type="button" onClick={props.normalizedReports.onRefresh} disabled={props.normalizedReports.loading}>

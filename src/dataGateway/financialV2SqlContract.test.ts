@@ -1,0 +1,136 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { describe, expect, it } from "vitest";
+
+const migration = readFileSync(
+  join(process.cwd(), "supabase", "phase10-financial-v2-rpcs.sql"),
+  "utf8"
+);
+const maintenanceMigration = readFileSync(
+  join(process.cwd(), "supabase", "phase11-operational-maintenance-rpcs.sql"),
+  "utf8"
+);
+
+function functionBody(name: string): string {
+  const match = migration.match(
+    new RegExp(`create or replace function public\\.${name}\\(payload jsonb\\)[\\s\\S]*?\\n\\$\\$;`, "i")
+  );
+  if (!match) {
+    throw new Error(`Unable to find ${name} in the v2 migration.`);
+  }
+  return match[0];
+}
+
+describe("financial v2 SQL contract", () => {
+  it("keeps both mutation RPCs completely independent of app_state", () => {
+    for (const name of ["commit_checkout_bill_v2", "commit_financial_adjustment_v2"]) {
+      const body = functionBody(name);
+      expect(body).not.toMatch(/public\.app_state/i);
+      expect(body).not.toMatch(/patch_app_state/i);
+      expect(body).not.toMatch(/base_app_state_version/i);
+    }
+  });
+
+  it("uses a unique mutation record and a canonical committed result", () => {
+    expect(migration).toMatch(/primary key \(organization_id, mutation_id\)/i);
+    expect(functionBody("commit_checkout_bill_v2")).toMatch(/for update/i);
+    expect(functionBody("commit_checkout_bill_v2")).toMatch(/canonical_result = v_result/i);
+    expect(functionBody("commit_financial_adjustment_v2")).toMatch(/canonical_result = v_result/i);
+  });
+
+  it("derives actors from auth and rejects client actor fields", () => {
+    expect(functionBody("commit_checkout_bill_v2")).toMatch(/v_actor_user_id uuid := auth\.uid\(\)/i);
+    expect(functionBody("commit_financial_adjustment_v2")).toMatch(/v_actor_user_id uuid := auth\.uid\(\)/i);
+    expect(migration).toMatch(/actor_spoof_rejected/i);
+    expect(migration).toMatch(/received_by_user_id[\s\S]*p_actor_user_id::text/i);
+    expect(migration).toMatch(/user_id[\s\S]*p_actor_user_id::text/i);
+  });
+
+  it("locks source sessions, tabs, bills, and inventory in the documented order", () => {
+    const checkout = functionBody("commit_checkout_bill_v2");
+    const sessionLock = checkout.indexOf("foreach v_lock_id in array v_source_session_ids");
+    const tabLock = checkout.indexOf("foreach v_lock_id in array v_source_tab_ids");
+    const billLock = checkout.indexOf("select distinct id from (");
+    const inventoryLock = checkout.indexOf("select distinct value->>'itemId'");
+    expect(sessionLock).toBeGreaterThan(0);
+    expect(tabLock).toBeGreaterThan(sessionLock);
+    expect(billLock).toBeGreaterThan(tabLock);
+    expect(inventoryLock).toBeGreaterThan(billLock);
+  });
+
+  it("keeps v2 RPC execution authenticated-only", () => {
+    expect(migration).toMatch(/grant execute on function public\.commit_checkout_bill_v2\(jsonb\) to authenticated/i);
+    expect(migration).toMatch(/grant execute on function public\.commit_financial_adjustment_v2\(jsonb\) to authenticated/i);
+    expect(migration).toMatch(/grant execute on function public\.get_financial_mutation_result\(jsonb\) to authenticated/i);
+  });
+
+  it("requires persisted row identities and validates server source metadata", () => {
+    const checkout = functionBody("commit_checkout_bill_v2");
+    expect(checkout).toMatch(/missing_financial_row_identity/i);
+    expect(checkout).toMatch(/source_item_mismatch/i);
+    expect(checkout).toMatch(/sold_as_pack_of/i);
+    expect(checkout).toMatch(/stock_units_per_sale/i);
+    expect(checkout).toMatch(/expected_description/i);
+    expect(checkout).toMatch(/format_financial_minutes_v2/i);
+    expect(checkout).toMatch(/to_char\(item\.sold_as_pack_of, 'FM999999999999990\.###'\)/i);
+    expect(checkout).not.toMatch(/rtrim\(rtrim\(item\.sold_as_pack_of/i);
+    expect(checkout).toMatch(/session_charge_mismatch/i);
+    expect(checkout).toMatch(/invalid_source_scope/i);
+    expect(checkout).toMatch(/invalid_ltp_result/i);
+    expect(checkout).toMatch(/invalid_customer_scope/i);
+    expect(checkout).toMatch(/replacement_source_mismatch/i);
+    expect(checkout).toMatch(/original_line\.stock_units_per_sale[\s\S]*variant\.stock_units_per_sale/i);
+    expect(checkout).toMatch(/current normalized catalog/i);
+  });
+
+  it("requires non-null adjustment expectations before lifecycle changes", () => {
+    const adjustment = functionBody("commit_financial_adjustment_v2");
+    expect(adjustment).toMatch(/jsonb_typeof\(source\.value->'expectedAmountPaid'\) is distinct from 'number'/i);
+    expect(adjustment).toMatch(/jsonb_typeof\(source\.value->'expectedAmountDue'\) is distinct from 'number'/i);
+    expect(adjustment).toMatch(/current_bill\.status is distinct from expectation->>'expectedStatus'/i);
+    expect(adjustment).toMatch(/expectedStatus' is distinct from 'issued'/i);
+    expect(adjustment).toMatch(/jsonb_typeof\(source\.value->'amountPaid'\) is distinct from 'number'/i);
+    expect(adjustment).toMatch(/status' is distinct from 'voided'/i);
+  });
+
+  it("server-stamps financial event and lifecycle timestamps", () => {
+    expect(migration).toMatch(/p_transaction_at timestamptz/i);
+    expect(migration).toMatch(/createdAt', p_transaction_at, 'issuedAt', p_transaction_at/i);
+    expect(migration).toMatch(/payment \|\| jsonb_build_object\('createdAt', p_transaction_at/i);
+    expect(migration).toMatch(/movement \|\| jsonb_build_object\('createdAt', p_transaction_at/i);
+    expect(migration).toMatch(/audit \|\| jsonb_build_object\([\s\S]*'createdAt', p_transaction_at/i);
+    expect(migration).toMatch(/bill[\s\S]*- 'voidedAt'[\s\S]*- 'settledAt'/i);
+  });
+
+  it("whitelists audit actions and settlement receipt linkage", () => {
+    const checkout = functionBody("commit_checkout_bill_v2");
+    const adjustment = functionBody("commit_financial_adjustment_v2");
+    expect(checkout).toMatch(/invalid_settlement_linkage/i);
+    expect(checkout).toMatch(/payment->>'relatedCheckoutBillId' is distinct from v_bill_id/i);
+    expect(checkout).toMatch(/source\.value->>'action' = 'session_checkout_details_updated'/i);
+    expect(checkout).toMatch(/source\.value->>'action' = 'ltp_discount_applied'/i);
+    expect(checkout).toMatch(/group by source\.value->>'entityType', source\.value->>'entityId', source\.value->>'action'/i);
+    expect(adjustment).toMatch(/jsonb_array_length\(v_audit_logs\) <> jsonb_array_length\(v_bills\)/i);
+    expect(adjustment).toMatch(/audit\.value->>'action' is distinct from case v_mutation_kind/i);
+    expect(adjustment).toMatch(/jsonb_array_length\(v_bills\) > 1[\s\S]*count\(distinct value->>'settlementGroupId'\)/i);
+  });
+
+  it("reconstructs detailed financial audit messages from locked server facts", () => {
+    expect(migration).toMatch(/when 'bill_settled' then 'Settled Rs '[\s\S]*during checkout[\s\S]*Remaining due: Rs/i);
+    expect(migration).toMatch(/when 'bill_replaced' then 'Issued replacement '[\s\S]*join public\.bills as original[\s\S]*Reason:/i);
+    expect(migration).toMatch(/when 'session_checkout_details_updated' then[\s\S]*start time:[\s\S]*customer name:[\s\S]*customer phone:/i);
+    expect(migration).toMatch(/when 'customer_tab_checkout_details_updated' then[\s\S]*customer name:[\s\S]*customer phone:/i);
+    expect(migration).toMatch(/pre-checkout values[\s\S]*apply_financial_v2_rows[\s\S]*update public\.sessions/i);
+  });
+
+  it("keeps normalized pause maintenance independent of app_state", () => {
+    expect(maintenanceMigration).not.toMatch(/public\.app_state/i);
+    expect(maintenanceMigration).not.toMatch(/patch_app_state/i);
+    for (const name of ["edit_pause_log", "delete_pause_log", "record_session_audit"]) {
+      expect(maintenanceMigration).toMatch(new RegExp(`grant execute on function public\\.${name}\\(jsonb\\) to authenticated`, "i"));
+    }
+    expect(maintenanceMigration).toMatch(/v_paused_at < v_session_started_at/i);
+    expect(maintenanceMigration).toMatch(/v_audit->>'action' <> 'hop_continuation_detached'/i);
+    expect(maintenanceMigration).toMatch(/'action', 'hop_continuation_detached'/i);
+  });
+});

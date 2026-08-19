@@ -12,6 +12,7 @@ export interface BackendFeatureFlags {
   normalizedRealtime: boolean;
   rpcOperationalWrites: boolean;
   rpcFinancialWrites: boolean;
+  financialRpcV2: boolean;
 }
 
 export const DEFAULT_BACKEND_FEATURE_FLAGS: BackendFeatureFlags = Object.freeze({
@@ -27,7 +28,8 @@ export const DEFAULT_BACKEND_FEATURE_FLAGS: BackendFeatureFlags = Object.freeze(
   normalizedBillHistoryReads: false,
   normalizedRealtime: false,
   rpcOperationalWrites: false,
-  rpcFinancialWrites: false
+  rpcFinancialWrites: false,
+  financialRpcV2: false
 });
 
 type BackendFeatureFlagKey = keyof BackendFeatureFlags;
@@ -45,7 +47,8 @@ const ENV_FLAG_NAMES: Record<BackendFeatureFlagKey, keyof ImportMetaEnv> = {
   normalizedBillHistoryReads: "VITE_BACKEND_NORMALIZED_BILL_HISTORY_READS",
   normalizedRealtime: "VITE_BACKEND_NORMALIZED_REALTIME",
   rpcOperationalWrites: "VITE_BACKEND_RPC_OPERATIONAL_WRITES",
-  rpcFinancialWrites: "VITE_BACKEND_RPC_FINANCIAL_WRITES"
+  rpcFinancialWrites: "VITE_BACKEND_RPC_FINANCIAL_WRITES",
+  financialRpcV2: "VITE_BACKEND_FINANCIAL_RPC_V2"
 };
 
 function parseBooleanFlag(value: string | undefined): boolean {
@@ -63,10 +66,29 @@ export function resolveBackendFeatureFlags(
   (Object.keys(ENV_FLAG_NAMES) as BackendFeatureFlagKey[]).forEach((key) => {
     resolved[key] = parseBooleanFlag(env[ENV_FLAG_NAMES[key]]);
   });
-  return {
+  const merged = {
     ...resolved,
     ...overrides
   };
+  if (merged.financialRpcV2) {
+    const requiredFlags: BackendFeatureFlagKey[] = [
+      "normalizedBootstrap",
+      "normalizedCustomerSearchReads",
+      "normalizedReportReads",
+      "inventoryReportReads",
+      "normalizedBillHistoryReads",
+      "normalizedRealtime",
+      "rpcOperationalWrites",
+      "rpcFinancialWrites"
+    ];
+    const missingFlags = requiredFlags.filter((key) => !merged[key]);
+    if (missingFlags.length > 0) {
+      throw new Error(
+        `VITE_BACKEND_FINANCIAL_RPC_V2 requires the normalized source-of-truth rollout first. Missing flags: ${missingFlags.join(", ")}.`
+      );
+    }
+  }
+  return merged;
 }
 
 export function hasNormalizedGatewayFlag(flags: BackendFeatureFlags): boolean {
@@ -86,5 +108,5 @@ export function hasNormalizedGatewayFlag(flags: BackendFeatureFlags): boolean {
 }
 
 export function hasRpcGatewayFlag(flags: BackendFeatureFlags): boolean {
-  return flags.rpcOperationalWrites || flags.rpcFinancialWrites;
+  return flags.rpcOperationalWrites || flags.rpcFinancialWrites || flags.financialRpcV2;
 }

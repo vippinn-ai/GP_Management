@@ -37,6 +37,11 @@ export function buildFinancialCheckoutPatch(params: {
   mutationId: string;
 }): FinancialCheckoutPatch {
   const changedBills = ensurePatchRecord(getChangedRecords(params.baseAppData.bills, params.nextAppData.bills), params.bill);
+  const baseBillsById = new Map(params.baseAppData.bills.map((bill) => [bill.id, bill]));
+  const baseInventoryById = new Map(params.baseAppData.inventoryItems.map((item) => [item.id, item]));
+  const changedSessions = getChangedRecords(params.baseAppData.sessions, params.nextAppData.sessions);
+  const changedCustomerTabs = getChangedRecords(params.baseAppData.customerTabs, params.nextAppData.customerTabs);
+  const changedInventoryItems = getChangedRecords(params.baseAppData.inventoryItems, params.nextAppData.inventoryItems);
   return {
     mutationId: params.mutationId,
     mode: params.mode,
@@ -51,9 +56,40 @@ export function buildFinancialCheckoutPatch(params: {
     stockMovements: getNewRecords(params.baseAppData.stockMovements, params.nextAppData.stockMovements),
     auditLogs: getNewRecords(params.baseAppData.auditLogs, params.nextAppData.auditLogs),
     customers: getChangedRecords(params.baseAppData.customers, params.nextAppData.customers),
-    sessions: getChangedRecords(params.baseAppData.sessions, params.nextAppData.sessions),
-    customerTabs: getChangedRecords(params.baseAppData.customerTabs, params.nextAppData.customerTabs),
-    inventoryItems: getChangedRecords(params.baseAppData.inventoryItems, params.nextAppData.inventoryItems)
+    sessions: changedSessions,
+    customerTabs: changedCustomerTabs,
+    inventoryItems: changedInventoryItems,
+    sourceSessionIds: changedSessions.map((session) => session.id).sort(),
+    sourceCustomerTabIds: changedCustomerTabs.map((tab) => tab.id).sort(),
+    settlementExpectations: changedBills.flatMap((bill) => {
+      const previous = baseBillsById.get(bill.id);
+      if (!previous || previous.status !== "pending" || bill.id === params.bill.id) {
+        return [];
+      }
+      return [
+        {
+          billId: bill.id,
+          expectedStatus: previous.status,
+          expectedAmountDue: previous.amountDue,
+          intendedAmountDue: bill.amountDue,
+          settlementAmount: bill.amountPaid - previous.amountPaid
+        }
+      ];
+    }),
+    inventoryExpectations: changedInventoryItems.flatMap((item) => {
+      const previous = baseInventoryById.get(item.id);
+      if (!previous) {
+        return [];
+      }
+      return [
+        {
+          itemId: item.id,
+          expectedStockQty: previous.stockQty,
+          intendedStockQty: item.stockQty,
+          delta: item.stockQty - previous.stockQty
+        }
+      ];
+    })
   };
 }
 
@@ -68,6 +104,10 @@ export function buildFinancialAdjustmentPatch(params: {
   userId: string;
   mutationId: string;
 }): FinancialAdjustmentPatch {
+  const changedBills = getChangedRecords(params.baseAppData.bills, params.nextAppData.bills);
+  const changedInventoryItems = getChangedRecords(params.baseAppData.inventoryItems, params.nextAppData.inventoryItems);
+  const baseBillsById = new Map(params.baseAppData.bills.map((bill) => [bill.id, bill]));
+  const baseInventoryById = new Map(params.baseAppData.inventoryItems.map((item) => [item.id, item]));
   return {
     mutationId: params.mutationId,
     kind: params.kind,
@@ -76,10 +116,22 @@ export function buildFinancialAdjustmentPatch(params: {
     userId: params.userId,
     createdAt: params.createdAt,
     baseAppStateVersion: params.baseVersion,
-    bills: getChangedRecords(params.baseAppData.bills, params.nextAppData.bills),
+    bills: changedBills,
     payments: getNewRecords(params.baseAppData.payments, params.nextAppData.payments),
     stockMovements: getNewRecords(params.baseAppData.stockMovements, params.nextAppData.stockMovements),
     auditLogs: getNewRecords(params.baseAppData.auditLogs, params.nextAppData.auditLogs),
-    inventoryItems: getChangedRecords(params.baseAppData.inventoryItems, params.nextAppData.inventoryItems)
+    inventoryItems: changedInventoryItems,
+    billExpectations: changedBills.flatMap((bill) => {
+      const previous = baseBillsById.get(bill.id);
+      return previous
+        ? [{ billId: bill.id, expectedStatus: previous.status, expectedAmountPaid: previous.amountPaid, expectedAmountDue: previous.amountDue }]
+        : [];
+    }),
+    inventoryExpectations: changedInventoryItems.flatMap((item) => {
+      const previous = baseInventoryById.get(item.id);
+      return previous
+        ? [{ itemId: item.id, expectedStockQty: previous.stockQty, intendedStockQty: item.stockQty, delta: item.stockQty - previous.stockQty }]
+        : [];
+    })
   };
 }

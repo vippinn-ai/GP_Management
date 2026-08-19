@@ -458,6 +458,7 @@ export interface DraftLineDiscountMap {
 
 export interface CheckoutState {
   mode: "session" | "customer_tab" | "bill_replacement";
+  mutationId?: string;
   sessionId?: string;
   customerTabId?: string;
   replacementBillId?: string;

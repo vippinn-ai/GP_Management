@@ -44,6 +44,7 @@ describe("BillRegisterPanel normalized history", () => {
     renderBillRegisterPanel({
       normalizedHistory: {
         enabled: true,
+        ready: true,
         loading: false,
         loadingMore: false,
         error: "",
@@ -70,6 +71,7 @@ describe("BillRegisterPanel normalized history", () => {
     renderBillRegisterPanel({
       normalizedHistory: {
         enabled: true,
+        ready: true,
         loading: false,
         loadingMore: false,
         error: "",
@@ -83,5 +85,28 @@ describe("BillRegisterPanel normalized history", () => {
     fireEvent.click(screen.getByRole("button", { name: "Load More Bills" }));
 
     expect(onLoadMore).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails closed with a retry action when normalized history is unavailable", () => {
+    const onRefresh = vi.fn();
+    renderBillRegisterPanel({
+      bills: [{ id: "stale-bill", billNumber: "STALE" } as never],
+      normalizedHistory: {
+        enabled: true,
+        ready: false,
+        loading: false,
+        loadingMore: false,
+        error: "Backend read failed.",
+        hasMore: false,
+        onQueryChange: vi.fn(),
+        onLoadMore: vi.fn(),
+        onRefresh
+      }
+    });
+
+    expect(screen.getByText(/Bill register data is temporarily unavailable/)).toBeInTheDocument();
+    expect(screen.queryByText("STALE")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(onRefresh).toHaveBeenCalledTimes(1);
   });
 });

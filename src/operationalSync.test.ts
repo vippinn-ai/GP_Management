@@ -82,6 +82,36 @@ describe("operational sync", () => {
     vi.restoreAllMocks();
   });
 
+  it("applies normalized pause-log maintenance and its audit locally", () => {
+    const appData = createAppData();
+    appData.sessions.push({
+      id: "session-1", stationId: "station-1", stationNameSnapshot: "Pool 1", mode: "timed",
+      startedAt: "2026-06-09T09:00:00.000Z", status: "paused", playMode: "group",
+      ltpEligible: false, pricingSnapshot: [], items: [], pauseLogIds: ["pause-1"]
+    });
+    appData.sessionPauseLogs.push({ id: "pause-1", sessionId: "session-1", pausedAt: "2026-06-09T09:30:00.000Z" });
+    const auditLog = {
+      id: "audit-edit", action: "pause_log_edited", entityType: "session", entityId: "session-1",
+      message: "Edited pause", createdAt: "2026-06-09T10:00:00.000Z", userId: "user-1"
+    };
+
+    const edited = applyOperationalMutation(appData, mutation("editPauseLog", "session", "session-1", {
+      sessionId: "session-1",
+      pauseLog: { ...appData.sessionPauseLogs[0], resumedAt: "2026-06-09T09:45:00.000Z" },
+      auditLog
+    }));
+    expect(edited.sessionPauseLogs[0].resumedAt).toBe("2026-06-09T09:45:00.000Z");
+    expect(edited.auditLogs[0].id).toBe("audit-edit");
+
+    const deleted = applyOperationalMutation(edited, mutation("deletePauseLog", "session", "session-1", {
+      sessionId: "session-1",
+      pauseLogId: "pause-1",
+      auditLog: { ...auditLog, id: "audit-delete", action: "pause_log_deleted" }
+    }));
+    expect(deleted.sessionPauseLogs).toHaveLength(0);
+    expect(deleted.sessions[0].pauseLogIds).toEqual([]);
+  });
+
   it("acknowledges only the matching operational mutation", async () => {
     const acknowledgements = createOperationalMutationAcknowledgementRegistry();
     const firstOutcome = acknowledgements.waitFor("op-hop-1");

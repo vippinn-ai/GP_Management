@@ -9,6 +9,8 @@ import {
   type NormalizedBillRegisterCursor,
   type NormalizedBillRegisterQuery
 } from "./normalizedBillRegister";
+import { loadNormalizedReportData } from "./normalizedReports";
+import { loadNormalizedCustomerDirectory } from "./normalizedCustomerSearch";
 import {
   emitGenericAppStateSaveEvent,
   loadNormalizedRealtimeOverlay,
@@ -36,7 +38,7 @@ import { addDays, toBusinessDayKey } from "../utils";
 const NORMALIZED_BOOTSTRAP_RECENT_BUSINESS_DAYS = 1;
 const NORMALIZED_BOOTSTRAP_STOCK_MOVEMENT_BUSINESS_DAYS = 30;
 const NORMALIZED_BOOTSTRAP_PAGE_SIZE = 200;
-const NORMALIZED_BOOTSTRAP_MAX_RECENT_BILLS = 200;
+const NORMALIZED_BOOTSTRAP_MAX_RECENT_BILLS = 5_000;
 const NORMALIZED_BOOTSTRAP_MAX_STOCK_MOVEMENTS = 5_000;
 const NORMALIZED_BOOTSTRAP_RECENT_AUDIT_LOGS = 20;
 
@@ -69,13 +71,18 @@ function mergeLiveCustomerTabs(baseTabs: CustomerTab[], normalizedTabs: Customer
 function mergeLiveSessionPauseLogs(
   basePauseLogs: SessionPauseLog[],
   normalizedPauseLogs: SessionPauseLog[],
+  refreshedSessions: Session[] | undefined,
   retainedSessions: Session[] | undefined
 ): SessionPauseLog[] {
   const normalizedPauseLogIds = new Set(normalizedPauseLogs.map((log) => log.id));
+  const refreshedSessionIds = refreshedSessions ? new Set(refreshedSessions.map((session) => session.id)) : undefined;
   const retainedSessionIds = retainedSessions ? new Set(retainedSessions.map((session) => session.id)) : undefined;
   return [
     ...basePauseLogs.filter(
-      (log) => !normalizedPauseLogIds.has(log.id) && (!retainedSessionIds || retainedSessionIds.has(log.sessionId))
+      (log) =>
+        !normalizedPauseLogIds.has(log.id)
+        && (!refreshedSessionIds || !refreshedSessionIds.has(log.sessionId))
+        && (!retainedSessionIds || retainedSessionIds.has(log.sessionId))
     ),
     ...normalizedPauseLogs
   ];
@@ -99,7 +106,7 @@ function appendUniqueRecordsById<T extends { id: string }>(baseRecords: T[], nex
   return [...baseRecords, ...nextRecords.filter((record) => !existingIds.has(record.id))];
 }
 
-function mergeNormalizedAppDataOverlay(baseAppData: AppData, overlayAppData: Partial<AppData>): AppData {
+export function mergeNormalizedAppDataOverlay(baseAppData: AppData, overlayAppData: Partial<AppData>): AppData {
   const merged = {
     ...baseAppData,
     ...overlayAppData
@@ -109,6 +116,15 @@ function mergeNormalizedAppDataOverlay(baseAppData: AppData, overlayAppData: Par
   }
   if (overlayAppData.payments) {
     merged.payments = mergeRecordsById<Payment>(baseAppData.payments, overlayAppData.payments);
+  }
+  if (overlayAppData.customers) {
+    merged.customers = mergeRecordsById(baseAppData.customers, overlayAppData.customers);
+  }
+  if (overlayAppData.stockMovements) {
+    merged.stockMovements = mergeRecordsById(baseAppData.stockMovements, overlayAppData.stockMovements);
+  }
+  if (overlayAppData.auditLogs) {
+    merged.auditLogs = mergeRecordsById(baseAppData.auditLogs, overlayAppData.auditLogs);
   }
   if (overlayAppData.sessions) {
     merged.sessions = mergeLiveSessions(baseAppData.sessions, overlayAppData.sessions);
@@ -120,13 +136,14 @@ function mergeNormalizedAppDataOverlay(baseAppData: AppData, overlayAppData: Par
     merged.sessionPauseLogs = mergeLiveSessionPauseLogs(
       baseAppData.sessionPauseLogs,
       overlayAppData.sessionPauseLogs,
+      overlayAppData.sessions,
       overlayAppData.sessions ? merged.sessions : undefined
     );
   }
   return merged;
 }
 
-async function loadNormalizedBillPages(
+export async function loadNormalizedBillPages(
   query: NormalizedBillRegisterQuery,
   client: ReturnType<typeof getSupabaseClient>,
   maxBills: number
@@ -147,8 +164,16 @@ async function loadNormalizedBillPages(
     );
     bills = appendUniqueRecordsById(bills, page.bills);
     payments = appendUniqueRecordsById(payments, page.payments);
-    if (!page.hasMore || !page.nextCursor || page.bills.length === 0) {
+    if (!page.hasMore) {
       break;
+    }
+    if (!page.nextCursor || page.bills.length === 0) {
+      throw new Error("Normalized bill history reported more rows without a usable cursor; refusing to return partial financial data.");
+    }
+    if (bills.length >= maxBills) {
+      throw new Error(
+        `Normalized bill history exceeded the safe bootstrap limit of ${maxBills}; refusing to return partial financial data.`
+      );
     }
     cursor = page.nextCursor;
   }
@@ -171,7 +196,7 @@ async function loadNormalizedBootstrapHistory(
   const { fromDate: recentFrom, toDate: currentBusinessDay } = getBusinessDayRangeForTrailingDays(
     NORMALIZED_BOOTSTRAP_RECENT_BUSINESS_DAYS
   );
-  const [recent, pendingBills] = await Promise.all([
+  const [recent, paymentDateActivity, pendingBills] = await Promise.all([
     loadNormalizedBillPages(
       {
         organizationId,
@@ -181,22 +206,30 @@ async function loadNormalizedBootstrapHistory(
       client,
       NORMALIZED_BOOTSTRAP_MAX_RECENT_BILLS
     ),
+    loadNormalizedReportData(
+      {
+        organizationId,
+        fromDate: recentFrom,
+        toDate: currentBusinessDay
+      },
+      client
+    ),
     loadNormalizedPendingBills({ organizationId }, client)
   ]);
 
   return {
-    bills: mergeRecordsById(recent.bills, pendingBills),
-    payments: recent.payments
+    bills: mergeRecordsById(mergeRecordsById(recent.bills, paymentDateActivity.bills), pendingBills),
+    payments: mergeRecordsById(recent.payments, paymentDateActivity.payments)
   };
 }
 
-async function loadNormalizedBootstrapStockMovements(
+export async function loadNormalizedBootstrapStockMovements(
   organizationId: string,
   client: ReturnType<typeof getSupabaseClient>
 ) {
   const stockMovementRange = getBusinessDayRangeForTrailingDays(NORMALIZED_BOOTSTRAP_STOCK_MOVEMENT_BUSINESS_DAYS);
   const dateRange = getBusinessDayIssuedAtRange(stockMovementRange.fromDate, stockMovementRange.toDate);
-  return loadNormalizedStockMovements(
+  const movements = await loadNormalizedStockMovements(
     organizationId,
     {
       fromIso: dateRange.fromIso,
@@ -205,6 +238,12 @@ async function loadNormalizedBootstrapStockMovements(
     },
     client
   );
+  if (movements.length >= NORMALIZED_BOOTSTRAP_MAX_STOCK_MOVEMENTS) {
+    throw new Error(
+      `Normalized stock-movement history reached the safe bootstrap limit of ${NORMALIZED_BOOTSTRAP_MAX_STOCK_MOVEMENTS}; refusing to return partial inventory audit data.`
+    );
+  }
+  return movements;
 }
 
 function upsertStartupCustomer(
@@ -291,7 +330,7 @@ async function loadNormalizedBootstrapSnapshot(): Promise<RemoteAppDataSnapshot>
         client
       })
     ]);
-    const [history, expenses, stockMovements, auditLogs] = overlay.organizationId
+    const [history, expenses, stockMovements, auditLogs, customers] = overlay.organizationId
       ? await Promise.all([
           loadNormalizedBootstrapHistory(overlay.organizationId, client),
           loadNormalizedExpenseAdminData(overlay.organizationId, client),
@@ -300,11 +339,13 @@ async function loadNormalizedBootstrapSnapshot(): Promise<RemoteAppDataSnapshot>
             overlay.organizationId,
             { limit: NORMALIZED_BOOTSTRAP_RECENT_AUDIT_LOGS },
             client
-          )
+          ),
+          loadNormalizedCustomerDirectory(overlay.organizationId, client)
         ])
       : [
           { bills: [], payments: [] },
           { expenses: [], expenseTemplates: [], expenseTemplateOverrides: [] },
+          [],
           [],
           []
         ];
@@ -317,7 +358,7 @@ async function loadNormalizedBootstrapSnapshot(): Promise<RemoteAppDataSnapshot>
     };
     const appData = hydrateAppData({
       ...startupAppData,
-      customers: deriveStartupCustomers(startupAppData),
+      customers: customers.length > 0 ? customers : deriveStartupCustomers(startupAppData),
       users
     });
     recordStartupBootstrapTelemetry({
@@ -441,9 +482,9 @@ export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): 
   if (_flags.rpcOperationalWrites) {
     gateway.commitOperationalMutation = (mutation) => invokeOperationalMutationRpc(mutation);
   }
-  if (_flags.rpcFinancialWrites) {
-    gateway.commitFinancialCheckout = (patch) => invokeFinancialCheckoutRpc(patch);
-    gateway.commitFinancialAdjustment = (patch) => invokeFinancialAdjustmentRpc(patch);
+  if (_flags.rpcFinancialWrites || _flags.financialRpcV2) {
+    gateway.commitFinancialCheckout = (patch) => invokeFinancialCheckoutRpc(patch, { useV2: _flags.financialRpcV2 });
+    gateway.commitFinancialAdjustment = (patch) => invokeFinancialAdjustmentRpc(patch, { useV2: _flags.financialRpcV2 });
   }
   gateway.commitAdminDataChange = (patch) => invokeAdminDataChangeRpc(patch);
   return gateway;

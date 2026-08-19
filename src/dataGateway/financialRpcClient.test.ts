@@ -1,7 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   buildFinancialAdjustmentRpcPayload,
+  buildFinancialAdjustmentV2RpcPayload,
   buildFinancialCheckoutRpcPayload,
+  buildFinancialCheckoutV2RpcPayload,
+  invokeFinancialCheckoutRpc,
   mapFinancialAdjustmentRpcResult,
   mapFinancialCheckoutRpcResult
 } from "./financialRpcClient";
@@ -159,6 +162,45 @@ describe("financial checkout RPC client", () => {
     });
   });
 
+  it("builds a v2 checkout command without client-trusted actor or app-state fields", () => {
+    const patch: FinancialCheckoutPatch = {
+      ...createPatch(),
+      sourceSessionIds: ["session-1", "session-hop-1"],
+      settlementExpectations: [
+        {
+          billId: "bill-pending",
+          expectedStatus: "pending",
+          expectedAmountDue: 50,
+          intendedAmountDue: 0,
+          settlementAmount: 50
+        }
+      ],
+      inventoryExpectations: [
+        { itemId: "item-1", expectedStockQty: 3, intendedStockQty: 2, delta: -1 }
+      ],
+      payments: [
+        {
+          id: "payment-1",
+          billId: "bill-1",
+          mode: "cash",
+          amount: 300,
+          createdAt: "2026-06-20T12:00:00.000Z",
+          receivedByUserId: "spoofed-user"
+        }
+      ]
+    };
+
+    const payload = buildFinancialCheckoutV2RpcPayload(patch, "org-primary");
+
+    expect(payload).not.toHaveProperty("user_id");
+    expect(payload).not.toHaveProperty("base_app_state_version");
+    expect(payload.payload.primary_bill).not.toHaveProperty("issuedByUserId");
+    expect(payload.payload.payments[0]).not.toHaveProperty("receivedByUserId");
+    expect(payload.payload.source_session_ids).toEqual(["session-1", "session-hop-1"]);
+    expect(payload.payload.settlement_expectations).toEqual(patch.settlementExpectations);
+    expect(payload.payload.inventory_expectations).toEqual(patch.inventoryExpectations);
+  });
+
   it("maps snake_case RPC result fields", () => {
     const patch = createPatch();
 
@@ -250,6 +292,56 @@ describe("financial checkout RPC client", () => {
       serverTime: "2026-06-20T12:05:01.000Z",
       serverDurationMs: 91.25,
       changedRows: { bills: ["bill-1"], payments: ["payment-1"] }
+    });
+  });
+
+  it("builds a v2 adjustment command without client-trusted actors", () => {
+    const patch = createAdjustmentPatch();
+    const payload = buildFinancialAdjustmentV2RpcPayload(patch, "org-primary");
+
+    expect(payload).not.toHaveProperty("user_id");
+    expect(payload).not.toHaveProperty("base_app_state_version");
+    expect(payload.payload.bill_updates[0]).not.toHaveProperty("issuedByUserId");
+    expect(payload.payload.payments[0]).not.toHaveProperty("receivedByUserId");
+  });
+
+  it("reconciles a lost v2 response by the same mutation ID instead of issuing again", async () => {
+    const patch = createPatch();
+    const rpc = vi
+      .fn()
+      .mockReturnValueOnce(Promise.reject(new Error("connection closed after commit")))
+      .mockResolvedValueOnce({
+        data: {
+          mutation_id: patch.mutationId,
+          organization_id: "org-primary",
+          entity_type: patch.entityType,
+          entity_id: patch.entityId,
+          bill_id: patch.bill.id,
+          bill_number: patch.bill.billNumber,
+          event_id: "event-recovered"
+        },
+        error: null
+      });
+
+    await expect(
+      invokeFinancialCheckoutRpc(patch, {
+        organizationId: "org-primary",
+        client: { rpc } as never,
+        useV2: true
+      })
+    ).resolves.toMatchObject({
+      mutationId: patch.mutationId,
+      rpcName: "commit_checkout_bill_v2",
+      eventId: "event-recovered"
+    });
+
+    expect(rpc).toHaveBeenNthCalledWith(1, "commit_checkout_bill_v2", { payload: expect.any(Object) });
+    expect(rpc).toHaveBeenNthCalledWith(2, "get_financial_mutation_result", {
+      payload: {
+        organization_id: "org-primary",
+        mutation_id: patch.mutationId,
+        mutation_kind: "commitCheckoutBill"
+      }
     });
   });
 });

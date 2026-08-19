@@ -1117,6 +1117,40 @@ export async function loadNormalizedCatalogData(
   return buildNormalizedCatalogData({ inventoryItems, saleVariants });
 }
 
+export async function loadNormalizedInventoryItemsByIds(
+  organizationId: string,
+  itemIds: string[],
+  client: SupabaseClient = getSupabaseClient()
+): Promise<InventoryItem[]> {
+  const requestedItemIds = Array.from(new Set(itemIds.filter(Boolean)));
+  if (requestedItemIds.length === 0) {
+    return [];
+  }
+  const [inventoryItems, saleVariants] = await Promise.all([
+    readMany<InventoryItemRow>(
+      client
+        .from("inventory_items")
+        .select(
+          "id, name, category, price, stock_qty, low_stock_threshold, unit, is_reusable, barcode, active, archived_at, archived_by_user_id, archive_reason, sell_base_item, cigarette_pack, raw_data"
+        )
+        .eq("organization_id", organizationId)
+        .in("id", requestedItemIds),
+      "loading changed inventory items"
+    ),
+    readMany<SaleVariantRow>(
+      client
+        .from("sale_variants")
+        .select("inventory_item_id, id, name, price, stock_units_per_sale, barcode, active, raw_data")
+        .eq("organization_id", organizationId)
+        .in("inventory_item_id", requestedItemIds)
+        .order("inventory_item_id", { ascending: true })
+        .order("name", { ascending: true }),
+      "loading changed inventory sale variants"
+    )
+  ]);
+  return buildNormalizedCatalogData({ inventoryItems, saleVariants }).inventoryItems;
+}
+
 export async function loadNormalizedComboData(
   organizationId: string,
   client: SupabaseClient = getSupabaseClient()
@@ -1238,6 +1272,24 @@ export async function loadNormalizedStockMovements(
   return rows.map(mapNormalizedStockMovement);
 }
 
+export async function loadNormalizedStockMovementsByIds(
+  organizationId: string,
+  movementIds: string[],
+  client: SupabaseClient = getSupabaseClient()
+): Promise<StockMovement[]> {
+  const ids = Array.from(new Set(movementIds.filter(Boolean)));
+  if (ids.length === 0) return [];
+  const rows = await readMany<StockMovementRow>(
+    client
+      .from("stock_movements")
+      .select("id, item_id, type, quantity, reason, movement_at, user_id, related_bill_id, raw_data, created_at")
+      .eq("organization_id", organizationId)
+      .in("id", ids),
+    "loading changed stock movements"
+  );
+  return rows.map(mapNormalizedStockMovement);
+}
+
 export async function loadNormalizedAuditLogs(
   organizationId: string,
   query: { limit?: number } = {},
@@ -1256,6 +1308,24 @@ export async function loadNormalizedAuditLogs(
   return rows.map(mapNormalizedAuditLog);
 }
 
+export async function loadNormalizedAuditLogsByIds(
+  organizationId: string,
+  auditLogIds: string[],
+  client: SupabaseClient = getSupabaseClient()
+): Promise<AuditLog[]> {
+  const ids = Array.from(new Set(auditLogIds.filter(Boolean)));
+  if (ids.length === 0) return [];
+  const rows = await readMany<AuditLogRow>(
+    client
+      .from("audit_logs")
+      .select("id, action, entity_type, entity_id, message, audit_at, user_id, raw_data, created_at")
+      .eq("organization_id", organizationId)
+      .in("id", ids),
+    "loading changed audit logs"
+  );
+  return rows.map(mapNormalizedAuditLog);
+}
+
 export async function loadNormalizedLiveData(
   organizationId: string,
   client: SupabaseClient = getSupabaseClient()
@@ -1268,10 +1338,10 @@ export async function loadNormalizedLiveData(
           "id, station_id, station_name_snapshot, mode, started_at, ended_at, status, customer_id, customer_name, customer_phone, play_mode, ltp_eligible, ltp_outcome, ltp_discount_applied, pricing_snapshot, pause_log_ids, continued_from_session_ids, closed_bill_id, close_disposition, close_reason, raw_data, created_at"
         )
         .eq("organization_id", organizationId)
-        .neq("status", "closed")
+        .or("status.neq.closed,and(status.eq.closed,close_disposition.eq.hopped,closed_bill_id.is.null)")
         .order("started_at", { ascending: false })
         .order("id", { ascending: false }),
-      "loading normalized open sessions"
+      "loading normalized live and recoverable sessions"
     ),
     readMany<CustomerTabRow>(
       client

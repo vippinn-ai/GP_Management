@@ -53,6 +53,21 @@ export interface FinancialCheckoutPatch {
   sessions: Session[];
   customerTabs: CustomerTab[];
   inventoryItems: InventoryItem[];
+  sourceSessionIds?: string[];
+  sourceCustomerTabIds?: string[];
+  settlementExpectations?: Array<{
+    billId: string;
+    expectedStatus: Bill["status"];
+    expectedAmountDue: number;
+    intendedAmountDue: number;
+    settlementAmount: number;
+  }>;
+  inventoryExpectations?: Array<{
+    itemId: string;
+    expectedStockQty: number;
+    intendedStockQty: number;
+    delta: number;
+  }>;
 }
 
 export interface FinancialCheckoutCommitResult {
@@ -68,6 +83,8 @@ export interface FinancialCheckoutCommitResult {
   serverTime?: string;
   serverDurationMs?: number;
   changedRows?: Record<string, unknown>;
+  canonicalBill?: Bill;
+  canonicalPayments?: Payment[];
   raw?: unknown;
 }
 
@@ -86,6 +103,18 @@ export interface FinancialAdjustmentPatch {
   stockMovements: StockMovement[];
   auditLogs: AuditLog[];
   inventoryItems: InventoryItem[];
+  billExpectations?: Array<{
+    billId: string;
+    expectedStatus: Bill["status"];
+    expectedAmountPaid: number;
+    expectedAmountDue: number;
+  }>;
+  inventoryExpectations?: Array<{
+    itemId: string;
+    expectedStockQty: number;
+    intendedStockQty: number;
+    delta: number;
+  }>;
 }
 
 export interface FinancialAdjustmentCommitResult {

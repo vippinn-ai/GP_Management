@@ -60,6 +60,7 @@ export function BillRegisterPanel(props: {
   canSettlePendingBills: boolean;
   normalizedHistory?: {
     enabled: boolean;
+    ready: boolean;
     loading: boolean;
     loadingMore: boolean;
     error: string;
@@ -269,6 +270,28 @@ export function BillRegisterPanel(props: {
       ...previous,
       [group.id]: checked ? group.bills.map((bill) => bill.id) : []
     }));
+  }
+
+  if (props.normalizedHistory?.enabled && !props.normalizedHistory.ready) {
+    return (
+      <div className="bill-register-page">
+        <div className={`read-only-banner ${props.normalizedHistory.error ? "is-warning" : ""}`}>
+          <span>
+            {props.normalizedHistory.loading
+              ? "Loading bill register data from the backend..."
+              : `Bill register data is temporarily unavailable. ${props.normalizedHistory.error || "Please retry."}`}
+          </span>
+          <button
+            className="secondary-button"
+            type="button"
+            onClick={props.normalizedHistory.onRefresh}
+            disabled={props.normalizedHistory.loading}
+          >
+            Retry
+          </button>
+        </div>
+      </div>
+    );
   }
 
   if (registerView === "receivables") {

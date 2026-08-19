@@ -26,6 +26,9 @@ export type OperationalMutationKind =
   | "startSession"
   | "pauseSession"
   | "resumeSession"
+  | "editPauseLog"
+  | "deletePauseLog"
+  | "recordSessionAudit"
   | "addSessionItem"
   | "removeSessionItem"
   | "hopSession"
@@ -151,6 +154,22 @@ interface ResumeSessionPayload {
   auditLog: AuditLog;
 }
 
+interface EditPauseLogPayload {
+  sessionId: string;
+  pauseLog: SessionPauseLog;
+  auditLog: AuditLog;
+}
+
+interface DeletePauseLogPayload {
+  sessionId: string;
+  pauseLogId: string;
+  auditLog: AuditLog;
+}
+
+interface RecordSessionAuditPayload {
+  auditLog: AuditLog;
+}
+
 interface AddSessionItemPayload {
   sessionId: string;
   item: SessionItem;
@@ -243,6 +262,9 @@ export type OperationalMutationPayload =
   | StartSessionPayload
   | PauseSessionPayload
   | ResumeSessionPayload
+  | EditPauseLogPayload
+  | DeletePauseLogPayload
+  | RecordSessionAuditPayload
   | AddSessionItemPayload
   | RemoveSessionItemPayload
   | RejectSessionPayload
@@ -509,6 +531,23 @@ export function validateOperationalMutation(appData: AppData, mutation: Operatio
         ? { ok: true }
         : { ok: false, reason: "The session cannot be resumed." };
     }
+    case "editPauseLog": {
+      const payload = mutation.payload as EditPauseLogPayload;
+      const session = appData.sessions.find((entry) => entry.id === payload.sessionId && entry.status !== "closed");
+      const pauseLog = appData.sessionPauseLogs.find((entry) => entry.id === payload.pauseLog.id && entry.sessionId === payload.sessionId);
+      return session && pauseLog ? { ok: true } : { ok: false, reason: "The pause log is no longer editable." };
+    }
+    case "deletePauseLog": {
+      const payload = mutation.payload as DeletePauseLogPayload;
+      const session = appData.sessions.find((entry) => entry.id === payload.sessionId && entry.status !== "closed");
+      return session ? { ok: true } : { ok: false, reason: "The pause log is no longer editable." };
+    }
+    case "recordSessionAudit": {
+      const payload = mutation.payload as RecordSessionAuditPayload;
+      return payload.auditLog.entityId === mutation.entityId
+        ? { ok: true }
+        : { ok: false, reason: "The session audit is invalid." };
+    }
     case "addSessionItem": {
       const payload = mutation.payload as AddSessionItemPayload;
       const session = appData.sessions.find((entry) => entry.id === payload.sessionId && entry.status !== "closed");
@@ -690,6 +729,35 @@ export function applyOperationalMutation(
       if (session) {
         session.status = "active";
       }
+      insertFirstUnique(appData.auditLogs, payload.auditLog);
+      break;
+    }
+    case "editPauseLog": {
+      const payload = mutation.payload as EditPauseLogPayload;
+      const pauseLog = appData.sessionPauseLogs.find((entry) => entry.id === payload.pauseLog.id);
+      if (pauseLog) {
+        pauseLog.pausedAt = payload.pauseLog.pausedAt;
+        pauseLog.resumedAt = payload.pauseLog.resumedAt;
+      }
+      insertFirstUnique(appData.auditLogs, payload.auditLog);
+      break;
+    }
+    case "deletePauseLog": {
+      const payload = mutation.payload as DeletePauseLogPayload;
+      const pauseLog = appData.sessionPauseLogs.find((entry) => entry.id === payload.pauseLogId);
+      appData.sessionPauseLogs = appData.sessionPauseLogs.filter((entry) => entry.id !== payload.pauseLogId);
+      const session = appData.sessions.find((entry) => entry.id === payload.sessionId);
+      if (session) {
+        session.pauseLogIds = session.pauseLogIds.filter((id) => id !== payload.pauseLogId);
+        if (pauseLog && !pauseLog.resumedAt && session.status === "paused") {
+          session.status = "active";
+        }
+      }
+      insertFirstUnique(appData.auditLogs, payload.auditLog);
+      break;
+    }
+    case "recordSessionAudit": {
+      const payload = mutation.payload as RecordSessionAuditPayload;
       insertFirstUnique(appData.auditLogs, payload.auditLog);
       break;
     }

@@ -29,10 +29,9 @@ type InventoryArchiveView = "active" | "archived";
 
 interface InventoryReportBackendStatus {
   enabled: boolean;
+  ready: boolean;
   loading: boolean;
   error: string;
-  usingCachedData: boolean;
-  usingFallback: boolean;
   onRefresh: () => void;
 }
 
@@ -289,12 +288,8 @@ export function InventoryPanel(props: {
     if (!backend?.enabled) return "";
     if (backend.loading) return "Loading inventory report data from the backend...";
     if (backend.error) {
-      return backend.usingFallback
-        ? `Using local cached inventory report data: ${backend.error}`
-        : `Using current cached inventory report data: ${backend.error}`;
+      return `Inventory report data is temporarily unavailable: ${backend.error}`;
     }
-    if (backend.usingFallback) return "Showing local cached inventory report data until backend data loads.";
-    if (backend.usingCachedData) return "Showing the last loaded inventory report while the selected range refreshes.";
     return "Inventory report range is loaded from backend report data.";
   }
 
@@ -593,6 +588,7 @@ export function InventoryPanel(props: {
               </div>
             )}
 
+            {props.inventoryReportBackend?.ready !== false && <>
             <div className="reports-kpi-grid inventory-report-kpis">
               <div className="report-kpi-card is-primary">
                 <span className="muted">Stock Added</span>
@@ -705,6 +701,7 @@ export function InventoryPanel(props: {
                 </table>
               </div>
             </div>
+            </>}
           </div>
         </section>
       ) : (

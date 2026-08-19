@@ -55,9 +55,11 @@ import {
   loadInventoryReportSummaryData,
   loadAnalyticsSummaryData,
   loadNormalizedCustomerSearch,
+  loadNormalizedCustomerHistoryData,
   loadNormalizedReportData,
   loadNormalizedBillRegisterPage,
   loadNormalizedPendingBills,
+  loadNormalizedFinancialDelta,
   resolveBackendFeatureFlags,
   type FinancialAdjustmentCommitResult,
   type FinancialAdjustmentKind,
@@ -67,6 +69,7 @@ import {
   type AnalyticsSummaryData,
   type NormalizedBillRegisterCursor,
   type NormalizedBillRegisterQuery,
+  type NormalizedCustomerHistoryData,
   type NormalizedReportData,
   type OperationalRpcCommitResult,
   OperationalRpcError
@@ -257,6 +260,12 @@ interface NormalizedCustomerSearchState {
   error: string;
 }
 
+interface NormalizedCustomerHistoryState extends NormalizedCustomerHistoryData {
+  loading: boolean;
+  error: string;
+  loaded: boolean;
+}
+
 interface NormalizedReportState extends NormalizedReportData {
   loading: boolean;
   error: string;
@@ -304,6 +313,10 @@ function createEmptyNormalizedCustomerSearchState(): NormalizedCustomerSearchSta
   };
 }
 
+function createEmptyNormalizedCustomerHistoryState(): NormalizedCustomerHistoryState {
+  return { customers: [], bills: [], payments: [], loading: false, error: "", loaded: false };
+}
+
 function createEmptyNormalizedReportState(): NormalizedReportState {
   return {
     bills: [],
@@ -348,6 +361,12 @@ function mergeBillsById(primary: Bill[], fallback: Bill[]): Bill[] {
 function mergePaymentsById(primary: Payment[], fallback: Payment[]): Payment[] {
   const map = new Map(fallback.map((payment) => [payment.id, payment]));
   primary.forEach((payment) => map.set(payment.id, payment));
+  return Array.from(map.values());
+}
+
+function mergeRecordsById<T extends { id: string }>(primary: T[], fallback: T[]): T[] {
+  const map = new Map(fallback.map((entry) => [entry.id, entry]));
+  primary.forEach((entry) => map.set(entry.id, entry));
   return Array.from(map.values());
 }
 
@@ -482,6 +501,10 @@ export default function App() {
   const [normalizedCustomerSearchState, setNormalizedCustomerSearchState] = useState<NormalizedCustomerSearchState>(
     createEmptyNormalizedCustomerSearchState
   );
+  const [normalizedCustomerHistoryState, setNormalizedCustomerHistoryState] = useState<NormalizedCustomerHistoryState>(
+    createEmptyNormalizedCustomerHistoryState
+  );
+  const [normalizedCustomerHistoryRefreshSignal, setNormalizedCustomerHistoryRefreshSignal] = useState(0);
   const [normalizedReportState, setNormalizedReportState] = useState<NormalizedReportState>(
     createEmptyNormalizedReportState
   );
@@ -511,6 +534,7 @@ export default function App() {
   }
   const alertedOperationalMutationIdsRef = useRef<Set<string>>(new Set());
   const lastCheckoutPendingSyncAlertKeyRef = useRef<string | null>(null);
+  const financialAdjustmentMutationIdsRef = useRef<Map<string, string>>(new Map());
   const todayDateKey = toLocalDateKey(new Date());
   const [reportFilter, setReportFilter] = useState<ReportFilterState>({
     preset: "today",
@@ -930,6 +954,7 @@ export default function App() {
     restoreRetrySignal,
     hasCachedAppData,
     remoteVersion,
+    allowFullAppDataPersist: !BACKEND_FEATURE_FLAGS.normalizedBootstrap,
     skipRemotePersistRef,
     remoteSaveTimerRef,
     setAppData,
@@ -1016,6 +1041,7 @@ export default function App() {
   // open sessions before this feature shipped. Runs once per device via localStorage flag.
   useEffect(() => {
     if (!activeUserId) return;
+    if (backendConfigured && BACKEND_FEATURE_FLAGS.normalizedBootstrap) return;
     const flagKey = "inv_reservation_migrated_v1";
     if (localStorage.getItem(flagKey)) return;
     const openSessions = appData.sessions.filter((s) => s.status !== "closed");
@@ -1081,6 +1107,7 @@ export default function App() {
   const canAccessTab = useCallback((tabId: TabId) => visibleTabs.some((tab) => tab.id === tabId), [visibleTabs]);
   const normalizedBillHistoryReadsEnabled = backendConfigured && BACKEND_FEATURE_FLAGS.normalizedBillHistoryReads;
   const normalizedCustomerSearchReadsEnabled = backendConfigured && BACKEND_FEATURE_FLAGS.normalizedCustomerSearchReads;
+  const normalizedCustomerHistoryReadsEnabled = backendConfigured && (BACKEND_FEATURE_FLAGS.normalizedBootstrap || BACKEND_FEATURE_FLAGS.normalizedCustomerSearchReads);
   const normalizedReportReadsEnabled = backendConfigured && BACKEND_FEATURE_FLAGS.normalizedReportReads;
   const analyticsSummaryReadsEnabled = backendConfigured && BACKEND_FEATURE_FLAGS.analyticsSummaryReads;
   const inventoryReportReadsEnabled = backendConfigured && BACKEND_FEATURE_FLAGS.inventoryReportReads;
@@ -1172,20 +1199,16 @@ export default function App() {
       }),
     [debouncedInventoryReportSearch, inventoryReportFromDate, inventoryReportRefreshSignal, inventoryReportToDate]
   );
-  const inventoryReportModel =
-    inventoryReportReadsEnabled && inventoryReportSummaryState.loaded && inventoryReportSummaryState.data
-      ? inventoryReportSummaryState.data
-      : filteredClientInventoryReportModel;
-  const inventoryReportBackendUsingCachedData =
+  const inventoryReportDataReady =
     inventoryReportReadsEnabled &&
     inventoryReportSummaryState.loaded &&
+    !inventoryReportSummaryState.error &&
     !!inventoryReportSummaryState.data &&
-    inventoryReportSummaryState.dataQueryKey !== inventoryReportQueryKey;
-  const inventoryReportBackendUsingFallback =
-    inventoryReportReadsEnabled &&
-    (!inventoryReportSummaryState.loaded || !inventoryReportSummaryState.data);
+    inventoryReportSummaryState.dataQueryKey === inventoryReportQueryKey;
+  const inventoryReportModel = inventoryReportDataReady
+    ? inventoryReportSummaryState.data!
+    : filteredClientInventoryReportModel;
   const normalizedReportDataReady =
-    !analyticsSummaryReadsEnabled &&
     normalizedReportReadsEnabled &&
     normalizedReportState.loaded &&
     !normalizedReportState.error &&
@@ -1196,10 +1219,19 @@ export default function App() {
     !!analyticsSummaryState.data &&
     analyticsSummaryState.dataQueryKey === normalizedReportQueryKey;
   const analyticsSummaryData = analyticsSummaryDataReady ? analyticsSummaryState.data : null;
-  const reportSourceBills = normalizedReportDataReady ? normalizedReportState.bills : appData.bills;
-  const reportSourcePayments = normalizedReportDataReady ? normalizedReportState.payments : appData.payments;
-  const reportSourceExpenses = normalizedReportDataReady ? normalizedReportState.expenses : appData.expenses;
-  const reportBillBusinessDates = normalizedReportDataReady ? normalizedReportState.billBusinessDates : billBusinessDates;
+  const financialReportDataReady =
+    (!analyticsSummaryReadsEnabled || analyticsSummaryDataReady) &&
+    (!normalizedReportReadsEnabled || normalizedReportDataReady);
+  const financialReportLoading =
+    (analyticsSummaryReadsEnabled && analyticsSummaryState.loading) ||
+    (normalizedReportReadsEnabled && normalizedReportState.loading);
+  const financialReportError =
+    (analyticsSummaryReadsEnabled ? analyticsSummaryState.error : "") ||
+    (normalizedReportReadsEnabled ? normalizedReportState.error : "");
+  const reportSourceBills = normalizedReportReadsEnabled ? normalizedReportState.bills : appData.bills;
+  const reportSourcePayments = normalizedReportReadsEnabled ? normalizedReportState.payments : appData.payments;
+  const reportSourceExpenses = normalizedReportReadsEnabled ? normalizedReportState.expenses : appData.expenses;
+  const reportBillBusinessDates = normalizedReportReadsEnabled ? normalizedReportState.billBusinessDates : billBusinessDates;
   const filteredBills = reportSourceBills.filter((bill) => {
     const billDate = reportBillBusinessDates[bill.id] ?? toBusinessDayKey(bill.issuedAt);
     return billDate >= reportFromDate && billDate <= reportToDate;
@@ -1252,7 +1284,15 @@ export default function App() {
     [sellableInventoryOptions]
   );
   const defaultArcadeInventoryItem = arcadeInventoryItems[0] ?? null;
-  const activeFinancialBills = appData.bills.filter((bill) => bill.status === "issued" || bill.status === "pending");
+  const normalizedCustomerHistoryReady =
+    normalizedCustomerHistoryReadsEnabled && normalizedCustomerHistoryState.loaded && !normalizedCustomerHistoryState.error;
+  const customerAnalyticsCustomers = normalizedCustomerHistoryReadsEnabled
+    ? normalizedCustomerHistoryState.customers
+    : appData.customers;
+  const customerAnalyticsBills = normalizedCustomerHistoryReadsEnabled
+    ? normalizedCustomerHistoryState.bills
+    : appData.bills;
+  const activeFinancialBills = customerAnalyticsBills.filter((bill) => bill.status === "issued" || bill.status === "pending");
 
   const customerAnalytics = (() => {
     const statsMap = new Map<
@@ -1284,7 +1324,7 @@ export default function App() {
       return bill.issuedAt;
     }
 
-    for (const customer of appData.customers) {
+    for (const customer of customerAnalyticsCustomers) {
       statsMap.set(customer.id, {
         customer,
         bills: [],
@@ -1299,7 +1339,7 @@ export default function App() {
       if (!bill.customerId) {
         continue;
       }
-      const customer = appData.customers.find((entry) => entry.id === bill.customerId);
+      const customer = customerAnalyticsCustomers.find((entry) => entry.id === bill.customerId);
       if (!customer) {
         continue;
       }
@@ -1370,10 +1410,10 @@ export default function App() {
       stats,
       topSpend,
       topVisits,
-      totalProfiles: appData.customers.length,
+      totalProfiles: customerAnalyticsCustomers.length,
       repeatCustomersCount: repeatCustomers.length,
       repeatRate: stats.length ? (repeatCustomers.length / stats.length) * 100 : 0,
-      averageSpendPerCustomer: appData.customers.length ? totalSpend / appData.customers.length : 0,
+      averageSpendPerCustomer: customerAnalyticsCustomers.length ? totalSpend / customerAnalyticsCustomers.length : 0,
       oneTimeCustomersCount: stats.filter((entry) => entry.visitCount === 1).length,
       activeCustomersCount: stats.filter(
         (entry) => new Date(entry.lastVisitAt).getTime() >= thirtyDaysAgo.getTime()
@@ -1395,7 +1435,7 @@ export default function App() {
   })();
   const selectedCustomerProfile =
     (selectedCustomerProfileId
-      ? appData.customers.find((customer) => customer.id === selectedCustomerProfileId)
+      ? customerAnalyticsCustomers.find((customer) => customer.id === selectedCustomerProfileId)
       : undefined) ??
     customerAnalytics.stats[0]?.customer ??
     null;
@@ -1434,14 +1474,14 @@ export default function App() {
   }, [openCustomerTabs, selectedCustomerTabId]);
 
   useEffect(() => {
-    if (selectedCustomerProfileId && !appData.customers.some((customer) => customer.id === selectedCustomerProfileId)) {
+    if (selectedCustomerProfileId && !customerAnalyticsCustomers.some((customer) => customer.id === selectedCustomerProfileId)) {
       setSelectedCustomerProfileId(customerAnalytics.stats[0]?.customer.id ?? null);
       return;
     }
     if (!selectedCustomerProfileId && customerAnalytics.stats[0]) {
       setSelectedCustomerProfileId(customerAnalytics.stats[0].customer.id);
     }
-  }, [appData.customers, customerAnalytics.stats, selectedCustomerProfileId]);
+  }, [customerAnalyticsCustomers, customerAnalytics.stats, selectedCustomerProfileId]);
 
   useEffect(() => {
     if (!activeUser) {
@@ -1450,7 +1490,7 @@ export default function App() {
     if (!canAccessTab(activeTab)) {
       setActiveTab(visibleTabs[0]?.id ?? "dashboard");
     }
-  }, [activeTab, activeUser, visibleTabs]);
+  }, [activeTab, activeUser, canAccessTab, visibleTabs]);
 
   const normalizedBillRegisterQueryKey = useMemo(
     () => JSON.stringify(normalizedBillRegisterQuery),
@@ -1460,6 +1500,28 @@ export default function App() {
     const nextKey = JSON.stringify(query);
     setNormalizedBillRegisterQuery((previous) => (JSON.stringify(previous) === nextKey ? previous : query));
   }, []);
+
+  useEffect(() => {
+    if (!normalizedCustomerHistoryReadsEnabled || activeTab !== "customers" || !activeUserId || !canAccessTab("customers")) {
+      return;
+    }
+    let cancelled = false;
+    setNormalizedCustomerHistoryState((previous) => ({ ...previous, loading: true, error: "" }));
+    loadNormalizedCustomerHistoryData()
+      .then((data) => {
+        if (!cancelled) setNormalizedCustomerHistoryState({ ...data, loading: false, error: "", loaded: true });
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) {
+          setNormalizedCustomerHistoryState({
+            customers: [], bills: [], payments: [], loading: false,
+            error: error instanceof Error ? error.message : "Unable to load normalized customer history.",
+            loaded: false
+          });
+        }
+      });
+    return () => { cancelled = true; };
+  }, [activeTab, activeUserId, canAccessTab, normalizedCustomerHistoryReadsEnabled, normalizedCustomerHistoryRefreshSignal]);
 
   useEffect(() => {
     if (!normalizedCustomerSearchReadsEnabled || !activeUserId) {
@@ -1520,9 +1582,11 @@ export default function App() {
       return undefined;
     }
     return {
+      serverSuggestionsEnabled: true,
       suggestionCustomers: normalizedCustomerSearchState.error ? undefined : normalizedCustomerSearchState.customers,
       suggestionQuery: normalizedCustomerSearchState.query,
       suggestionsLoading: normalizedCustomerSearchState.loading,
+      suggestionsError: normalizedCustomerSearchState.error,
       onSuggestionQueryChange: setCustomerSuggestionQuery
     };
   }, [normalizedCustomerSearchReadsEnabled, normalizedCustomerSearchState]);
@@ -1664,7 +1728,6 @@ export default function App() {
 
   useEffect(() => {
     if (
-      analyticsSummaryReadsEnabled ||
       !normalizedReportReadsEnabled ||
       activeTab !== "reports" ||
       !activeUserId ||
@@ -1949,6 +2012,45 @@ export default function App() {
     return hasPendingOperationalMutationForEntity(pendingOperationalMutations, "customer_tab", customerTabId);
   }
 
+  async function hydrateNormalizedFinancialDelta(
+    patch: FinancialCheckoutPatch | FinancialAdjustmentPatch,
+    result?: FinancialCheckoutCommitResult | FinancialAdjustmentCommitResult
+  ) {
+    const checkoutPatch = "sessions" in patch ? patch : null;
+    const changedRows = result?.changedRows ?? {};
+    const changedIds = (key: string) =>
+      Array.isArray(changedRows[key])
+        ? (changedRows[key] as unknown[]).filter((value): value is string => typeof value === "string" && Boolean(value))
+        : [];
+    const delta = await loadNormalizedFinancialDelta({
+      billIds: Array.from(new Set([
+        ...patch.bills.map((bill) => bill.id),
+        ...changedIds("bills"),
+        ...(result && "billId" in result ? [result.billId] : [])
+      ])),
+      paymentIds: Array.from(new Set([...patch.payments.map((payment) => payment.id), ...changedIds("payments")])),
+      sessionIds: checkoutPatch?.sourceSessionIds ?? checkoutPatch?.sessions.map((session) => session.id),
+      customerTabIds:
+        checkoutPatch?.sourceCustomerTabIds ?? checkoutPatch?.customerTabs.map((tab) => tab.id),
+      inventoryItemIds: Array.from(new Set([...patch.inventoryItems.map((item) => item.id), ...changedIds("inventory_items")])),
+      customerIds: Array.from(new Set([...(checkoutPatch?.customers ?? []).map((customer) => customer.id), ...changedIds("customers")])),
+      stockMovementIds: Array.from(new Set([...patch.stockMovements.map((movement) => movement.id), ...changedIds("stock_movements")])),
+      auditLogIds: Array.from(new Set([...patch.auditLogs.map((audit) => audit.id), ...changedIds("audit_logs")]))
+    });
+    setAppData((previous) => ({
+      ...previous,
+      bills: mergeBillsById(delta.bills, previous.bills),
+      payments: mergePaymentsById(delta.payments, previous.payments),
+      sessions: mergeRecordsById(delta.sessions, previous.sessions),
+      sessionPauseLogs: mergeRecordsById(delta.sessionPauseLogs, previous.sessionPauseLogs),
+      customerTabs: mergeRecordsById(delta.customerTabs, previous.customerTabs),
+      inventoryItems: mergeRecordsById(delta.inventoryItems, previous.inventoryItems),
+      customers: mergeRecordsById(delta.customers, previous.customers),
+      stockMovements: mergeRecordsById(delta.stockMovements, previous.stockMovements),
+      auditLogs: mergeRecordsById(delta.auditLogs, previous.auditLogs)
+    }));
+  }
+
   async function commitFinancialCheckoutPatch(patch: FinancialCheckoutPatch): Promise<FinancialCheckoutCommitResult | null> {
     if (!activeUserId || !defaultRemoteDataGateway.commitFinancialCheckout) {
       return null;
@@ -1960,14 +2062,29 @@ export default function App() {
     setRemoteSaving(true);
     try {
       const result = await defaultRemoteDataGateway.commitFinancialCheckout(patch);
-      const nextVersion = result.appStateVersion ?? patch.baseAppStateVersion + 1;
-      remoteVersionRef.current = nextVersion;
-      setRemoteVersion(nextVersion);
+      const nextVersion =
+        result.appStateVersion ??
+        (BACKEND_FEATURE_FLAGS.financialRpcV2 ? remoteVersionRef.current : patch.baseAppStateVersion + 1);
+      if (nextVersion !== remoteVersionRef.current) {
+        remoteVersionRef.current = nextVersion;
+        setRemoteVersion(nextVersion);
+      }
       setRemoteError("");
       setPendingRetryData(null);
+      if (BACKEND_FEATURE_FLAGS.financialRpcV2) {
+        await hydrateNormalizedFinancialDelta(patch, result);
+      }
       return result;
     } catch (error) {
-      await refreshRemoteState({ keepUser: true });
+      if (!BACKEND_FEATURE_FLAGS.financialRpcV2) {
+        await refreshRemoteState({ keepUser: true });
+      } else {
+        try {
+          await hydrateNormalizedFinancialDelta(patch);
+        } catch (hydrationError) {
+          console.warn("Unable to hydrate the affected financial rows after checkout failure.", hydrationError);
+        }
+      }
       setRemoteError(error instanceof Error ? error.message : "Could not issue the bill. Please check the latest data and try again.");
       setPendingRetryData(null);
       throw error;
@@ -1987,14 +2104,29 @@ export default function App() {
     setRemoteSaving(true);
     try {
       const result = await defaultRemoteDataGateway.commitFinancialAdjustment(patch);
-      const nextVersion = result.appStateVersion ?? patch.baseAppStateVersion + 1;
-      remoteVersionRef.current = nextVersion;
-      setRemoteVersion(nextVersion);
+      const nextVersion =
+        result.appStateVersion ??
+        (BACKEND_FEATURE_FLAGS.financialRpcV2 ? remoteVersionRef.current : patch.baseAppStateVersion + 1);
+      if (nextVersion !== remoteVersionRef.current) {
+        remoteVersionRef.current = nextVersion;
+        setRemoteVersion(nextVersion);
+      }
       setRemoteError("");
       setPendingRetryData(null);
+      if (BACKEND_FEATURE_FLAGS.financialRpcV2) {
+        await hydrateNormalizedFinancialDelta(patch, result);
+      }
       return result;
     } catch (error) {
-      await refreshRemoteState({ keepUser: true });
+      if (!BACKEND_FEATURE_FLAGS.financialRpcV2) {
+        await refreshRemoteState({ keepUser: true });
+      } else {
+        try {
+          await hydrateNormalizedFinancialDelta(patch);
+        } catch (hydrationError) {
+          console.warn("Unable to hydrate the affected rows after financial adjustment failure.", hydrationError);
+        }
+      }
       setRemoteError(error instanceof Error ? error.message : "Could not save the financial update. Please check the latest data and try again.");
       setPendingRetryData(null);
       throw error;
@@ -2025,6 +2157,9 @@ export default function App() {
       return false;
     }
 
+    const mutationKey = `${kind}:${entityType}:${entityId}`;
+    const mutationId = financialAdjustmentMutationIdsRef.current.get(mutationKey) ?? createId("financial-adjustment");
+    financialAdjustmentMutationIdsRef.current.set(mutationKey, mutationId);
     const patch = buildFinancialAdjustmentPatch({
       baseAppData,
       nextAppData,
@@ -2034,7 +2169,7 @@ export default function App() {
       baseVersion: remoteVersionRef.current,
       createdAt: new Date().toISOString(),
       userId: activeUser?.id ?? activeUserId ?? "",
-      mutationId: createId("financial-adjustment")
+      mutationId
     });
     if (patch.bills.length === 0) {
       return false;
@@ -2044,7 +2179,10 @@ export default function App() {
       await runBlockingAction(label, async () => {
         await commitFinancialAdjustmentPatch(patch);
         skipRemotePersistRef.current = true;
-        setAppData(normalizeAppDataCustomers(nextAppData));
+        if (!BACKEND_FEATURE_FLAGS.financialRpcV2) {
+          setAppData(normalizeAppDataCustomers(nextAppData));
+        }
+        financialAdjustmentMutationIdsRef.current.delete(mutationKey);
         onSuccess?.(nextAppData);
       });
       return true;
@@ -3223,19 +3361,18 @@ export default function App() {
         customerName: name,
         customerPhone: phone
       });
+      skipRemotePersistRef.current = true;
       setAppData((previous) => ({
         ...previous,
         bills: replacePendingBillsForCustomer(previous.bills, freshPendingBills, customerId, name, phone)
       }));
       return freshPendingBills;
     } catch (error) {
-      if (localPendingBills.length > 0) {
-        return localPendingBills;
-      }
       throw new Error(
         error instanceof Error
           ? `Unable to verify pending bills: ${error.message}`
-          : "Unable to verify pending bills from the backend."
+          : "Unable to verify pending bills from the backend.",
+        { cause: error }
       );
     }
   }
@@ -3591,13 +3728,29 @@ export default function App() {
       window.alert("Pause intervals cannot overlap.");
       return;
     }
-    void commitAppDataChange("Saving pause log...", (draft) => {
-      const entry = draft.sessionPauseLogs.find((e) => e.id === logId);
-      if (!entry) return false;
-      if (patch.pausedAt) entry.pausedAt = new Date(patch.pausedAt).toISOString();
-      if (patch.resumedAt !== undefined) entry.resumedAt = patch.resumedAt ? new Date(patch.resumedAt).toISOString() : undefined;
-      addAuditLog(draft, activeUser.id, "pause_log_edited", "session", log.sessionId, `Edited pause log entry for ${session.stationNameSnapshot}.`);
-    }, () => setEditingPauseLogId(null));
+    const pauseLog = {
+      ...log,
+      pausedAt: patch.pausedAt ? new Date(patch.pausedAt).toISOString() : log.pausedAt,
+      resumedAt: patch.resumedAt !== undefined
+        ? patch.resumedAt ? new Date(patch.resumedAt).toISOString() : undefined
+        : log.resumedAt
+    };
+    const auditLog = {
+      id: createId("audit"),
+      action: "pause_log_edited",
+      entityType: "session",
+      entityId: log.sessionId,
+      message: `Edited pause log entry for ${session.stationNameSnapshot}.`,
+      createdAt: new Date().toISOString(),
+      userId: activeUser.id
+    };
+    commitOperationalChange(createOperationalMutation(
+      "editPauseLog",
+      "Saving pause log",
+      "session",
+      log.sessionId,
+      { sessionId: log.sessionId, pauseLog, auditLog }
+    ), () => setEditingPauseLogId(null));
   }
 
   function deletePauseLogEntry(logId: string) {
@@ -3606,18 +3759,22 @@ export default function App() {
     if (!log) return;
     const session = appData.sessions.find((entry) => entry.id === log.sessionId);
     if (!session) return;
-    const isOpenPause = !log.resumedAt;
-    void commitAppDataChange("Deleting pause log...", (draft) => {
-      draft.sessionPauseLogs = draft.sessionPauseLogs.filter((entry) => entry.id !== logId);
-      const draftSession = draft.sessions.find((entry) => entry.id === log.sessionId);
-      if (draftSession) {
-        draftSession.pauseLogIds = draftSession.pauseLogIds.filter((id) => id !== logId);
-        if (isOpenPause && draftSession.status === "paused") {
-          draftSession.status = "active";
-        }
-      }
-      addAuditLog(draft, activeUser.id, "pause_log_deleted", "session", log.sessionId, `Deleted pause log entry for ${session.stationNameSnapshot}.`);
-    }, () => setPauseLogDeleteConfirmId(null));
+    const auditLog = {
+      id: createId("audit"),
+      action: "pause_log_deleted",
+      entityType: "session",
+      entityId: log.sessionId,
+      message: `Deleted pause log entry for ${session.stationNameSnapshot}.`,
+      createdAt: new Date().toISOString(),
+      userId: activeUser.id
+    };
+    commitOperationalChange(createOperationalMutation(
+      "deletePauseLog",
+      "Deleting pause log",
+      "session",
+      log.sessionId,
+      { sessionId: log.sessionId, pauseLogId: logId, auditLog }
+    ), () => setPauseLogDeleteConfirmId(null));
   }
 
   function addItemToSession(sessionId: string) {
@@ -3903,6 +4060,7 @@ export default function App() {
     setIsHopMode(false);
     setCheckoutState({
       mode: "session",
+      mutationId: createId("financial"),
       sessionId,
       closedAt,
       sessionStartedAt: session.startedAt,
@@ -4473,6 +4631,7 @@ export default function App() {
     }
     setCheckoutState({
       mode: "customer_tab",
+      mutationId: createId("financial"),
       customerTabId: selectedCustomerTab.id,
       customerId: selectedCustomerTab.customerId,
       customerName: selectedCustomerTab.customerName,
@@ -4527,6 +4686,7 @@ export default function App() {
     });
     setCheckoutState({
       mode: "customer_tab",
+      mutationId: createId("financial"),
       customerTabId: tab.id,
       customerId: tab.customerId,
       customerName: tab.customerName,
@@ -4763,16 +4923,22 @@ export default function App() {
     const detachedSessionId = lastHoppedSessionId;
     discardFailedContinuationStart(detachedSessionId);
     const hoppedSession = getSessionById(detachedSessionId);
-    void commitAppDataChange("Detaching continuation...", (draft) => {
-      addAuditLog(
-        draft,
-        activeUser.id,
-        "hop_continuation_detached",
-        "session",
-        detachedSessionId,
-        `Detached post-hop continuation${hoppedSession ? ` from ${hoppedSession.stationNameSnapshot}` : ""}.`
-      );
-    }, () => {
+    const auditLog = {
+      id: createId("audit"),
+      action: "hop_continuation_detached",
+      entityType: "session",
+      entityId: detachedSessionId,
+      message: `Detached post-hop continuation${hoppedSession ? ` from ${hoppedSession.stationNameSnapshot}` : ""}.`,
+      createdAt: new Date().toISOString(),
+      userId: activeUser.id
+    };
+    commitOperationalChange(createOperationalMutation(
+      "recordSessionAudit",
+      "Detaching continuation",
+      "session",
+      detachedSessionId,
+      { auditLog }
+    ), () => {
       setLastHoppedSessionId(null);
       setPostHopContinuationMode("gaming");
       setPostHopCustomerLocked(false);
@@ -4948,6 +5114,7 @@ export default function App() {
     setReplacementItemForm({ sellableOptionId: "", quantity: 1 });
     setCheckoutState({
       mode: "bill_replacement",
+      mutationId: createId("financial"),
       replacementBillId: billId,
       customerId: bill.customerId,
       customerName: bill.customerName ?? "",
@@ -5645,6 +5812,9 @@ export default function App() {
       if (billStatus === "pending") {
         addAuditLog(draft, activeUser.id, "bill_pending", "bill", billId, `${billNumber} issued as pending (due Rs ${billAmountDue.toFixed(2)}).`);
       }
+    let confirmedReceiptBill: Bill = issuedBill;
+    let confirmedReceiptBills = nextAppData.bills;
+    let confirmedReceiptPayments = nextAppData.payments;
     if (backendConfigured) {
       const financialRpcMode =
         defaultRemoteDataGateway.commitFinancialCheckout &&
@@ -5671,11 +5841,25 @@ export default function App() {
           baseVersion,
           createdAt: issuedAt,
           userId: activeUser?.id ?? activeUserId ?? "",
-          mutationId: createId("financial")
+          mutationId: checkoutState.mutationId ?? createId("financial")
         });
         const financialRpcStartedAt = Date.now();
         try {
           const financialResult = await commitFinancialCheckoutPatch(financialPatch);
+          if (BACKEND_FEATURE_FLAGS.financialRpcV2 && !financialResult?.canonicalBill) {
+            throw new Error("The server confirmed checkout without returning the canonical bill. Receipt generation was stopped.");
+          }
+          if (BACKEND_FEATURE_FLAGS.financialRpcV2 && financialResult?.canonicalBill) {
+            confirmedReceiptBill = financialResult.canonicalBill;
+            confirmedReceiptBills = mergeBillsById(
+              [financialResult.canonicalBill],
+              nextAppData.bills.filter((bill) => bill.id !== issuedBill.id)
+            );
+            confirmedReceiptPayments = mergePaymentsById(
+              financialResult.canonicalPayments ?? [],
+              nextAppData.payments.filter((payment) => payment.billId !== issuedBill.id)
+            );
+          }
           recordCheckoutTelemetrySample({
             stage: "financial_rpc",
             mode: financialRpcMode,
@@ -5704,20 +5888,22 @@ export default function App() {
         await saveRemoteSnapshot(nextAppData, baseVersion, false, "Issuing bill");
       }
       skipRemotePersistRef.current = true;
-      setAppData(normalizeAppDataCustomers(nextAppData));
+      if (!BACKEND_FEATURE_FLAGS.financialRpcV2) {
+        setAppData(normalizeAppDataCustomers(nextAppData));
+      }
     } else {
       setAppData(normalizeAppDataCustomers(nextAppData));
     }
 
-    setSelectedReceiptBillId(billId);
+    setSelectedReceiptBillId(confirmedReceiptBill.id);
     setCheckoutState(null);
     setManageSessionId(null);
     setSelectedCustomerTabId(null);
     setCustomerTabDraft({ customerId: undefined, customerName: "", customerPhone: "" });
     setReplacementItemForm({ sellableOptionId: "", quantity: 1 });
     setLastHoppedSessionId(null);
-    openReceiptWindow(nextAppData.businessProfile, issuedBill, nextAppData.bills, nextAppData.payments);
-    downloadReceiptPdf(nextAppData.businessProfile, issuedBill, nextAppData.bills, nextAppData.payments);
+    openReceiptWindow(nextAppData.businessProfile, confirmedReceiptBill, confirmedReceiptBills, confirmedReceiptPayments);
+    downloadReceiptPdf(nextAppData.businessProfile, confirmedReceiptBill, confirmedReceiptBills, confirmedReceiptPayments);
     recordCheckoutTelemetrySample({
       stage: "checkout_total",
       mode: checkoutTelemetryMode,
@@ -6243,16 +6429,18 @@ export default function App() {
           id: editUserDraft.id,
           name: nextName,
           username: nextUsername,
-          role: editUserDraft.role
+          role: editUserDraft.role,
+          tabPermissions: nextTabPermissions
         });
-        const snapshot = await defaultRemoteDataGateway.loadAppDataSnapshot();
-        const nextAppData = normalizeAppDataCustomers(snapshot.appData);
-        const user = nextAppData.users.find((u) => u.id === editUserDraft.id);
-        if (user) {
-          user.tabPermissions = nextTabPermissions;
-        }
-        await saveRemoteSnapshot(nextAppData, snapshot.version, false, "Updating user permissions");
+        const nextAppData = cloneValue(appDataRef.current);
+        const user = nextAppData.users.find((entry) => entry.id === editUserDraft.id);
+        if (!user) throw new Error("Updated user could not be reconciled locally.");
+        user.name = nextName;
+        user.username = nextUsername;
+        user.role = editUserDraft.role;
+        user.tabPermissions = nextTabPermissions;
         skipRemotePersistRef.current = true;
+        appDataRef.current = nextAppData;
         setAppData(nextAppData);
         setEditUserDraft(null);
       }).catch((error: unknown) => {
@@ -6694,13 +6882,25 @@ export default function App() {
           relatedBillId: bill.id
         });
       }
+      addAuditLog(
+        draft,
+        activeUser.id,
+        refund ? "bill_refunded" : "bill_voided",
+        "bill",
+        bill.id,
+        `${refund ? "Refunded" : "Voided"} ${bill.billNumber}. Reason: ${cleanReason}.`
+      );
     });
   }
 
   const normalizedBillRegisterDisplayEnabled =
-    normalizedBillHistoryReadsEnabled && activeTab === "bills" && !normalizedBillRegisterState.error;
-  const billRegisterBills = normalizedBillRegisterDisplayEnabled ? normalizedBillRegisterState.bills : appData.bills;
-  const billRegisterPayments = normalizedBillRegisterDisplayEnabled ? normalizedBillRegisterState.payments : appData.payments;
+    normalizedBillHistoryReadsEnabled &&
+    activeTab === "bills" &&
+    normalizedBillRegisterState.loaded &&
+    !normalizedBillRegisterState.error &&
+    normalizedBillRegisterState.queryKey === normalizedBillRegisterQueryKey;
+  const billRegisterBills = normalizedBillHistoryReadsEnabled ? normalizedBillRegisterState.bills : appData.bills;
+  const billRegisterPayments = normalizedBillHistoryReadsEnabled ? normalizedBillRegisterState.payments : appData.payments;
   const billRegisterBusinessDates = normalizedBillRegisterDisplayEnabled
     ? billRegisterBills.reduce<Record<string, string>>((dates, bill) => {
         dates[bill.id] = getBillBusinessDate(bill);
@@ -6715,12 +6915,8 @@ export default function App() {
         return datesByBill;
       }, {})
     : billPaymentBusinessDates;
-  const billRegisterReceiptBills = normalizedBillRegisterDisplayEnabled
-    ? mergeBillsById(billRegisterBills, appData.bills)
-    : appData.bills;
-  const billRegisterReceiptPayments = normalizedBillRegisterDisplayEnabled
-    ? mergePaymentsById(billRegisterPayments, appData.payments)
-    : appData.payments;
+  const billRegisterReceiptBills = normalizedBillHistoryReadsEnabled ? billRegisterBills : appData.bills;
+  const billRegisterReceiptPayments = normalizedBillHistoryReadsEnabled ? billRegisterPayments : appData.payments;
   const selectedReceiptBill =
     billRegisterBills.find((bill) => bill.id === selectedReceiptBillId) ??
     appData.bills.find((bill) => bill.id === selectedReceiptBillId) ??
@@ -7453,10 +7649,9 @@ export default function App() {
               inventoryReportReadsEnabled
                 ? {
                     enabled: true,
+                    ready: inventoryReportDataReady,
                     loading: inventoryReportSummaryState.loading,
                     error: inventoryReportSummaryState.error,
-                    usingCachedData: inventoryReportBackendUsingCachedData,
-                    usingFallback: inventoryReportBackendUsingFallback,
                     onRefresh: refreshInventoryReport
                   }
                 : undefined
@@ -7525,6 +7720,7 @@ export default function App() {
               normalizedBillHistoryReadsEnabled
                 ? {
                     enabled: true,
+                    ready: normalizedBillRegisterDisplayEnabled,
                     loading: normalizedBillRegisterState.loading,
                     loadingMore: normalizedBillRegisterState.loadingMore,
                     error: normalizedBillRegisterState.error,
@@ -7594,15 +7790,17 @@ export default function App() {
               analyticsSummaryReadsEnabled
                 ? {
                     enabled: true,
-                    loading: analyticsSummaryState.loading,
-                    error: analyticsSummaryState.error,
+                    ready: financialReportDataReady,
+                    loading: financialReportLoading,
+                    error: financialReportError,
                     onRefresh: refreshNormalizedReport
                   }
                 : normalizedReportReadsEnabled
                 ? {
                     enabled: true,
-                    loading: normalizedReportState.loading,
-                    error: normalizedReportState.error,
+                    ready: financialReportDataReady,
+                    loading: financialReportLoading,
+                    error: financialReportError,
                     onRefresh: refreshNormalizedReport
                   }
                 : undefined
@@ -7640,6 +7838,17 @@ export default function App() {
             onEditCustomerProfileDraftChange={setEditCustomerProfileDraft}
             onBeginEditCustomerProfile={beginEditCustomerProfile}
             onSaveCustomerProfile={saveCustomerProfile}
+            normalizedHistory={
+              normalizedCustomerHistoryReadsEnabled
+                ? {
+                    enabled: true,
+                    ready: normalizedCustomerHistoryReady,
+                    loading: normalizedCustomerHistoryState.loading,
+                    error: normalizedCustomerHistoryState.error,
+                    onRefresh: () => setNormalizedCustomerHistoryRefreshSignal((value) => value + 1)
+                  }
+                : undefined
+            }
           />
         )}
 

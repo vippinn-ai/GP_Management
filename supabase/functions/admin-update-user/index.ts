@@ -17,9 +17,16 @@ Deno.serve(async (request) => {
   if ("error" in guard) return guard.error;
 
   try {
-    const { id, name, username, role } = await request.json();
+    const { id, name, username, role, tabPermissions } = await request.json();
     if (!id || !name?.trim() || !username?.trim() || !role) {
       return jsonResponse({ error: "Missing required user fields." }, 400, origin);
+    }
+    const allowedTabs = new Set(["dashboard", "sale", "inventory", "bills", "reports", "customers", "settings", "users"]);
+    if (tabPermissions !== undefined && (
+      !Array.isArray(tabPermissions)
+      || tabPermissions.some((tab) => typeof tab !== "string" || !allowedTabs.has(tab))
+    )) {
+      return jsonResponse({ error: "Invalid tab permissions." }, 400, origin);
     }
 
     const { adminClient } = guard;
@@ -47,7 +54,12 @@ Deno.serve(async (request) => {
 
     const { error } = await adminClient
       .from("profiles")
-      .update({ name: name.trim(), username: username.trim(), role })
+      .update({
+        name: name.trim(),
+        username: username.trim(),
+        role,
+        tab_permissions: Array.isArray(tabPermissions) && tabPermissions.length > 0 ? tabPermissions : null
+      })
       .eq("id", id);
 
     if (error) {

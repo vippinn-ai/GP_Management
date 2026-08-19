@@ -2,9 +2,11 @@ import { useState } from "react";
 import type { Customer } from "../types";
 
 export interface CustomerAutocompleteSuggestionProps {
+  serverSuggestionsEnabled?: boolean;
   suggestionCustomers?: Customer[];
   suggestionQuery?: string;
   suggestionsLoading?: boolean;
+  suggestionsError?: string;
   onSuggestionQueryChange?: (query: string) => void;
 }
 
@@ -26,9 +28,10 @@ export function CustomerAutocompleteFields(props: {
   const normalizedQuery = activeQuery.trim().replace(/\s+/g, " ").toLowerCase();
   const normalizedPhoneQuery = (activeQuery.match(/[\d+]+/g)?.join("") ?? "").replace(/(?!^)\+/g, "");
   const serverSuggestionsMatch = props.suggestionQuery?.trim() === activeQuery.trim();
+  const useServerSuggestions = Boolean(props.serverSuggestionsEnabled || props.suggestionCustomers !== undefined);
   const suggestions = (() => {
-    if (props.suggestionCustomers && serverSuggestionsMatch) {
-      return props.suggestionCustomers;
+    if (useServerSuggestions) {
+      return props.suggestionCustomers && serverSuggestionsMatch ? props.suggestionCustomers : [];
     }
     if (!normalizedQuery && !normalizedPhoneQuery) {
       return [] as Customer[];
@@ -57,9 +60,13 @@ export function CustomerAutocompleteFields(props: {
   const canShowLoadingState = Boolean(
     props.suggestionsLoading && serverSuggestionsMatch && activeSuggestionField && (normalizedQuery || normalizedPhoneQuery)
   );
-  const suggestionList = activeSuggestionField && (suggestions.length > 0 || canShowLoadingState) ? (
+  const canShowErrorState = Boolean(
+    useServerSuggestions && props.suggestionsError && activeSuggestionField && (normalizedQuery || normalizedPhoneQuery)
+  );
+  const suggestionList = activeSuggestionField && (suggestions.length > 0 || canShowLoadingState || canShowErrorState) ? (
     <div className="customer-suggestion-list">
       {canShowLoadingState && <div className="customer-suggestion muted">Searching customers...</div>}
+      {canShowErrorState && <div className="customer-suggestion muted">Customer search unavailable. Please retry typing.</div>}
       {suggestions.map((customer) => (
         <button
           key={customer.id}

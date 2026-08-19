@@ -8,35 +8,16 @@ create or replace function public.resolve_operational_inventory_item(
   target_item_id text
 )
 returns table(item_name text, stock_qty numeric)
-language plpgsql
+language sql
 security definer
 set search_path = public
 as $$
-declare
-  v_state_item jsonb;
-begin
-  select item.value
-  into v_state_item
-  from public.app_state
-  cross join lateral jsonb_array_elements(coalesce(app_state.data->'inventoryItems', '[]'::jsonb)) as item(value)
-  where app_state.id = 'primary'
-    and item.value->>'id' = target_item_id
-  limit 1;
-
-  if v_state_item is not null then
-    item_name := coalesce(nullif(v_state_item->>'name', ''), 'Inventory item');
-    stock_qty := coalesce(nullif(v_state_item->>'stockQty', '')::numeric, 0);
-    return next;
-    return;
-  end if;
-
-  return query
   select inventory_items.name, inventory_items.stock_qty
   from public.inventory_items
   where inventory_items.organization_id = target_organization_id
     and inventory_items.id = target_item_id
-  limit 1;
-end;
+  limit 1
+  for update;
 $$;
 
 revoke all on function public.resolve_operational_inventory_item(text, text) from public;
