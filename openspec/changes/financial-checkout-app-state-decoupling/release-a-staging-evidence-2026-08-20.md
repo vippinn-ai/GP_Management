@@ -131,17 +131,25 @@ The previously deployed edge source was retained in evidence with SHA-256 `5b061
 
 The actual ignored `.env.staging` boolean flag capture was reviewed and hashed. Its SHA-256 is `cc6cf00348ed6f4e61971438d04b24254a36e3fbf8c301d4847a49fb6d537942`; all required normalized/operational read and write flags are `true`, while `VITE_BACKEND_FINANCIAL_RPC_V2=false`.
 
-The staging frontend build passed from clean commit `0af9c7b0cb35e521fd35bff9ba7980d792cf100e` with the existing large-chunk warning. The Cloudflare upload did not start because the non-interactive shell has no `CLOUDFLARE_API_TOKEN`; Wrangler exited before changing the deployment. The in-app Cloudflare dashboard is open at its login page for the operator to authenticate. Functional, two-browser, and soak gates remain pending until the frontend is deployed.
+The first staging frontend build passed from clean application commit `0af9c7b0cb35e521fd35bff9ba7980d792cf100e` with the existing large-chunk warning, but its Cloudflare upload did not start because the stored Wrangler OAuth credential had expired and its refresh request returned HTTP 400. Wrangler exited before changing the deployment. The operator renewed the existing Wrangler OAuth authorization without exposing an API token.
+
+The reviewed staging build was then repeated successfully from evidence checkpoint `0cc3f15` (application source unchanged from `0af9c7b`). Wrangler uploaded three modified assets and deployed only worker `gp-management-staging-pages`:
+
+- URL: `https://gp-management-staging-pages.breakperfectgaminglounge.workers.dev`.
+- Cloudflare version ID: `8bd7fd6d-9084-428f-859d-26b04123135c`.
+- Financial v2 build flag: `false`.
+- Production worker `management` was not targeted or changed.
+
+A fresh, uncached in-app browser tab loaded the deployed staging URL successfully with title `Game Parlour Management System` and the expected BreakPerfect sign-in screen. Authenticated, two-browser, mutation, fail-closed, and soak gates remain pending.
 
 ## Current gate decision
 
-Database reconstruction and additive Release A installation are complete and clean. Frontend deployment is blocked only on Cloudflare authentication. No functional/soak claim and no production promotion claim is made.
+Database reconstruction, additive Release A installation, and staging frontend deployment are complete and clean. The unauthenticated load smoke passed. No authenticated functional/soak claim and no production promotion claim is made.
 
 ## Remaining gated work
 
-1. Authenticate the in-app Cloudflare staging account and deploy the already-built Release A frontend with the reviewed flags.
-2. Hard-refresh independent staging browsers and execute Gate 5 functional/two-browser cases.
-3. Repeat post-functional parity, actors, errors, hashes, and deployment captures.
-4. Complete the full representative staging business-day soak and independent sign-off.
+1. Authenticate independent staging application browsers and execute Gate 5 functional/two-browser cases.
+2. Repeat post-functional parity, actors, errors, hashes, and deployment captures.
+3. Complete the full representative staging business-day soak and independent sign-off.
 
 No production action is authorized by this evidence.
