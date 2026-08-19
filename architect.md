@@ -168,8 +168,9 @@ profiles (
 )
 ```
 
-#### `app_state` table
-Stores the **entire application data** as a single JSON blob.
+#### `app_state` compatibility table
+
+Historically this row stored the entire application data as a single JSON blob. It remains installed for local/legacy-v1 compatibility and rollback while the normalized-read cutover is gated. When normalized bootstrap is enabled it is not a financial source of truth, generic full-state saves are blocked, and financial v2 RPCs must not read, lock, expand, patch, or update it.
 
 ```sql
 app_state (
@@ -181,9 +182,9 @@ app_state (
 )
 ```
 
-### The AppData JSON Shape
+### The in-memory `AppData` shape
 
-The `data` column in `app_state` is a JSON object with these top-level arrays:
+The React application retains one compatible `AppData` shape. Legacy mode hydrates it from `app_state.data`; normalized mode reconstructs it from purpose-built normalized readers and merges compact by-ID realtime deltas:
 
 ```
 AppData {
@@ -206,11 +207,11 @@ AppData {
 }
 ```
 
-> **Note:** `users` are intentionally NOT stored in the `data` column. They are loaded separately from the `profiles` table and merged into `AppData` in memory. This prevents user credentials from ever appearing in the JSON blob.
+> **Note:** `users` are loaded from `profiles` and merged into `AppData` in memory. Normalized operational and financial data is stored in organization-scoped tables for sessions, tabs, catalog, bills, payments, inventory, audits, and related entities.
 
-### Versioned Optimistic Concurrency
+### Legacy-v1 versioned optimistic concurrency
 
-When saving, the app sends:
+In legacy/app-state mode, saving uses:
 ```
 UPDATE app_state SET data = ?, version = current + 1
 WHERE id = 'primary' AND version = current
@@ -293,7 +294,7 @@ Users log in with a **username** (not email). Supabase Auth requires email. The 
 
 ## Data Sync Architecture
 
-### How data flows between browser and database
+### How normalized data flows between browser and database
 
 ```
 App starts
@@ -302,49 +303,45 @@ App starts
 Restore session from localStorage (no network call)
     │
     ▼
-Load app_state from Supabase (single SELECT)
-Load profiles from Supabase (single SELECT)
+Load normalized bootstrap readers and profiles
     │
     ▼
 Merge into AppData → render UI
     │
     ▼
-User makes a change (e.g. starts a session)
+User makes a change (for example, starts a session)
     │
     ▼
-State updated immediately in React (optimistic)
+Call the purpose-built operational, admin, or financial RPC
     │
-    ▼ (debounced 1.2 seconds)
-    ▼
-Save to Supabase (UPDATE app_state SET data = ?, version = current + 1
-                  WHERE version = current)
+Server validates membership, locks the affected normalized rows, and commits atomically
     │
-    ├─ Success → update local version counter
-    └─ Conflict → show error banner "Data changed in another tab"
+    ├─ Success → merge the canonical normalized result into AppData
+    └─ Failure → keep financial views fail-closed and offer a bounded retry/reconciliation path
 ```
 
 ### Realtime sync across tabs
 
 ```
-Supabase Realtime listens on app_state table for any UPDATE event
+Supabase Realtime listens for compact organization-scoped operational events
     │
     ▼
-Another browser tab saves a change
+Another browser commits a purpose-built mutation
     │
     ▼
-Supabase broadcasts the change to all subscribers
+Supabase broadcasts changed entity IDs
     │
     ▼
 This tab receives the notification
     │
     ▼
-Fetches fresh app_state from database
+Fetches the affected normalized rows by ID
     │
     ▼
 Updates local React state → UI re-renders with latest data
 ```
 
-This means two staff members on different machines will see each other's actions within ~1 second.
+Legacy mode continues to use the `app_state` subscription. Normalized mode must never fall back to that snapshot after a normalized read error.
 
 ### The `skipRemotePersistRef` flag
 
@@ -542,7 +539,7 @@ manager     → dashboard, sale, bills, inventory, reports, settings
 receptionist → dashboard, sale, bills
 ```
 
-Admins can grant **additive** extra tab access to any individual user via the Users panel. These are stored as `tabPermissions?: TabId[]` on the user record (in `app_state.data.users`). The field stores only the *extra* grants — tabs already in the role default are never stored here.
+Admins can grant **additive** extra tab access to any individual user via the Users panel. These are exposed as `tabPermissions?: TabId[]` on the in-memory user record and stored in `profiles.tab_permissions`. The field stores only the *extra* grants—tabs already in the role default are never stored here.
 
 At runtime, `visibleTabs` is computed by merging role defaults with any extra grants:
 ```typescript
@@ -552,19 +549,19 @@ visibleTabs = [...roleTabs, ...extras];
 
 Panel rendering and nav tabs both use `canAccessTab(tabId)` — a function derived from `visibleTabs`. Write-action permissions (`canEditInventory`, `canEditSettings`, etc.) remain role-gated regardless of tab grants.
 
-In backend mode, `tabPermissions` is saved to the `app_state` JSON blob (not the `profiles` table) via `mutateAppData` after the `adminUpdateUserRemote` call completes.
+In backend mode, `tabPermissions` is saved with the authenticated admin profile update. It does not require or trigger an `app_state` rewrite.
 
 ---
 
 ## Key Design Decisions
 
-### 1. Single JSON blob for all app data
+### 1. Compatible in-memory model with normalized persistence
 
-**Decision:** Store all app data (stations, bills, inventory, sessions...) as one JSONB column in a single `app_state` row, rather than normalised tables.
+**Current decision:** Preserve the existing `AppData` frontend contract and local-browser mode while normalized organization-scoped tables become the backend source of truth. Keep `app_state` only as a gated legacy-v1 compatibility path until its separately tested retirement.
 
-**Why:** The app was built for a single location with one active user at a time. A single-row approach eliminates complex SQL, JOIN queries, migration management, and RLS rules for dozens of tables. The entire app state can be loaded in one query.
+**Why:** The original single-row design simplified the first release, but its growing JSON payload serialized unrelated writers and caused checkout latency. Normalized readers and purpose-built RPCs isolate changes, preserve atomic billing rules, and support compact realtime refreshes.
 
-**Trade-off:** As data grows (many months of bills + sessions), the JSON blob gets large. Reads and writes always transfer the full dataset. This will become a performance issue eventually — the planned Phase 6 refactor will address this by either paginating history or archiving old records.
+**Trade-off:** The staged migration temporarily maintains both contracts. Feature-flag dependencies, parity checks, fail-closed normalized reads, and the v1 fallback must remain until staging and production evidence supports removal.
 
 ### 2. Username-based login (not email)
 

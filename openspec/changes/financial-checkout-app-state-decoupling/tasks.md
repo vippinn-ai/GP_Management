@@ -4,8 +4,9 @@
 
 - [x] Preserve pre-change WIP in commit `63c2b8a`.
 - [x] Create `codex/checkout-app-state-decoupling`.
-- [ ] Complete review manifest and traceability matrix.
+- [x] Complete reproducible per-file review manifest and source-of-truth traceability matrix.
 - [x] Resolve the current lint error; local lint has zero errors and five pre-existing warnings (no new warning gate).
+- [x] Prepare the gated Release A staging installation/verification/rollback runbook.
 - [ ] Capture staging schema/function/grant/parity evidence.
 
 ## Release A: normalized reads
@@ -15,7 +16,7 @@
 - [x] Make normalized inventory authoritative in operational helpers.
 - [x] Prove generic full-state saves remain blocked in normalized bootstrap.
 - [x] Prove compact realtime closes/removes live entities and merges financial overlays by ID.
-- [ ] Complete scoped read coverage for downstream screens/actions.
+- [x] Complete scoped read coverage for downstream screens/actions, including historical Bill Register action hydration and normalized customer visit activity.
 
 ## Release B: financial v2
 
@@ -28,7 +29,7 @@
 
 ## Verification
 
-- [x] Local unit and characterization tests pass (29 files / 364 tests on 2026-08-20).
+- [x] Local unit and characterization tests pass (30 files / 372 tests on 2026-08-20).
 - [ ] SQL transaction/security/idempotency/concurrency tests pass.
 - [ ] Two-browser staging test passes.
 - [ ] Performance thresholds pass on production-sized staging data.

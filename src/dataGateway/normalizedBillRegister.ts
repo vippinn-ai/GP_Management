@@ -59,6 +59,7 @@ export interface NormalizedBillRegisterQuery {
 
 export interface NormalizedBillRegisterPage {
   bills: Bill[];
+  relatedBills: Bill[];
   payments: Payment[];
   nextCursor?: NormalizedBillRegisterCursor;
   hasMore: boolean;
@@ -397,8 +398,21 @@ export function mapNormalizedPayment(row: PaymentRow): Payment {
   };
 }
 
+export function collectReceiptRelatedBillIds(
+  pageRows: Array<{ id: string; replacement_of_bill_id: string | null; replaced_by_bill_id: string | null }>,
+  checkoutRelatedPaymentRows: Array<{ bill_id: string | null }>
+): string[] {
+  const pageBillIds = new Set(pageRows.map((row) => row.id));
+  const candidateIds = [
+    ...pageRows.flatMap((row) => [row.replacement_of_bill_id, row.replaced_by_bill_id]),
+    ...checkoutRelatedPaymentRows.map((row) => row.bill_id)
+  ].filter((id): id is string => typeof id === "string" && id.length > 0);
+  return Array.from(new Set(candidateIds.filter((id) => !pageBillIds.has(id))));
+}
+
 export function buildNormalizedBillRegisterPage(params: {
   billRows: BillRow[];
+  relatedBillRows?: BillRow[];
   lineRows?: BillLineRow[];
   billDiscountRows?: BillDiscountRow[];
   lineDiscountRows?: BillLineDiscountRow[];
@@ -423,9 +437,14 @@ export function buildNormalizedBillRegisterPage(params: {
     })
   );
   const lastRow = pageRows[pageRows.length - 1];
+  const pageBillIds = new Set(pageRows.map((row) => row.id));
+  const relatedBills = (params.relatedBillRows ?? [])
+    .filter((row) => !pageBillIds.has(row.id))
+    .map((row) => mapNormalizedBill(row));
 
   return {
     bills,
+    relatedBills,
     payments,
     hasMore,
     nextCursor:
@@ -489,7 +508,7 @@ export async function loadNormalizedBillRegisterPage(
     return buildNormalizedBillRegisterPage({ billRows, pageSize });
   }
 
-  const [lineRows, billDiscountRows, lineDiscountRows, paymentRows] = await Promise.all([
+  const [lineRows, billDiscountRows, lineDiscountRows, directPaymentRows, checkoutRelatedPaymentRows] = await Promise.all([
     readMany<BillLineRow>(
       client
         .from("bill_lines")
@@ -525,11 +544,35 @@ export async function loadNormalizedBillRegisterPage(
         .in("bill_id", billIds)
         .order("paid_at", { ascending: true }),
       "loading bill payments"
+    ),
+    readMany<PaymentRow>(
+      client
+        .from("payments")
+        .select(PAYMENT_SELECT_COLUMNS)
+        .eq("organization_id", organizationId)
+        .in("related_checkout_bill_id", billIds)
+        .order("paid_at", { ascending: true }),
+      "loading checkout-related bill payments"
     )
   ]);
+  const paymentRows = Array.from(
+    new Map([...directPaymentRows, ...checkoutRelatedPaymentRows].map((row) => [row.id, row])).values()
+  );
+  const relatedBillIds = collectReceiptRelatedBillIds(pageRows, checkoutRelatedPaymentRows);
+  const relatedBillRows = relatedBillIds.length > 0
+    ? await readMany<BillRow>(
+        client
+          .from("bills")
+          .select(BILL_SELECT_COLUMNS)
+          .eq("organization_id", organizationId)
+          .in("id", relatedBillIds),
+        "loading receipt-related bills"
+      )
+    : [];
 
   return buildNormalizedBillRegisterPage({
     billRows,
+    relatedBillRows,
     lineRows,
     billDiscountRows,
     lineDiscountRows,

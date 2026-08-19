@@ -16,6 +16,7 @@ export {
   type BackendFeatureFlags
 } from "./featureFlags";
 export { appStateRemoteDataGateway } from "./appStateGateway";
+export { mergeNormalizedAppDataOverlay } from "./normalizedGateway";
 export {
   adminDataChangePatchHasChanges,
   adminDataChangePatchHasUnsupportedChanges,
@@ -30,11 +31,15 @@ export {
 } from "./adminDataRpcClient";
 export {
   buildCustomerSearchFilter,
+  buildNormalizedCustomerBillVisitAt,
+  dedupeNormalizedCustomerHistoryPayments,
   loadNormalizedCustomerSearch,
   loadNormalizedCustomerDirectory,
   loadNormalizedCustomerHistoryData,
   mapNormalizedCustomer,
   type NormalizedCustomerHistoryData,
+  type CustomerHistorySessionActivityRow,
+  type CustomerHistoryTabActivityRow,
   type NormalizedCustomerSearchQuery
 } from "./normalizedCustomerSearch";
 export { clearCachedNormalizedOrganizationId } from "./normalizedOrganization";

@@ -3,6 +3,7 @@ import {
   buildBillRegisterCursorFilter,
   buildBillRegisterSearchFilter,
   buildNormalizedBillRegisterPage,
+  collectReceiptRelatedBillIds,
   loadNormalizedPendingBills,
   mapNormalizedBill,
   mapNormalizedBillLine,
@@ -256,9 +257,10 @@ describe("normalized bill register row mapping", () => {
 });
 
 describe("normalized bill register page model", () => {
-  it("returns one extra-row-backed cursor and includes related page rows only", () => {
+  it("keeps receipt-support bills out of displayed page rows while retaining linked details", () => {
     const page = buildNormalizedBillRegisterPage({
       pageSize: 2,
+      relatedBillRows: [createBillRow({ id: "bill-older", bill_number: "BILL-OLDER" })],
       billRows: [
         {
           id: "bill-3",
@@ -374,16 +376,38 @@ describe("normalized bill register page model", () => {
           settlement_group_id: null,
           related_checkout_bill_id: null,
           raw_data: null
+        },
+        {
+          id: "payment-older",
+          bill_id: "bill-older",
+          mode: "upi",
+          amount: 25,
+          paid_at: "2026-06-20T10:01:00.000Z",
+          received_by_user_id: "user-1",
+          settlement_group_id: "settlement-1",
+          related_checkout_bill_id: "bill-2",
+          raw_data: null
         }
       ]
     });
 
     expect(page.bills.map((bill) => bill.id)).toEqual(["bill-3", "bill-2"]);
-    expect(page.payments.map((payment) => payment.id)).toEqual(["payment-1"]);
+    expect(page.relatedBills.map((bill) => bill.id)).toEqual(["bill-older"]);
+    expect(page.payments.map((payment) => payment.id)).toEqual(["payment-1", "payment-older"]);
     expect(page.hasMore).toBe(true);
     expect(page.nextCursor).toEqual({
       issuedAt: "2026-06-20T10:00:00.000Z",
       id: "bill-2"
     });
+  });
+
+  it("collects replacement and previous-due bill IDs without duplicating page bills", () => {
+    expect(collectReceiptRelatedBillIds(
+      [
+        { id: "bill-current", replacement_of_bill_id: "bill-original", replaced_by_bill_id: null },
+        { id: "bill-on-page", replacement_of_bill_id: null, replaced_by_bill_id: "bill-current" }
+      ],
+      [{ bill_id: "bill-old-due" }, { bill_id: "bill-original" }, { bill_id: "bill-on-page" }]
+    )).toEqual(["bill-original", "bill-old-due"]);
   });
 });

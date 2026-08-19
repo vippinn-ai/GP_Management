@@ -60,6 +60,7 @@ import {
   loadNormalizedBillRegisterPage,
   loadNormalizedPendingBills,
   loadNormalizedFinancialDelta,
+  mergeNormalizedAppDataOverlay,
   resolveBackendFeatureFlags,
   type FinancialAdjustmentCommitResult,
   type FinancialAdjustmentKind,
@@ -243,6 +244,7 @@ interface PostHopTabLinkDraft {
 
 interface NormalizedBillRegisterState {
   bills: Bill[];
+  relatedBills: Bill[];
   payments: Payment[];
   nextCursor?: NormalizedBillRegisterCursor;
   hasMore: boolean;
@@ -294,6 +296,7 @@ interface InventoryReportSummaryState {
 function createEmptyNormalizedBillRegisterState(): NormalizedBillRegisterState {
   return {
     bills: [],
+    relatedBills: [],
     payments: [],
     hasMore: false,
     loading: false,
@@ -314,7 +317,7 @@ function createEmptyNormalizedCustomerSearchState(): NormalizedCustomerSearchSta
 }
 
 function createEmptyNormalizedCustomerHistoryState(): NormalizedCustomerHistoryState {
-  return { customers: [], bills: [], payments: [], loading: false, error: "", loaded: false };
+  return { customers: [], bills: [], payments: [], billVisitAt: {}, loading: false, error: "", loaded: false };
 }
 
 function createEmptyNormalizedReportState(): NormalizedReportState {
@@ -1311,6 +1314,9 @@ export default function App() {
     const weekdayTotals = new Map<number, number>();
 
     function getBillVisitAt(bill: Bill) {
+      if (normalizedCustomerHistoryReadsEnabled) {
+        return normalizedCustomerHistoryState.billVisitAt[bill.id] ?? bill.issuedAt;
+      }
       const linkedSession = bill.sessionId
         ? appData.sessions.find((session) => session.id === bill.sessionId)
         : undefined;
@@ -1496,9 +1502,20 @@ export default function App() {
     () => JSON.stringify(normalizedBillRegisterQuery),
     [normalizedBillRegisterQuery]
   );
+  const normalizedBillRegisterQueryKeyRef = useRef(normalizedBillRegisterQueryKey);
+  const normalizedBillRegisterGenerationRef = useRef(0);
+  normalizedBillRegisterQueryKeyRef.current = normalizedBillRegisterQueryKey;
   const handleNormalizedBillRegisterQueryChange = useCallback((query: BillRegisterServerQuery) => {
     const nextKey = JSON.stringify(query);
     setNormalizedBillRegisterQuery((previous) => (JSON.stringify(previous) === nextKey ? previous : query));
+  }, []);
+
+  const hydrateNormalizedBillRegisterPage = useCallback((page: { bills: Bill[]; payments: Payment[] }) => {
+    skipRemotePersistRef.current = true;
+    setAppData((previous) => mergeNormalizedAppDataOverlay(previous, {
+      bills: page.bills,
+      payments: page.payments
+    }));
   }, []);
 
   useEffect(() => {
@@ -1514,7 +1531,7 @@ export default function App() {
       .catch((error: unknown) => {
         if (!cancelled) {
           setNormalizedCustomerHistoryState({
-            customers: [], bills: [], payments: [], loading: false,
+            customers: [], bills: [], payments: [], billVisitAt: {}, loading: false,
             error: error instanceof Error ? error.message : "Unable to load normalized customer history.",
             loaded: false
           });
@@ -1817,6 +1834,7 @@ export default function App() {
       return;
     }
     let cancelled = false;
+    const requestGeneration = ++normalizedBillRegisterGenerationRef.current;
     setNormalizedBillRegisterState((previous) => ({
       ...previous,
       loading: true,
@@ -1830,11 +1848,13 @@ export default function App() {
       limit: BILL_REGISTER_PAGE_SIZE
     })
       .then((page) => {
-        if (cancelled) {
+        if (cancelled || normalizedBillRegisterGenerationRef.current !== requestGeneration) {
           return;
         }
+        hydrateNormalizedBillRegisterPage(page);
         setNormalizedBillRegisterState({
           bills: page.bills,
+          relatedBills: page.relatedBills,
           payments: page.payments,
           nextCursor: page.nextCursor,
           hasMore: page.hasMore,
@@ -1846,12 +1866,13 @@ export default function App() {
         });
       })
       .catch((error: unknown) => {
-        if (cancelled) {
+        if (cancelled || normalizedBillRegisterGenerationRef.current !== requestGeneration) {
           return;
         }
         setNormalizedBillRegisterState((previous) => ({
           ...previous,
           bills: [],
+          relatedBills: [],
           payments: [],
           nextCursor: undefined,
           hasMore: false,
@@ -1872,7 +1893,8 @@ export default function App() {
     canAccessTab,
     normalizedBillHistoryReadsEnabled,
     normalizedBillRegisterQuery,
-    normalizedBillRegisterQueryKey
+    normalizedBillRegisterQueryKey,
+    hydrateNormalizedBillRegisterPage
   ]);
 
   const loadMoreNormalizedBillRegister = useCallback(() => {
@@ -1885,6 +1907,8 @@ export default function App() {
       return;
     }
     const cursor = normalizedBillRegisterState.nextCursor;
+    const requestedQueryKey = normalizedBillRegisterQueryKey;
+    const requestedGeneration = normalizedBillRegisterGenerationRef.current;
     setNormalizedBillRegisterState((previous) => ({ ...previous, loadingMore: true, error: "" }));
     loadNormalizedBillRegisterPage({
       ...normalizedBillRegisterQuery,
@@ -1892,25 +1916,49 @@ export default function App() {
       limit: BILL_REGISTER_PAGE_SIZE
     })
       .then((page) => {
-        setNormalizedBillRegisterState((previous) => ({
-          ...previous,
-          bills: mergeBillsById(page.bills, previous.bills),
-          payments: mergePaymentsById(page.payments, previous.payments),
-          nextCursor: page.nextCursor,
-          hasMore: page.hasMore,
-          loading: false,
-          loadingMore: false,
-          error: "",
-          loaded: true,
-          queryKey: normalizedBillRegisterQueryKey
-        }));
+        if (
+          normalizedBillRegisterQueryKeyRef.current !== requestedQueryKey ||
+          normalizedBillRegisterGenerationRef.current !== requestedGeneration
+        ) {
+          return;
+        }
+        hydrateNormalizedBillRegisterPage(page);
+        setNormalizedBillRegisterState((previous) => {
+          if (previous.queryKey !== requestedQueryKey) {
+            return previous;
+          }
+          return {
+            ...previous,
+            bills: mergeBillsById(page.bills, previous.bills),
+            relatedBills: mergeBillsById(page.relatedBills, previous.relatedBills),
+            payments: mergePaymentsById(page.payments, previous.payments),
+            nextCursor: page.nextCursor,
+            hasMore: page.hasMore,
+            loading: false,
+            loadingMore: false,
+            error: "",
+            loaded: true,
+            queryKey: requestedQueryKey
+          };
+        });
       })
       .catch((error: unknown) => {
-        setNormalizedBillRegisterState((previous) => ({
-          ...previous,
-          loadingMore: false,
-          error: error instanceof Error ? error.message : "Unable to load more normalized bill history."
-        }));
+        if (
+          normalizedBillRegisterQueryKeyRef.current !== requestedQueryKey ||
+          normalizedBillRegisterGenerationRef.current !== requestedGeneration
+        ) {
+          return;
+        }
+        setNormalizedBillRegisterState((previous) => {
+          if (previous.queryKey !== requestedQueryKey) {
+            return previous;
+          }
+          return {
+            ...previous,
+            loadingMore: false,
+            error: error instanceof Error ? error.message : "Unable to load more normalized bill history."
+          };
+        });
       });
   }, [
     normalizedBillHistoryReadsEnabled,
@@ -1918,10 +1966,12 @@ export default function App() {
     normalizedBillRegisterQueryKey,
     normalizedBillRegisterState.loading,
     normalizedBillRegisterState.loadingMore,
-    normalizedBillRegisterState.nextCursor
+    normalizedBillRegisterState.nextCursor,
+    hydrateNormalizedBillRegisterPage
   ]);
 
   const refreshNormalizedBillRegister = useCallback(() => {
+    normalizedBillRegisterGenerationRef.current += 1;
     setNormalizedBillRegisterState((previous) => ({
       ...previous,
       loaded: false,
@@ -2181,6 +2231,9 @@ export default function App() {
         skipRemotePersistRef.current = true;
         if (!BACKEND_FEATURE_FLAGS.financialRpcV2) {
           setAppData(normalizeAppDataCustomers(nextAppData));
+        }
+        if (normalizedBillHistoryReadsEnabled) {
+          refreshNormalizedBillRegister();
         }
         financialAdjustmentMutationIdsRef.current.delete(mutationKey);
         onSuccess?.(nextAppData);
@@ -6915,14 +6968,13 @@ export default function App() {
         return datesByBill;
       }, {})
     : billPaymentBusinessDates;
-  const billRegisterReceiptBills = normalizedBillHistoryReadsEnabled ? billRegisterBills : appData.bills;
+  const billRegisterReceiptBills = normalizedBillHistoryReadsEnabled
+    ? mergeBillsById(normalizedBillRegisterState.relatedBills, billRegisterBills)
+    : appData.bills;
   const billRegisterReceiptPayments = normalizedBillHistoryReadsEnabled ? billRegisterPayments : appData.payments;
-  const selectedReceiptBill =
-    billRegisterBills.find((bill) => bill.id === selectedReceiptBillId) ??
-    appData.bills.find((bill) => bill.id === selectedReceiptBillId) ??
-    billRegisterBills[0] ??
-    appData.bills[0] ??
-    null;
+  const selectedReceiptBill = normalizedBillHistoryReadsEnabled
+    ? billRegisterBills.find((bill) => bill.id === selectedReceiptBillId) ?? billRegisterBills[0] ?? null
+    : appData.bills.find((bill) => bill.id === selectedReceiptBillId) ?? appData.bills[0] ?? null;
   const receiptPreviewModel = selectedReceiptBill
     ? buildReceiptPreviewModel(appData.businessProfile, selectedReceiptBill, billRegisterReceiptBills, billRegisterReceiptPayments)
     : null;

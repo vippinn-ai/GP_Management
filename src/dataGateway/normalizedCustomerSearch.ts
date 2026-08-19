@@ -29,6 +29,17 @@ interface CustomerRow {
   updated_at: string;
 }
 
+export interface CustomerHistorySessionActivityRow {
+  id: string;
+  started_at: string;
+  closed_bill_id: string | null;
+}
+
+export interface CustomerHistoryTabActivityRow {
+  opened_at: string;
+  closed_bill_id: string | null;
+}
+
 export interface NormalizedCustomerSearchQuery {
   organizationId?: string;
   search: string;
@@ -194,6 +205,40 @@ export interface NormalizedCustomerHistoryData {
   customers: Customer[];
   bills: Bill[];
   payments: Payment[];
+  billVisitAt: Record<string, string>;
+}
+
+export function dedupeNormalizedCustomerHistoryPayments(payments: Payment[]): Payment[] {
+  return Array.from(new Map(payments.map((entry) => [entry.id, entry])).values());
+}
+
+export function buildNormalizedCustomerBillVisitAt(
+  bills: Bill[],
+  sessionRows: CustomerHistorySessionActivityRow[],
+  tabRows: CustomerHistoryTabActivityRow[]
+): Record<string, string> {
+  const sessionStartedById = new Map(sessionRows.map((row) => [row.id, row.started_at]));
+  const sessionStartedByBillId = new Map(
+    sessionRows.filter((row) => row.closed_bill_id).map((row) => [row.closed_bill_id!, row.started_at])
+  );
+  const tabOpenedByBillId = new Map(
+    tabRows.filter((row) => row.closed_bill_id).map((row) => [row.closed_bill_id!, row.opened_at])
+  );
+  const missingLinkedSession = bills.find((bill) => bill.sessionId && !sessionStartedById.has(bill.sessionId));
+  if (missingLinkedSession?.sessionId) {
+    throw new Error(
+      `Normalized customer history is missing linked session ${missingLinkedSession.sessionId} for bill ${missingLinkedSession.id}.`
+    );
+  }
+  return Object.fromEntries(
+    bills.map((bill) => [
+      bill.id,
+      (bill.sessionId ? sessionStartedById.get(bill.sessionId) : undefined)
+        ?? tabOpenedByBillId.get(bill.id)
+        ?? sessionStartedByBillId.get(bill.id)
+        ?? bill.issuedAt
+    ])
+  );
 }
 
 export async function loadNormalizedCustomerHistoryData(
@@ -204,6 +249,8 @@ export async function loadNormalizedCustomerHistoryData(
   const customersPromise = loadNormalizedCustomerDirectory(resolvedOrganizationId, client);
   const bills: Bill[] = [];
   const payments: Payment[] = [];
+  const sessionActivityById = new Map<string, CustomerHistorySessionActivityRow>();
+  const tabActivityByBillId = new Map<string, CustomerHistoryTabActivityRow>();
   let cursor: NormalizedBillRegisterCursor | undefined;
   do {
     const page = await loadNormalizedBillRegisterPage({
@@ -213,10 +260,61 @@ export async function loadNormalizedCustomerHistoryData(
     }, client);
     bills.push(...page.bills);
     payments.push(...page.payments);
+    const billIds = page.bills.map((bill) => bill.id);
+    const sessionIds = page.bills.flatMap((bill) => bill.sessionId ? [bill.sessionId] : []);
+    const [sessionsById, sessionsByBillId, tabsByBillId] = await Promise.all([
+      sessionIds.length > 0
+        ? readMany<CustomerHistorySessionActivityRow>(
+            client
+              .from("sessions")
+              .select("id, started_at, closed_bill_id")
+              .eq("organization_id", resolvedOrganizationId)
+              .in("id", sessionIds),
+            "loading normalized customer session activity by ID"
+          )
+        : Promise.resolve([]),
+      billIds.length > 0
+        ? readMany<CustomerHistorySessionActivityRow>(
+            client
+              .from("sessions")
+              .select("id, started_at, closed_bill_id")
+              .eq("organization_id", resolvedOrganizationId)
+              .in("closed_bill_id", billIds),
+            "loading normalized customer session activity by bill"
+          )
+        : Promise.resolve([]),
+      billIds.length > 0
+        ? readMany<CustomerHistoryTabActivityRow>(
+            client
+              .from("customer_tabs")
+              .select("opened_at, closed_bill_id")
+              .eq("organization_id", resolvedOrganizationId)
+              .in("closed_bill_id", billIds),
+            "loading normalized customer-tab activity by bill"
+          )
+        : Promise.resolve([])
+    ]);
+    for (const row of [...sessionsById, ...sessionsByBillId]) {
+      sessionActivityById.set(row.id, row);
+    }
+    for (const row of tabsByBillId) {
+      if (row.closed_bill_id) {
+        tabActivityByBillId.set(row.closed_bill_id, row);
+      }
+    }
     cursor = page.hasMore ? page.nextCursor : undefined;
     if (page.hasMore && !cursor) {
       throw new Error("Normalized customer history pagination stopped before all bills were loaded.");
     }
   } while (cursor);
-  return { customers: Array.from(new Map((await customersPromise).map((entry) => [entry.id, entry])).values()), bills, payments };
+  return {
+    customers: Array.from(new Map((await customersPromise).map((entry) => [entry.id, entry])).values()),
+    bills,
+    payments: dedupeNormalizedCustomerHistoryPayments(payments),
+    billVisitAt: buildNormalizedCustomerBillVisitAt(
+      bills,
+      Array.from(sessionActivityById.values()),
+      Array.from(tabActivityByBillId.values())
+    )
+  };
 }

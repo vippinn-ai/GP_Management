@@ -152,6 +152,38 @@ describe("normalized overlay collection merging", () => {
     expect(merged.sessionPauseLogs.find((entry) => entry.id === "pause-remaining")?.resumedAt)
       .toBe("2026-08-19T11:05:00.000Z");
   });
+
+  it("hydrates historical bill-register pages by ID without dropping bootstrap financial rows", () => {
+    const base = createAppData();
+    base.bills = [
+      { id: "bill-current", billNumber: "BILL-CURRENT", amountPaid: 10 },
+      { id: "bill-history", billNumber: "BILL-HISTORY", amountPaid: 0 }
+    ] as never;
+    base.payments = [
+      { id: "payment-current", billId: "bill-current", amount: 10 },
+      { id: "payment-history", billId: "bill-history", amount: 5 }
+    ] as never;
+
+    const merged = mergeNormalizedAppDataOverlay(base, {
+      bills: [
+        { id: "bill-history", billNumber: "BILL-HISTORY", amountPaid: 25 },
+        { id: "bill-older", billNumber: "BILL-OLDER", amountPaid: 0 }
+      ] as never,
+      payments: [
+        { id: "payment-history", billId: "bill-history", amount: 25 },
+        { id: "payment-older", billId: "bill-older", amount: 0 }
+      ] as never
+    });
+
+    expect(merged.bills.map((entry) => entry.id).sort()).toEqual(["bill-current", "bill-history", "bill-older"]);
+    expect(merged.bills.find((entry) => entry.id === "bill-history")?.amountPaid).toBe(25);
+    expect(merged.payments.map((entry) => entry.id).sort()).toEqual([
+      "payment-current",
+      "payment-history",
+      "payment-older"
+    ]);
+    expect(merged.payments.find((entry) => entry.id === "payment-history")?.amount).toBe(25);
+  });
 });
 
 describe("normalized bootstrap completeness", () => {
