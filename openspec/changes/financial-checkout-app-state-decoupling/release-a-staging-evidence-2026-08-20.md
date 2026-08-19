@@ -199,6 +199,13 @@ Four controlled v1 bills/adjustments were completed without a client timeout or 
 
 Analytics after the first three bills showed Rs 51 gross revenue, three bills, Rs 35.76 session revenue, Rs 15 consumables revenue, and Rs 51 cash, matching the controlled bills. Bill Register rows and receipts remained available after hard refresh.
 
+Normalized historical Bill Register and receipt-support checks also passed without a write:
+
+- Direct search loaded April history outside the initial 50-row page: `BILL-20260415-003` rendered its Snooker Star Table line, Rs 3.43 subtotal, `-Rs 0.43` round-off, and Rs 3 total.
+- An isolated replaced bill, `BILL-20260621-003`, resolved and displayed `Superseded By BILL-20260621-012` even though the related bill was not part of the search result page.
+- An isolated checkout bill, `BILL-20260722-004`, hydrated the cross-bill payment support needed by its receipt and displayed `Previous Dues Paid Rs 100`, source `BILL-20260625-005`, and the Rs 100 cash/zero UPI split.
+- These read-only searches and receipt previews did not advance `app_state` beyond version `493` or its checkout timestamp/hash captured below.
+
 The first customer-tab case exposed a real Release A blocker: the tab and bill referenced `customer-ee251663-5e04-4188-9ea8-29afe587aa7b`, while the normalized customer row created at tab-open was `customer-24d8c529-ae9f-4e93-957e-858fb0068817`. Customer Profiles therefore showed the valid Rs 10 bill as zero visits/zero spend. This was retained as failure evidence and not silently rewritten.
 
 After the two-step fix and final redeployment, the exact scenario was repeated with `QA Customer ID Fix 20260820 0219`. Database evidence for `BILL-20260819-004` proves:
