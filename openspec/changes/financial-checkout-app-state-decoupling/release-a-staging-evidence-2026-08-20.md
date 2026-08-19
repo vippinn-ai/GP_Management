@@ -140,15 +140,45 @@ The reviewed staging build was then repeated successfully from evidence checkpoi
 - Financial v2 build flag: `false`.
 - Production worker `management` was not targeted or changed.
 
-A fresh, uncached in-app browser tab loaded the deployed staging URL successfully with title `Game Parlour Management System` and the expected BreakPerfect sign-in screen. Authenticated, two-browser, mutation, fail-closed, and soak gates remain pending.
+A fresh, uncached in-app browser tab loaded the deployed staging URL successfully with title `Game Parlour Management System` and the expected BreakPerfect sign-in screen.
+
+## Authenticated application smoke and realtime evidence
+
+The staging application login was exercised with an active admin profile. No credential, resolved email address, access token, or password was written to this evidence or the repository.
+
+Authenticated normalized-read checks passed after login and after a hard refresh:
+
+- Live Dashboard loaded with `0` live open sessions before the controlled mutation.
+- Bill Register loaded its first normalized page of 50 bills.
+- Analytics loaded without a retry/error state.
+- Customer Profiles loaded 61 normalized customer profiles.
+- Inventory loaded without a retry/error state.
+- No checked screen displayed a cached-data fallback or stale-read warning.
+
+A controlled realtime mutation was then run from the deployed staging UI:
+
+- A temporary session was started on `Arcade 3` for uniquely tagged customer `QA ReleaseA 20260820 0134`.
+- The origin tab showed the session as Running, a Rs 5 live bill, and `1` open session.
+- A second authenticated tab received the new session through compact realtime without a manual refresh and also showed `1` open session.
+- Because this browser runtime does not expose `window.prompt`, the UI Reject button could not supply its required reason. Cleanup therefore used the application's authenticated `reject_session` RPC contract rather than a direct table edit.
+- Cleanup session: `session-94a531bc-222f-4b06-8654-4f290480bcfd`.
+- Cleanup mutation: `op-8746f50d-6b95-4c97-ad41-465fcfbff066`.
+- Cleanup operational event: `event-972b08e8-04a3-471d-8676-5f2c84761fe4`.
+- RPC duration: `85.528 ms`; compatibility `app_state.version` advanced from `487` to `488`.
+- The persisted session is closed with disposition `rejected` and the staging smoke-cleanup reason.
+- The `session_rejected` audit actor and `reject_session` operational-event actor both match the authenticated user.
+- Both tabs received the closure through realtime: `0` live open sessions, `Arcade 3` Available, and the QA customer absent from live sessions.
+- Both tabs retained the same state after hard refresh; the closed QA session did not resurrect.
+
+This is a same-browser, two-tab realtime check. A genuinely independent Chrome profile could not be connected because the local Chrome native-host integration is unavailable. The required independent two-browser gate therefore remains open; it is not represented as passed here.
 
 ## Current gate decision
 
-Database reconstruction, additive Release A installation, and staging frontend deployment are complete and clean. The unauthenticated load smoke passed. No authenticated functional/soak claim and no production promotion claim is made.
+Database reconstruction, additive Release A installation, staging frontend deployment, authenticated normalized-read smoke, controlled start/reject cleanup, same-browser realtime, and hard-refresh non-resurrection checks are complete and clean. The independent-browser, exhaustive functional, performance, and full-business-day soak gates remain open. No production promotion claim is made.
 
 ## Remaining gated work
 
-1. Authenticate independent staging application browsers and execute Gate 5 functional/two-browser cases.
+1. Connect a genuinely independent second staging browser and execute the remaining Gate 5 functional/two-browser cases.
 2. Repeat post-functional parity, actors, errors, hashes, and deployment captures.
 3. Complete the full representative staging business-day soak and independent sign-off.
 

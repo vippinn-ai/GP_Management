@@ -7,7 +7,7 @@
 - [x] Complete reproducible per-file review manifest and source-of-truth traceability matrix.
 - [x] Resolve the current lint error; local lint has zero errors and five pre-existing warnings (no new warning gate).
 - [x] Prepare the gated Release A staging installation/verification/rollback runbook.
-- [ ] Capture staging schema/function/grant/parity evidence.
+- [x] Capture staging schema/function/grant/parity evidence.
 
 ## Release A: normalized reads
 

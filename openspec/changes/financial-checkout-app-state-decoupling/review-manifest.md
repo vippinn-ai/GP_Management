@@ -9,10 +9,10 @@ The generated CSV is the per-file evidence. Its columns record path, physical li
 Current generated snapshot:
 
 - First-party text/configuration files: 242.
-- Physical lines mechanically screened: 68,425.
-- Semantic billing/data-gateway/compatibility hotspots: 183.
-- Files with billing/financial vocabulary: 167.
-- Files containing an `app_state`, `appState`, or base-version reference: 75; none remain in the unclassified bucket.
+- Physical lines mechanically screened: 68,455.
+- Semantic billing/data-gateway/compatibility hotspots: 184.
+- Files with billing/financial vocabulary: 168.
+- Files containing an `app_state`, `appState`, or base-version reference: 76; none remain in the unclassified bucket.
 - Excluded: generated `dist`, dependencies, coverage/cache/test artifacts, `.git`, binary assets, this narrative file, and the generated CSV itself.
 - `package-lock.json` is parsed as JSON, hashed, and marked as a mechanical lockfile-integrity screen rather than authored business logic.
 
