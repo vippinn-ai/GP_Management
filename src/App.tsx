@@ -207,6 +207,7 @@ import {
   hasPendingOperationalMutationForEntity,
   isOperationalMutationSyncable,
   loadPendingOperationalMutations,
+  reconcileOperationalServerIdentity,
   rebasePendingMutations,
   savePendingOperationalMutations,
   type OperationalMutation,
@@ -792,25 +793,30 @@ export default function App() {
     mutation: OperationalMutation,
     result: OperationalRpcCommitResult
   ) {
+    const identityReconciledSource = reconcileOperationalServerIdentity(
+      source,
+      mutation,
+      result.changedRows
+    );
     const lineReconciliation = getCustomerTabLineIdReconciliation(mutation, result);
     if (!lineReconciliation) {
-      return source;
+      return identityReconciledSource;
     }
-    const sourceTab = source.customerTabs.find((tab) => tab.id === lineReconciliation.customerTabId);
+    const sourceTab = identityReconciledSource.customerTabs.find((tab) => tab.id === lineReconciliation.customerTabId);
     const sourceLine = sourceTab?.items.find((line) => line.id === lineReconciliation.localLineId);
     if (!sourceTab || !sourceLine) {
-      return source;
+      return identityReconciledSource;
     }
 
-    const nextAppData = cloneValue(source);
+    const nextAppData = cloneValue(identityReconciledSource);
     const tab = nextAppData.customerTabs.find((entry) => entry.id === lineReconciliation.customerTabId);
     if (!tab) {
-      return source;
+      return identityReconciledSource;
     }
     const localLine = tab.items.find((line) => line.id === lineReconciliation.localLineId);
     const serverLine = tab.items.find((line) => line.id === lineReconciliation.serverLineId);
     if (!localLine) {
-      return source;
+      return identityReconciledSource;
     }
     if (serverLine) {
       serverLine.quantity += localLine.quantity;
@@ -5650,7 +5656,8 @@ export default function App() {
         draft,
         checkoutState.customerName,
         checkoutState.customerPhone,
-        previewSession?.startedAt ?? customerTab?.createdAt ?? issuedAt
+        previewSession?.startedAt ?? customerTab?.createdAt ?? issuedAt,
+        previewSession?.customerId ?? customerTab?.customerId
       );
       const billNumber = formatBillNumber(draft, issuedAt);
       const issuedBill = {

@@ -25,6 +25,7 @@ import {
   filterInventoryReportModel,
   getCombosForStation,
   getConsumablesCombos,
+  normalizeAppDataCustomers,
   resolveComboFixedSelections,
   resolveComboChoiceSelections,
   getSessionCheckoutLines
@@ -114,6 +115,53 @@ describe("findExactCustomerProfileMatch", () => {
     ];
 
     expect(findExactCustomerProfileMatch(customers, "YASH")).toBeUndefined();
+  });
+});
+
+describe("normalizeAppDataCustomers", () => {
+  it("preserves a referenced customer id when its profile row is absent", () => {
+    const source = {
+      customers: [],
+      sessions: [],
+      customerTabs: [{
+        id: "tab-1",
+        customerId: "customer-canonical",
+        customerName: "QA Customer",
+        status: "open",
+        createdAt: "2026-08-20T01:57:00.000Z",
+        items: []
+      }],
+      bills: [{
+        id: "bill-1",
+        billNumber: "BILL-20260820-001",
+        status: "issued",
+        createdAt: "2026-08-20T01:58:00.000Z",
+        issuedAt: "2026-08-20T01:58:00.000Z",
+        issuedByUserId: "user-1",
+        customerId: "customer-canonical",
+        customerName: "QA Customer",
+        paymentMode: "cash",
+        amountPaid: 10,
+        amountDue: 0,
+        subtotal: 10,
+        totalDiscountAmount: 0,
+        billDiscountAmount: 0,
+        roundOffEnabled: false,
+        roundOffAmount: 0,
+        total: 10,
+        lineDiscounts: [],
+        lines: [],
+        receiptType: "digital"
+      }]
+    } as unknown as AppData;
+
+    const normalized = normalizeAppDataCustomers(source);
+
+    expect(normalized.customers).toEqual([
+      expect.objectContaining({ id: "customer-canonical", name: "QA Customer" })
+    ]);
+    expect(normalized.customerTabs[0].customerId).toBe("customer-canonical");
+    expect(normalized.bills[0].customerId).toBe("customer-canonical");
   });
 });
 

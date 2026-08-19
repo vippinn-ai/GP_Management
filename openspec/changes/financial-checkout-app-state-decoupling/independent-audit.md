@@ -3,6 +3,8 @@
 Date: 2026-08-20  
 Scope: read-only static review and local automated gates against the shared implementation tree.
 
+> Historical status note: this document records the independent pre-staging audit snapshot. Current staging execution and its remaining gates are tracked in `release-a-staging-evidence-2026-08-20.md`; the blocked/not-run statuses below must not be read as the current staging state.
+
 ## Verdict
 
 No release-blocking static/local code defect remains in the reviewed tree, including the audit-driven Release A customer-history, historical-action, receipt-support, post-adjustment refresh, and async-race fixes. Staging and production enablement remain prohibited until the installed-database, security, concurrency, two-browser, performance, and soak gates below are complete.

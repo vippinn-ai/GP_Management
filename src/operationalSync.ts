@@ -307,6 +307,67 @@ export interface OperationalRebaseResult {
   conflicts: OperationalMutation[];
 }
 
+export function reconcileOperationalServerIdentity(
+  source: AppData,
+  mutation: OperationalMutation,
+  changedRows: Record<string, unknown> = {}
+) {
+  if (mutation.kind !== "openCustomerTab") {
+    return source;
+  }
+  const payload = mutation.payload as OpenCustomerTabPayload;
+  const localCustomerId = payload.customer?.id;
+  const changedCustomerIds = changedRows.customers;
+  const serverCustomerId = Array.isArray(changedCustomerIds) && typeof changedCustomerIds[0] === "string"
+    ? changedCustomerIds[0]
+    : undefined;
+  if (!localCustomerId || !serverCustomerId || localCustomerId === serverCustomerId) {
+    return source;
+  }
+
+  const appData = cloneValue(source);
+  for (const session of appData.sessions) {
+    if (session.customerId === localCustomerId) {
+      session.customerId = serverCustomerId;
+    }
+  }
+  for (const tab of appData.customerTabs) {
+    if (tab.id === payload.tab.id || tab.customerId === localCustomerId) {
+      tab.customerId = serverCustomerId;
+    }
+  }
+  for (const bill of appData.bills) {
+    if (bill.customerId === localCustomerId) {
+      bill.customerId = serverCustomerId;
+    }
+  }
+
+  const localCustomer = appData.customers.find((customer) => customer.id === localCustomerId);
+  const serverCustomer = appData.customers.find((customer) => customer.id === serverCustomerId);
+  if (localCustomer && serverCustomer) {
+    serverCustomer.phone = serverCustomer.phone || localCustomer.phone;
+    serverCustomer.notes = serverCustomer.notes || localCustomer.notes;
+    if (new Date(localCustomer.lastVisitAt).getTime() > new Date(serverCustomer.lastVisitAt).getTime()) {
+      serverCustomer.lastVisitAt = localCustomer.lastVisitAt;
+    }
+    if (new Date(localCustomer.createdAt).getTime() < new Date(serverCustomer.createdAt).getTime()) {
+      serverCustomer.createdAt = localCustomer.createdAt;
+    }
+    appData.customers = appData.customers.filter((customer) => customer.id !== localCustomerId);
+  } else if (localCustomer) {
+    localCustomer.id = serverCustomerId;
+  } else if (!serverCustomer && payload.customer) {
+    appData.customers.unshift({
+      id: serverCustomerId,
+      name: getCustomerDisplayName(payload.customer.name, payload.customer.phone),
+      phone: payload.customer.phone?.trim() || undefined,
+      createdAt: payload.customer.visitAt,
+      lastVisitAt: payload.customer.visitAt
+    });
+  }
+  return appData;
+}
+
 export function isOperationalMutationSyncable(mutation: OperationalMutation) {
   return (
     mutation.status === "pending" ||

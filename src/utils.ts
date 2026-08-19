@@ -1294,7 +1294,8 @@ export function resolveCustomerProfile(
   appData: AppData,
   customerName?: string,
   customerPhone?: string,
-  visitAt = new Date().toISOString()
+  visitAt = new Date().toISOString(),
+  preferredCustomerId?: string
 ) {
   const trimmedName = customerName?.trim() ?? "";
   const trimmedPhone = customerPhone?.trim() ?? "";
@@ -1309,7 +1310,7 @@ export function resolveCustomerProfile(
     existing.lastVisitAt = visitAt;
     return existing.id;
   }
-  const customerId = createId("customer");
+  const customerId = preferredCustomerId || createId("customer");
   appData.customers.unshift({
     id: customerId,
     name: getCustomerDisplayName(trimmedName, trimmedPhone),
@@ -1367,11 +1368,26 @@ export function normalizeAppDataCustomers(source: AppData) {
     if (customerId && customerIdMap.has(customerId)) {
       return customerIdMap.get(customerId);
     }
+    const visitAt = fallbackVisitAt ?? new Date().toISOString();
+    if (customerId) {
+      const name = customerName?.trim() ?? "";
+      const phone = customerPhone?.trim() ?? "";
+      if (!name && !phone) {
+        return customerId;
+      }
+      return upsertNormalizedCustomer({
+        id: customerId,
+        name: getCustomerDisplayName(name, phone),
+        phone: phone || undefined,
+        createdAt: visitAt,
+        lastVisitAt: visitAt
+      });
+    }
     return resolveCustomerProfile(
       { ...appData, customers: normalizedCustomers },
       customerName,
       customerPhone,
-      fallbackVisitAt ?? new Date().toISOString()
+      visitAt
     );
   }
 

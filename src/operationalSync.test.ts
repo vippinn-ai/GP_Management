@@ -7,6 +7,7 @@ import {
   isOperationalMutationSyncable,
   loadPendingOperationalMutations,
   PENDING_OPERATION_STORAGE_KEY,
+  reconcileOperationalServerIdentity,
   rebasePendingMutations,
   savePendingOperationalMutations,
   validateOperationalMutation,
@@ -73,6 +74,49 @@ function mutation(
 }
 
 describe("operational sync", () => {
+  it("reconciles an optimistic customer id to the canonical server id", () => {
+    const appData = createAppData();
+    appData.customers.push({
+      id: "customer-local",
+      name: "QA Customer",
+      createdAt: "2026-08-20T01:57:00.000Z",
+      lastVisitAt: "2026-08-20T01:57:00.000Z"
+    });
+    appData.customerTabs.push({
+      id: "tab-1",
+      customerId: "customer-local",
+      customerName: "QA Customer",
+      status: "open",
+      createdAt: "2026-08-20T01:57:00.000Z",
+      items: []
+    });
+    const openMutation = mutation("openCustomerTab", "customer_tab", "tab-1", {
+      tab: appData.customerTabs[0],
+      customer: {
+        id: "customer-local",
+        name: "QA Customer",
+        visitAt: "2026-08-20T01:57:00.000Z"
+      },
+      auditLog: {
+        id: "audit-1",
+        action: "customer_tab_opened",
+        entityType: "customer_tab",
+        entityId: "tab-1",
+        message: "Opened customer tab.",
+        createdAt: "2026-08-20T01:57:00.000Z",
+        userId: "user-1"
+      }
+    });
+
+    const reconciled = reconcileOperationalServerIdentity(appData, openMutation, {
+      customers: ["customer-canonical"]
+    });
+
+    expect(reconciled.customerTabs[0].customerId).toBe("customer-canonical");
+    expect(reconciled.customers.map((customer) => customer.id)).toEqual(["customer-canonical"]);
+    expect(appData.customerTabs[0].customerId).toBe("customer-local");
+  });
+
   beforeEach(() => {
     window.localStorage.removeItem(PENDING_OPERATION_STORAGE_KEY);
   });

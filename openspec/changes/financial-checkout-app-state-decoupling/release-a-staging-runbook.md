@@ -86,8 +86,8 @@ where n.nspname = 'public'
     'commit_checkout_bill',
     'commit_financial_adjustment',
     'commit_admin_data_change',
-    'get_analytics_summary',
-    'get_inventory_report_summary'
+    'load_analytics_summary',
+    'load_inventory_report_summary'
   )
 order by 1;
 
