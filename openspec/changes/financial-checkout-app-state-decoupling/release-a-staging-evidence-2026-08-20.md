@@ -3,19 +3,19 @@
 ## Scope
 
 - Project: `test/staging` (`tkbdyzxwwbhkpztgjjxh`), Southeast Asia (Singapore).
-- Live-run/base Playwright-harness commit: `8e9d79ceb9000b1047e1e427127f69a3ae6d05c9`; the selector, cleanup-identity, canonical-response, contract, and evidence hardening was independently reviewed in the closeout working tree described below. The ordinary staging frontend remains the accepted build from application commit `8e964f81b77c6710907412e13ab46bf16a7c866a`; the harness did not deploy or replace that Worker. The initial Release A deployment was built from application commit `0af9c7b0cb35e521fd35bff9ba7980d792cf100e`.
+- Live-run/base Playwright-harness commit: `8e9d79ceb9000b1047e1e427127f69a3ae6d05c9`; the selector, cleanup-identity, canonical-response, contract, and evidence hardening was independently reviewed in the closeout working tree described below. The ordinary staging frontend is now built from application commit `392923d35051be1ab3c2bd784360b1d5357bf4a4`; the initial Release A deployment was built from application commit `0af9c7b0cb35e521fd35bff9ba7980d792cf100e`.
 - Financial v2 remained disabled; phase 10 was not applied.
 - No production project, production database, or production deployment was accessed.
 - Staging was resumed from its paused state. The initial investigation was read-only. After the user explicitly approved the staging-only destructive reconstruction, a verified backup was retained and normalized `org-primary` was rebuilt from authoritative `app_state`.
 
 ## Evidence metadata
 
-- Execution window: `2026-08-19T19:28:17Z` through at least `2026-08-20T09:40:15.398089Z` (`2026-08-20 00:58` through at least `15:10:15` IST) for the recorded active runs; the required business-day soak remains open.
+- Execution window: `2026-08-19T19:28:17Z` through at least `2026-08-20T11:49:07.599Z` (`2026-08-20 00:58` through at least `17:19:07` IST) for the recorded active runs; the required business-day soak remains open.
 - Operator: Codex primary agent using the user-authorized authenticated staging sessions.
 - Independent reviewer: separate read-only checkout test agent.
 - Browser surface: authenticated Codex in-app browser, the user's independently authenticated Chrome profile through the connected browser integration, and the guarded local Playwright staging runner using two isolated Chrome contexts.
 - Previous accepted staging frontend version: `c76b06d6-3cab-408f-a32c-d1937b14b562`.
-- Current staging frontend version: `67dd6e80-58fc-408d-a7f0-d13742f447aa`.
+- Current staging frontend version: `a9a13291-1dec-469d-953a-89f3ff594218`.
 - Isolated fail-closed QA frontend version: `89b6e9e4-3558-49cf-91b1-0f9f4c499d44` at `gp-management-staging-failclosed-qa.breakperfectgaminglounge.workers.dev`; this did not replace the ordinary staging Worker.
 
 ## Project and compatibility baseline
@@ -513,13 +513,45 @@ Before billing, the observer saw Playstation become available and received both 
 
 The harness now waits for the complete canonical tuple—bill ID, hop session ID, and that exact session in checkout `changed_rows`—and its `finally` path recognizes an already committed canonical checkout without reissuing it. Rejection cleanup requires the unique QA customer on the station card and the exact stored Customer Name field before registering the confirmation handler. The final local gates pass: 37 test files / 400 tests, production build, lint with zero errors and five known warnings, Playwright discovery of exactly two scenarios with zero retries, and `git diff --check`. The independent read-only reviewer marked this behavior checkpoint GO and agreed that another live rerun is unnecessary.
 
+## Complete normalized report exports
+
+Source review found that CSV, Excel, and PDF exporter functions still existed, but the Reports refactor had removed their UI controls and left the `reportRows` and `businessProfile` props unused. Restoring the historical buttons initially exposed a second release blocker: normalized detail reads could silently stop at the PostgREST row cap while the summary RPC continued to show complete totals.
+
+Commit `392923d35051be1ab3c2bd784360b1d5357bf4a4` restores all three export actions and makes the normalized report detail reader complete and fail-closed. Bills, payments, session/tab activity, and expenses now use deterministic timestamp-plus-ID keyset pagination. Bill/detail IDs are batched, their rows use matching ID keysets, the 100,000-row safety limit applies to each complete collection rather than each batch, the related-bill union is separately bounded, and payment IDs are deduplicated before totals are calculated. A loader-level characterization crosses a 500-row cursor boundary with 501 bills and retains the final bill. The independent reviewer rejected the original offset implementation, then marked the keyset implementation GO after verifying the PostgREST predicates, ordering, aggregate caps, deduplication, and normalized fail-closed UI.
+
+Local evidence for this checkpoint is 37 test files / 403 tests passing, the production build passing with the existing large-chunk warning, lint exiting with zero errors and five known warnings, and `git diff --check` passing. The commit was pushed and deployed to the ordinary staging Worker as Cloudflare version `a9a13291-1dec-469d-953a-89f3ff594218`, bundle `/assets/index-0lY7xws2.js`, SHA-256 `cdb3c8e7b15713a9ad3bf2d34cb536fa02f3bddfdf82e9f2b541e8de84bf6c1c`. Financial v2 remained disabled and the bundle guard found the staging project reference and no production project reference.
+
+Read-only Playwright run `20260820113710` passed with zero retries in `17.6 s`. It loaded the normalized Today range (`2026-08-20`), downloaded and inspected:
+
+- `report-2026-08-20-2026-08-20.csv`, 777 bytes, with the expected header and `BILL-20260820-006`;
+- `report-2026-08-20-2026-08-20.xlsx`, 17,915 bytes, sheet `Daily Report`, six rows, including `BILL-20260820-006`;
+- `report-2026-08-20-2026-08-20.pdf`, 4,450 bytes, with a valid `%PDF` signature.
+
+The live staging range contains six report rows, so the deployed download check validates the actual PostgREST reader and generated file formats but does not claim a live 500-row cursor crossing. That boundary is covered by the loader-level 501-bill characterization; production-sized performance remains a later Release B gate.
+
+## Combo, variant, cigarette-pack, and reservation refresh matrix
+
+Read-only Playwright discovery run `20260820113906` verified the exact existing staging fixtures before any write: consumables combo `Pot 1` includes one Thumsuyp and one Masala Maggie variant; `Cheese Maggie` is a standalone sale variant of the same Maggie stock item; and `Malboro Compact` supports a pack of 10 cigarettes. Starting stock was Maggie `18`, Malboro Compact `96`, and Thumsuyp `87`.
+
+Several guarded development attempts are retained as failed harness evidence rather than relabeled as application passes. Runs `20260820114115`, `20260820114300`, `20260820114402`, `20260820114534`, and `20260820114728` stopped on Playwright overlap/selection timing before completing the matrix. The runner never retried an ambiguous RPC. Any exact QA tab that had been opened was rejected once through `reject_customer_tab`; the captured failed attempts contain no item/combo mutation response. The last harness correction waits for an enabled target, dispatches the exact DOM button action to avoid the responsive-layout overlap, and then waits for both the rendered line and the canonical RPC acknowledgement before continuing.
+
+Final run `20260820114831` passed both cases with zero Playwright retries in `31.5 s`. The mutation case opened tab `customer-tab-95e08f5f-05cc-4fec-961e-908c4a1edb5d` for `QA PW Inventory 20260820114831` and retained this exact canonical chain:
+
+- `open_customer_tab`: event `event-3a506eba-ef0b-4a1a-b92d-c89e04636a7f`, mutation `op-b1393143-8861-4738-9467-af270f9140f3`, server time `2026-08-20T11:48:55.436864`, HTTP 200;
+- standalone `Cheese Maggie`: item `customer-tab-item-0dc56a69-c269-49b6-b41b-1d182185a1ac`, event `event-9d8a0698-4784-482a-8397-4e6d83cafc94`, mutation `op-4b1cc22e-d7de-423d-87f3-099f1322633e`, server time `2026-08-20T11:48:55.620476`, HTTP 200;
+- `Malboro Compact (Pack of 10)`: item `customer-tab-item-4f054823-d2b1-4976-9b03-ccaaa536fdc7`, event `event-55caf988-7f62-4bbc-ad5d-6edea27cbcc5`, mutation `op-c53178ef-59b2-48e3-b249-5b46022cf38d`, server time `2026-08-20T11:48:56.362263`, HTTP 200;
+- combo `Pot 1`: application `combo-app-479f6779-a91b-429f-9132-44e3858cc344`, item IDs `customer-tab-item-2df55da6-7835-4bd7-b835-81812d815303` and `customer-tab-item-823500ab-d3d2-47cc-94fb-b4160b729333`, event `event-419f1747-78eb-4061-8d2c-bcd294a73e44`, mutation `op-a094602b-7526-4940-9510-c92d5d5163a4`, server time `2026-08-20T11:48:57.322111`, HTTP 200.
+
+The origin and independently isolated observer both showed Cheese Maggie, the pack-of-10 line, and Pot 1 without refresh. Catalog availability in both browsers changed exactly from `18/96/87` to `16/86/86`. After a hard refresh, the observer reconstructed the same tab lines and the same availability. The normalized Inventory Report returned HTTP 200 and showed exact reservations with unchanged current stock: Maggie `2`, Malboro Compact `10`, and Thumsuyp `1`.
+
+Cleanup rejected only that exact tab once. `reject_customer_tab` returned event `event-185c1099-5a10-4053-ac43-43c9c84b5d5f`, mutation `op-c10a6eae-896d-46e9-be65-d808eda3ca0d`, server time `2026-08-20T11:49:02.237829`, and HTTP 200. Both browsers removed the QA tab; independent hard refresh restored exact catalog availability to `18/96/87`. The final run captured exactly two successful `add_customer_tab_item` responses, one `apply_customer_tab_combo`, and one rejection, with no page or console errors.
+
 ## Current gate decision
 
-Database reconstruction, additive Release A installation, staging frontend deployment, authenticated normalized-read smoke, representative timed/unit/tab v1 checkout, settlement, replacement, write-off, refund, customer-history correction, actor/stock verification, independent Chrome session/item/reject and financial realtime coverage, the complete customer-tab item add/update/remove realtime matrix with exactly-once quantity mutation, no-refresh pause deletion overlay, two-browser pause edit, two-browser hop/detach with exact-session billing reconciliation, Bill Register invalidation correction, receipt PDF export/rendering, historical receipt linkage, analytics, customer-history, Coke inventory-report parity, hard-refresh non-resurrection checks, permission persistence/restoration, the isolated live fail-closed exercise, and the Gate 6 database/error/performance capture are complete. Release A remains a no-go because the remaining export/inventory matrix and full-business-day soak are not yet evidenced. No production promotion claim is made.
+Database reconstruction, additive Release A installation, staging frontend deployment, authenticated normalized-read smoke, representative timed/unit/tab v1 checkout, settlement, replacement, write-off, refund, customer-history correction, actor/stock verification, independent Chrome session/item/reject and financial realtime coverage, the complete customer-tab item add/update/remove realtime matrix with exactly-once quantity mutation, no-refresh pause deletion overlay, two-browser pause edit, two-browser hop/detach with exact-session billing reconciliation, Bill Register invalidation correction, receipt and report CSV/XLSX/PDF exports, historical receipt linkage, analytics, customer-history, the combo/variant/cigarette reservation and refresh matrix, hard-refresh non-resurrection checks, permission persistence/restoration, the isolated live fail-closed exercise, and the Gate 6 database/error/performance capture are complete. Release A remains a no-go until the full representative staging business-day soak and final independent sign-off are complete. No production promotion claim is made.
 
 ## Remaining gated work
 
-1. Complete report exports beyond the receipt PDF and the inventory combo, variant, cigarette-pack, and reservation before/after-refresh matrix.
-2. Complete the full representative staging business-day soak and independent sign-off.
+1. Complete the full representative staging business-day soak and independent sign-off.
 
 No production action is authorized by this evidence.

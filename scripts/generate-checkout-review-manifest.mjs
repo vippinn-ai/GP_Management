@@ -87,13 +87,26 @@ const collectionPatterns = [
   ["financial_mutations", /financialMutations|financial_mutations/i]
 ];
 
-function inferCollections(content) {
-  return collectionPatterns.filter(([, pattern]) => pattern.test(content)).map(([name]) => name).join("; ");
+function inferCollections(path, content) {
+  const names = new Set(collectionPatterns.filter(([, pattern]) => pattern.test(content)).map(([name]) => name));
+  if (path === "tests/e2e/staging/release-a-inventory-matrix.e2e.ts") {
+    [
+      "customer_tabs",
+      "customer_tab_items",
+      "customer_tab_combo_applications",
+      "inventory_items",
+      "sale_variants",
+      "combos",
+      "operational_events"
+    ].forEach((name) => names.add(name));
+  }
+  return [...names].join("; ");
 }
 
 function inferRpcs(content) {
   const names = new Set();
   for (const match of content.matchAll(/\.rpc\(\s*["']([a-z0-9_]+)["']/gi)) names.add(match[1]);
+  for (const match of content.matchAll(/\brpc\s*===\s*["']([a-z0-9_]+)["']/gi)) names.add(match[1]);
   for (const match of content.matchAll(/function\s+public\.([a-z0-9_]+)\s*\(/gi)) names.add(match[1]);
   return [...names].sort().join("; ");
 }
@@ -131,7 +144,8 @@ const rows = files.map((path) => {
   if (extname(path).toLowerCase() === ".json") {
     JSON.parse(content);
   }
-  const billingRelevant = /checkout|bill|payment|settle|receipt|discount|refund|void|deferred|financial/i.test(content);
+  const operationalStagingContract = path.startsWith("tests/e2e/staging/") && path.endsWith(".e2e.ts");
+  const billingRelevant = operationalStagingContract || /checkout|bill|payment|settle|receipt|discount|refund|void|deferred|financial/i.test(content);
   const appStateDisposition = classifyAppState(path, content);
   const semanticHotspot = billingRelevant || appStateDisposition !== "none" || path === "src/App.tsx" || path.startsWith("src/dataGateway/");
   return {
@@ -143,7 +157,7 @@ const rows = files.map((path) => {
       ? "mechanical-lockfile-json-integrity-screen"
       : semanticHotspot ? "semantic-hotspot-plus-mechanical-screen" : "mechanical-full-text-risk-screen",
     billingRelevant: billingRelevant ? "yes" : "no",
-    collections: inferCollections(content),
+    collections: inferCollections(path, content),
     rpcs: inferRpcs(content),
     appStateDisposition,
     tests: inferDirectTests(path)
