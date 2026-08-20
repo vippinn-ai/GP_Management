@@ -11,6 +11,6 @@ export default defineConfig({
     environment: "jsdom",
     globals: true,
     setupFiles: ["./src/test/setup.ts"],
-    exclude: [...configDefaults.exclude, ".claude/**", "openwhispr/**", "test-artifacts/**"]
+    exclude: [...configDefaults.exclude, ".claude/**", "openwhispr/**", "test-artifacts/**", "tests/e2e/**"]
   }
 });

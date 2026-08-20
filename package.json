@@ -15,6 +15,8 @@
     "test": "vitest",
     "test:ui": "vitest --ui",
     "test:ui:consumables": "node scripts/consumables-tab-ui-regression.mjs",
+    "test:e2e:staging": "node scripts/run-staging-e2e.mjs",
+    "test:e2e:staging:list": "node scripts/run-staging-e2e.mjs --list",
     "lint": "eslint src --ext ts,tsx"
   },
   "dependencies": {
@@ -26,6 +28,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@playwright/test": "^1.59.1",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
     "@testing-library/user-event": "^14.6.1",
