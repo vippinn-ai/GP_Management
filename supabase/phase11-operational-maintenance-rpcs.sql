@@ -24,6 +24,7 @@ declare
   v_session_started_at timestamptz;
   v_station_name text;
   v_audit_message text;
+  v_event_at timestamptz := now();
   v_event_id text;
   v_existing jsonb;
 begin
@@ -73,17 +74,17 @@ begin
   update public.session_pause_logs set
     paused_at = v_paused_at, resumed_at = v_resumed_at,
     raw_data = coalesce(raw_data, '{}'::jsonb) || jsonb_build_object('pausedAt', v_paused_at, 'resumedAt', v_resumed_at),
-    updated_at = timezone('utc', now())
+    updated_at = v_event_at
   where organization_id = v_org and id = v_pause_id;
   v_audit_message := 'Edited pause log entry for ' || coalesce(nullif(v_station_name, ''), 'session') || '.';
   insert into public.audit_logs (organization_id, id, action, entity_type, entity_id, message, audit_at, user_id, raw_data)
-  values (v_org, v_audit->>'id', 'pause_log_edited', 'session', v_session_id, v_audit_message, timezone('utc', now()), v_actor::text,
-    jsonb_build_object('id', v_audit->>'id', 'action', 'pause_log_edited', 'entityType', 'session', 'entityId', v_session_id, 'message', v_audit_message, 'createdAt', timezone('utc', now()), 'userId', v_actor::text));
+  values (v_org, v_audit->>'id', 'pause_log_edited', 'session', v_session_id, v_audit_message, v_event_at, v_actor::text,
+    jsonb_build_object('id', v_audit->>'id', 'action', 'pause_log_edited', 'entityType', 'session', 'entityId', v_session_id, 'message', v_audit_message, 'createdAt', v_event_at, 'userId', v_actor::text));
   insert into public.operational_events (organization_id, event_type, entity_type, entity_id, created_by, metadata)
   values (v_org, 'edit_pause_log', 'session', v_session_id, v_actor::text,
     jsonb_build_object('mutation_id', v_mutation_id, 'changed_rows', jsonb_build_object('sessions', jsonb_build_array(v_session_id), 'session_pause_logs', jsonb_build_array(v_pause_id), 'audit_logs', jsonb_build_array(v_audit->>'id'))))
   returning id into v_event_id;
-  return jsonb_build_object('mutation_id', v_mutation_id, 'organization_id', v_org, 'entity_type', 'session', 'entity_id', v_session_id, 'event_id', v_event_id, 'server_time', timezone('utc', now()), 'changed_rows', jsonb_build_object('sessions', jsonb_build_array(v_session_id), 'session_pause_logs', jsonb_build_array(v_pause_id), 'audit_logs', jsonb_build_array(v_audit->>'id')));
+  return jsonb_build_object('mutation_id', v_mutation_id, 'organization_id', v_org, 'entity_type', 'session', 'entity_id', v_session_id, 'event_id', v_event_id, 'server_time', v_event_at, 'changed_rows', jsonb_build_object('sessions', jsonb_build_array(v_session_id), 'session_pause_logs', jsonb_build_array(v_pause_id), 'audit_logs', jsonb_build_array(v_audit->>'id')));
 end;
 $$;
 
@@ -104,6 +105,7 @@ declare
   v_was_open boolean;
   v_station_name text;
   v_audit_message text;
+  v_event_at timestamptz := now();
   v_event_id text;
   v_existing jsonb;
 begin
@@ -126,15 +128,15 @@ begin
     pause_log_ids = coalesce((select jsonb_agg(value) from jsonb_array_elements_text(coalesce(pause_log_ids, '[]'::jsonb)) as source(value) where value <> v_pause_id), '[]'::jsonb),
     status = case when v_was_open and status = 'paused' then 'active' else status end,
     raw_data = jsonb_set(jsonb_set(coalesce(raw_data, '{}'::jsonb), '{pauseLogIds}', coalesce((select jsonb_agg(value) from jsonb_array_elements_text(coalesce(pause_log_ids, '[]'::jsonb)) as source(value) where value <> v_pause_id), '[]'::jsonb), true), '{status}', to_jsonb(case when v_was_open and status = 'paused' then 'active' else status end), true),
-    updated_at = timezone('utc', now())
+    updated_at = v_event_at
   where organization_id = v_org and id = v_session_id;
   v_audit_message := 'Deleted pause log entry for ' || coalesce(nullif(v_station_name, ''), 'session') || '.';
   insert into public.audit_logs (organization_id, id, action, entity_type, entity_id, message, audit_at, user_id, raw_data)
-  values (v_org, v_audit->>'id', 'pause_log_deleted', 'session', v_session_id, v_audit_message, timezone('utc', now()), v_actor::text,
-    jsonb_build_object('id', v_audit->>'id', 'action', 'pause_log_deleted', 'entityType', 'session', 'entityId', v_session_id, 'message', v_audit_message, 'createdAt', timezone('utc', now()), 'userId', v_actor::text));
+  values (v_org, v_audit->>'id', 'pause_log_deleted', 'session', v_session_id, v_audit_message, v_event_at, v_actor::text,
+    jsonb_build_object('id', v_audit->>'id', 'action', 'pause_log_deleted', 'entityType', 'session', 'entityId', v_session_id, 'message', v_audit_message, 'createdAt', v_event_at, 'userId', v_actor::text));
   insert into public.operational_events (organization_id, event_type, entity_type, entity_id, created_by, metadata)
   values (v_org, 'delete_pause_log', 'session', v_session_id, v_actor::text, jsonb_build_object('mutation_id', v_mutation_id, 'changed_rows', jsonb_build_object('sessions', jsonb_build_array(v_session_id), 'session_pause_logs', jsonb_build_array(v_pause_id), 'audit_logs', jsonb_build_array(v_audit->>'id')))) returning id into v_event_id;
-  return jsonb_build_object('mutation_id', v_mutation_id, 'organization_id', v_org, 'entity_type', 'session', 'entity_id', v_session_id, 'event_id', v_event_id, 'server_time', timezone('utc', now()), 'changed_rows', jsonb_build_object('sessions', jsonb_build_array(v_session_id), 'session_pause_logs', jsonb_build_array(v_pause_id), 'audit_logs', jsonb_build_array(v_audit->>'id')));
+  return jsonb_build_object('mutation_id', v_mutation_id, 'organization_id', v_org, 'entity_type', 'session', 'entity_id', v_session_id, 'event_id', v_event_id, 'server_time', v_event_at, 'changed_rows', jsonb_build_object('sessions', jsonb_build_array(v_session_id), 'session_pause_logs', jsonb_build_array(v_pause_id), 'audit_logs', jsonb_build_array(v_audit->>'id')));
 end;
 $$;
 
@@ -152,6 +154,7 @@ declare
   v_audit jsonb := coalesce(payload #> '{payload,auditLog}', '{}'::jsonb);
   v_station_name text;
   v_audit_message text;
+  v_event_at timestamptz := now();
   v_event_id text;
   v_existing jsonb;
 begin
@@ -169,11 +172,11 @@ begin
   if not found then perform public.raise_operational_rpc_error('session_not_found', 'The session no longer exists.', '{}'::jsonb); end if;
   v_audit_message := 'Detached post-hop continuation from ' || coalesce(nullif(v_station_name, ''), 'session') || '.';
   insert into public.audit_logs (organization_id, id, action, entity_type, entity_id, message, audit_at, user_id, raw_data)
-  values (v_org, v_audit->>'id', 'hop_continuation_detached', 'session', v_session_id, v_audit_message, timezone('utc', now()), v_actor::text,
-    jsonb_build_object('id', v_audit->>'id', 'action', 'hop_continuation_detached', 'entityType', 'session', 'entityId', v_session_id, 'message', v_audit_message, 'createdAt', timezone('utc', now()), 'userId', v_actor::text));
+  values (v_org, v_audit->>'id', 'hop_continuation_detached', 'session', v_session_id, v_audit_message, v_event_at, v_actor::text,
+    jsonb_build_object('id', v_audit->>'id', 'action', 'hop_continuation_detached', 'entityType', 'session', 'entityId', v_session_id, 'message', v_audit_message, 'createdAt', v_event_at, 'userId', v_actor::text));
   insert into public.operational_events (organization_id, event_type, entity_type, entity_id, created_by, metadata)
   values (v_org, 'record_session_audit', 'session', v_session_id, v_actor::text, jsonb_build_object('mutation_id', v_mutation_id, 'changed_rows', jsonb_build_object('audit_logs', jsonb_build_array(v_audit->>'id')))) returning id into v_event_id;
-  return jsonb_build_object('mutation_id', v_mutation_id, 'organization_id', v_org, 'entity_type', 'session', 'entity_id', v_session_id, 'event_id', v_event_id, 'server_time', timezone('utc', now()), 'changed_rows', jsonb_build_object('audit_logs', jsonb_build_array(v_audit->>'id')));
+  return jsonb_build_object('mutation_id', v_mutation_id, 'organization_id', v_org, 'entity_type', 'session', 'entity_id', v_session_id, 'event_id', v_event_id, 'server_time', v_event_at, 'changed_rows', jsonb_build_object('audit_logs', jsonb_build_array(v_audit->>'id')));
 end;
 $$;
 

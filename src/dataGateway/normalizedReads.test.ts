@@ -3,8 +3,33 @@ import {
   buildNormalizedCatalogData,
   buildNormalizedComboData,
   buildNormalizedConfigData,
-  buildNormalizedLiveData
+  buildNormalizedLiveData,
+  mapNormalizedAuditLog
 } from "./normalizedReads";
+
+describe("normalized audit mapping", () => {
+  it("uses the typed audit timestamp instead of a timezone-less raw timestamp", () => {
+    expect(mapNormalizedAuditLog({
+      id: "audit-pause-delete",
+      action: "pause_log_deleted",
+      entity_type: "session",
+      entity_id: "session-1",
+      message: "Deleted pause log entry for 8 Ball Pool.",
+      audit_at: "2026-08-20T06:45:00.000Z",
+      user_id: "user-1",
+      raw_data: {
+        id: "audit-pause-delete",
+        action: "pause_log_deleted",
+        entityType: "session",
+        entityId: "session-1",
+        message: "Deleted pause log entry for 8 Ball Pool.",
+        createdAt: "2026-08-20T06:45:00",
+        userId: "user-1"
+      },
+      created_at: "2026-08-20T06:45:00.000Z"
+    }).createdAt).toBe("2026-08-20T06:45:00.000Z");
+  });
+});
 
 describe("normalized config read mapping", () => {
   it("maps normalized organization, station, category, and pricing rows into current app models", () => {

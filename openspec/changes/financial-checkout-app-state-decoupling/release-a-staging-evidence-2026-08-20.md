@@ -3,19 +3,19 @@
 ## Scope
 
 - Project: `test/staging` (`tkbdyzxwwbhkpztgjjxh`), Southeast Asia (Singapore).
-- Current reviewed deployment commit: `55da12bccfdf2ca1cdc52692779ef54ef278d504` (the initial Release A deployment was built from application commit `0af9c7b0cb35e521fd35bff9ba7980d792cf100e`).
+- Current reviewed deployment commit at the start of this checkpoint: `0e9cbb933facee931b047217066c27df34624763` (the initial Release A deployment was built from application commit `0af9c7b0cb35e521fd35bff9ba7980d792cf100e`).
 - Financial v2 remained disabled; phase 10 was not applied.
 - No production project, production database, or production deployment was accessed.
 - Staging was resumed from its paused state. The initial investigation was read-only. After the user explicitly approved the staging-only destructive reconstruction, a verified backup was retained and normalized `org-primary` was rebuilt from authoritative `app_state`.
 
 ## Evidence metadata
 
-- Execution window: `2026-08-19T19:28:17Z` through at least `2026-08-20T06:05:34.810068Z` (`2026-08-20 00:58` through at least `11:35` IST) for the recorded active runs; the required business-day soak remains open.
+- Execution window: `2026-08-19T19:28:17Z` through at least `2026-08-20T06:55:37.339448Z` (`2026-08-20 00:58` through at least `12:25` IST) for the recorded active runs; the required business-day soak remains open.
 - Operator: Codex primary agent using the user-authorized authenticated staging sessions.
 - Independent reviewer: separate read-only checkout test agent.
 - Browser surface: authenticated Codex in-app browser plus the user's independently authenticated Chrome profile through the connected browser integration.
 - Previous accepted staging frontend version: `c76b06d6-3cab-408f-a32c-d1937b14b562`.
-- Current staging frontend version: `8ebe7ee1-4265-407c-afa7-ce11ec2d597c`.
+- Current staging frontend version at the start of this checkpoint: `e148e232-51db-46f7-aed7-e35dfa3477f0`.
 
 ## Project and compatibility baseline
 
@@ -382,7 +382,7 @@ The four normalized financial screen boundaries now have explicit component-leve
 - Operational Reports receives stale non-zero revenue but does not render the financial KPI while the normalized report reader is unavailable. Analytics readiness also rejects matching cached data whenever the latest summary refresh has an error.
 - Inventory Report receives stale stock totals and a stale item row but renders neither while the normalized inventory reader is unavailable.
 
-Each case verifies that Retry/Refresh invokes the scoped normalized-reader callback. The post-change local gates passed: 33 test files / 384 tests, production build, lint with zero errors and the same five known warnings, and `git diff --check`.
+Each case verifies that Retry/Refresh invokes the scoped normalized-reader callback. The post-change local gates passed: 33 test files / 385 tests, production build, lint with zero errors and the same five known warnings, and `git diff --check`.
 
 This is strong automated regression evidence, but it does not replace the runbook's controlled browser failure exercise. The connected staging browser does not expose safe request interception; shared staging database grants were deliberately not revoked. The live controlled-failure item therefore remains open until it can be run in an isolated browser/deployment harness without disrupting other staging users.
 
@@ -401,6 +401,32 @@ Final cleanup verification at `2026-08-20T06:05:34.810068+00:00` proved the sess
 
 This passes start/pause/resume two-browser propagation only. Pause edit/delete and browser-2 complete pause-log replacement after deletion remain open exactly as listed below.
 
+## Pause deletion, hard-refresh reconstruction, and audit timestamp correction
+
+Application commit `0e9cbb933facee931b047217066c27df34624763` was deployed to the staging Worker as Cloudflare version `e148e232-51db-46f7-aed7-e35dfa3477f0`, with normalized bootstrap/read/realtime and operational RPC flags enabled and financial v2 disabled. Two additional staging-only QA sessions were then created under Vipin (`61cc2f83-69d1-46ab-9d89-9df7f7b1e497`):
+
+- Unit session `session-b9d0846a-e213-4bac-9ee0-4a90e0409a24`, customer `QA Pause Delete 20260820 1158`, started on Arcade 1 at `2026-08-20T06:27:27.212Z`.
+- Timed session `session-7bc331a5-0d43-431f-9016-6ed3c9140e74`, customer `QA Pause Edit Delete 20260820 1200`, started on 8 Ball Pool at `2026-08-20T06:28:53.815Z`.
+
+The independent Chrome receptionist view received both open sessions without refresh. Browser 1 paused the timed session at `06:29:20.593Z` and resumed it at `06:29:32.988Z`; browser 2 received both transitions. The pause row was `pause-49f76176-8b30-4ff4-b03d-f590a782ba45`.
+
+The native `datetime-local` control could not be populated by the connected automation surface, so the edit RPC was never called and the pause-edit gate remains not run. With explicit user approval, Browser 1 deleted the completed pause entry through `delete_pause_log`. The origin immediately showed no Pause History. An independently authenticated Chrome receptionist load then reconstructed the still-active session with no pause row and displayed the deletion audit. Database evidence showed zero pause rows for both QA sessions and retained:
+
+- audit `audit-1d97c598-f974-45d6-8014-7844d7cd48ed`, action `pause_log_deleted`, actor Vipin, typed `audit_at = 2026-08-20T06:45:12.835437+00:00`;
+- event `event-65a00677-efa2-4ad3-be79-ad7e92112812`, mutation `op-6a2a4dd9-37d3-4ce0-8c73-6b154bb83a62`, the same actor, and changed pause ID `pause-49f76176-8b30-4ff4-b03d-f590a782ba45`;
+- unchanged compatibility state at version `504`, timestamp `2026-08-20T06:02:59.161456+00:00`, SHA-256 `4f99ee07feafbb5cb6c0a866c546ae201c8f639ecf6a930ead78efa843c99fe4` immediately after the normalized-only deletion.
+
+Because the original observer tab was lost when the browser integration reconnected, this proves independent hard-refresh reconstruction after deletion, not the required no-refresh second-browser overlay deletion. That narrower realtime case remains open.
+
+The hard-refresh check exposed a real display defect: the deletion audit appeared as `6:45 am` in an IST browser instead of `12:15 pm`. The typed database timestamp was correct, but the normalized mapper preferred a timezone-less `raw_data.createdAt` emitted by Phase 11. The correction makes typed `audit_at` authoritative and uses one `timestamptz now()` value for typed audit time, raw audit time, row update time, and RPC `server_time`. Characterization and SQL-contract tests cover the precedence and all three Phase 11 functions. The corrected Phase 11 definitions were applied to staging only and read-only definition checks confirmed timezone-safe implementations for `edit_pause_log`, `delete_pause_log`, and `record_session_audit`. Production was untouched.
+
+Both QA sessions were finally closed through the existing authenticated `reject_session` purpose RPC, never by direct table mutation. At `2026-08-20T06:55:37.339448+00:00`:
+
+- timed cleanup mutation `mutation-release-a-pause-delete-cleanup-20260820-1` produced audit `audit-release-a-pause-delete-cleanup-20260820-1`, event `event-2f0b6cc0-2943-4b80-a5d8-415976feb3ed`, server duration `129.429 ms`, and compatibility version `505`;
+- unit cleanup mutation `mutation-release-a-unit-cleanup-20260820-1` produced audit `audit-release-a-unit-cleanup-20260820-1`, event `event-880e92dc-e4f7-4c74-9876-6f57e370b314`, server duration `69.039 ms`, and compatibility version `506`.
+
+Both sessions are `closed`/`rejected` with their exact QA cleanup reasons, all audit/event actors are Vipin, the combined pause-row count is zero, and final `app_state` SHA-256 is `ea1b4001d668236fe2c54530b59c5d3ef56c763c7b550845ee36a38e96e29025`.
+
 ## Current gate decision
 
 Database reconstruction, additive Release A installation, staging frontend deployment, authenticated normalized-read smoke, representative timed/unit/tab v1 checkout, settlement, replacement, write-off, refund, customer-history correction, actor/stock verification, independent Chrome session/item/reject and financial realtime coverage, Bill Register invalidation correction, receipt PDF export/rendering, historical receipt linkage, analytics, customer-history, Coke inventory-report parity, hard-refresh non-resurrection checks, permission persistence/restoration, and the Gate 6 database/error/performance capture are complete. The permission checkpoint passes, but Release A remains a no-go because the remaining Gate 5 cases and full-business-day soak are not yet evidenced. No production promotion claim is made.
@@ -408,7 +434,7 @@ Database reconstruction, additive Release A installation, staging frontend deplo
 ## Remaining gated work
 
 1. Complete the controlled fail-closed history, report, customer, and inventory read cases.
-2. Retain two-browser evidence for hop/detach, remaining customer-tab item mutations, pause edit/delete, and complete pause-log overlay replacement after deletion.
+2. Retain two-browser evidence for hop/detach, remaining customer-tab item mutations, pause edit, and no-refresh complete pause-log overlay replacement after deletion. Pause deletion plus independent hard-refresh reconstruction now pass.
 3. Complete report exports beyond the receipt PDF and the inventory combo, variant, cigarette-pack, and reservation before/after-refresh matrix.
 4. Complete the full representative staging business-day soak and independent sign-off.
 

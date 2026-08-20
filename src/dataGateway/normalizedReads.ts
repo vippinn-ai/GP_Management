@@ -915,7 +915,10 @@ export function mapNormalizedAuditLog(row: AuditLogRow): AuditLog {
     entityType: toStringValue(raw.entityType, row.entity_type ?? ""),
     entityId: toStringValue(raw.entityId, row.entity_id ?? ""),
     message: toStringValue(raw.message, row.message ?? ""),
-    createdAt: toStringValue(raw.createdAt, row.audit_at ?? row.created_at),
+    // The typed timestamp is the normalized source of truth. Legacy/raw JSON may
+    // contain a timezone-less value, which browsers otherwise interpret as local
+    // time and display several hours away from the actual audit event.
+    createdAt: toStringValue(row.audit_at, toStringValue(raw.createdAt, row.created_at)),
     userId: toStringValue(raw.userId, row.user_id ?? "")
   };
 }

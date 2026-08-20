@@ -21,6 +21,16 @@ function functionBody(name: string): string {
   return match[0];
 }
 
+function maintenanceFunctionBody(name: string): string {
+  const match = maintenanceMigration.match(
+    new RegExp(`create or replace function public\\.${name}\\(payload jsonb\\)[\\s\\S]*?\\n\\$\\$;`, "i")
+  );
+  if (!match) {
+    throw new Error(`Unable to find ${name} in the maintenance migration.`);
+  }
+  return match[0];
+}
+
 describe("financial v2 SQL contract", () => {
   it("keeps both mutation RPCs completely independent of app_state", () => {
     for (const name of ["commit_checkout_bill_v2", "commit_financial_adjustment_v2"]) {
@@ -132,5 +142,14 @@ describe("financial v2 SQL contract", () => {
     expect(maintenanceMigration).toMatch(/v_paused_at < v_session_started_at/i);
     expect(maintenanceMigration).toMatch(/v_audit->>'action' <> 'hop_continuation_detached'/i);
     expect(maintenanceMigration).toMatch(/'action', 'hop_continuation_detached'/i);
+    expect(maintenanceMigration.match(/v_event_at timestamptz := now\(\)/gi)).toHaveLength(3);
+    expect(maintenanceMigration).not.toMatch(/'createdAt', timezone\('utc', now\(\)\)/i);
+    for (const name of ["edit_pause_log", "delete_pause_log", "record_session_audit"]) {
+      const body = maintenanceFunctionBody(name);
+      expect(body).toMatch(/v_event_at timestamptz := now\(\)/i);
+      expect(body).toMatch(/audit_at, user_id, raw_data\)[\s\S]*v_event_at, v_actor::text/i);
+      expect(body).toMatch(/'createdAt', v_event_at/i);
+      expect(body).toMatch(/'server_time', v_event_at/i);
+    }
   });
 });
