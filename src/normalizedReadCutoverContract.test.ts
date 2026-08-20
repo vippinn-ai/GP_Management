@@ -46,4 +46,12 @@ describe("normalized Release A read-path contract", () => {
       /const refreshNormalizedBillRegister = useCallback\([\s\S]*?setNormalizedBillRegisterRefreshSignal\(\(previous\) => previous \+ 1\);/
     );
   });
+
+  it("uses a controlled modal for void and refund instead of native dialogs", () => {
+    expect(appSource).not.toContain('window.prompt("Enter reason for void/refund:")');
+    expect(appSource).not.toContain('window.confirm("OK = refund, Cancel = void")');
+    expect(appSource).toContain('setVoidRefundDraft({ billId, reason: "", action: "void" })');
+    expect(appSource).toContain('aria-label="Void or refund action"');
+    expect(appSource).toContain('return commitFinancialAdjustmentChange(refund ? "Refunding bill..." : "Voiding bill..."');
+  });
 });

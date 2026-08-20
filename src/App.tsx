@@ -605,6 +605,11 @@ export default function App() {
   const [settlementDraft, setSettlementDraft] = useState<SettlementDraft | null>(null);
   const [voidPendingDraft, setVoidPendingDraft] = useState<VoidPendingDraft | null>(null);
   const [voidPendingGroupDraft, setVoidPendingGroupDraft] = useState<VoidPendingGroupDraft | null>(null);
+  const [voidRefundDraft, setVoidRefundDraft] = useState<{
+    billId: string;
+    reason: string;
+    action: "void" | "refund";
+  } | null>(null);
   const [pendingWarningDraft, setPendingWarningDraft] = useState<{
     pendingBills: Bill[];
     customerLabel: string;
@@ -6910,14 +6915,22 @@ export default function App() {
     if (!activeUser || !canVoidRefundBills) {
       return;
     }
-    const reason = window.prompt("Enter reason for void/refund:");
-    if (!reason?.trim()) {
+    const bill = appData.bills.find((entry) => entry.id === billId);
+    if (!bill || bill.status !== "issued") {
       return;
     }
-    const refund = window.confirm("OK = refund, Cancel = void");
+    setVoidRefundDraft({ billId, reason: "", action: "void" });
+  }
+
+  function submitVoidOrRefundBill(): Promise<boolean> {
+    if (!activeUser || !canVoidRefundBills || !voidRefundDraft?.reason.trim()) {
+      return Promise.resolve(false);
+    }
+    const refund = voidRefundDraft.action === "refund";
     const voidedAt = new Date().toISOString();
-    const cleanReason = reason.trim();
-    void commitFinancialAdjustmentChange(refund ? "Refunding bill..." : "Voiding bill...", refund ? "refundBill" : "voidBill", "bill", billId, (draft) => {
+    const cleanReason = voidRefundDraft.reason.trim();
+    const billId = voidRefundDraft.billId;
+    return commitFinancialAdjustmentChange(refund ? "Refunding bill..." : "Voiding bill...", refund ? "refundBill" : "voidBill", "bill", billId, (draft) => {
       const bill = draft.bills.find((entry) => entry.id === billId);
       if (!bill || bill.status !== "issued") {
         return false;
@@ -9456,6 +9469,55 @@ export default function App() {
                 disabled={!voidPendingGroupDraft.reason.trim()}
               >
                 Write Off Selected
+              </button>
+            </div>
+          </Modal>
+        );
+      })()}
+      {voidRefundDraft && (() => {
+        const targetBill = appData.bills.find((bill) => bill.id === voidRefundDraft.billId);
+        if (!targetBill || targetBill.status !== "issued") return null;
+        const isRefund = voidRefundDraft.action === "refund";
+        return (
+          <Modal title={`Void or Refund - ${targetBill.billNumber}`} onClose={() => setVoidRefundDraft(null)}>
+            <div className="form-grid">
+              <div className="field-span-full checkout-summary">
+                <div><span className="muted">Bill Total</span><strong>{currency(targetBill.total)}</strong></div>
+                <div><span className="muted">Paid</span><strong>{currency(targetBill.amountPaid)}</strong></div>
+              </div>
+              <label>
+                <span>Action</span>
+                <select
+                  aria-label="Void or refund action"
+                  value={voidRefundDraft.action}
+                  onChange={(event) => setVoidRefundDraft((draft) => draft ? { ...draft, action: event.target.value as "void" | "refund" } : draft)}
+                >
+                  <option value="void">Void</option>
+                  <option value="refund">Refund</option>
+                </select>
+              </label>
+              <label className="field-span-full">
+                <span>Reason</span>
+                <input
+                  value={voidRefundDraft.reason}
+                  placeholder={`Reason for ${isRefund ? "refunding" : "voiding"} this bill`}
+                  onChange={(event) => setVoidRefundDraft((draft) => draft ? { ...draft, reason: event.target.value } : draft)}
+                />
+              </label>
+            </div>
+            <div className="button-row">
+              <button className="secondary-button" type="button" onClick={() => setVoidRefundDraft(null)}>Cancel</button>
+              <button
+                className="danger-button"
+                type="button"
+                onClick={() => {
+                  void submitVoidOrRefundBill().then((saved) => {
+                    if (saved) setVoidRefundDraft(null);
+                  });
+                }}
+                disabled={!voidRefundDraft.reason.trim()}
+              >
+                Confirm {isRefund ? "Refund" : "Void"}
               </button>
             </div>
           </Modal>

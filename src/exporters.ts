@@ -90,7 +90,7 @@ export function exportRowsToPdf(rows: ReportRow[], filename: string, businessNam
 
   pdf.setFontSize(9);
   for (const row of rows) {
-    const line = `${row.billNumber} | ${row.date} | ${row.station} | ${row.customer} | ${row.paymentMode.toUpperCase()} | ${currency(row.total)} | ${row.status}`;
+    const line = `${row.billNumber} | ${row.date} | ${row.station} | ${row.customer} | ${row.paymentMode.toUpperCase()} | ${pdfSafeText(currency(row.total))} | ${row.status}`;
     const wrapped = pdf.splitTextToSize(line, 520);
     pdf.text(wrapped, 40, y);
     y += wrapped.length * 12 + 4;
@@ -164,7 +164,7 @@ export async function downloadReceiptPdf(business: BusinessProfile, bill: Bill, 
   for (const row of receipt.metaRows) {
     pdf.setFont("helvetica", "normal");
     pdf.text(row.label, horizontalPadding, y);
-    pdf.text(row.value, pageWidth - horizontalPadding, y, { align: "right" });
+    pdf.text(pdfSafeText(row.value), pageWidth - horizontalPadding, y, { align: "right" });
     y += 11;
   }
 
@@ -177,12 +177,12 @@ export async function downloadReceiptPdf(business: BusinessProfile, bill: Bill, 
     pdf.setFontSize(9);
     const titleLines = pdf.splitTextToSize(entry.title, contentWidth - 56);
     pdf.text(titleLines, horizontalPadding, y);
-    pdf.text(entry.amount, pageWidth - horizontalPadding, y, { align: "right" });
+    pdf.text(pdfSafeText(entry.amount), pageWidth - horizontalPadding, y, { align: "right" });
     y += titleLines.length * 10;
 
     pdf.setFont("helvetica", "normal");
     pdf.setFontSize(8);
-    const detailLines = pdf.splitTextToSize(entry.detail, contentWidth);
+    const detailLines = pdf.splitTextToSize(pdfSafeText(entry.detail), contentWidth);
     pdf.text(detailLines, horizontalPadding, y);
     y += detailLines.length * 9 + 6;
   }
@@ -190,22 +190,22 @@ export async function downloadReceiptPdf(business: BusinessProfile, bill: Bill, 
   drawDivider(pdf, horizontalPadding, y, pageWidth);
   y += 12;
 
-  y = drawTotalRow(pdf, "Subtotal", receipt.subtotal, horizontalPadding, pageWidth, y);
-  y = drawTotalRow(pdf, "Discount", receipt.discount, horizontalPadding, pageWidth, y);
+  y = drawTotalRow(pdf, "Subtotal", pdfSafeText(receipt.subtotal), horizontalPadding, pageWidth, y);
+  y = drawTotalRow(pdf, "Discount", pdfSafeText(receipt.discount), horizontalPadding, pageWidth, y);
   if (receipt.roundOff) {
-    y = drawTotalRow(pdf, "Round Off", receipt.roundOff, horizontalPadding, pageWidth, y);
+    y = drawTotalRow(pdf, "Round Off", pdfSafeText(receipt.roundOff), horizontalPadding, pageWidth, y);
   }
   pdf.setFont("helvetica", "bold");
   pdf.setFontSize(11);
   pdf.text("Total", horizontalPadding, y);
-  pdf.text(receipt.total, pageWidth - horizontalPadding, y, { align: "right" });
+  pdf.text(pdfSafeText(receipt.total), pageWidth - horizontalPadding, y, { align: "right" });
   y += 18;
 
   if (receipt.previousDueSummary) {
     drawDivider(pdf, horizontalPadding, y, pageWidth);
     y += 12;
-    y = drawTotalRow(pdf, "Previous Dues Paid", receipt.previousDueSummary.total, horizontalPadding, pageWidth, y);
-    y = drawTotalRow(pdf, "Cash / UPI", `${receipt.previousDueSummary.cash} / ${receipt.previousDueSummary.upi}`, horizontalPadding, pageWidth, y);
+    y = drawTotalRow(pdf, "Previous Dues Paid", pdfSafeText(receipt.previousDueSummary.total), horizontalPadding, pageWidth, y);
+    y = drawTotalRow(pdf, "Cash / UPI", pdfSafeText(`${receipt.previousDueSummary.cash} / ${receipt.previousDueSummary.upi}`), horizontalPadding, pageWidth, y);
     const billLines = pdf.splitTextToSize(`Bills: ${receipt.previousDueSummary.billNumbers}`, contentWidth);
     pdf.setFont("helvetica", "normal");
     pdf.setFontSize(8);
@@ -449,6 +449,10 @@ function getReceiptBrandHeader(business: BusinessProfile) {
     title: rawTitle.replace(/([a-z])([A-Z])/g, "$1 $2").toUpperCase(),
     subtitle: match ? "Gaming Lounge" : ""
   };
+}
+
+export function pdfSafeText(value: string): string {
+  return value.replaceAll("₹", "Rs ");
 }
 
 function drawDivider(pdf: jsPDF, x: number, y: number, pageWidth: number) {
