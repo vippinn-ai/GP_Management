@@ -10,10 +10,10 @@
 
 ## Evidence metadata
 
-- Execution window: `2026-08-19T19:28:17Z` through `2026-08-19T20:56:52Z` (`2026-08-20 00:58` through `02:26` IST) for the recorded active run; the required business-day soak remains open.
+- Execution window: `2026-08-19T19:28:17Z` through `2026-08-20T03:45Z` (`2026-08-20 00:58` through approximately `09:15` IST) for the recorded active runs; the required business-day soak remains open.
 - Operator: Codex primary agent using the user-authorized authenticated staging sessions.
 - Independent reviewer: separate read-only checkout test agent.
-- Browser surface: authenticated Codex in-app browser; an independent Chrome profile was unavailable because its local native-host integration was not connected.
+- Browser surface: authenticated Codex in-app browser plus the user's independently authenticated Chrome profile through the connected browser integration.
 - Previous accepted staging frontend version: `8bd7fd6d-9084-428f-859d-26b04123135c`.
 - Current staging frontend version: `c76b06d6-3cab-408f-a32c-d1937b14b562`.
 
@@ -186,7 +186,26 @@ A controlled realtime mutation was then run from the deployed staging UI:
 - Both tabs received the closure through realtime: `0` live open sessions, `Arcade 3` Available, and the QA customer absent from live sessions.
 - Both tabs retained the same state after hard refresh; the closed QA session did not resurrect.
 
-This is a same-browser, two-tab realtime check. A genuinely independent Chrome profile could not be connected because the local Chrome native-host integration is unavailable. The required independent two-browser gate therefore remains open; it is not represented as passed here.
+This first lifecycle was a same-browser, two-tab realtime check. Its former Chrome-connectivity limitation was subsequently removed. The independent Chrome lifecycle below supersedes that limitation for session start/item/reject/reload coverage, but it does not represent the whole Gate 5 matrix as passed.
+
+### Independent Chrome lifecycle and non-resurrection check
+
+A second controlled lifecycle used two genuinely independent browser sessions: the authenticated Codex in-app browser and the user's separately authenticated Chrome profile.
+
+- Test customer: `QA Independent Chrome 20260820 0905`.
+- Session: `session-9d6a8e93-12c9-42da-87e3-9327c0782f6c` on `Arcade 2`.
+- The in-app origin started the unit session at `2026-08-20T03:34:46.409+00:00` with one `Arcade 1 Coin`, quantity `1`, unit price Rs 5.
+- Chrome received the new Running session through realtime without refresh and showed the same Rs 5 live total.
+- The origin added one Coke; Chrome independently received the Rs 15 total. The origin then removed Coke; Chrome independently returned to Rs 5. The persisted session subsequently contained only the original Arcade coin.
+- Start mutation/event: `op-3111337b-f2f7-4235-8836-8a8b4a0f3ad5` / `start_session`.
+- Add mutation/event: `op-5fcb0615-d160-4a2c-b01b-a53b6b80450a` / `add_session_item`.
+- Remove mutation/event: `op-249feed0-84b8-47b7-bec2-249d6147d1e0` / `remove_session_item`.
+- Chrome initiated the normal UI rejection. The persisted rejection time is `2026-08-20T03:44:45.187+00:00`; the stored reason is `reject`.
+- Reject mutation/event: `op-abb91978-c253-46c5-897c-083e24cb5808` / `reject_session`; server duration `198.529 ms`.
+- The final session is closed with disposition `rejected`, no bill link, and `Arcade 2` available.
+- All four audit rows and all four operational events resolve to the authenticated `Vipin` / `vipin` profile (`61cc2f83-69d1-46ab-9d89-9df7f7b1e497`).
+- Compatibility `app_state.version` advanced to `494`; final SHA-256 is `4f0f0865923aaf5c8bf7768b74ffffeb214b62820d1bcf0ed08fbb5e81eb6af5`, updated at `2026-08-20T03:44:47.166446+00:00` by the same actor.
+- A fresh in-app browser load and a full Chrome reload each reconstructed `0` open sessions, showed `Arcade 2` Available, displayed the rejection audit, and did not resurrect the closed session.
 
 ## Extended v1 financial and downstream verification
 
@@ -227,19 +246,19 @@ The repository 36-row parity query returned three nonzero collection-count rows 
 
 | Collection | `app_state` | Normalized | Delta | Reconciliation |
 | --- | ---: | ---: | ---: | --- |
-| audit logs | 538 | 551 | +13 | Exactly the controlled purpose-RPC audit IDs: session start/pause/resume/pause edit/pause delete/item add/item remove, unit-session start, and the two tab-open/item-add pairs. |
-| customers | 62 | 66 | +4 | Exactly the four normalized QA customer rows created through purpose-built operational RPCs. |
-| stock movements | 275 | 277 | +2 | Exactly the Coke session reservation `-1` and reservation release `+1`, net zero. |
+| audit logs | 539 | 555 | +16 | The prior 13 controlled normalized-only purpose-RPC audits plus the independent Chrome lifecycle's session start, Coke add, and Coke remove. The rejection audit was patched into both normalized storage and compatibility state. |
+| customers | 62 | 67 | +5 | Exactly the five normalized QA customer rows created through purpose-built operational RPCs. |
+| stock movements | 275 | 279 | +4 | Two controlled Coke reservation/release pairs (`-1`, `+1`), including the independent Chrome lifecycle; combined net zero. |
 
 These deltas are explained normalized-only operational history, not missing normalized data. They demonstrate why Release A must not roll reads back to the compatibility snapshot. They do not satisfy the complete Gate 6 by themselves; the remaining verification scripts, second-browser matrix, and soak evidence are still required.
 
 ## Current gate decision
 
-Database reconstruction, additive Release A installation, staging frontend deployment, authenticated normalized-read smoke, controlled operational lifecycle checks, representative timed/unit/tab v1 checkout, settlement, customer-history correction, actor/stock verification, same-browser realtime, and hard-refresh non-resurrection checks are complete. The independent-browser, remaining Gate 5 adjustment/downstream/fail-closed matrix, complete Gate 6 capture, performance, and full-business-day soak gates remain open. No production promotion claim is made.
+Database reconstruction, additive Release A installation, staging frontend deployment, authenticated normalized-read smoke, controlled operational lifecycle checks, representative timed/unit/tab v1 checkout, settlement, customer-history correction, actor/stock verification, independent Chrome session/item/reject realtime coverage, and hard-refresh non-resurrection checks are complete. The remaining independent-browser Gate 5 checkout/tab/adjustment/downstream/fail-closed matrix, complete Gate 6 capture, performance, and full-business-day soak gates remain open. No production promotion claim is made.
 
 ## Remaining gated work
 
-1. Connect a genuinely independent second staging browser and execute the remaining Gate 5 functional/two-browser cases.
+1. Execute the remaining Gate 5 functional/two-browser cases in the now-connected independent Chrome profile, including timed and tab checkout coverage.
 2. Complete the remaining Bill Register adjustment, older-history receipt, receivables, permissions, controlled fail-closed, reports/export, and inventory matrix.
 3. Complete the remaining Gate 6 definitions/grants/indexes/publication/error/duplicate captures and performance probes.
 4. Complete the full representative staging business-day soak and independent sign-off.
