@@ -13,7 +13,7 @@ interface NormalizedExpenseDetail {
   monthKey: string;
 }
 import { NumericInput } from "../components/NumericInput";
-import { type ReportRow } from "../exporters";
+import { exportRowsToCsv, exportRowsToPdf, exportRowsToXlsx, type ReportRow } from "../exporters";
 
 interface ExpenseForm {
   title: string;
@@ -96,7 +96,7 @@ export function ReportsPanel(props: {
   onResolveBackfillPrompt: (templateId: string, backfill: boolean) => void;
 }) {
   const {
-    reportFilter, reportFromDate, reportToDate, summary, expenseForm, expenseTemplateForm,
+    businessProfile, reportFilter, reportFromDate, reportToDate, reportRows, summary, expenseForm, expenseTemplateForm,
     filteredExpenses, expenseCategoryOptions, expenseTemplates, expenseTemplateOverrides,
     canCreateExpenses, canDeleteExpenses, canManageExpenseTemplates, isManagerReadOnly
   } = props;
@@ -234,6 +234,29 @@ export function ReportsPanel(props: {
               <strong>{props.resolvedReportRangeLabel}</strong>
             </div>
             <div className="muted">{reportFromDate} to {reportToDate}</div>
+          </div>
+          <div className="button-row compact-actions" aria-label="Report exports">
+            <button
+              className="secondary-button"
+              type="button"
+              onClick={() => exportRowsToCsv(reportRows, `report-${reportFromDate}-${reportToDate}.csv`)}
+            >
+              Export CSV
+            </button>
+            <button
+              className="secondary-button"
+              type="button"
+              onClick={() => exportRowsToXlsx(reportRows, `report-${reportFromDate}-${reportToDate}.xlsx`)}
+            >
+              Export Excel
+            </button>
+            <button
+              className="secondary-button"
+              type="button"
+              onClick={() => exportRowsToPdf(reportRows, `report-${reportFromDate}-${reportToDate}.pdf`, businessProfile.name)}
+            >
+              Export PDF
+            </button>
           </div>
         </div>
       </div>

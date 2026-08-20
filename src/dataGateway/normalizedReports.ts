@@ -6,6 +6,9 @@ import { getBusinessDayIssuedAtRange, mapNormalizedBill, mapNormalizedBillDiscou
 import { loadNormalizedActiveOrganization } from "./normalizedReads";
 
 const REPORT_READ_TIMEOUT_MS = 20_000;
+const REPORT_PAGE_SIZE = 500;
+const REPORT_ID_BATCH_SIZE = 100;
+const MAX_REPORT_ROWS_PER_QUERY = 100_000;
 
 const BILL_SELECT_COLUMNS =
   "id, bill_number, status, created_at_source, issued_at, issued_by_user_id, customer_id, customer_name, customer_phone, payment_mode, station_id, session_id, amount_paid, amount_due, subtotal, total_discount_amount, bill_discount_amount, round_off_enabled, round_off_amount, total, receipt_type, replacement_of_bill_id, replaced_by_bill_id, replaced_at, replaced_by_user_id, replace_reason, voided_at, voided_by_user_id, void_reason, settled_at, settled_by_user_id, raw_data";
@@ -215,6 +218,66 @@ async function readMany<T>(request: PromiseLike<NormalizedQueryResult<T[]>>, act
   return result.data ?? [];
 }
 
+export async function exhaustNormalizedReportPages<T, TCursor>(
+  loadPage: (cursor: TCursor | undefined, limit: number) => PromiseLike<NormalizedQueryResult<T[]>>,
+  action: string,
+  getCursor: (lastRow: T) => TCursor,
+  pageSize = REPORT_PAGE_SIZE
+): Promise<T[]> {
+  const rows: T[] = [];
+  let cursor: TCursor | undefined;
+  while (true) {
+    const page = await readMany(loadPage(cursor, pageSize), action);
+    if (rows.length + page.length > MAX_REPORT_ROWS_PER_QUERY) {
+      throw new Error(
+        `Normalized report data exceeded the safe ${MAX_REPORT_ROWS_PER_QUERY.toLocaleString("en-IN")} row limit while ${action}. Refine the report range before showing or exporting partial data.`
+      );
+    }
+    rows.push(...page);
+    if (page.length < pageSize) {
+      return rows;
+    }
+    const nextCursor = getCursor(page[page.length - 1]);
+    if (JSON.stringify(nextCursor) === JSON.stringify(cursor)) {
+      throw new Error(`Normalized report pagination did not advance while ${action}.`);
+    }
+    cursor = nextCursor;
+  }
+}
+
+interface CompoundReportCursor {
+  value: string;
+  id: string;
+}
+
+function quotePostgrestValue(value: string): string {
+  return `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
+}
+
+function buildCompoundCursorFilter(column: string, cursor: CompoundReportCursor, ascending: boolean): string {
+  const comparison = ascending ? "gt" : "lt";
+  const value = quotePostgrestValue(cursor.value);
+  const id = quotePostgrestValue(cursor.id);
+  return `${column}.${comparison}.${value},and(${column}.eq.${value},id.${comparison}.${id})`;
+}
+
+function appendCappedRows<T>(target: T[], additions: T[], action: string): void {
+  if (target.length + additions.length > MAX_REPORT_ROWS_PER_QUERY) {
+    throw new Error(
+      `Normalized report data exceeded the safe ${MAX_REPORT_ROWS_PER_QUERY.toLocaleString("en-IN")} row limit while ${action}. Refine the report range before showing or exporting partial data.`
+    );
+  }
+  target.push(...additions);
+}
+
+function chunkValues(values: string[], size = REPORT_ID_BATCH_SIZE): string[][] {
+  const chunks: string[][] = [];
+  for (let index = 0; index < values.length; index += size) {
+    chunks.push(values.slice(index, index + size));
+  }
+  return chunks;
+}
+
 export function getLocalDateRange(from: string, to: string): { fromIso: string; toIsoExclusive: string } {
   const start = new Date(`${from}T00:00:00`);
   const end = addDays(new Date(`${to}T00:00:00`), 1);
@@ -311,7 +374,14 @@ export function buildNormalizedReportData(params: {
 
   return {
     bills,
-    payments: params.paymentRows.map(mapNormalizedPayment).filter((payment) => payment.billId),
+    payments: Array.from(
+      new Map(
+        params.paymentRows
+          .map(mapNormalizedPayment)
+          .filter((payment) => payment.billId)
+          .map((payment) => [payment.id, payment])
+      ).values()
+    ),
     expenses: params.expenseRows.map(mapNormalizedExpense),
     billBusinessDates
   };
@@ -328,15 +398,63 @@ async function loadRowsByIds<T>(
   if (ids.length === 0) {
     return [];
   }
-  const request = client
-    .from(table)
-    .select(columns)
-    .eq("organization_id", organizationId)
-    .in("id", ids) as unknown as PromiseLike<NormalizedQueryResult<T[]>>;
-  return readMany<T>(
-    request,
-    action
-  );
+  const rows: T[] = [];
+  for (const idBatch of chunkValues(ids)) {
+    const additions = await exhaustNormalizedReportPages<T, string>(
+      (cursor, limit) => {
+        let request = client
+          .from(table)
+          .select(columns)
+          .eq("organization_id", organizationId)
+          .in("id", idBatch)
+          .order("id", { ascending: true })
+          .limit(limit);
+        if (cursor) request = request.gt("id", cursor);
+        return request as unknown as PromiseLike<NormalizedQueryResult<T[]>>;
+      },
+      action,
+      (lastRow) => String((lastRow as Record<string, unknown>).id)
+    );
+    appendCappedRows(rows, additions, action);
+  }
+  return rows;
+}
+
+async function loadRowsByForeignIds<T>(params: {
+  client: SupabaseClient;
+  table: string;
+  columns: string;
+  organizationId: string;
+  foreignIdColumn: string;
+  ids: string[];
+  orderColumns: string[];
+  action: string;
+}): Promise<T[]> {
+  if (params.ids.length === 0) return [];
+  const rows: T[] = [];
+  for (const idBatch of chunkValues(params.ids)) {
+    const additions = await exhaustNormalizedReportPages<T, CompoundReportCursor>(
+      (cursor, limit) => {
+        let request = params.client
+          .from(params.table)
+          .select(params.columns)
+          .eq("organization_id", params.organizationId)
+          .in(params.foreignIdColumn, idBatch);
+        params.orderColumns.forEach((column) => {
+          request = request.order(column, { ascending: true });
+        });
+        if (cursor) request = request.or(buildCompoundCursorFilter(params.foreignIdColumn, cursor, true));
+        return request.limit(limit) as unknown as PromiseLike<NormalizedQueryResult<T[]>>;
+      },
+      params.action,
+      (lastRow) => ({
+        value: String((lastRow as Record<string, unknown>)[params.foreignIdColumn]),
+        id: String((lastRow as Record<string, unknown>).id)
+      })
+    );
+    appendCappedRows(rows, additions, params.action);
+  }
+  return rows;
 }
 
 export async function loadNormalizedReportData(
@@ -349,58 +467,87 @@ export async function loadNormalizedReportData(
   const expenseRange = getLocalDateRange(query.fromDate, query.toDate);
 
   const [issuedBillRows, paymentRows, sessionActivityRows, customerTabActivityRows, expenseRows] = await Promise.all([
-    readMany<BillRow>(
-      client
-        .from("bills")
-        .select(BILL_SELECT_COLUMNS)
-        .eq("organization_id", organizationId)
-        .gte("issued_at", reportRange.fromIso ?? "")
-        .lt("issued_at", reportRange.toIsoExclusive ?? "")
-        .order("issued_at", { ascending: false })
-        .order("id", { ascending: false }),
-      "loading normalized report bills"
+    exhaustNormalizedReportPages<BillRow, CompoundReportCursor>(
+      (cursor, limit) => {
+        let request = client
+          .from("bills")
+          .select(BILL_SELECT_COLUMNS)
+          .eq("organization_id", organizationId)
+          .gte("issued_at", reportRange.fromIso ?? "")
+          .lt("issued_at", reportRange.toIsoExclusive ?? "")
+          .order("issued_at", { ascending: false })
+          .order("id", { ascending: false });
+        if (cursor) request = request.or(buildCompoundCursorFilter("issued_at", cursor, false));
+        return request.limit(limit);
+      },
+      "loading normalized report bills",
+      (lastRow) => ({ value: lastRow.issued_at ?? "", id: lastRow.id })
     ),
-    readMany<PaymentRow>(
-      client
-        .from("payments")
-        .select(PAYMENT_SELECT_COLUMNS)
-        .eq("organization_id", organizationId)
-        .gte("paid_at", paymentRange.fromIso ?? "")
-        .lt("paid_at", paymentRange.toIsoExclusive ?? "")
-        .order("paid_at", { ascending: false })
-        .order("id", { ascending: false }),
-      "loading normalized report payments"
+    exhaustNormalizedReportPages<PaymentRow, CompoundReportCursor>(
+      (cursor, limit) => {
+        let request = client
+          .from("payments")
+          .select(PAYMENT_SELECT_COLUMNS)
+          .eq("organization_id", organizationId)
+          .gte("paid_at", paymentRange.fromIso ?? "")
+          .lt("paid_at", paymentRange.toIsoExclusive ?? "")
+          .order("paid_at", { ascending: false })
+          .order("id", { ascending: false });
+        if (cursor) request = request.or(buildCompoundCursorFilter("paid_at", cursor, false));
+        return request.limit(limit);
+      },
+      "loading normalized report payments",
+      (lastRow) => ({ value: lastRow.paid_at ?? "", id: lastRow.id })
     ),
-    readMany<SessionActivityRow>(
-      client
-        .from("sessions")
-        .select("id, started_at, closed_bill_id")
-        .eq("organization_id", organizationId)
-        .not("closed_bill_id", "is", null)
-        .gte("started_at", reportRange.fromIso ?? "")
-        .lt("started_at", reportRange.toIsoExclusive ?? ""),
-      "loading normalized report session activity"
+    exhaustNormalizedReportPages<SessionActivityRow, CompoundReportCursor>(
+      (cursor, limit) => {
+        let request = client
+          .from("sessions")
+          .select("id, started_at, closed_bill_id")
+          .eq("organization_id", organizationId)
+          .not("closed_bill_id", "is", null)
+          .gte("started_at", reportRange.fromIso ?? "")
+          .lt("started_at", reportRange.toIsoExclusive ?? "")
+          .order("started_at", { ascending: false })
+          .order("id", { ascending: false });
+        if (cursor) request = request.or(buildCompoundCursorFilter("started_at", cursor, false));
+        return request.limit(limit);
+      },
+      "loading normalized report session activity",
+      (lastRow) => ({ value: lastRow.started_at ?? "", id: lastRow.id })
     ),
-    readMany<CustomerTabActivityRow>(
-      client
-        .from("customer_tabs")
-        .select("id, opened_at, closed_bill_id")
-        .eq("organization_id", organizationId)
-        .not("closed_bill_id", "is", null)
-        .gte("opened_at", reportRange.fromIso ?? "")
-        .lt("opened_at", reportRange.toIsoExclusive ?? ""),
-      "loading normalized report customer tab activity"
+    exhaustNormalizedReportPages<CustomerTabActivityRow, CompoundReportCursor>(
+      (cursor, limit) => {
+        let request = client
+          .from("customer_tabs")
+          .select("id, opened_at, closed_bill_id")
+          .eq("organization_id", organizationId)
+          .not("closed_bill_id", "is", null)
+          .gte("opened_at", reportRange.fromIso ?? "")
+          .lt("opened_at", reportRange.toIsoExclusive ?? "")
+          .order("opened_at", { ascending: false })
+          .order("id", { ascending: false });
+        if (cursor) request = request.or(buildCompoundCursorFilter("opened_at", cursor, false));
+        return request.limit(limit);
+      },
+      "loading normalized report customer tab activity",
+      (lastRow) => ({ value: lastRow.opened_at ?? "", id: lastRow.id })
     ),
-    readMany<ExpenseRow>(
-      client
-        .from("expenses")
-        .select(EXPENSE_SELECT_COLUMNS)
-        .eq("organization_id", organizationId)
-        .gte("spent_at", expenseRange.fromIso)
-        .lt("spent_at", expenseRange.toIsoExclusive)
-        .order("spent_at", { ascending: false })
-        .order("id", { ascending: false }),
-      "loading normalized report expenses"
+    exhaustNormalizedReportPages<ExpenseRow, CompoundReportCursor>(
+      (cursor, limit) => {
+        let request = client
+          .from("expenses")
+          .select(EXPENSE_SELECT_COLUMNS)
+          .eq("organization_id", organizationId)
+          .gte("spent_at", expenseRange.fromIso)
+          .lt("spent_at", expenseRange.toIsoExclusive)
+          .order("spent_at", { ascending: false })
+          .order("id", { ascending: false });
+        if (cursor) request = request.or(buildCompoundCursorFilter("spent_at", cursor, false));
+        return request.limit(limit);
+      },
+      "loading normalized report expenses",
+      (lastRow) => ({ value: lastRow.spent_at ?? "", id: lastRow.id })
     )
   ]);
 
@@ -410,50 +557,54 @@ export async function loadNormalizedReportData(
     ...sessionActivityRows.map((row) => row.closed_bill_id),
     ...customerTabActivityRows.map((row) => row.closed_bill_id)
   ]);
+  if (billIds.length > MAX_REPORT_ROWS_PER_QUERY) {
+    throw new Error(
+      `Normalized report data exceeded the safe ${MAX_REPORT_ROWS_PER_QUERY.toLocaleString("en-IN")} related-bill limit. Refine the report range before showing or exporting partial data.`
+    );
+  }
 
   const billRows =
     billIds.length > 0
-      ? await readMany<BillRow>(
-          client
-            .from("bills")
-            .select(BILL_SELECT_COLUMNS)
-            .eq("organization_id", organizationId)
-            .in("id", billIds),
-          "loading normalized report bill details"
-        )
+      ? await loadRowsByIds<BillRow>(client, "bills", BILL_SELECT_COLUMNS, organizationId, billIds, "loading normalized report bill details")
       : [];
   const sessionIds = uniqueValues(billRows.map((row) => row.session_id));
 
   const [billLineRows, billDiscountRows, billLineDiscountRows, billSessionRows, billCustomerTabRows] = await Promise.all([
     billIds.length > 0
-      ? readMany<BillLineRow>(
-          client
-            .from("bill_lines")
-            .select(BILL_LINE_SELECT_COLUMNS)
-            .eq("organization_id", organizationId)
-            .in("bill_id", billIds),
-          "loading normalized report bill lines"
-        )
+      ? loadRowsByForeignIds<BillLineRow>({
+          client,
+          table: "bill_lines",
+          columns: BILL_LINE_SELECT_COLUMNS,
+          organizationId,
+          foreignIdColumn: "bill_id",
+          ids: billIds,
+          orderColumns: ["bill_id", "id"],
+          action: "loading normalized report bill lines"
+        })
       : Promise.resolve([]),
     billIds.length > 0
-      ? readMany<BillDiscountRow>(
-          client
-            .from("bill_discounts")
-            .select(BILL_DISCOUNT_SELECT_COLUMNS)
-            .eq("organization_id", organizationId)
-            .in("bill_id", billIds),
-          "loading normalized report bill discounts"
-        )
+      ? loadRowsByForeignIds<BillDiscountRow>({
+          client,
+          table: "bill_discounts",
+          columns: BILL_DISCOUNT_SELECT_COLUMNS,
+          organizationId,
+          foreignIdColumn: "bill_id",
+          ids: billIds,
+          orderColumns: ["bill_id", "id"],
+          action: "loading normalized report bill discounts"
+        })
       : Promise.resolve([]),
     billIds.length > 0
-      ? readMany<BillLineDiscountRow>(
-          client
-            .from("bill_line_discounts")
-            .select(BILL_LINE_DISCOUNT_SELECT_COLUMNS)
-            .eq("organization_id", organizationId)
-            .in("bill_id", billIds),
-          "loading normalized report line discounts"
-        )
+      ? loadRowsByForeignIds<BillLineDiscountRow>({
+          client,
+          table: "bill_line_discounts",
+          columns: BILL_LINE_DISCOUNT_SELECT_COLUMNS,
+          organizationId,
+          foreignIdColumn: "bill_id",
+          ids: billIds,
+          orderColumns: ["bill_id", "id"],
+          action: "loading normalized report line discounts"
+        })
       : Promise.resolve([]),
     loadRowsByIds<SessionActivityRow>(
       client,
@@ -464,14 +615,16 @@ export async function loadNormalizedReportData(
       "loading normalized report linked sessions"
     ),
     billIds.length > 0
-      ? readMany<CustomerTabActivityRow>(
-          client
-            .from("customer_tabs")
-            .select("id, opened_at, closed_bill_id")
-            .eq("organization_id", organizationId)
-            .in("closed_bill_id", billIds),
-          "loading normalized report linked customer tabs"
-        )
+      ? loadRowsByForeignIds<CustomerTabActivityRow>({
+          client,
+          table: "customer_tabs",
+          columns: "id, opened_at, closed_bill_id",
+          organizationId,
+          foreignIdColumn: "closed_bill_id",
+          ids: billIds,
+          orderColumns: ["closed_bill_id", "id"],
+          action: "loading normalized report linked customer tabs"
+        })
       : Promise.resolve([])
   ]);
 

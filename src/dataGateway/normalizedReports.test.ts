@@ -1,7 +1,123 @@
 import { describe, expect, it } from "vitest";
-import { buildNormalizedReportData, getLocalDateRange, getReportPaymentQueryRange, mapNormalizedExpense } from "./normalizedReports";
+import { buildNormalizedReportData, exhaustNormalizedReportPages, getLocalDateRange, getReportPaymentQueryRange, loadNormalizedReportData, mapNormalizedExpense } from "./normalizedReports";
 
 describe("normalized report ranges", () => {
+  it("loads every page instead of silently accepting the backend row cap", async () => {
+    const source = Array.from({ length: 1_201 }, (_, index) => ({ id: `bill-${index + 1}` }));
+    const requestedRanges: Array<[number, number]> = [];
+
+    const rows = await exhaustNormalizedReportPages(
+      async (cursor: number | undefined, limit) => {
+        const from = cursor ?? 0;
+        requestedRanges.push([from, from + limit - 1]);
+        return { data: source.slice(from, from + limit), error: null };
+      },
+      "loading a large normalized report",
+      (lastRow) => Number(lastRow.id.slice("bill-".length)),
+      500
+    );
+
+    expect(requestedRanges).toEqual([[0, 499], [500, 999], [1000, 1499]]);
+    expect(rows).toHaveLength(1_201);
+    expect(rows.at(-1)).toEqual({ id: "bill-1201" });
+  });
+
+  it("paginates the complete report loader and retains a bill beyond the first backend page", async () => {
+    const billRows = Array.from({ length: 501 }, (_, index) => {
+      const id = `bill-${String(501 - index).padStart(4, "0")}`;
+      return {
+        id,
+        bill_number: `BILL-${id.slice(5)}`,
+        status: "issued",
+        created_at_source: `2026-08-20T${String(15 - Math.floor(index / 60)).padStart(2, "0")}:${String(59 - (index % 60)).padStart(2, "0")}:00.000Z`,
+        issued_at: `2026-08-20T${String(15 - Math.floor(index / 60)).padStart(2, "0")}:${String(59 - (index % 60)).padStart(2, "0")}:00.000Z`,
+        issued_by_user_id: "user-1",
+        customer_id: null,
+        customer_name: "Walk-in",
+        customer_phone: null,
+        payment_mode: "cash",
+        station_id: null,
+        session_id: null,
+        amount_paid: 10,
+        amount_due: 0,
+        subtotal: 10,
+        total_discount_amount: 0,
+        bill_discount_amount: 0,
+        round_off_enabled: false,
+        round_off_amount: 0,
+        total: 10,
+        receipt_type: "digital",
+        replacement_of_bill_id: null,
+        replaced_by_bill_id: null,
+        replaced_at: null,
+        replaced_by_user_id: null,
+        replace_reason: null,
+        voided_at: null,
+        voided_by_user_id: null,
+        void_reason: null,
+        settled_at: null,
+        settled_by_user_id: null,
+        raw_data: null
+      };
+    });
+    const rowsById = new Map(billRows.map((row) => [row.id, row]));
+    let primaryBillPage = 0;
+    const primaryBillCursorFilters: string[] = [];
+
+    const fakeClient = {
+      from(table: string) {
+        const state: { ids?: string[]; cursorFilter?: string; limit?: number } = {};
+        const request: Record<string, unknown> = {};
+        const chain = () => request;
+        Object.assign(request, {
+          select: chain,
+          eq: chain,
+          gte: chain,
+          lt: chain,
+          not: chain,
+          order: chain,
+          gt: chain,
+          in: (column: string, ids: string[]) => {
+            if (column === "id") state.ids = ids;
+            return request;
+          },
+          or: (filter: string) => {
+            state.cursorFilter = filter;
+            return request;
+          },
+          limit: (limit: number) => {
+            state.limit = limit;
+            return request;
+          },
+          then: (resolve: (value: unknown) => unknown, reject: (reason: unknown) => unknown) => {
+            let data: unknown[] = [];
+            if (table === "bills" && state.ids) {
+              data = state.ids.map((id) => rowsById.get(id)).filter(Boolean);
+            } else if (table === "bills") {
+              if (state.cursorFilter) primaryBillCursorFilters.push(state.cursorFilter);
+              const from = primaryBillPage * (state.limit ?? 500);
+              data = billRows.slice(from, from + (state.limit ?? 500));
+              primaryBillPage += 1;
+            }
+            return Promise.resolve({ data, error: null }).then(resolve, reject);
+          }
+        });
+        return request;
+      }
+    };
+
+    const report = await loadNormalizedReportData({
+      organizationId: "org-1",
+      fromDate: "2026-08-20",
+      toDate: "2026-08-20"
+    }, fakeClient as never);
+
+    expect(report.bills).toHaveLength(501);
+    expect(report.bills.at(-1)?.id).toBe("bill-0001");
+    expect(primaryBillCursorFilters).toHaveLength(1);
+    expect(primaryBillCursorFilters[0]).toContain("issued_at.lt.");
+  });
+
   it("uses the earliest comparison date and latest report date for payment reads", () => {
     const range = getReportPaymentQueryRange({
       fromDate: "2026-06-20",
