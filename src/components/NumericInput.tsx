@@ -54,12 +54,16 @@ export function NumericInput(props: {
     if (!nextDraft || nextDraft === ".") {
       const normalizedFallback = normalizeNumericValue(fallbackValue, mode, props.min);
       setDraftValue(formatNumericDraft(normalizedFallback, mode));
-      props.onValueChange(normalizedFallback);
+      if (normalizedFallback !== props.value) {
+        props.onValueChange(normalizedFallback);
+      }
       return;
     }
     const normalizedValue = normalizeNumericValue(Number(nextDraft), mode, props.min);
     setDraftValue(formatNumericDraft(normalizedValue, mode));
-    props.onValueChange(normalizedValue);
+    if (normalizedValue !== props.value) {
+      props.onValueChange(normalizedValue);
+    }
   }
 
   return (

@@ -29,7 +29,7 @@
 
 ## Verification
 
-- [x] Local unit and characterization tests pass (33 files / 385 tests on 2026-08-20).
+- [x] Local unit and characterization tests pass (34 files / 391 tests on 2026-08-20).
 - [ ] SQL transaction/security/idempotency/concurrency tests pass.
 - [ ] Two-browser staging test passes.
 - [ ] Performance thresholds pass on production-sized staging data.

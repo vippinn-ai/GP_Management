@@ -4624,8 +4624,14 @@ export default function App() {
     }
     const nextQuantity = clampNumber(quantity, 1);
     const currentLine = targetTab.items.find((entry) => entry.id === lineId);
-    if (currentLine?.comboApplicationId) {
+    if (!currentLine) {
+      return;
+    }
+    if (currentLine.comboApplicationId) {
       window.alert("Included combo items cannot be edited directly. Apply the combo again if the customer wants another set.");
+      return;
+    }
+    if (currentLine.quantity === nextQuantity) {
       return;
     }
     const currentItem = currentLine

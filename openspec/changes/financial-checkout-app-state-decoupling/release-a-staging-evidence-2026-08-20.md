@@ -349,7 +349,7 @@ The repository `phase3-performance-evidence-probes-single-result.sql` completed 
 - Probe 3, recent reports: planning `0.798 ms`, execution `0.213 ms`.
 - Probe 4, older-history search: planning `0.389 ms`, execution `0.451 ms`.
 - The four query plans use normalized tables. The script reads `app_state` only once to report document size; it performs no business-data update or compatibility rewrite.
-- The final review manifest was regenerated after this evidence change: 245 first-party files, 69,421 physical lines, 186 semantic hotspots, and 170 billing-relevant files.
+- The final review manifest was regenerated after this evidence change: 246 first-party files, 69,538 physical lines, 187 semantic hotspots, and 171 billing-relevant files.
 
 ## Gate 5 permission persistence and restoration
 
