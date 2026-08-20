@@ -3,19 +3,19 @@
 ## Scope
 
 - Project: `test/staging` (`tkbdyzxwwbhkpztgjjxh`), Southeast Asia (Singapore).
-- Current reviewed deployment commit: `4c1a2fc13be3f66370a320a2017e837242513193` (the initial Release A deployment was built from application commit `0af9c7b0cb35e521fd35bff9ba7980d792cf100e`).
+- Current reviewed deployment commit: `8e964f81b77c6710907412e13ab46bf16a7c866a` (the initial Release A deployment was built from application commit `0af9c7b0cb35e521fd35bff9ba7980d792cf100e`).
 - Financial v2 remained disabled; phase 10 was not applied.
 - No production project, production database, or production deployment was accessed.
 - Staging was resumed from its paused state. The initial investigation was read-only. After the user explicitly approved the staging-only destructive reconstruction, a verified backup was retained and normalized `org-primary` was rebuilt from authoritative `app_state`.
 
 ## Evidence metadata
 
-- Execution window: `2026-08-19T19:28:17Z` through at least `2026-08-20T07:14:23.327Z` (`2026-08-20 00:58` through at least `12:44` IST) for the recorded active runs; the required business-day soak remains open.
+- Execution window: `2026-08-19T19:28:17Z` through at least `2026-08-20T07:44:47.776162Z` (`2026-08-20 00:58` through at least `13:14` IST) for the recorded active runs; the required business-day soak remains open.
 - Operator: Codex primary agent using the user-authorized authenticated staging sessions.
 - Independent reviewer: separate read-only checkout test agent.
 - Browser surface: authenticated Codex in-app browser plus the user's independently authenticated Chrome profile through the connected browser integration.
 - Previous accepted staging frontend version: `c76b06d6-3cab-408f-a32c-d1937b14b562`.
-- Current staging frontend version: `5f408587-bdcb-4333-94fc-abedc030bf50`.
+- Current staging frontend version: `67dd6e80-58fc-408d-a7f0-d13742f447aa`.
 
 ## Project and compatibility baseline
 
@@ -349,7 +349,7 @@ The repository `phase3-performance-evidence-probes-single-result.sql` completed 
 - Probe 3, recent reports: planning `0.798 ms`, execution `0.213 ms`.
 - Probe 4, older-history search: planning `0.389 ms`, execution `0.451 ms`.
 - The four query plans use normalized tables. The script reads `app_state` only once to report document size; it performs no business-data update or compatibility rewrite.
-- The final review manifest was regenerated after this evidence change: 246 first-party files, 69,538 physical lines, 187 semantic hotspots, and 171 billing-relevant files.
+- The final review manifest was regenerated after this evidence change: 246 first-party files, 69,560 physical lines, 187 semantic hotspots, and 171 billing-relevant files.
 
 ## Gate 5 permission persistence and restoration
 
@@ -454,14 +454,36 @@ The session was cleaned up through the authenticated `reject_session` purpose RP
 
 Both browsers removed the session and showed zero open sessions without refresh. A subsequent independent Chrome hard reload still showed 8 Ball Pool available, zero open sessions, the deletion audit at `12:42 pm`, and the cleanup rejection at `12:43 pm`. This passes the no-refresh second-browser deletion-overlay and hard-refresh non-resurrection case. Pause edit remains open because the connected automation cannot populate the native `datetime-local` control.
 
+## Two-browser customer-tab item matrix and duplicate-write correction
+
+The customer-tab add/update/remove matrix was first exercised on the previous deployment with the in-app browser as origin and a continuously connected Chrome tab as observer. The staging tab was `customer-tab-a385dbb7-6431-4e49-a0d4-bcacb9d235e9` for customer `QA Realtime Tab Items 20260820 1254`, and its Coke line was `customer-tab-item-33a4a81a-280d-450d-8074-07b9a0f42b55`. Opening the tab and adding Coke propagated to Chrome without refresh. Changing the Coke quantity from one to two also propagated, but database verification exposed two distinct `update_customer_tab_item_quantity` events for the same resulting quantity:
+
+- `event-7290a1d1-9a6c-47a1-9da6-7001e8c965cc`, mutation `op-edd8f42c-9a3e-478a-95a9-fbd01a148b7a`, at `2026-08-20T07:23:19.141046+00:00`;
+- `event-3ab10ce2-2265-4649-a794-88e6d6b09fcb`, mutation `op-19a00884-a5d6-4dd1-98b3-4dfcb760b8b6`, at `2026-08-20T07:24:41.504456+00:00`.
+
+Both mutations stored quantity two, so the duplicate did not double quantity or deduct stock, but it was still an invalid duplicate operational write. Static tracing found that `NumericInput` committed once during change and again on blur, while the customer-tab quantity handler did not reject an unchanged value. The fix suppresses only a true raw controlled-value equality on blur and adds an unchanged-quantity guard before stock validation or mutation creation. It preserves below-min correction, decimal rounding, integer truncation, and the existing combo-line warning. Six focused numeric-input cases, the full 34-file/391-test suite, the production build, lint with zero errors and five known warnings, and `git diff --check` passed locally. Commit `8e964f81b77c6710907412e13ab46bf16a7c866a` was pushed and deployed to staging as Worker version `67dd6e80-58fc-408d-a7f0-d13742f447aa`; both browsers then loaded `/assets/index-Dbvi7qP_.js`.
+
+That pre-fix tab was emptied and then closed through authenticated `reject_customer_tab`, using mutation `mutation-release-a-tab-items-cleanup-20260820-1`, audit `audit-release-a-tab-items-cleanup-20260820-1`, and event `event-0630b939-376a-463a-a647-7605f29dc66b`. The cleanup completed in `127.648 ms` at `2026-08-20T07:30:23.049623+00:00` and advanced compatibility version exactly once from `507` to `508`; its final SHA-256 was `fb15ffeb20968768a24c94c30b159b95b35028813c9bc8ad88071db3a8edc327`.
+
+The corrected retest used customer `QA Numeric Single Event 20260820 1312`, tab `customer-tab-ed8c1fcb-a0ac-4cff-9ff0-d9ed1d221bb0`, and Coke line `customer-tab-item-c02d7c0c-13cf-4aac-91c2-e6d99f2de833`:
+
+- opening produced event `event-63018fd5-606c-453b-8582-061bfde2791a` and mutation `op-f2c354cd-ea60-44e6-be67-a43d725cb200`;
+- adding Coke produced event `event-96f14e8b-77aa-4987-89a3-1d302bc039a8` and mutation `op-27c45c3f-fabb-4905-a949-db031903a104`; Chrome changed to one item/Rs 10 without refresh;
+- changing quantity once from one to two and then blurring produced exactly one update event, `event-740267dc-c739-4337-9ccb-0667effd93b6`, with mutation `op-129794b2-ee20-43b8-a785-3f5fec55404b` at `2026-08-20T07:41:49.479334+00:00`; Chrome changed to Rs 20 without refresh and hard refresh retained quantity two;
+- removing Coke produced audit `audit-c77d7592-7148-4c41-8758-4ebbbc202b78`, event `event-0dc0de93-d54f-4981-ba0e-9b6991df8321`, and mutation `op-84c6e865-ed1b-4351-9983-be73522499e7`; Chrome changed to zero items/Rs 0 without refresh and hard refresh retained the empty tab.
+
+Read-only verification at `2026-08-20T07:43:51.270898+00:00` proved zero remaining tab-item rows, exactly one quantity-update event, exactly one removal event, and unchanged compatibility version `508` with SHA-256 `fb15ffeb20968768a24c94c30b159b95b35028813c9bc8ad88071db3a8edc327`. Coke stock remained `86`; open-tab item mutations changed reservations only and did not create a stock deduction.
+
+The test tab was closed through authenticated `reject_customer_tab`, using mutation `mutation-release-a-single-quantity-cleanup-20260820-1`, audit `audit-release-a-single-quantity-cleanup-20260820-1`, and event `event-6d3dd358-4f17-485c-bc49-ae413c10cd9f`. The event completed in `181.985 ms` at `2026-08-20T07:44:09.899228+00:00`; lifecycle event actors and the removal/rejection audit actors resolved to Vipin. The observer removed the tab without refresh, and hard refresh showed zero open sessions/tabs. The single compatibility cleanup advanced `app_state` exactly once from version `508` to `509`; final SHA-256 is `5733baa22366035f64350b8d8bc436e4f6da90ebf61f4d6c9adea2052cb4e781`. A final query at `2026-08-20T07:44:47.776162+00:00` showed exactly one event for each lifecycle operation: open tab, add item, update quantity, remove item, and reject tab.
+
 ## Current gate decision
 
-Database reconstruction, additive Release A installation, staging frontend deployment, authenticated normalized-read smoke, representative timed/unit/tab v1 checkout, settlement, replacement, write-off, refund, customer-history correction, actor/stock verification, independent Chrome session/item/reject and financial realtime coverage, no-refresh pause deletion overlay, Bill Register invalidation correction, receipt PDF export/rendering, historical receipt linkage, analytics, customer-history, Coke inventory-report parity, hard-refresh non-resurrection checks, permission persistence/restoration, and the Gate 6 database/error/performance capture are complete. The permission checkpoint passes, but Release A remains a no-go because the remaining Gate 5 cases and full-business-day soak are not yet evidenced. No production promotion claim is made.
+Database reconstruction, additive Release A installation, staging frontend deployment, authenticated normalized-read smoke, representative timed/unit/tab v1 checkout, settlement, replacement, write-off, refund, customer-history correction, actor/stock verification, independent Chrome session/item/reject and financial realtime coverage, the complete customer-tab item add/update/remove realtime matrix with exactly-once quantity mutation, no-refresh pause deletion overlay, Bill Register invalidation correction, receipt PDF export/rendering, historical receipt linkage, analytics, customer-history, Coke inventory-report parity, hard-refresh non-resurrection checks, permission persistence/restoration, and the Gate 6 database/error/performance capture are complete. The permission checkpoint passes, but Release A remains a no-go because the remaining Gate 5 cases and full-business-day soak are not yet evidenced. No production promotion claim is made.
 
 ## Remaining gated work
 
 1. Complete the controlled fail-closed history, report, customer, and inventory read cases.
-2. Retain two-browser evidence for hop/detach, remaining customer-tab item mutations, and pause edit. Pause deletion, no-refresh overlay replacement, and independent hard-refresh reconstruction now pass.
+2. Retain two-browser evidence for hop/detach and pause edit. Customer-tab item add/update/remove, pause deletion, no-refresh overlay replacement, and independent hard-refresh reconstruction now pass.
 3. Complete report exports beyond the receipt PDF and the inventory combo, variant, cigarette-pack, and reservation before/after-refresh matrix.
 4. Complete the full representative staging business-day soak and independent sign-off.
 
