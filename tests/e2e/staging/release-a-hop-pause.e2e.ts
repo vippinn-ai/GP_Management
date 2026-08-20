@@ -63,6 +63,11 @@ test.describe.serial("Release A staging two-browser operational maintenance", ()
 
       const observerModal = await openManagedSession(observer.page, pauseStation);
       await expect(observerModal.getByRole("heading", { name: "Pause History", exact: true })).toBeVisible();
+      const expectedPausedLabel = await observer.page.evaluate((value) => new Intl.DateTimeFormat("en-IN", {
+        dateStyle: "medium",
+        timeStyle: "short"
+      }).format(new Date(value)), editedPausedAt);
+      await expect(observerModal.getByText(expectedPausedLabel, { exact: true })).toBeVisible();
       await observerModal.getByRole("button", { name: "Edit", exact: true }).click();
       await expect(observerModal.getByLabel("Paused At", { exact: true })).toHaveValue(editedPausedAt);
       await expect(observerModal.getByLabel("Resumed At", { exact: true })).toHaveValue(editedResumedAt);
@@ -171,8 +176,9 @@ test.describe.serial("Release A staging two-browser operational maintenance", ()
       await expect(observer.page.getByText(new RegExp(`Game hop: closed ${hopStation}`)).first()).toBeVisible();
 
       await continuation.getByRole("button", { name: "Change Customer", exact: true }).click();
-      await expect(continuation).toContainText("Customer changed. Previous hopped session remains unbilled.");
+      await expect(continuation).toBeHidden();
       await waitForSynced(page);
+      await expect(page.getByText(new RegExp(`Detached post-hop continuation.*${hopStation}`)).first()).toBeVisible();
       await expect(observer.page.getByText(new RegExp(`Detached post-hop continuation.*${hopStation}`)).first()).toBeVisible();
 
       await expect.poll(() => rpcEvidence.findLast((entry) => entry.rpc === "hop_session" && entry.status < 300)?.entityId).toBeTruthy();
