@@ -3,19 +3,20 @@
 ## Scope
 
 - Project: `test/staging` (`tkbdyzxwwbhkpztgjjxh`), Southeast Asia (Singapore).
-- Current reviewed deployment commit: `8e964f81b77c6710907412e13ab46bf16a7c866a` (the initial Release A deployment was built from application commit `0af9c7b0cb35e521fd35bff9ba7980d792cf100e`).
+- Current reviewed repository commit: `96f8baa3c9710daacbff4fd85aacfc6d1175952f`. The ordinary staging frontend remains the accepted build from application commit `8e964f81b77c6710907412e13ab46bf16a7c866a`; the newer commit was deployed only to the isolated fail-closed QA Worker described below. The initial Release A deployment was built from application commit `0af9c7b0cb35e521fd35bff9ba7980d792cf100e`.
 - Financial v2 remained disabled; phase 10 was not applied.
 - No production project, production database, or production deployment was accessed.
 - Staging was resumed from its paused state. The initial investigation was read-only. After the user explicitly approved the staging-only destructive reconstruction, a verified backup was retained and normalized `org-primary` was rebuilt from authoritative `app_state`.
 
 ## Evidence metadata
 
-- Execution window: `2026-08-19T19:28:17Z` through at least `2026-08-20T07:44:47.776162Z` (`2026-08-20 00:58` through at least `13:14` IST) for the recorded active runs; the required business-day soak remains open.
+- Execution window: `2026-08-19T19:28:17Z` through at least `2026-08-20T08:38:48.977045Z` (`2026-08-20 00:58` through at least `14:08:48` IST) for the recorded active runs; the required business-day soak remains open.
 - Operator: Codex primary agent using the user-authorized authenticated staging sessions.
 - Independent reviewer: separate read-only checkout test agent.
 - Browser surface: authenticated Codex in-app browser plus the user's independently authenticated Chrome profile through the connected browser integration.
 - Previous accepted staging frontend version: `c76b06d6-3cab-408f-a32c-d1937b14b562`.
 - Current staging frontend version: `67dd6e80-58fc-408d-a7f0-d13742f447aa`.
+- Isolated fail-closed QA frontend version: `89b6e9e4-3558-49cf-91b1-0f9f4c499d44` at `gp-management-staging-failclosed-qa.breakperfectgaminglounge.workers.dev`; this did not replace the ordinary staging Worker.
 
 ## Project and compatibility baseline
 
@@ -309,7 +310,7 @@ The repository 36-row parity query after the independent financial cases returne
 | session pause logs | 18 | 19 | +1 | The independent timed session's pause/resume row is normalized-only and survives reload; it is intentionally absent from the stale compatibility snapshot. |
 | stock movements | 279 | 283 | +4 | Two controlled Coke reservation/release pairs (`-1`, `+1`); combined net zero. All financial sale/replacement/write-off movements are present in both stores. |
 
-These deltas are explained normalized-only operational history, not missing normalized data. They demonstrate why Release A must not roll reads back to the compatibility snapshot. The following Gate 6 capture reconciles the database structure, errors, duplicates, and performance; the permission case is recorded immediately after it. Controlled fail-closed reads and the business-day soak remain separate open gates.
+These deltas are explained normalized-only operational history, not missing normalized data. They demonstrate why Release A must not roll reads back to the compatibility snapshot. The following Gate 6 capture reconciles the database structure, errors, duplicates, and performance; the permission case is recorded immediately after it. At this checkpoint, controlled fail-closed reads and the business-day soak were separate open gates; the controlled read exercise was completed later below, while the soak remains open.
 
 ## Gate 6 database, error, and performance capture
 
@@ -349,7 +350,7 @@ The repository `phase3-performance-evidence-probes-single-result.sql` completed 
 - Probe 3, recent reports: planning `0.798 ms`, execution `0.213 ms`.
 - Probe 4, older-history search: planning `0.389 ms`, execution `0.451 ms`.
 - The four query plans use normalized tables. The script reads `app_state` only once to report document size; it performs no business-data update or compatibility rewrite.
-- The final review manifest was regenerated after this evidence change: 246 first-party files, 69,560 physical lines, 187 semantic hotspots, and 171 billing-relevant files.
+- The final review manifest was regenerated after this evidence change: 250 first-party files, 69,863 physical lines, 190 semantic hotspots, and 174 billing-relevant files.
 
 ## Gate 5 permission persistence and restoration
 
@@ -373,7 +374,7 @@ The administrator then removed the temporary Analytics permission through the sa
 
 The temporary staging mutation is therefore fully restored. This Gate 5 permission case passes: the edit persisted through sign-out/in, changed only `profiles.tab_permissions`, and never rewrote `app_state`.
 
-## Automated fail-closed screen contract
+## Automated and live fail-closed screen contract
 
 The four normalized financial screen boundaries now have explicit component-level failure cases:
 
@@ -382,9 +383,20 @@ The four normalized financial screen boundaries now have explicit component-leve
 - Operational Reports receives stale non-zero revenue but does not render the financial KPI while the normalized report reader is unavailable. Analytics readiness also rejects matching cached data whenever the latest summary refresh has an error.
 - Inventory Report receives stale stock totals and a stale item row but renders neither while the normalized inventory reader is unavailable.
 
-Each case verifies that Retry/Refresh invokes the scoped normalized-reader callback. The post-change local gates passed: 33 test files / 385 tests, production build, lint with zero errors and the same five known warnings, and `git diff --check`.
+Each case verifies that Retry/Refresh invokes the scoped normalized-reader callback. The final local gates passed: 36 test files / 397 tests, production build, lint with zero errors and the same five known warnings, and `git diff --check`.
 
-This is strong automated regression evidence, but it does not replace the runbook's controlled browser failure exercise. The connected staging browser does not expose safe request interception; shared staging database grants were deliberately not revoked. The live controlled-failure item therefore remains open until it can be run in an isolated browser/deployment harness without disrupting other staging users.
+The controlled browser exercise was then completed without revoking shared database grants or changing the ordinary staging deployment. Commit `faee90c` introduced an isolated harness whose fault activation requires all of the following at runtime: the exact isolated hostname, build ID `release-a-failclosed-qa-v1`, the exact normalized-reader flag contract, financial v2 disabled, and one of four explicit query targets. Commit `96f8baa3c9710daacbff4fd85aacfc6d1175952f` added an attempt counter so the browser could distinguish a real Retry from a retained error. The QA artifact precheck verified the staging project ref and flags without printing credentials; the artifact check proved the production project ref was absent. The final isolated bundle was `/assets/index-rBklWmXp.js`, deployed only as Worker version `89b6e9e4-3558-49cf-91b1-0f9f4c499d44`.
+
+An isolated temporary staging admin profile, `QA Fail Closed 20260820 1354` (`ef8bf1e2-2a2e-4634-886e-c0f7f894f1f4`), authenticated only for this exercise. The isolated hostname was temporarily appended to the staging Edge Function CORS allowlist. The following cases were then observed in the browser:
+
+- Bill Register rendered only the read-only error and Retry on `QA attempt 1`; Retry produced `QA attempt 2` with no bill rows. Removing the fault restored `Normalized history active`, 50 loaded bills, and the expected historical rows.
+- Operational Reports rendered only the read-only error and Retry, with no financial KPI values. Retry advanced the visible attempt from `1` to `3` because the screen starts two scoped normalized readers. Removing the fault restored the backend-loaded report, including Gross Revenue `Rs 30.00`, two bills, and the expected payment/expense breakdown.
+- Customer Profiles rendered only the retryable customer-history error on attempts `1` and `2`; it exposed no cached profile metrics or directory. Removing the fault restored 77 profiles and the normalized customer analytics/directory.
+- Inventory Report rendered only the retryable inventory error on attempts `1` and `2`; it exposed no cached movement totals or item rows. Removing the fault restored the backend report with four units deducted, net change `-4`, and Coke current stock `86`.
+
+Cleanup was completed immediately after the four cases. The isolated session signed out, the staging CORS allowlist was restored exactly to `https://gp-management-staging-pages.breakperfectgaminglounge.workers.dev,http://localhost:4173`, and a new isolated-origin login attempt was rejected while the ordinary staging Vipin session remained authenticated and healthy. The temporary profile was then disabled through the ordinary staging Users screen.
+
+Final read-only database reconciliation at `2026-08-20T08:38:48.977045+00:00` proved that the exercise created zero `operational_events` from its `08:30Z` test window, left `app_state` exactly at version `509`, timestamp `2026-08-20T07:44:09.899228+00:00`, updater `61cc2f83-69d1-46ab-9d89-9df7f7b1e497`, and SHA-256 `5733baa22366035f64350b8d8bc436e4f6da90ebf61f4d6c9adea2052cb4e781`, and showed the temporary profile inactive with `updated_at = 2026-08-20T08:36:18.856115+00:00`. No production project, data, or deployment was accessed. This closes the controlled fail-closed Release A gate.
 
 ## Partial two-browser pause flow and cleanup
 
@@ -478,13 +490,12 @@ The test tab was closed through authenticated `reject_customer_tab`, using mutat
 
 ## Current gate decision
 
-Database reconstruction, additive Release A installation, staging frontend deployment, authenticated normalized-read smoke, representative timed/unit/tab v1 checkout, settlement, replacement, write-off, refund, customer-history correction, actor/stock verification, independent Chrome session/item/reject and financial realtime coverage, the complete customer-tab item add/update/remove realtime matrix with exactly-once quantity mutation, no-refresh pause deletion overlay, Bill Register invalidation correction, receipt PDF export/rendering, historical receipt linkage, analytics, customer-history, Coke inventory-report parity, hard-refresh non-resurrection checks, permission persistence/restoration, and the Gate 6 database/error/performance capture are complete. The permission checkpoint passes, but Release A remains a no-go because the remaining Gate 5 cases and full-business-day soak are not yet evidenced. No production promotion claim is made.
+Database reconstruction, additive Release A installation, staging frontend deployment, authenticated normalized-read smoke, representative timed/unit/tab v1 checkout, settlement, replacement, write-off, refund, customer-history correction, actor/stock verification, independent Chrome session/item/reject and financial realtime coverage, the complete customer-tab item add/update/remove realtime matrix with exactly-once quantity mutation, no-refresh pause deletion overlay, Bill Register invalidation correction, receipt PDF export/rendering, historical receipt linkage, analytics, customer-history, Coke inventory-report parity, hard-refresh non-resurrection checks, permission persistence/restoration, the isolated live fail-closed exercise, and the Gate 6 database/error/performance capture are complete. Release A remains a no-go because the remaining Gate 5 cases and full-business-day soak are not yet evidenced. No production promotion claim is made.
 
 ## Remaining gated work
 
-1. Complete the controlled fail-closed history, report, customer, and inventory read cases.
-2. Retain two-browser evidence for hop/detach and pause edit. Customer-tab item add/update/remove, pause deletion, no-refresh overlay replacement, and independent hard-refresh reconstruction now pass.
-3. Complete report exports beyond the receipt PDF and the inventory combo, variant, cigarette-pack, and reservation before/after-refresh matrix.
-4. Complete the full representative staging business-day soak and independent sign-off.
+1. Retain two-browser evidence for hop/detach and pause edit. Customer-tab item add/update/remove, pause deletion, no-refresh overlay replacement, and independent hard-refresh reconstruction now pass.
+2. Complete report exports beyond the receipt PDF and the inventory combo, variant, cigarette-pack, and reservation before/after-refresh matrix.
+3. Complete the full representative staging business-day soak and independent sign-off.
 
 No production action is authorized by this evidence.
