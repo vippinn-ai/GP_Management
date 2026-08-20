@@ -24,7 +24,7 @@ describe("controlled normalized-read QA failure", () => {
     const read = vi.fn().mockResolvedValue("stale data");
 
     await expect(runQaControlledNormalizedRead("customers", read, qaContext)).rejects.toThrow(
-      "Controlled QA failure: normalized customers read is unavailable."
+      "Controlled QA failure: normalized customers read is unavailable. QA attempt 1."
     );
     expect(read).not.toHaveBeenCalled();
   });
@@ -34,5 +34,14 @@ describe("controlled normalized-read QA failure", () => {
 
     await expect(runQaControlledNormalizedRead("inventory", read, qaContext)).resolves.toBe("fresh data");
     expect(read).toHaveBeenCalledTimes(1);
+  });
+
+  it("increments the controlled attempt number for a scoped retry", async () => {
+    const reportContext = { ...qaContext, search: "?qaNormalizedReadFailure=reports" };
+    const read = vi.fn().mockResolvedValue("stale data");
+
+    await expect(runQaControlledNormalizedRead("reports", read, reportContext)).rejects.toThrow("QA attempt 1.");
+    await expect(runQaControlledNormalizedRead("reports", read, reportContext)).rejects.toThrow("QA attempt 2.");
+    expect(read).not.toHaveBeenCalled();
   });
 });

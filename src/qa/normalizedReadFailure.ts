@@ -26,6 +26,7 @@ const QA_NORMALIZED_READ_FAILURE_TARGETS = new Set<QaNormalizedReadFailureTarget
   "customers",
   "inventory"
 ]);
+const qaNormalizedReadFailureAttempts = new Map<QaNormalizedReadFailureTarget, number>();
 
 interface QaNormalizedReadFailureContext {
   enabled: boolean;
@@ -66,11 +67,13 @@ export function runQaControlledNormalizedRead<T>(
     return read();
   }
 
+  const attempt = (qaNormalizedReadFailureAttempts.get(target) ?? 0) + 1;
+  qaNormalizedReadFailureAttempts.set(target, attempt);
   return new Promise<T>((_resolve, reject) => {
     globalThis.setTimeout(() => {
       reject(
         new Error(
-          `Controlled QA failure: normalized ${target} read is unavailable. (${QA_NORMALIZED_READ_BUILD_ARTIFACT_MARKER})`
+          `Controlled QA failure: normalized ${target} read is unavailable. QA attempt ${attempt}. (${QA_NORMALIZED_READ_BUILD_ARTIFACT_MARKER})`
         )
       );
     }, context.delayMs ?? QA_NORMALIZED_READ_FAILURE_DELAY_MS);
