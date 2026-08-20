@@ -3,19 +3,19 @@
 ## Scope
 
 - Project: `test/staging` (`tkbdyzxwwbhkpztgjjxh`), Southeast Asia (Singapore).
-- Current reviewed deployment commit: `60ba75c07cebf6a5e12bc52096b8158917cbbcdc` (the initial Release A deployment was built from application commit `0af9c7b0cb35e521fd35bff9ba7980d792cf100e`).
+- Current reviewed deployment commit: `ab9b355a66d642bd1351bf8414770b9af543827d` (the initial Release A deployment was built from application commit `0af9c7b0cb35e521fd35bff9ba7980d792cf100e`).
 - Financial v2 remained disabled; phase 10 was not applied.
 - No production project, production database, or production deployment was accessed.
 - Staging was resumed from its paused state. The initial investigation was read-only. After the user explicitly approved the staging-only destructive reconstruction, a verified backup was retained and normalized `org-primary` was rebuilt from authoritative `app_state`.
 
 ## Evidence metadata
 
-- Execution window: `2026-08-19T19:28:17Z` through `2026-08-20T03:45Z` (`2026-08-20 00:58` through approximately `09:15` IST) for the recorded active runs; the required business-day soak remains open.
+- Execution window: `2026-08-19T19:28:17Z` through approximately `2026-08-20T04:15Z` (`2026-08-20 00:58` through approximately `09:45` IST) for the recorded active runs; the required business-day soak remains open.
 - Operator: Codex primary agent using the user-authorized authenticated staging sessions.
 - Independent reviewer: separate read-only checkout test agent.
 - Browser surface: authenticated Codex in-app browser plus the user's independently authenticated Chrome profile through the connected browser integration.
-- Previous accepted staging frontend version: `8bd7fd6d-9084-428f-859d-26b04123135c`.
-- Current staging frontend version: `c76b06d6-3cab-408f-a32c-d1937b14b562`.
+- Previous accepted staging frontend version: `c76b06d6-3cab-408f-a32c-d1937b14b562`.
+- Current staging frontend version: `a92f5873-ccf0-4801-ad30-ac5a6c32d858`.
 
 ## Project and compatibility baseline
 
@@ -151,12 +151,19 @@ The reviewed staging build was then repeated successfully from evidence checkpoi
 
 A fresh, uncached in-app browser tab loaded the deployed staging URL successfully with title `Game Parlour Management System` and the expected BreakPerfect sign-in screen.
 
-During extended functional verification, the application source was updated only to correct a staging-discovered customer-identity defect. Commit `249e898` first preserved missing canonical customer IDs and reconciled optimistic IDs with the server response. The independent reviewer then found a duplicate-name/phone edge case; commit `60ba75c` made IDs referenced by sessions, tabs, or bills authoritative and added both failure-shape tests. The intermediate Cloudflare version `f6456e7c-e506-43d5-a13a-6902c39b7c84` was superseded before acceptance. The final staging-only deployment is:
+During extended functional verification, the application source was updated only to correct a staging-discovered customer-identity defect. Commit `249e898` first preserved missing canonical customer IDs and reconciled optimistic IDs with the server response. The independent reviewer then found a duplicate-name/phone edge case; commit `60ba75c` made IDs referenced by sessions, tabs, or bills authoritative and added both failure-shape tests. The intermediate Cloudflare version `f6456e7c-e506-43d5-a13a-6902c39b7c84` was superseded before acceptance. The identity-corrected staging deployment was:
 
 - Commit: `60ba75c07cebf6a5e12bc52096b8158917cbbcdc`.
 - Cloudflare version: `c76b06d6-3cab-408f-a32c-d1937b14b562`.
 - Local gates: 30 test files / 376 tests passed; production and staging builds passed; lint exited zero with five pre-existing warnings; generated manifest contains 242 files with zero missing/hash/line mismatches.
 - Financial v2 remained `false`; production was not targeted.
+
+The independent financial adjustment case then exposed a separate Bill Register invalidation defect: replacement committed successfully in PostgreSQL, but the origin and observer Bill Register pages retained stale rows even after the screen's Refresh action; a hard reload reconstructed the correct data. Commit `ab9b355` made compact financial realtime carry its refreshed bill slice into the application, added a dedicated Bill Register refresh generation, and covered the behavior in gateway and cutover contract tests. The reviewed fix was deployed only to staging:
+
+- Commit: `ab9b355a66d642bd1351bf8414770b9af543827d` (`Refresh normalized bill register after adjustments`).
+- Cloudflare version: `a92f5873-ccf0-4801-ad30-ac5a6c32d858`.
+- Local gates: 30 test files / 377 tests passed; build passed with the existing large-chunk warning; lint exited zero with five pre-existing warnings; `git diff --check` passed.
+- The staging build retained `VITE_BACKEND_FINANCIAL_RPC_V2=false`; worker `management` and the production database were not targeted.
 
 ## Authenticated application smoke and realtime evidence
 
@@ -218,6 +225,22 @@ Four controlled v1 bills/adjustments were completed without a client timeout or 
 
 Analytics after the first three bills showed Rs 51 gross revenue, three bills, Rs 35.76 session revenue, Rs 15 consumables revenue, and Rs 51 cash, matching the controlled bills. Bill Register rows and receipts remained available after hard refresh.
 
+### Independent two-browser checkout, settlement, replacement, and refresh verification
+
+The authenticated in-app browser and the user's independently authenticated Chrome profile then exercised the v1 financial path together:
+
+- `BILL-20260820-001` (`bill-69424f80-7bd2-43de-b111-908732c4a674`) closed a timed 8 Ball Pool session after realtime pause/resume observation. It contains the timed line `8 Ball Pool session (0 min)` at Rs 2.21, Rs -0.21 round-off, and a Rs 2 cash payment.
+- `BILL-20260820-002` (`bill-0f817565-a26c-4da9-ba82-fe43ca8a5c58`) closed a customer tab containing one Coke as Rs 10 deferred, then settled Rs 10 cash. Both browsers showed zero due.
+- Replacement `BILL-20260820-003` (`bill-f878d264-017b-430a-92be-3619f25e51d4`) increased Coke from one to two and charged Rs 20 cash. PostgreSQL atomically marked `BILL-20260820-002` replaced and linked both bills. Inventory history contains the original Coke sale `-1` and the replacement difference `-1`, not a duplicate full deduction.
+- On the pre-fix deployment, the replacement revealed that the Bill Register's separate normalized page state was not invalidated by origin success or compact realtime. Both pages stayed stale until a hard reload. This failure was retained as evidence and fixed in commit `ab9b355`.
+- Post-fix `BILL-20260820-004` (`bill-b6d1040d-816a-44e0-93ac-2dc5253647be`) closed a second one-Coke tab as Rs 10 deferred and was then fully settled in cash. Without pressing Refresh or hard reloading, both the origin in-app browser and independent Chrome observer changed from `Pending`, paid Rs 0/due Rs 10, to `Issued`, paid Rs 10/no due; the Settle action disappeared in both within the bounded observation window.
+- A subsequent hard reload in both browsers reconstructed the same paid/issued row, `Receivables (0)`, and `0` open sessions. The closed tab did not resurrect.
+- All four bill issuers, all four payment receivers, both settlement actors, every related bill audit, and every related stock movement resolve to the same authenticated `Vipin` profile (`61cc2f83-69d1-46ab-9d89-9df7f7b1e497`).
+- Server durations were `167.788 ms`, `115.464 ms`, `103.244 ms` for the first settlement, `110.882 ms` for replacement, `199.302 ms` for `BILL-20260820-004`, and `335.511 ms` for its settlement. No client timeout or SQLSTATE `57014` occurred.
+- `BILL-20260820-004` has exactly one Rs 10 cash payment, one Coke sale movement of `-1`, and a `bill_settled` audit stating Rs 10 collected and zero remaining due. Staging has zero negative inventory rows.
+- Compatibility `app_state.version` advanced through the v1 operations to `500`; final SHA-256 is `74392d91ce5052436003fcd033981e40d46d68bf12fa26723b707bdef51a4b6b`, updated at `2026-08-20T04:11:48.582945+00:00` by the same actor.
+- Two interrupted browser-dialog attempts to open the void workflow did not commit: database evidence retains `BILL-20260820-001` as issued with `voided_at = null`. The mutation was not retried after the settlement flow supplied the required refresh proof.
+
 Normalized historical Bill Register and receipt-support checks also passed without a write:
 
 - Direct search loaded April history outside the initial 50-row page: `BILL-20260415-003` rendered its Snooker Star Table line, Rs 3.43 subtotal, `-Rs 0.43` round-off, and Rs 3 total.
@@ -242,24 +265,25 @@ The independent reviewer re-read the strengthened identity logic, ran the focuse
 
 ## Post-functional parity reconciliation
 
-The repository 36-row parity query returned three nonzero collection-count rows and zero financial-total or live-summary deltas:
+The repository 36-row parity query after the independent financial cases returned four nonzero collection-count rows and zero financial-total or live-summary deltas:
 
 | Collection | `app_state` | Normalized | Delta | Reconciliation |
 | --- | ---: | ---: | ---: | --- |
-| audit logs | 539 | 555 | +16 | The prior 13 controlled normalized-only purpose-RPC audits plus the independent Chrome lifecycle's session start, Coke add, and Coke remove. The rejection audit was patched into both normalized storage and compatibility state. |
-| customers | 62 | 67 | +5 | Exactly the five normalized QA customer rows created through purpose-built operational RPCs. |
-| stock movements | 275 | 279 | +4 | Two controlled Coke reservation/release pairs (`-1`, `+1`), including the independent Chrome lifecycle; combined net zero. |
+| audit logs | 547 | 570 | +23 | Exactly 23 normalized-only purpose-RPC audit IDs: the prior 16 plus the independent timed start/pause/resume, independent tab open/item-add, and refresh-proof tab open/item-add. Financial bill/settlement/replacement audits were patched into both stores. |
+| customers | 64 | 70 | +6 | Exactly six normalized QA customers created through purpose-built operational RPCs; the additional row is the independent timed-session customer. |
+| session pause logs | 18 | 19 | +1 | The independent timed session's pause/resume row is normalized-only and survives reload; it is intentionally absent from the stale compatibility snapshot. |
+| stock movements | 278 | 282 | +4 | Two controlled Coke reservation/release pairs (`-1`, `+1`); combined net zero. All financial sale/replacement movements are present in both stores. |
 
 These deltas are explained normalized-only operational history, not missing normalized data. They demonstrate why Release A must not roll reads back to the compatibility snapshot. They do not satisfy the complete Gate 6 by themselves; the remaining verification scripts, second-browser matrix, and soak evidence are still required.
 
 ## Current gate decision
 
-Database reconstruction, additive Release A installation, staging frontend deployment, authenticated normalized-read smoke, controlled operational lifecycle checks, representative timed/unit/tab v1 checkout, settlement, customer-history correction, actor/stock verification, independent Chrome session/item/reject realtime coverage, and hard-refresh non-resurrection checks are complete. The remaining independent-browser Gate 5 checkout/tab/adjustment/downstream/fail-closed matrix, complete Gate 6 capture, performance, and full-business-day soak gates remain open. No production promotion claim is made.
+Database reconstruction, additive Release A installation, staging frontend deployment, authenticated normalized-read smoke, controlled operational lifecycle checks, representative timed/unit/tab v1 checkout, settlement, replacement, customer-history correction, actor/stock verification, independent Chrome session/item/reject and financial realtime coverage, Bill Register invalidation correction, and hard-refresh non-resurrection checks are complete. The remaining Gate 5 downstream/fail-closed/permissions matrix, complete Gate 6 capture, performance, and full-business-day soak gates remain open. No production promotion claim is made.
 
 ## Remaining gated work
 
-1. Execute the remaining Gate 5 functional/two-browser cases in the now-connected independent Chrome profile, including timed and tab checkout coverage.
-2. Complete the remaining Bill Register adjustment, older-history receipt, receivables, permissions, controlled fail-closed, reports/export, and inventory matrix.
+1. Complete the remaining Bill Register write-off/refund, permissions, controlled fail-closed, reports/export, customer-history, and inventory matrix.
+2. Repeat the historical receipt and receivables checks on the current deployment and retain browser/database evidence.
 3. Complete the remaining Gate 6 definitions/grants/indexes/publication/error/duplicate captures and performance probes.
 4. Complete the full representative staging business-day soak and independent sign-off.
 
