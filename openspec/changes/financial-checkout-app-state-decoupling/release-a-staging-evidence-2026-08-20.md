@@ -241,6 +241,15 @@ The authenticated in-app browser and the user's independently authenticated Chro
 - Compatibility `app_state.version` advanced through the v1 operations to `500`; final SHA-256 is `74392d91ce5052436003fcd033981e40d46d68bf12fa26723b707bdef51a4b6b`, updated at `2026-08-20T04:11:48.582945+00:00` by the same actor.
 - Two interrupted browser-dialog attempts to open the void workflow did not commit: database evidence retains `BILL-20260820-001` as issued with `voided_at = null`. The mutation was not retried after the settlement flow supplied the required refresh proof.
 
+Current-deployment downstream reads were repeated after the refresh fix and final hard reload:
+
+- Both browsers showed `Receivables (0)` and today Gross Revenue Rs 32 across three active bills: Session Revenue Rs 2.21 and Consumable Revenue Rs 30. Payment Mix was Rs 32 cash and Rs 0 UPI.
+- Customer Profiles loaded all 70 normalized profiles. The controlled rows were `QA Independent Timed 20260820 0921` at 1 visit/Rs 2, `QA Independent Tab 20260820 0923` at 1 visit/Rs 20, and `QA Refresh Settlement 20260820 0939` at 1 visit/Rs 10.
+- Inventory Catalog showed Coke current stock `87`. Inventory Report showed Stock Deducted `3`, Net Stock Change `-3`, Currently Reserved `0`, and the exact original sale, replacement difference, and refresh-proof sale movements. Independent Chrome reconstructed the same Coke summary row.
+- Exact historical search still loaded `BILL-20260415-003` outside the initial page with its Rs 3.43 timed line, Rs -0.43 round-off, and Rs 3 total.
+- Isolated replaced bill `BILL-20260621-003` still resolved `Superseded By BILL-20260621-012`.
+- Isolated checkout bill `BILL-20260722-004` still hydrated `Previous Dues Paid Rs 100`, source `BILL-20260625-005`, and the Rs 100 cash/Rs 0 UPI split.
+
 Normalized historical Bill Register and receipt-support checks also passed without a write:
 
 - Direct search loaded April history outside the initial 50-row page: `BILL-20260415-003` rendered its Snooker Star Table line, Rs 3.43 subtotal, `-Rs 0.43` round-off, and Rs 3 total.
@@ -278,12 +287,12 @@ These deltas are explained normalized-only operational history, not missing norm
 
 ## Current gate decision
 
-Database reconstruction, additive Release A installation, staging frontend deployment, authenticated normalized-read smoke, controlled operational lifecycle checks, representative timed/unit/tab v1 checkout, settlement, replacement, customer-history correction, actor/stock verification, independent Chrome session/item/reject and financial realtime coverage, Bill Register invalidation correction, and hard-refresh non-resurrection checks are complete. The remaining Gate 5 downstream/fail-closed/permissions matrix, complete Gate 6 capture, performance, and full-business-day soak gates remain open. No production promotion claim is made.
+Database reconstruction, additive Release A installation, staging frontend deployment, authenticated normalized-read smoke, controlled operational lifecycle checks, representative timed/unit/tab v1 checkout, settlement, replacement, customer-history correction, actor/stock verification, independent Chrome session/item/reject and financial realtime coverage, Bill Register invalidation correction, historical receipt linkage, analytics, customer-history, inventory-report parity, and hard-refresh non-resurrection checks are complete. The remaining Gate 5 write-off/refund/export/fail-closed/permissions cases, complete Gate 6 capture, performance, and full-business-day soak gates remain open. No production promotion claim is made.
 
 ## Remaining gated work
 
-1. Complete the remaining Bill Register write-off/refund, permissions, controlled fail-closed, reports/export, customer-history, and inventory matrix.
-2. Repeat the historical receipt and receivables checks on the current deployment and retain browser/database evidence.
+1. Complete the remaining Bill Register write-off/refund and receipt-export cases.
+2. Complete permissions and controlled fail-closed read cases.
 3. Complete the remaining Gate 6 definitions/grants/indexes/publication/error/duplicate captures and performance probes.
 4. Complete the full representative staging business-day soak and independent sign-off.
 
