@@ -3,19 +3,19 @@
 ## Scope
 
 - Project: `test/staging` (`tkbdyzxwwbhkpztgjjxh`), Southeast Asia (Singapore).
-- Current reviewed deployment commit: `ab9b355a66d642bd1351bf8414770b9af543827d` (the initial Release A deployment was built from application commit `0af9c7b0cb35e521fd35bff9ba7980d792cf100e`).
+- Current reviewed deployment commit: `55da12bccfdf2ca1cdc52692779ef54ef278d504` (the initial Release A deployment was built from application commit `0af9c7b0cb35e521fd35bff9ba7980d792cf100e`).
 - Financial v2 remained disabled; phase 10 was not applied.
 - No production project, production database, or production deployment was accessed.
 - Staging was resumed from its paused state. The initial investigation was read-only. After the user explicitly approved the staging-only destructive reconstruction, a verified backup was retained and normalized `org-primary` was rebuilt from authoritative `app_state`.
 
 ## Evidence metadata
 
-- Execution window: `2026-08-19T19:28:17Z` through approximately `2026-08-20T04:15Z` (`2026-08-20 00:58` through approximately `09:45` IST) for the recorded active runs; the required business-day soak remains open.
+- Execution window: `2026-08-19T19:28:17Z` through at least `2026-08-20T05:10Z` (`2026-08-20 00:58` through at least `10:40` IST) for the recorded active runs; the required business-day soak remains open.
 - Operator: Codex primary agent using the user-authorized authenticated staging sessions.
 - Independent reviewer: separate read-only checkout test agent.
 - Browser surface: authenticated Codex in-app browser plus the user's independently authenticated Chrome profile through the connected browser integration.
 - Previous accepted staging frontend version: `c76b06d6-3cab-408f-a32c-d1937b14b562`.
-- Current staging frontend version: `a92f5873-ccf0-4801-ad30-ac5a6c32d858`.
+- Current staging frontend version: `8ebe7ee1-4265-407c-afa7-ce11ec2d597c`.
 
 ## Project and compatibility baseline
 
@@ -309,16 +309,55 @@ The repository 36-row parity query after the independent financial cases returne
 | session pause logs | 18 | 19 | +1 | The independent timed session's pause/resume row is normalized-only and survives reload; it is intentionally absent from the stale compatibility snapshot. |
 | stock movements | 279 | 283 | +4 | Two controlled Coke reservation/release pairs (`-1`, `+1`); combined net zero. All financial sale/replacement/write-off movements are present in both stores. |
 
-These deltas are explained normalized-only operational history, not missing normalized data. They demonstrate why Release A must not roll reads back to the compatibility snapshot. They do not satisfy the complete Gate 6 by themselves; the remaining verification scripts, second-browser matrix, and soak evidence are still required.
+These deltas are explained normalized-only operational history, not missing normalized data. They demonstrate why Release A must not roll reads back to the compatibility snapshot. The following Gate 6 capture reconciles the database structure, errors, duplicates, and performance; permissions, controlled fail-closed reads, and the business-day soak remain separate open gates.
+
+## Gate 6 database, error, and performance capture
+
+The post-functional Gate 2/Gate 6 capture was repeated against staging at `2026-08-20T05:08:38.318098+00:00`. Production was not accessed.
+
+Database structure and access controls:
+
+- PostgreSQL remains `17.6`. All 13 required Release A function signatures were present and their definition SHA-256 values were captured.
+- Every captured function is denied to `anon`. The 12 client-callable operational, financial, admin, analytics, and inventory functions are granted to `authenticated`; internal `resolve_operational_inventory_item(text,text)` is granted to neither `anon` nor `authenticated`.
+- The resolver definition reads `public.inventory_items` and contains no `app_state` reference.
+- The reviewed table set has 43 captured indexes, including the unique `(organization_id, bill_number)` bill index and the required session, tab, bill, payment, stock, audit, event, and profile indexes.
+- `profiles.tab_permissions` exists as `jsonb`.
+- `app_state` and `operational_events` remain members of `supabase_realtime`.
+- `commit_checkout_bill_v2(jsonb)`, `commit_financial_adjustment_v2(jsonb)`, and `financial_mutations` are absent. Financial v2 remained disabled throughout this release.
+
+Post-functional integrity checks:
+
+- Normalized and compatibility views each report `0` open sessions, `0` open customer tabs, and `0` pending bills.
+- Staging has `0` negative inventory rows, `0` duplicate bill numbers, `0` duplicate recent payment fingerprints, and `0` duplicate mutation-event IDs.
+- All 14 recorded financial v1 events have a corresponding operational event: nine checkout commits and five adjustments. Their server-duration distribution is minimum `98.236 ms`, average `158.703 ms`, p95 `246.97515 ms`, and maximum `335.511 ms`.
+- No operational-event metadata contains a `57014`, deadlock, timeout, or error marker. A separate Supabase unified-log search over the last 24 hours returned no event message containing SQLSTATE `57014`, no `deadlock detected`, and no `canceling statement due to statement timeout`.
+- After all read-only Analytics, Inventory Report, Bill Register, customer-history, refresh, SQL verification, and log-navigation checks, `app_state` remained version `503`, updated at `2026-08-20T04:57:04.47677+00:00`, with SHA-256 `e0420b050f843f4b53bf73895b22e7673ac004a99a2d5dfa6172a28811ce4ff5`. Read-only navigation therefore caused no compatibility write.
+
+Normalized summary verification:
+
+- Opening Analytics refreshed the current business day and cleared its dirty-date queue. The `2026-08-20` row is two paid bills, Rs 30 gross revenue, Rs 30 cash, Rs 0 UPI, Rs 0 pending revenue, and Rs 0 one-time expenses.
+- Opening Inventory Report for Today rebuilt the current-day row: Coke deducted `4`, net `-4`, six movements, current stock `86`, and currently reserved `0`.
+- Expanding Inventory Report to Last 7 Days rebuilt the one older dirty date as well. Final analytics and inventory dirty-date queues are both `0`; inventory has seven refreshed dates and 11 report movements in the selected range.
+- Analytics and inventory summary tables retain RLS. Their load RPCs are denied to `anon` and granted to `authenticated`; refresh/backfill helpers are granted to neither browser role.
+
+The repository `phase3-performance-evidence-probes-single-result.sql` completed read-only against the seeded staging history:
+
+- Compatibility `app_state.data` size: `250,529` bytes.
+- Current business day: `2026-08-20`; recent bills/page rows `9`, bill lines `9`, payments `8`, session activities `3`, and customer-tab activities `5`. The normalized page JSON was `21,250` bytes.
+- Probe 1, recent bill page: planning `0.241 ms`, execution `0.119 ms`.
+- Probe 2, page details: planning `0.630 ms`, execution `0.345 ms`.
+- Probe 3, recent reports: planning `0.798 ms`, execution `0.213 ms`.
+- Probe 4, older-history search: planning `0.389 ms`, execution `0.451 ms`.
+- The four query plans use normalized tables. The script reads `app_state` only once to report document size; it performs no business-data update or compatibility rewrite.
+- The final review manifest was regenerated after this evidence change: 243 first-party files, 69,076 physical lines, 185 semantic hotspots, and 169 billing-relevant files.
 
 ## Current gate decision
 
-Database reconstruction, additive Release A installation, staging frontend deployment, authenticated normalized-read smoke, controlled operational lifecycle checks, representative timed/unit/tab v1 checkout, settlement, replacement, write-off, refund, customer-history correction, actor/stock verification, independent Chrome session/item/reject and financial realtime coverage, Bill Register invalidation correction, receipt PDF export/rendering, historical receipt linkage, analytics, customer-history, inventory-report parity, and hard-refresh non-resurrection checks are complete. The remaining Gate 5 fail-closed/permissions cases, complete Gate 6 capture, performance, and full-business-day soak gates remain open. No production promotion claim is made.
+Database reconstruction, additive Release A installation, staging frontend deployment, authenticated normalized-read smoke, controlled operational lifecycle checks, representative timed/unit/tab v1 checkout, settlement, replacement, write-off, refund, customer-history correction, actor/stock verification, independent Chrome session/item/reject and financial realtime coverage, Bill Register invalidation correction, receipt PDF export/rendering, historical receipt linkage, analytics, customer-history, inventory-report parity, hard-refresh non-resurrection checks, and the Gate 6 database/error/performance capture are complete. The remaining Gate 5 fail-closed/permissions cases and full-business-day soak gate remain open. No production promotion claim is made.
 
 ## Remaining gated work
 
 1. Complete permissions and controlled fail-closed read cases.
-2. Complete the remaining Gate 6 definitions/grants/indexes/publication/error/duplicate captures and performance probes.
-3. Complete the full representative staging business-day soak and independent sign-off.
+2. Complete the full representative staging business-day soak and independent sign-off.
 
 No production action is authorized by this evidence.
