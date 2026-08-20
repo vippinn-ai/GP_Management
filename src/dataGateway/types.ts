@@ -140,7 +140,7 @@ export interface AdminDataChangePatch {
   createdAt: string;
   baseAppStateVersion: number;
   inventoryCategories?: string[];
-  inventoryItems: InventoryItem[];
+  inventoryItems: Array<InventoryItem & { expectedStockQty?: number }>;
   inventoryItemIdsToDelete: string[];
   combos: ComboPackage[];
   comboIdsToDelete: string[];

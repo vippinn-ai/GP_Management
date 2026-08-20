@@ -8,11 +8,11 @@ The generated CSV is the per-file evidence. Its columns record path, physical li
 
 Current generated snapshot:
 
-- First-party text/configuration files: 259.
-- Physical lines mechanically screened: 71,431.
-- Semantic billing/data-gateway/compatibility hotspots: 196.
-- Files with billing/financial vocabulary: 180.
-- Files containing an `app_state`, `appState`, or base-version reference: 76; none remain in the unclassified bucket.
+- First-party text/configuration files: 277.
+- Physical lines mechanically screened: 75,103.
+- Semantic billing/data-gateway/compatibility hotspots: 214.
+- Files with billing/financial vocabulary: 197.
+- Files containing an `app_state`, `appState`, or base-version reference: 78; none remain in the unclassified bucket.
 - Excluded: generated `dist`, dependencies, coverage/cache/test artifacts, `.git`, binary assets, this narrative file, and the generated CSV itself.
 - `package-lock.json` is parsed as JSON, hashed, and marked as a mechanical lockfile-integrity screen rather than authored business logic.
 
@@ -22,7 +22,7 @@ Current generated snapshot:
 
 | Disposition | Current count | Release meaning |
 | --- | ---: | --- |
-| Documentation or test reference | 32 | Evidence, characterization, or explicitly documented legacy behavior. |
+| Documentation or test reference | 34 | Evidence, characterization, or explicitly documented legacy behavior. |
 | Runtime legacy compatibility boundary | 14 | Gated v1/local contracts retained for rollback; normalized mode cannot use them as a financial read fallback. |
 | Migration, diagnostic, or reconstruction | 9 | Offline parity/backfill/evidence tooling; not a v2 runtime dependency. |
 | Legacy-v1 purpose writer | 8 | Existing v1 operational/financial/admin behavior retained while v2 is off. |

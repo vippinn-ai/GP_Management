@@ -14,6 +14,8 @@ Assert exact normalized rows and complete rollback on failure. Prove the `app_st
 
 Use two independent connections for same-mutation replay, lost response, double click, same session/tab, shared hopped session, shared pending bill, limited stock, duplicate bill number, and checkout concurrent with settlement, admin inventory save, reject, hop, replacement, void/refund, and live item/combo writes. Require no duplicates, negative stock, over-settlement, deadlock, stale success, or global-row wait.
 
+For checkout versus an admin inventory save, require the admin command to carry the stock value observed before the race. If checkout wins the normalized item lock, the admin request must roll back with `inventory_conflict`; if the admin save wins, checkout must apply its delta to the newly committed stock. In neither ordering may the admin snapshot restore stock consumed by the bill. Verify that the precondition field is absent from normalized `raw_data` and `app_state.data`.
+
 ## UI/reload/realtime
 
 Use two staging browsers. Verify confirmation-bound modal behavior, canonical receipt/PDF, compact realtime, hard refresh, Bill Register, pending receivables, dashboard, analytics, reports, customer history, inventory report, actor attribution, event-before-response ordering, and recovery after a missed realtime event.

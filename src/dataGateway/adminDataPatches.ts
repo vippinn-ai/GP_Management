@@ -60,6 +60,15 @@ export function buildAdminDataChangePatch(params: {
   mutationId: string;
   actionLabel: string;
 }): AdminDataChangePatch {
+  const baseInventoryById = new Map(params.baseAppData.inventoryItems.map((item) => [item.id, item]));
+  const changedInventoryItems = getChangedRecords(
+    params.baseAppData.inventoryItems,
+    params.nextAppData.inventoryItems
+  ).map((item) => {
+    const baseItem = baseInventoryById.get(item.id);
+    return baseItem ? { ...item, expectedStockQty: baseItem.stockQty } : item;
+  });
+
   return {
     mutationId: params.mutationId,
     entityType: "admin_data",
@@ -70,7 +79,7 @@ export function buildAdminDataChangePatch(params: {
     inventoryCategories: arraysEqual(params.baseAppData.inventoryCategories, params.nextAppData.inventoryCategories)
       ? undefined
       : params.nextAppData.inventoryCategories,
-    inventoryItems: getChangedRecords(params.baseAppData.inventoryItems, params.nextAppData.inventoryItems),
+    inventoryItems: changedInventoryItems,
     inventoryItemIdsToDelete: getDeletedRecordIds(params.baseAppData.inventoryItems, params.nextAppData.inventoryItems),
     combos: getChangedRecords(params.baseAppData.combos, params.nextAppData.combos),
     comboIdsToDelete: getDeletedRecordIds(params.baseAppData.combos, params.nextAppData.combos),

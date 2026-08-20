@@ -163,9 +163,36 @@ describe("admin data change patches", () => {
 
     expect(adminDataChangePatchHasChanges(patch)).toBe(true);
     expect(adminDataChangePatchHasUnsupportedChanges(createAppData({ inventoryItems: [baseItem] }), nextAppData)).toBe(false);
-    expect(patch.inventoryItems).toEqual([nextItem]);
+    expect(patch.inventoryItems).toEqual([{ ...nextItem, expectedStockQty: 0 }]);
     expect(patch.stockMovements).toEqual(nextAppData.stockMovements);
     expect(patch.auditLogs).toEqual(nextAppData.auditLogs);
+  });
+
+  it("carries the normalized stock precondition for existing item edits", () => {
+    const baseItem: InventoryItem = {
+      id: "item-1",
+      name: "Cola",
+      category: "Drinks",
+      price: 40,
+      stockQty: 12,
+      lowStockThreshold: 2,
+      unit: "piece",
+      isReusable: false,
+      active: true
+    };
+    const nextItem = { ...baseItem, price: 45 };
+
+    const patch = buildAdminDataChangePatch({
+      baseAppData: createAppData({ inventoryItems: [baseItem] }),
+      nextAppData: createAppData({ inventoryItems: [nextItem] }),
+      baseVersion: 14,
+      createdAt: "2026-08-20T16:00:00.000Z",
+      userId: "user-1",
+      mutationId: "admin-change-stock-precondition",
+      actionLabel: "Updating inventory item..."
+    });
+
+    expect(patch.inventoryItems).toEqual([{ ...nextItem, expectedStockQty: 12 }]);
   });
 
   it("flags unsupported user changes so they fall back to the full save path", () => {

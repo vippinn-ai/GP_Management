@@ -52,7 +52,10 @@ declare
   v_mutation_kind text := nullif(payload->>'mutation_kind', '');
   v_entity_type text := nullif(payload->>'entity_type', '');
   v_entity_id text := coalesce(nullif(payload->>'entity_id', ''), 'admin_data');
-  v_user_id text := nullif(payload->>'user_id', '');
+  v_client_user_id text := nullif(payload->>'user_id', '');
+  v_actor_user_id uuid := auth.uid();
+  v_user_id text := auth.uid()::text;
+  v_actor_role public.app_role;
   v_client_created_at timestamptz := coalesce(nullif(payload->>'client_created_at', '')::timestamptz, timezone('utc', now()));
   v_expected_version integer := nullif(payload->>'base_app_state_version', '')::integer;
   v_patch jsonb := coalesce(payload->'payload', '{}'::jsonb);
@@ -86,13 +89,14 @@ declare
   v_changed_rows jsonb := '{}'::jsonb;
   v_row jsonb;
   v_combo jsonb;
+  v_lock_id text;
   v_server_duration_ms numeric;
 begin
   if v_organization_id is null then
     perform public.raise_operational_rpc_error('invalid_payload', 'The admin change payload is missing an organization.', '{}'::jsonb);
   end if;
 
-  if not (select public.current_user_has_org_access(v_organization_id)) then
+  if v_actor_user_id is null or not (select public.current_user_has_org_access(v_organization_id)) then
     perform public.raise_operational_rpc_error(
       'organization_access_denied',
       'You do not have access to this organization.',
@@ -100,11 +104,47 @@ begin
     );
   end if;
 
-  if v_mutation_id is null or v_mutation_kind <> 'commitAdminDataChange' or v_user_id is null or v_entity_type <> 'admin_data' then
+  v_actor_role := public.current_user_org_role(v_organization_id);
+
+  if v_client_user_id is null or v_client_user_id <> v_user_id then
+    perform public.raise_operational_rpc_error(
+      'actor_spoof_rejected',
+      'The admin change actor must match the authenticated user.',
+      jsonb_build_object('organization_id', v_organization_id)
+    );
+  end if;
+
+  if v_mutation_id is null or v_mutation_kind <> 'commitAdminDataChange' or v_entity_type <> 'admin_data' then
     perform public.raise_operational_rpc_error(
       'invalid_payload',
       'The admin change payload is incomplete.',
       jsonb_build_object('mutation_id', v_mutation_id, 'mutation_kind', v_mutation_kind, 'entity_type', v_entity_type)
+    );
+  end if;
+
+  if v_actor_role <> 'admin'::public.app_role and (
+    jsonb_typeof(v_inventory_categories) = 'array'
+    or jsonb_array_length(case when jsonb_typeof(v_inventory_items) = 'array' then v_inventory_items else '[]'::jsonb end) > 0
+    or jsonb_array_length(case when jsonb_typeof(v_inventory_item_ids_to_delete) = 'array' then v_inventory_item_ids_to_delete else '[]'::jsonb end) > 0
+    or jsonb_array_length(case when jsonb_typeof(v_combos) = 'array' then v_combos else '[]'::jsonb end) > 0
+    or jsonb_array_length(case when jsonb_typeof(v_combo_ids_to_delete) = 'array' then v_combo_ids_to_delete else '[]'::jsonb end) > 0
+    or jsonb_array_length(case when jsonb_typeof(v_stock_movements) = 'array' then v_stock_movements else '[]'::jsonb end) > 0
+    or exists (
+      select 1
+      from jsonb_array_elements(
+        case when jsonb_typeof(v_audit_logs) = 'array' then v_audit_logs else '[]'::jsonb end
+      ) as source(audit)
+      where source.audit->>'action' in (
+        'inventory_created', 'inventory_updated', 'inventory_archived',
+        'inventory_restored', 'stock_movement', 'combo_created',
+        'combo_updated', 'combo_archived', 'combo_restored'
+      )
+    )
+  ) then
+    perform public.raise_operational_rpc_error(
+      'role_access_denied',
+      'Only administrators can change inventory or combo data.',
+      jsonb_build_object('required_role', 'admin', 'actual_role', v_actor_role)
     );
   end if;
 
@@ -127,6 +167,89 @@ begin
   end if;
 
   v_next_app_state_data := v_app_state_data;
+
+  -- Serialize existing inventory edits/deletes with normalized checkout stock
+  -- updates. Existing-item changes must carry the stock value the admin saw;
+  -- a concurrent checkout then fails this admin mutation instead of allowing a
+  -- stale client snapshot to overwrite the checkout deduction.
+  for v_lock_id in
+    select id
+    from (
+      select item->>'id' as id
+      from jsonb_array_elements(
+        case when jsonb_typeof(v_inventory_items) = 'array' then v_inventory_items else '[]'::jsonb end
+      ) as item
+      where nullif(item->>'id', '') is not null
+      union
+      select value as id
+      from jsonb_array_elements_text(
+        case when jsonb_typeof(v_inventory_item_ids_to_delete) = 'array' then v_inventory_item_ids_to_delete else '[]'::jsonb end
+      ) as deleted(value)
+      where nullif(value, '') is not null
+    ) as affected_inventory
+    order by id
+  loop
+    perform 1
+    from public.inventory_items
+    where organization_id = v_organization_id and id = v_lock_id
+    for update;
+  end loop;
+
+  if exists (
+    select 1
+    from jsonb_array_elements(
+      case when jsonb_typeof(v_inventory_items) = 'array' then v_inventory_items else '[]'::jsonb end
+    ) as source(item)
+    left join public.inventory_items as current_item
+      on current_item.organization_id = v_organization_id
+     and current_item.id = source.item->>'id'
+    where case
+      when current_item.id is null then source.item ? 'expectedStockQty'
+      when jsonb_typeof(source.item->'expectedStockQty') is distinct from 'number' then true
+      else (source.item->>'expectedStockQty')::numeric is distinct from current_item.stock_qty
+    end
+  ) then
+    perform public.raise_operational_rpc_error(
+      'inventory_conflict',
+      'Inventory stock changed while this admin edit was being saved. Refresh and review the latest stock before trying again.',
+      '{}'::jsonb
+    );
+  end if;
+
+  select coalesce(jsonb_agg(
+    (
+      item
+      - 'expectedStockQty'
+      - 'archivedByUserId'
+    ) || case
+      when nullif(item->>'archivedAt', '') is not null
+        then jsonb_build_object('archivedByUserId', v_user_id)
+      else '{}'::jsonb
+    end
+    order by ordinality
+  ), '[]'::jsonb)
+  into v_inventory_items
+  from jsonb_array_elements(
+    case when jsonb_typeof(v_inventory_items) = 'array' then v_inventory_items else '[]'::jsonb end
+  ) with ordinality as source(item, ordinality);
+
+  select coalesce(jsonb_agg(
+    (movement - 'userId') || jsonb_build_object('userId', v_user_id)
+    order by ordinality
+  ), '[]'::jsonb)
+  into v_stock_movements
+  from jsonb_array_elements(
+    case when jsonb_typeof(v_stock_movements) = 'array' then v_stock_movements else '[]'::jsonb end
+  ) with ordinality as source(movement, ordinality);
+
+  select coalesce(jsonb_agg(
+    (audit - 'userId') || jsonb_build_object('userId', v_user_id)
+    order by ordinality
+  ), '[]'::jsonb)
+  into v_audit_logs
+  from jsonb_array_elements(
+    case when jsonb_typeof(v_audit_logs) = 'array' then v_audit_logs else '[]'::jsonb end
+  ) with ordinality as source(audit, ordinality);
 
   if jsonb_typeof(v_inventory_categories) = 'array' then
     delete from public.inventory_categories

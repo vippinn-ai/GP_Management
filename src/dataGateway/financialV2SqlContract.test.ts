@@ -56,16 +56,42 @@ describe("financial v2 SQL contract", () => {
     expect(migration).toMatch(/user_id[\s\S]*p_actor_user_id::text/i);
   });
 
-  it("locks source sessions, tabs, bills, and inventory in the documented order", () => {
+  it("locks idempotency, source sessions, tabs, bills, and inventory in the documented order", () => {
     const checkout = functionBody("commit_checkout_bill_v2");
+    const mutationLock = checkout.indexOf("pg_advisory_xact_lock(hashtextextended");
+    const mutationInsert = checkout.indexOf("insert into public.financial_mutations");
     const sessionLock = checkout.indexOf("foreach v_lock_id in array v_source_session_ids");
     const tabLock = checkout.indexOf("foreach v_lock_id in array v_source_tab_ids");
     const billLock = checkout.indexOf("select distinct id from (");
     const inventoryLock = checkout.indexOf("select distinct value->>'itemId'");
-    expect(sessionLock).toBeGreaterThan(0);
+    expect(mutationLock).toBeGreaterThan(0);
+    expect(mutationInsert).toBeGreaterThan(mutationLock);
+    expect(sessionLock).toBeGreaterThan(mutationInsert);
     expect(tabLock).toBeGreaterThan(sessionLock);
     expect(billLock).toBeGreaterThan(tabLock);
     expect(inventoryLock).toBeGreaterThan(billLock);
+  });
+
+  it("serializes identical checkout and adjustment mutation keys without a global row", () => {
+    for (const name of ["commit_checkout_bill_v2", "commit_financial_adjustment_v2"]) {
+      const body = functionBody(name);
+      expect(body).toMatch(
+        /pg_advisory_xact_lock\(hashtextextended\(v_organization_id \|\| chr\(31\) \|\| v_mutation_id, 0\)\)/i
+      );
+      expect(body.indexOf("pg_advisory_xact_lock")).toBeLessThan(
+        body.indexOf("insert into public.financial_mutations")
+      );
+    }
+  });
+
+  it("measures complete financial work after mutation commit hydration", () => {
+    for (const name of ["commit_checkout_bill_v2", "commit_financial_adjustment_v2"]) {
+      const body = functionBody(name);
+      expect(body).toMatch(
+        /status = 'committed'[\s\S]*v_server_duration_ms := round[\s\S]*'server_duration_ms', v_server_duration_ms[\s\S]*canonical_result = v_result/i
+      );
+      expect(body).toMatch(/'core_duration_ms', v_server_duration_ms/i);
+    }
   });
 
   it("keeps v2 RPC execution authenticated-only", () => {
@@ -91,6 +117,9 @@ describe("financial v2 SQL contract", () => {
     expect(checkout).toMatch(/replacement_source_mismatch/i);
     expect(checkout).toMatch(/original_line\.stock_units_per_sale[\s\S]*variant\.stock_units_per_sale/i);
     expect(checkout).toMatch(/current normalized catalog/i);
+    expect(checkout).not.toMatch(/full join/i);
+    expect(checkout.match(/from expected[\s\S]*?where not exists \([\s\S]*?select 1 from actual/gi)).toHaveLength(2);
+    expect(checkout.match(/from actual[\s\S]*?where not exists \([\s\S]*?select 1 from expected/gi)).toHaveLength(2);
   });
 
   it("requires non-null adjustment expectations before lifecycle changes", () => {
@@ -128,7 +157,14 @@ describe("financial v2 SQL contract", () => {
   it("reconstructs detailed financial audit messages from locked server facts", () => {
     expect(migration).toMatch(/when 'bill_settled' then 'Settled Rs '[\s\S]*during checkout[\s\S]*Remaining due: Rs/i);
     expect(migration).toMatch(/when 'bill_replaced' then 'Issued replacement '[\s\S]*join public\.bills as original[\s\S]*Reason:/i);
-    expect(migration).toMatch(/when 'session_checkout_details_updated' then[\s\S]*start time:[\s\S]*customer name:[\s\S]*customer phone:/i);
+    expect(migration).toMatch(/when 'session_checkout_details_updated' then[\s\S]*start time:[\s\S]*end time:[\s\S]*customer name:[\s\S]*customer phone:/i);
+    expect(functionBody("commit_checkout_bill_v2")).toMatch(
+      /endedAt'\)::timestamptz is distinct from current_session\.ended_at/i
+    );
+    expect(functionBody("commit_checkout_bill_v2")).toMatch(
+      /session_checkout_details_updated'[\s\S]*<> \([\s\S]*current_session\.ended_at/i
+    );
+    expect(functionBody("commit_checkout_bill_v2")).not.toMatch(/endedAt'[\s\S]{0,160}> 60/i);
     expect(migration).toMatch(/when 'customer_tab_checkout_details_updated' then[\s\S]*customer name:[\s\S]*customer phone:/i);
     expect(migration).toMatch(/pre-checkout values[\s\S]*apply_financial_v2_rows[\s\S]*update public\.sessions/i);
   });

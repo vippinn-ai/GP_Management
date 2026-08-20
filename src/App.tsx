@@ -5504,7 +5504,9 @@ export default function App() {
     if (previewSession) {
       const startedAt = new Date(previewSession.startedAt);
       const endedAt = new Date(effectiveClosedAt);
-      const nowDate = new Date(now);
+      // The interval-driven display clock can lag this newly frozen close time
+      // by milliseconds. Compare with the fresh transaction timestamp instead.
+      const nowDate = new Date(issuedAt);
       if (startedAt.getTime() > endedAt.getTime()) {
         window.alert("Session start time cannot be later than end time.");
         return;
@@ -5853,8 +5855,8 @@ export default function App() {
         if ((checkoutState.sessionStartedAt ?? session.startedAt) !== session.startedAt) {
           detailChanges.push(`start time: ${formatDateTime(session.startedAt)} -> ${formatDateTime(checkoutState.sessionStartedAt ?? session.startedAt)}`);
         }
-        if (effectiveClosedAt !== (checkoutState.closedAt ?? effectiveClosedAt)) {
-          detailChanges.push(`end time: ${formatDateTime(checkoutState.closedAt ?? effectiveClosedAt)} -> ${formatDateTime(effectiveClosedAt)}`);
+        if (effectiveClosedAt !== session.endedAt) {
+          detailChanges.push(`end time: ${session.endedAt ? formatDateTime(session.endedAt) : "not set"} -> ${formatDateTime(effectiveClosedAt)}`);
         }
         if (detailChanges.length > 0) {
           addAuditLog(draft, activeUser.id, "session_checkout_details_updated", "session", session.id, `Updated during checkout: ${detailChanges.join("; ")}`);

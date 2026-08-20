@@ -1,0 +1,98 @@
+# Release B staging execution evidence — 2026-08-20
+
+## Scope and current decision
+
+- Environment: `test/staging` Supabase project `tkbdyzxwwbhkpztgjjxh` and Cloudflare Worker `gp-management-staging-pages`.
+- Production project `rrdwbxvuwrbxefarxnse` was not queried, migrated, deployed, or otherwise changed during this Release B execution.
+- Financial v2 is enabled only in the staging build. The final tested frontend is Worker version `9b941466-ac14-481e-9e97-b3ee62216fbf`, bundle `/assets/index-CGAv19GL.js`, SHA-256 `61d75f977819f975f80a2afdfef973f40147e1f2b8fc6fa1414cf9c5c86d71a5`.
+- The installed Phase 10 SQL SHA-256 is `68ca3612d4e4bb3e5bfa5eca3607431552b0248a436e43dc8d99eb1e7db3b426`.
+- Current decision: **Release B production NO-GO**. The evidence below closes the basic transaction, security and role boundaries, idempotency, duplicate-money, lifecycle, exact- and over-capacity limited-stock safety, single-hop double-billing prevention, repeated-session performance, realtime, and reload subgates. Concurrency against remaining operational/admin writers, representative complex/mixed performance, remaining payment/discount/LTP paths, final query-plan/error capture, and independent final sign-off remain open.
+
+## Installed definition and security evidence
+
+The final Phase 10 migration was applied atomically in the staging SQL editor and returned `Success. No rows returned`. Read-only definition verification proved both `commit_checkout_bill_v2` and `commit_financial_adjustment_v2` contain the core metric, compute the final `server_duration_ms` after `financial_mutations.status = 'committed'`, and retain authenticated execute grants.
+
+The final staging database smoke completed at `2026-08-20T14:45:57.964Z`, with zero retries and production access disabled:
+
+- anonymous checkout rejected with `42501`;
+- wrong organization rejected with `organization_access_denied`;
+- client actor spoof rejected with `actor_spoof_rejected`;
+- malformed checkout rejected with `invalid_payload`;
+- absent mutation lookup returned `null`;
+- authenticated actor and organization resolution passed.
+
+Both ignored browser credential slots currently resolve to the same staging admin identity, so the command-line smoke explicitly reports its two-identity role case as `not-run`; it does not claim a false independent user. The retained, rollback-safe [`release-b-role-authorization-proof.sql`](./release-b-role-authorization-proof.sql) executed in the signed-in staging editor; the hardened retained copy was re-executed at `2026-08-20 15:21:58.452954+00`. Inside one transaction it changed that profile and its triggered organization membership to `receptionist`, established the authenticated JWT actor, and called the real v2 RPCs. Write-off, void, refund, and bill replacement each returned `role_access_denied`; settlement passed the role boundary and reached domain validation. The transaction rolled back, reset the SQL session role, and returned `passed | admin | admin`, proving that both profile and membership roles were restored.
+
+The retained, rollback-safe [`release-b-inactive-authorization-proof.sql`](./release-b-inactive-authorization-proof.sql) then executed at `2026-08-20 15:48:29.8673+00`. Inside one transaction it set the same staging profile inactive and verified the profile trigger also made the organization membership inactive. With that user's authenticated JWT context, both `commit_checkout_bill_v2` and `commit_financial_adjustment_v2` rejected before domain validation with `organization_access_denied`. The transaction rolled back, reset the SQL session role, and returned `passed | true | true | admin | admin`, proving both active flags and roles were restored. No financial row was created because both calls were rejected at the organization-access boundary.
+
+## Functional and two-browser evidence
+
+All listed Playwright runs used the exact staging host/project guard, two isolated Chrome contexts where applicable, zero retries, disabled traces, ignored local credentials, compact JSON RPC evidence, and failure-only screenshot/video capture.
+
+| Run | Case | Result |
+| --- | --- | --- |
+| `20260820131857` | Timed session checkout with edited end time | Passed after exact client/server audit-transition alignment; one canonical bill/event and no session resurrection. |
+| `20260820132447` | Customer-tab inventory checkout with standalone variant, cigarette pack, and consumables combo | Passed; exact Maggie `-2`, cigarette `-10`, and Thumsuyp `-1` deltas, observer closure, and hard-refresh parity. |
+| `20260820135005` | Invalid arithmetic rollback plus two simultaneous copies of one mutation | Passed; invalid mutation left no status row, concurrent replay returned one canonical bill/event. |
+| `20260820134814` | Deferred checkout followed by v2 settlement | Passed; pending-to-issued transition, one settlement payment, observer parity, and hard refresh. |
+| `20260820141104` | Two different mutations against the same session | Passed; exactly one mutation committed, loser rolled back with no status row, winner replay returned the original canonical result. |
+| `20260820142216` | Two different settlement mutations against one pending bill | Passed; exactly one settlement committed and the loser left no mutation record, preventing over-collection. |
+| `20260820142733` | Two valid sessions concurrently claiming one bill number | Passed; exactly one `BILL` committed, loser received the explicit concurrent duplicate-financial-row error, loser mutation remained absent, and the still-open losing session was rejected through guarded cleanup. |
+| `20260820143100` | Paid inventory bill refund | Passed; canonical Refunded status, one stock reversal, one audit, no fabricated payment row, observer realtime, and hard-refresh parity. |
+| `20260820143246` | Unchanged bill replacement | Passed; original and replacement bills linked, original Replaced, replacement Issued, zero replacement stock movement, observer realtime, and hard-refresh parity. |
+| `20260820150530` | Two simultaneous limited-stock customer-tab checkouts | Passed; a dedicated stock-2 item had two one-unit open reservations, both independent v2 submissions returned HTTP 200, both tabs closed, both browsers reloaded at stock zero with no open reservation, and the item was archived. |
+| `20260820151921` | Two distinct checkout mutations against one hopped session | Passed; one request issued `BILL-20260820-134`, the competing request returned `session_not_billable`, the loser mutation remained absent, and replay of the winner returned the same bill and event. |
+| `20260820153726` | Two stale limited-stock commands with demand above physical stock | Passed; both requests returned `inventory_conflict`, neither mutation/event/bill existed, physical stock remained `1`, and both source tabs remained open until guarded cleanup. |
+
+Earlier failed runs are retained as harness evidence and are not relabeled: `20260820135449` exposed the stale display-clock future-time boundary; `20260820142409` and `20260820142540` attempted timed-session controls on unit-sale Arcade sessions; `20260820142646` proved the bill collision but failed cleanup because two dialog handlers raced. Each harness defect was corrected, characterized, and followed by the passing run above without retrying an ambiguous financial mutation.
+
+Limited-stock setup attempts `20260820145030` and `20260820145330` (before the final pass) are also retained. They stopped before any financial request: the first exposed a Category locator issue, and the second exposed premature `Synced` sampling plus tab-selection/realtime timing. Exact RPC waits and direct tab-chip activation corrected the harness. The aborted `20260820145330` tabs were closed through `reject_customer_tab`, and its dedicated item was archived through the normal admin UI. No abandoned QA tab or active item remains from those attempts.
+
+The passing exact-capacity artifact contains two distinct bill IDs, mutation IDs, event IDs, and stock-movement IDs. Read-only database reconciliation proved two bills totaling Rs 2, two payments totaling Rs 2, one bill actor and one payment actor, two committed mutations, two v2 checkout events, maximum recorded database duration `318.560 ms`, two movements totaling `-2`, two closed tabs, final normalized stock `0`, open reservations `0`, and archived item state. The two `TypeError: Failed to fetch` page errors are expected from deliberately aborting the UI submissions after capturing each command; the two captured commands were then sent exactly once through independent API contexts.
+
+The over-capacity run created an isolated stock-2 item, reserved one unit in each of two open tabs, captured both valid commands, and then recorded one audited admin deduction so physical stock was `1` while combined reservations remained `2`. Both independent requests returned HTTP 400 with `inventory_conflict`; both mutation-status lookups were `null`. The two source tabs were still visible after hard reload and physical stock displayed zero available with one unit reserved. Database reconciliation after guarded cleanup proved physical `stock_qty = 1`, exactly one `-1` admin adjustment, zero checkout bills, zero financial mutations, zero checkout events, both tabs rejected with no bill, zero remaining open reservations, and the dedicated item archived. Harness-only runs `20260820152459`, `20260820152759`, `20260820153046`, `20260820153209`, `20260820153423`, and `20260820153552` exposed dialog, available-versus-physical stock, and post-reload navigation assumptions; they created no committed checkout, and their exact QA tabs/items were closed or archived before the next run.
+
+The first hopped-race run `20260820151441` stopped before any financial request because its recovery flow detached the continuation and then targeted a stale modal. Its exact QA hopped session was billed once through the staging UI as unambiguous cleanup; it was not retried as a test result. The corrected zero-retry run `20260820151921` billed directly from the post-hop continuation and raced two distinct mutation IDs. Responses were HTTP `[400, 200]`: the loser returned `session_not_billable`, its mutation-status lookup was `null`, and replaying the winner returned the original `bill-03d08bdf-0ee1-4863-abc9-35e85507df79` and `event-2348b701-7b8c-4a86-831d-76a5bf8b8267`. Read-only database reconciliation proved exactly one bill and one payment for the source session, one committed mutation (the winner only), one operational event, actor equality, session status `closed`, close disposition `billed`, and the same closed bill ID. This closes the one-hop/two-bill race; multi-hop chains and concurrency against hop/reject or other writers remain open.
+
+## Corrected performance evidence
+
+The first 50-case run `20260820140339` functionally passed but its SQL duration stopped before canonical hydration and the mutation completion update. That run is retained as functional load evidence only. Phase 10 now records `core_duration_ms` separately and computes `server_duration_ms` after all domain writes, event insertion, canonical hydration, and mutation commit; only persistence of the timing metric itself follows.
+
+Corrected run `20260820141559` executed 50 sequential Arcade 1 unit-sale session/inventory checkouts in one zero-retry test:
+
+- 50/50 checkout RPCs returned HTTP 200;
+- 50 unique session, bill, bill-number, event, and mutation IDs;
+- bills `BILL-20260820-075` through `BILL-20260820-124`;
+- full-domain database p95 `478.066 ms`, maximum `530.476 ms`;
+- browser p95 `4,261 ms`, maximum `5,051 ms`;
+- database and browser thresholds passed (`<2 s` p95, `<5 s` DB max, `<7 s` browser max);
+- cleanup recorded 50 completed, no active QA customer, no cleanup error, no dialogs, and no remote errors.
+
+Read-only database reconciliation matched the artifact exactly: 50 issued bills totaling Rs 250, 50 payments totaling Rs 250, 50 operational events, 50 mutation IDs, 100 referenced audits, and 50 stock movements totaling `-50`. Bill, payment, and audit actor sets each contained one authenticated actor.
+
+Immediately before and after this corrected run, the legacy snapshot remained exactly:
+
+- `app_state.id = 'primary'`;
+- version `543`;
+- SHA-256 `d75a28837a0640266056f80e835e03d7ae6d4012b901b498afff046904574023`.
+
+This performance claim is deliberately scoped to repeated Arcade session/inventory checkout. It does not represent a mixed session/customer-tab/carryover/combo/settlement workload.
+
+## Local gates
+
+After the final source and SQL changes:
+
+- Vitest: 38 files / 416 tests passed;
+- production build: passed (existing large-chunk warning remains);
+- lint: zero errors and five documented warnings;
+- `git diff --check`: passed, with expected line-ending notices only;
+- focused financial/admin SQL and staging-harness contracts: 26/26 passed;
+- financial-v2 Playwright discovery: 14 tests across 10 files, with zero configured retries;
+- final review manifest: 277 first-party files / 75,103 physical lines / 214 semantic hotspots / 197 billing-relevant files / 78 classified `app_state` references.
+
+## Remaining mandatory Release B gates
+
+1. Checkout is safe against concurrent hop, reject, settlement, replacement, void/refund, admin inventory save, and item/combo mutation; multi-hop chain contention is also proven.
+2. Live timed/unit/tab coverage completes UPI, split, partial/deferred collection during checkout, discount/LTP/rounding/zero-total boundaries, pauses, direct/multi-hop carryover, and changed replacement quantities.
+3. A mixed representative performance/contention run passes and final deployed query plans/logs prove no `app_state.data` read, expansion, lock, patch, or rewrite and no SQLSTATE `57014`/deadlock.
+4. Independent tester completes the final evidence review and issues a production recommendation. Production deployment still requires separate explicit approval and a no-active-session window.

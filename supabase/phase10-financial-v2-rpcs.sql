@@ -344,6 +344,8 @@ begin
         select concat_ws('; ',
           case when (update_row.value->>'startedAt')::timestamptz is distinct from current_session.started_at
             then 'start time: ' || coalesce(current_session.started_at::text, 'not set') || ' -> ' || coalesce(update_row.value->>'startedAt', 'not set') end,
+          case when (update_row.value->>'endedAt')::timestamptz is distinct from current_session.ended_at
+            then 'end time: ' || coalesce(current_session.ended_at::text, 'not set') || ' -> ' || coalesce(update_row.value->>'endedAt', 'not set') end,
           case when nullif(update_row.value->>'customerName', '') is distinct from current_session.customer_name
             then 'customer name: ' || coalesce(current_session.customer_name, 'not set') || ' -> ' || coalesce(nullif(update_row.value->>'customerName', ''), 'not set') end,
           case when nullif(update_row.value->>'customerPhone', '') is distinct from current_session.customer_phone
@@ -552,6 +554,10 @@ begin
   then
     perform public.raise_operational_rpc_error('invalid_payload', 'The v2 checkout payload is incomplete.', '{}'::jsonb);
   end if;
+
+  -- Serialize identical mutation keys before speculative unique-index inserts.
+  -- This transaction-scoped lock does not serialize unrelated checkouts.
+  perform pg_advisory_xact_lock(hashtextextended(v_organization_id || chr(31) || v_mutation_id, 0));
 
   insert into public.financial_mutations (
     organization_id, mutation_id, mutation_kind, entity_type, entity_id,
@@ -1069,17 +1075,34 @@ begin
         coalesce((line->>'unitPrice')::numeric, 0)
     )
     select 1
-    from expected full join actual
-      on actual.inventory_item_id is not distinct from expected.inventory_item_id
-      and actual.sale_variant_id is not distinct from expected.sale_variant_id
-      and actual.combo_application_id is not distinct from expected.combo_application_id
-      and actual.combo_id is not distinct from expected.combo_id
-      and actual.sold_as_pack_of is not distinct from expected.sold_as_pack_of
-      and actual.stock_units_per_sale is not distinct from expected.stock_units_per_sale
-      and actual.actual_description is not distinct from expected.expected_description
-      and actual.unit_price is not distinct from expected.unit_price
-    where expected.inventory_item_id is null or actual.inventory_item_id is null
-      or abs(expected.quantity - actual.quantity) > 0.0001
+    from expected
+    where not exists (
+      select 1 from actual
+      where actual.inventory_item_id is not distinct from expected.inventory_item_id
+        and actual.sale_variant_id is not distinct from expected.sale_variant_id
+        and actual.combo_application_id is not distinct from expected.combo_application_id
+        and actual.combo_id is not distinct from expected.combo_id
+        and actual.sold_as_pack_of is not distinct from expected.sold_as_pack_of
+        and actual.stock_units_per_sale is not distinct from expected.stock_units_per_sale
+        and actual.actual_description is not distinct from expected.expected_description
+        and actual.unit_price is not distinct from expected.unit_price
+        and abs(expected.quantity - actual.quantity) <= 0.0001
+    )
+    union all
+    select 1
+    from actual
+    where not exists (
+      select 1 from expected
+      where actual.inventory_item_id is not distinct from expected.inventory_item_id
+        and actual.sale_variant_id is not distinct from expected.sale_variant_id
+        and actual.combo_application_id is not distinct from expected.combo_application_id
+        and actual.combo_id is not distinct from expected.combo_id
+        and actual.sold_as_pack_of is not distinct from expected.sold_as_pack_of
+        and actual.stock_units_per_sale is not distinct from expected.stock_units_per_sale
+        and actual.actual_description is not distinct from expected.expected_description
+        and actual.unit_price is not distinct from expected.unit_price
+        and abs(expected.quantity - actual.quantity) <= 0.0001
+    )
   ) then
     perform public.raise_operational_rpc_error('source_item_mismatch', 'Bill inventory rows do not match the locked session or tab items.', '{}'::jsonb);
   end if;
@@ -1176,14 +1199,30 @@ begin
         coalesce((line->>'unitPrice')::numeric, 0), nullif(line->>'linkedSessionId', '')
     )
     select 1
-    from expected full join actual
-      on actual.combo_application_id is not distinct from expected.combo_application_id
-      and actual.combo_id is not distinct from expected.combo_id
-      and actual.actual_description is not distinct from expected.expected_description
-      and actual.unit_price is not distinct from expected.unit_price
-      and actual.linked_session_id is not distinct from expected.linked_session_id
-    where expected.combo_application_id is null or actual.combo_application_id is null
-      or actual.row_count <> 1 or abs(actual.quantity - 1) > 0.0001
+    from expected
+    where not exists (
+      select 1 from actual
+      where actual.combo_application_id is not distinct from expected.combo_application_id
+        and actual.combo_id is not distinct from expected.combo_id
+        and actual.actual_description is not distinct from expected.expected_description
+        and actual.unit_price is not distinct from expected.unit_price
+        and actual.linked_session_id is not distinct from expected.linked_session_id
+        and actual.row_count = 1
+        and abs(actual.quantity - 1) <= 0.0001
+    )
+    union all
+    select 1
+    from actual
+    where not exists (
+      select 1 from expected
+      where actual.combo_application_id is not distinct from expected.combo_application_id
+        and actual.combo_id is not distinct from expected.combo_id
+        and actual.actual_description is not distinct from expected.expected_description
+        and actual.unit_price is not distinct from expected.unit_price
+        and actual.linked_session_id is not distinct from expected.linked_session_id
+        and actual.row_count = 1
+        and abs(actual.quantity - 1) <= 0.0001
+    )
   ) then
     perform public.raise_operational_rpc_error('source_combo_mismatch', 'Bill combo rows do not match the locked combo snapshots.', '{}'::jsonb);
   end if;
@@ -1530,6 +1569,23 @@ begin
       select 1 from jsonb_array_elements(v_audit_logs) as source(value)
       where source.value->>'entityType' = 'bill' and source.value->>'entityId' = v_bill_id and source.value->>'action' = 'bill_pending'
     )
+  ) or (
+    v_mode = 'session' and (
+      select count(*) from jsonb_array_elements(v_audit_logs) as source(value)
+      where source.value->>'entityType' = 'session' and source.value->>'entityId' = v_entity_id
+        and source.value->>'action' = 'session_checkout_details_updated'
+    ) <> (
+      select count(*)
+      from public.sessions as current_session
+      join jsonb_array_elements(v_sessions) as update_row(value) on update_row.value->>'id' = current_session.id
+      where current_session.organization_id = v_organization_id and current_session.id = v_entity_id
+        and (
+          (update_row.value->>'startedAt')::timestamptz is distinct from current_session.started_at
+          or (update_row.value->>'endedAt')::timestamptz is distinct from current_session.ended_at
+          or nullif(update_row.value->>'customerName', '') is distinct from current_session.customer_name
+          or nullif(update_row.value->>'customerPhone', '') is distinct from current_session.customer_phone
+        )
+    )
   ) or exists (
     select 1 from jsonb_array_elements(v_audit_logs) as source(value)
     where not (
@@ -1565,6 +1621,7 @@ begin
             where current_session.organization_id = v_organization_id and current_session.id = v_entity_id
               and (
                 (update_row.value->>'startedAt')::timestamptz is distinct from current_session.started_at
+                or (update_row.value->>'endedAt')::timestamptz is distinct from current_session.ended_at
                 or nullif(update_row.value->>'customerName', '') is distinct from current_session.customer_name
                 or nullif(update_row.value->>'customerPhone', '') is distinct from current_session.customer_phone
               )
@@ -1784,7 +1841,7 @@ begin
     jsonb_build_object(
       'mutation_id', v_mutation_id, 'mutation_kind', v_mutation_kind,
       'bill_id', v_bill_id, 'bill_number', v_bill_number,
-      'client_created_at', v_client_created_at, 'server_duration_ms', v_server_duration_ms,
+      'client_created_at', v_client_created_at, 'core_duration_ms', v_server_duration_ms,
       'changed_rows', v_changed_rows
     )
   ) returning id into v_event_id;
@@ -1794,7 +1851,7 @@ begin
     'entity_type', v_entity_type, 'entity_id', v_entity_id,
     'bill_id', v_bill_id, 'bill_number', v_bill_number,
     'event_id', v_event_id, 'server_time', timezone('utc', now()),
-    'server_duration_ms', v_server_duration_ms, 'changed_rows', v_changed_rows,
+    'core_duration_ms', v_server_duration_ms, 'changed_rows', v_changed_rows,
     'canonical_bill', (
       select bill.raw_data
         || jsonb_build_object(
@@ -1826,6 +1883,18 @@ begin
   update public.financial_mutations set
     status = 'committed', canonical_result = v_result,
     committed_at = timezone('utc', now()), updated_at = timezone('utc', now())
+  where organization_id = v_organization_id and mutation_id = v_mutation_id;
+
+  -- Measure after every domain write, the event insert, canonical hydration,
+  -- and the mutation commit update. The two updates below only persist this
+  -- instrumentation in the already-atomic transaction.
+  v_server_duration_ms := round((extract(epoch from (clock_timestamp() - v_started_at)) * 1000)::numeric, 3);
+  v_result := v_result || jsonb_build_object('server_duration_ms', v_server_duration_ms);
+  update public.operational_events set
+    metadata = metadata || jsonb_build_object('server_duration_ms', v_server_duration_ms)
+  where id = v_event_id and organization_id = v_organization_id;
+  update public.financial_mutations set
+    canonical_result = v_result, updated_at = timezone('utc', now())
   where organization_id = v_organization_id and mutation_id = v_mutation_id;
 
   return v_result;
@@ -1880,6 +1949,8 @@ begin
   then
     perform public.raise_operational_rpc_error('invalid_payload', 'The v2 financial adjustment payload is incomplete.', '{}'::jsonb);
   end if;
+
+  perform pg_advisory_xact_lock(hashtextextended(v_organization_id || chr(31) || v_mutation_id, 0));
 
   insert into public.financial_mutations (
     organization_id, mutation_id, mutation_kind, entity_type, entity_id,
@@ -2233,7 +2304,7 @@ begin
     v_organization_id, 'financial_adjustment_committed_v2', v_entity_type, v_entity_id, v_actor_user_id::text,
     jsonb_build_object(
       'mutation_id', v_mutation_id, 'mutation_kind', v_mutation_kind,
-      'server_duration_ms', v_server_duration_ms, 'changed_rows', v_changed_rows
+      'core_duration_ms', v_server_duration_ms, 'changed_rows', v_changed_rows
     )
   ) returning id into v_event_id;
 
@@ -2241,13 +2312,22 @@ begin
     'mutation_id', v_mutation_id, 'mutation_kind', v_mutation_kind,
     'organization_id', v_organization_id, 'entity_type', v_entity_type,
     'entity_id', v_entity_id, 'event_id', v_event_id,
-    'server_time', timezone('utc', now()), 'server_duration_ms', v_server_duration_ms,
+    'server_time', timezone('utc', now()), 'core_duration_ms', v_server_duration_ms,
     'changed_rows', v_changed_rows
   );
 
   update public.financial_mutations set
     status = 'committed', canonical_result = v_result,
     committed_at = timezone('utc', now()), updated_at = timezone('utc', now())
+  where organization_id = v_organization_id and mutation_id = v_mutation_id;
+
+  v_server_duration_ms := round((extract(epoch from (clock_timestamp() - v_started_at)) * 1000)::numeric, 3);
+  v_result := v_result || jsonb_build_object('server_duration_ms', v_server_duration_ms);
+  update public.operational_events set
+    metadata = metadata || jsonb_build_object('server_duration_ms', v_server_duration_ms)
+  where id = v_event_id and organization_id = v_organization_id;
+  update public.financial_mutations set
+    canonical_result = v_result, updated_at = timezone('utc', now())
   where organization_id = v_organization_id and mutation_id = v_mutation_id;
 
   return v_result;

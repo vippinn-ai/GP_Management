@@ -16,6 +16,7 @@ export interface RpcEvidence {
   eventId?: string;
   mutationId?: string;
   serverTime?: string;
+  serverDurationMs?: number;
   changedRows?: Record<string, unknown>;
 }
 
@@ -127,6 +128,7 @@ export function captureRpcEvidence(page: Page, pageName: RpcEvidence["page"], ta
       eventId: typeof body.event_id === "string" ? body.event_id : undefined,
       mutationId: typeof body.mutation_id === "string" ? body.mutation_id : undefined,
       serverTime: typeof body.server_time === "string" ? body.server_time : undefined,
+      serverDurationMs: typeof body.server_duration_ms === "number" ? body.server_duration_ms : undefined,
       changedRows: body.changed_rows && typeof body.changed_rows === "object" ? body.changed_rows as Record<string, unknown> : undefined
     });
   });

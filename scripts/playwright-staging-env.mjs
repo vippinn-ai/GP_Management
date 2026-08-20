@@ -47,7 +47,7 @@ export function assertStagingBaseUrl(value) {
   return parsed.href;
 }
 
-export function assertStagingSupabaseEnvironment(stagingEnv) {
+export function assertStagingSupabaseEnvironment(stagingEnv, expectedFinancialV2 = false) {
   const supabaseUrl = stagingEnv.VITE_SUPABASE_URL?.trim();
   if (!supabaseUrl) {
     throw new Error(".env.staging must contain VITE_SUPABASE_URL before staging E2E can run.");
@@ -57,8 +57,10 @@ export function assertStagingSupabaseEnvironment(stagingEnv) {
   if (hostname !== expectedHostname || supabaseUrl.includes(PRODUCTION_PROJECT_REF)) {
     throw new Error("The staging build environment does not point to the approved staging Supabase project.");
   }
-  if (stagingEnv.VITE_BACKEND_FINANCIAL_RPC_V2 !== "false") {
-    throw new Error("Release A staging E2E requires VITE_BACKEND_FINANCIAL_RPC_V2=false.");
+  if (stagingEnv.VITE_BACKEND_FINANCIAL_RPC_V2 !== String(expectedFinancialV2)) {
+    throw new Error(
+      `Staging E2E requires VITE_BACKEND_FINANCIAL_RPC_V2=${expectedFinancialV2}.`
+    );
   }
 }
 
