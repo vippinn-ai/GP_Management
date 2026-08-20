@@ -272,28 +272,53 @@ After the two-step fix and final redeployment, the exact scenario was repeated w
 
 The independent reviewer re-read the strengthened identity logic, ran the focused 131-test pair and full 376-test suite, verified the 242-row manifest, and reported no remaining blocker specific to customer identity.
 
+### Write-off, refund, and receipt-export verification
+
+The remaining Bill Register financial-adjustment and export cases were exercised on staging only. Production was not targeted.
+
+- `BILL-20260820-005` (`bill-13fb7748-feac-41fe-94ee-1a5af98fc440`) was issued as a Rs 10 deferred one-Coke customer-tab bill and then written off with reason `Release A independent write-off verification`.
+- The canonical bill is `voided` at `2026-08-20T04:40:13.441+00:00`; its `voided_by_user_id`, `bill_voided_bad_debt` audit actor, and `writeOffPendingBills` event actor all resolve to `Vipin` / `vipin` (`61cc2f83-69d1-46ab-9d89-9df7f7b1e497`). The adjustment event completed in `98.236 ms` and advanced compatibility `app_state.version` to `502`.
+- The origin Bill Register changed to Voided immediately after confirmation. The independent Chrome observer changed from Pending to Voided without a manual or hard refresh within the bounded observation window; it was proven updated by the final 7.5-second sample. A later hard refresh retained Voided and exposed no obsolete action.
+- Write-off is a bad-debt disposition, not a return of a consumed item. The original Coke sale movement remains the only movement for the bill and stock remains deducted once; no reversal was expected or created. Staging retained zero negative inventory rows.
+- Database reconciliation found one bill-number row, zero duplicate payment IDs, and zero duplicate event IDs. No payment exists for the deferred write-off.
+
+The native `window.prompt` / `window.confirm` void-refund flow proved unreliable in both controlled browsers. The interrupted attempts did not commit; a read-only database check still showed `BILL-20260820-001` issued, with no void timestamp or refund event. Commit `55da12b` replaced only those native dialogs with the existing controlled modal pattern while leaving the `voidBill` / `refundBill` patch, reversal, audit, and Bill Register refresh logic unchanged. A source-contract test prevents reintroduction of the native-dialog flow.
+
+- The controlled modal was loaded from final staging bundle `index-o2QILXCi.js` and refunded `BILL-20260820-001` with reason `Release A independent refund verification`.
+- The origin Bill Register immediately changed to Refunded without a manual refresh. An independently authenticated Chrome load reconstructed the same Refunded row, `Receivables (0)`, and Rs 30 current-day revenue; it reported no browser warning or error.
+- Canonical PostgreSQL evidence shows status `refunded`, `voided_at=2026-08-20T04:57:03.937+00:00`, and the exact reason. The issuer, refund actor, `bill_refunded` audit actor, original payment receiver, and adjustment-event actor all resolve to the same authenticated `Vipin` profile.
+- The `refundBill` event completed in `166.390 ms`, advanced compatibility `app_state.version` exactly once to `503`, and produced final compatibility SHA-256 `e0420b050f843f4b53bf73895b22e7673ac004a99a2d5dfa6172a28811ce4ff5` at `2026-08-20T04:57:04.47677+00:00`.
+- This timed-session bill contained no inventory line, so the correct refund stock result was zero related stock movements. Staging still had zero negative inventory rows. Reconciliation found one bill-number row, zero duplicate payment IDs, and zero duplicate event IDs.
+
+Receipt export was tested with replacement `BILL-20260820-003`:
+
+- The staging UI generated a one-page PDF with the correct bill number, issue time, customer, cash mode, `Replaces BILL-20260820-002`, two Coke lines at Rs 10, and Rs 20 total.
+- Visual rendering of the first export exposed that jsPDF's built-in Helvetica font displayed the rupee glyph as an apostrophe-like character. Commit `55da12b` made only PDF-bound currency text font-safe as `Rs `; the on-screen receipt and all numerical models remain unchanged.
+- The corrected staging export is 292,211 bytes, one page, 226.77 by 384 points. A 150-DPI render verified the logo, address, bill metadata, replacement link, line, subtotal, discount, round-off, total, and footer with legible `Rs 20.00` / `Rs 10.00` values and no clipping or overlap.
+- The final frontend was deployed only to `gp-management-staging-pages`, Cloudflare version `8ebe7ee1-4265-407c-afa7-ce11ec2d597c`. `VITE_BACKEND_FINANCIAL_RPC_V2` remained `false`; the production worker and production database were not targeted.
+- Final local gates for this source were 31 test files / 380 tests passed; production and staging builds passed with the existing large-chunk warning; lint exited zero with the same five warnings; `git diff --check` passed.
+
 ## Post-functional parity reconciliation
 
 The repository 36-row parity query after the independent financial cases returned four nonzero collection-count rows and zero financial-total or live-summary deltas:
 
 | Collection | `app_state` | Normalized | Delta | Reconciliation |
 | --- | ---: | ---: | ---: | --- |
-| audit logs | 547 | 570 | +23 | Exactly 23 normalized-only purpose-RPC audit IDs: the prior 16 plus the independent timed start/pause/resume, independent tab open/item-add, and refresh-proof tab open/item-add. Financial bill/settlement/replacement audits were patched into both stores. |
-| customers | 64 | 70 | +6 | Exactly six normalized QA customers created through purpose-built operational RPCs; the additional row is the independent timed-session customer. |
+| audit logs | 551 | 576 | +25 | Exactly 25 normalized-only purpose-RPC audit IDs: the prior 23 plus the write-off tab-open and item-add audits. Financial checkout, settlement, replacement, write-off, and refund audits were patched into both stores. |
+| customers | 64 | 71 | +7 | Exactly seven normalized QA customers created through purpose-built operational RPCs; the added row is the write-off customer-tab customer. |
 | session pause logs | 18 | 19 | +1 | The independent timed session's pause/resume row is normalized-only and survives reload; it is intentionally absent from the stale compatibility snapshot. |
-| stock movements | 278 | 282 | +4 | Two controlled Coke reservation/release pairs (`-1`, `+1`); combined net zero. All financial sale/replacement movements are present in both stores. |
+| stock movements | 279 | 283 | +4 | Two controlled Coke reservation/release pairs (`-1`, `+1`); combined net zero. All financial sale/replacement/write-off movements are present in both stores. |
 
 These deltas are explained normalized-only operational history, not missing normalized data. They demonstrate why Release A must not roll reads back to the compatibility snapshot. They do not satisfy the complete Gate 6 by themselves; the remaining verification scripts, second-browser matrix, and soak evidence are still required.
 
 ## Current gate decision
 
-Database reconstruction, additive Release A installation, staging frontend deployment, authenticated normalized-read smoke, controlled operational lifecycle checks, representative timed/unit/tab v1 checkout, settlement, replacement, customer-history correction, actor/stock verification, independent Chrome session/item/reject and financial realtime coverage, Bill Register invalidation correction, historical receipt linkage, analytics, customer-history, inventory-report parity, and hard-refresh non-resurrection checks are complete. The remaining Gate 5 write-off/refund/export/fail-closed/permissions cases, complete Gate 6 capture, performance, and full-business-day soak gates remain open. No production promotion claim is made.
+Database reconstruction, additive Release A installation, staging frontend deployment, authenticated normalized-read smoke, controlled operational lifecycle checks, representative timed/unit/tab v1 checkout, settlement, replacement, write-off, refund, customer-history correction, actor/stock verification, independent Chrome session/item/reject and financial realtime coverage, Bill Register invalidation correction, receipt PDF export/rendering, historical receipt linkage, analytics, customer-history, inventory-report parity, and hard-refresh non-resurrection checks are complete. The remaining Gate 5 fail-closed/permissions cases, complete Gate 6 capture, performance, and full-business-day soak gates remain open. No production promotion claim is made.
 
 ## Remaining gated work
 
-1. Complete the remaining Bill Register write-off/refund and receipt-export cases.
-2. Complete permissions and controlled fail-closed read cases.
-3. Complete the remaining Gate 6 definitions/grants/indexes/publication/error/duplicate captures and performance probes.
-4. Complete the full representative staging business-day soak and independent sign-off.
+1. Complete permissions and controlled fail-closed read cases.
+2. Complete the remaining Gate 6 definitions/grants/indexes/publication/error/duplicate captures and performance probes.
+3. Complete the full representative staging business-day soak and independent sign-off.
 
 No production action is authorized by this evidence.
