@@ -80,6 +80,7 @@ import {
   estimateCheckoutPayloadBytes,
   recordCheckoutTelemetrySample
 } from "./checkoutTelemetry";
+import { runQaControlledNormalizedRead } from "./qa/normalizedReadFailure";
 import type {
   AppData,
   AppliedDiscount,
@@ -1538,7 +1539,7 @@ export default function App() {
     }
     let cancelled = false;
     setNormalizedCustomerHistoryState((previous) => ({ ...previous, loading: true, error: "" }));
-    loadNormalizedCustomerHistoryData()
+    runQaControlledNormalizedRead("customers", () => loadNormalizedCustomerHistoryData())
       .then((data) => {
         if (!cancelled) setNormalizedCustomerHistoryState({ ...data, loading: false, error: "", loaded: true });
       })
@@ -1635,12 +1636,12 @@ export default function App() {
       queryKey: normalizedReportQueryKey
     }));
 
-    loadAnalyticsSummaryData({
+    runQaControlledNormalizedRead("reports", () => loadAnalyticsSummaryData({
       fromDate: reportFromDate,
       toDate: reportToDate,
       previousFromDate: previousRange.from,
       previousToDate: previousRange.to
-    })
+    }))
       .then((data) => {
         if (cancelled) {
           return;
@@ -1710,11 +1711,11 @@ export default function App() {
       queryKey: inventoryReportQueryKey
     }));
 
-    loadInventoryReportSummaryData({
+    runQaControlledNormalizedRead("inventory", () => loadInventoryReportSummaryData({
       fromDate: inventoryReportFromDate,
       toDate: inventoryReportToDate,
       searchQuery: debouncedInventoryReportSearch
-    })
+    }))
       .then((data) => {
         if (cancelled) {
           return;
@@ -1775,12 +1776,12 @@ export default function App() {
       queryKey: normalizedReportQueryKey
     }));
 
-    loadNormalizedReportData({
+    runQaControlledNormalizedRead("reports", () => loadNormalizedReportData({
       fromDate: reportFromDate,
       toDate: reportToDate,
       previousFromDate: previousRange.from,
       previousToDate: previousRange.to
-    })
+    }))
       .then((data) => {
         if (cancelled) {
           return;
@@ -1857,10 +1858,10 @@ export default function App() {
       queryKey: normalizedBillRegisterQueryKey
     }));
 
-    loadNormalizedBillRegisterPage({
+    runQaControlledNormalizedRead("bill-history", () => loadNormalizedBillRegisterPage({
       ...normalizedBillRegisterQuery,
       limit: BILL_REGISTER_PAGE_SIZE
-    })
+    }))
       .then((page) => {
         if (cancelled || normalizedBillRegisterGenerationRef.current !== requestGeneration) {
           return;
@@ -1925,11 +1926,11 @@ export default function App() {
     const requestedQueryKey = normalizedBillRegisterQueryKey;
     const requestedGeneration = normalizedBillRegisterGenerationRef.current;
     setNormalizedBillRegisterState((previous) => ({ ...previous, loadingMore: true, error: "" }));
-    loadNormalizedBillRegisterPage({
+    runQaControlledNormalizedRead("bill-history", () => loadNormalizedBillRegisterPage({
       ...normalizedBillRegisterQuery,
       cursor,
       limit: BILL_REGISTER_PAGE_SIZE
-    })
+    }))
       .then((page) => {
         if (
           normalizedBillRegisterQueryKeyRef.current !== requestedQueryKey ||

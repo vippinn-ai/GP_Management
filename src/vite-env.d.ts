@@ -17,6 +17,8 @@ interface ImportMetaEnv {
   readonly VITE_BACKEND_RPC_OPERATIONAL_WRITES?: string;
   readonly VITE_BACKEND_RPC_FINANCIAL_WRITES?: string;
   readonly VITE_BACKEND_FINANCIAL_RPC_V2?: string;
+  readonly VITE_QA_NORMALIZED_READ_FAILURES?: string;
+  readonly VITE_QA_FAIL_CLOSED_BUILD_ID?: string;
 }
 
 interface ImportMeta {
