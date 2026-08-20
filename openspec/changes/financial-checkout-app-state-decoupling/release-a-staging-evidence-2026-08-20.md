@@ -3,19 +3,19 @@
 ## Scope
 
 - Project: `test/staging` (`tkbdyzxwwbhkpztgjjxh`), Southeast Asia (Singapore).
-- Current reviewed deployment commit at the start of this checkpoint: `0e9cbb933facee931b047217066c27df34624763` (the initial Release A deployment was built from application commit `0af9c7b0cb35e521fd35bff9ba7980d792cf100e`).
+- Current reviewed deployment commit: `4c1a2fc13be3f66370a320a2017e837242513193` (the initial Release A deployment was built from application commit `0af9c7b0cb35e521fd35bff9ba7980d792cf100e`).
 - Financial v2 remained disabled; phase 10 was not applied.
 - No production project, production database, or production deployment was accessed.
 - Staging was resumed from its paused state. The initial investigation was read-only. After the user explicitly approved the staging-only destructive reconstruction, a verified backup was retained and normalized `org-primary` was rebuilt from authoritative `app_state`.
 
 ## Evidence metadata
 
-- Execution window: `2026-08-19T19:28:17Z` through at least `2026-08-20T06:55:37.339448Z` (`2026-08-20 00:58` through at least `12:25` IST) for the recorded active runs; the required business-day soak remains open.
+- Execution window: `2026-08-19T19:28:17Z` through at least `2026-08-20T07:03:46.231Z` (`2026-08-20 00:58` through at least `12:33` IST) for the recorded active runs; the required business-day soak remains open.
 - Operator: Codex primary agent using the user-authorized authenticated staging sessions.
 - Independent reviewer: separate read-only checkout test agent.
 - Browser surface: authenticated Codex in-app browser plus the user's independently authenticated Chrome profile through the connected browser integration.
 - Previous accepted staging frontend version: `c76b06d6-3cab-408f-a32c-d1937b14b562`.
-- Current staging frontend version at the start of this checkpoint: `e148e232-51db-46f7-aed7-e35dfa3477f0`.
+- Current staging frontend version: `5f408587-bdcb-4333-94fc-abedc030bf50`.
 
 ## Project and compatibility baseline
 
@@ -349,7 +349,7 @@ The repository `phase3-performance-evidence-probes-single-result.sql` completed 
 - Probe 3, recent reports: planning `0.798 ms`, execution `0.213 ms`.
 - Probe 4, older-history search: planning `0.389 ms`, execution `0.451 ms`.
 - The four query plans use normalized tables. The script reads `app_state` only once to report document size; it performs no business-data update or compatibility rewrite.
-- The final review manifest was regenerated after this evidence change: 245 first-party files, 69,318 physical lines, 186 semantic hotspots, and 170 billing-relevant files.
+- The final review manifest was regenerated after this evidence change: 245 first-party files, 69,396 physical lines, 186 semantic hotspots, and 170 billing-relevant files.
 
 ## Gate 5 permission persistence and restoration
 
@@ -399,7 +399,7 @@ The browser connection timed out while submitting a pause-time edit. Read-only d
 
 Final cleanup verification at `2026-08-20T06:05:34.810068+00:00` proved the session closed as rejected with reason `Release A pause overlay test cleanup`, audit `audit-release-a-pause-cleanup-20260820-1`, operational event `event-624bafcb-a174-4bd5-88d8-208dab0d5cb3`, matching actor, and server duration `119.436 ms`. The compatibility write advanced `app_state` once from version `503` to `504`, with final SHA-256 `4f99ee07feafbb5cb6c0a866c546ae201c8f639ecf6a930ead78efa843c99fe4`.
 
-This passes start/pause/resume two-browser propagation only. Pause edit/delete and browser-2 complete pause-log replacement after deletion remain open exactly as listed below.
+At that checkpoint, only start/pause/resume two-browser propagation passed. Pause deletion and independent hard-refresh reconstruction were completed in the later checkpoint below; pause edit and the no-refresh observer deletion-overlay case remain open.
 
 ## Pause deletion, hard-refresh reconstruction, and audit timestamp correction
 
@@ -419,6 +419,8 @@ The native `datetime-local` control could not be populated by the connected auto
 Because the original observer tab was lost when the browser integration reconnected, this proves independent hard-refresh reconstruction after deletion, not the required no-refresh second-browser overlay deletion. That narrower realtime case remains open.
 
 The hard-refresh check exposed a real display defect: the deletion audit appeared as `6:45 am` in an IST browser instead of `12:15 pm`. The typed database timestamp was correct, but the normalized mapper preferred a timezone-less `raw_data.createdAt` emitted by Phase 11. The correction makes typed `audit_at` authoritative and uses one `timestamptz now()` value for typed audit time, raw audit time, row update time, and RPC `server_time`. Characterization and SQL-contract tests cover the precedence and all three Phase 11 functions. The corrected Phase 11 definitions were applied to staging only and read-only definition checks confirmed timezone-safe implementations for `edit_pause_log`, `delete_pause_log`, and `record_session_audit`. Production was untouched.
+
+Commit `4c1a2fc13be3f66370a320a2017e837242513193` containing the mapper and SQL correction was pushed and deployed to the staging Worker as version `5f408587-bdcb-4333-94fc-abedc030bf50`. A fresh independently authenticated Chrome load of that exact deployment showed `Deleted pause log entry for 8 Ball Pool.` at `20 Aug 2026, 12:15 pm`, matching `06:45:12Z +05:30`. It also reconstructed zero open sessions and showed both cleanup rejections at `12:25 pm`. This closes the visible audit-time regression without changing the stored historical row.
 
 Both QA sessions were finally closed through the existing authenticated `reject_session` purpose RPC, never by direct table mutation. At `2026-08-20T06:55:37.339448+00:00`:
 
