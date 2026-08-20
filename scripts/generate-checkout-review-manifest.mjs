@@ -34,7 +34,7 @@ function classifyAppState(path, content) {
   if (!/app_state|appState|baseAppStateVersion/.test(content)) return "none";
   if (path === "supabase/phase10-financial-v2-rpcs.sql") return "v2-prohibition-and-client-field-rejection";
   if (
-    path.startsWith("openspec/") || path.endsWith(".test.ts") || path.endsWith(".test.tsx") ||
+    path.startsWith("openspec/") || path.startsWith("tests/") || path.endsWith(".test.ts") || path.endsWith(".test.tsx") ||
     path === ".gitignore" || path === "architect.md" || path === "deploymentrules.md" || path.endsWith("runbook.md")
   ) {
     return "documentation-or-test-reference";
@@ -108,6 +108,7 @@ function inferRpcs(content) {
   for (const match of content.matchAll(/\.rpc\(\s*["']([a-z0-9_]+)["']/gi)) names.add(match[1]);
   for (const match of content.matchAll(/\brpc\s*===\s*["']([a-z0-9_]+)["']/gi)) names.add(match[1]);
   for (const match of content.matchAll(/function\s+public\.([a-z0-9_]+)\s*\(/gi)) names.add(match[1]);
+  for (const match of content.matchAll(/\b(?:perform|select)\s+public\.([a-z0-9_]+)\s*\(/gi)) names.add(match[1]);
   return [...names].sort().join("; ");
 }
 
@@ -145,7 +146,8 @@ const rows = files.map((path) => {
     JSON.parse(content);
   }
   const operationalStagingContract = path.startsWith("tests/e2e/staging/") && path.endsWith(".e2e.ts");
-  const billingRelevant = operationalStagingContract || /checkout|bill|payment|settle|receipt|discount|refund|void|deferred|financial/i.test(content);
+  const releaseBProof = path.startsWith("openspec/changes/financial-checkout-app-state-decoupling/release-b-") && path.endsWith(".sql");
+  const billingRelevant = operationalStagingContract || releaseBProof || /checkout|bill|payment|settle|receipt|discount|refund|void|deferred|financial/i.test(content);
   const appStateDisposition = classifyAppState(path, content);
   const semanticHotspot = billingRelevant || appStateDisposition !== "none" || path === "src/App.tsx" || path.startsWith("src/dataGateway/");
   return {

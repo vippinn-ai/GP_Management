@@ -13,6 +13,13 @@ const stagingProof = readFileSync(
   ),
   "utf8"
 );
+const authorizationProof = readFileSync(
+  resolve(
+    process.cwd(),
+    "openspec/changes/financial-checkout-app-state-decoupling/release-b-admin-data-authorization-proof.sql"
+  ),
+  "utf8"
+);
 
 describe("admin inventory concurrency SQL contract", () => {
   it("locks affected normalized inventory rows in deterministic order", () => {
@@ -52,10 +59,23 @@ describe("admin inventory concurrency SQL contract", () => {
   it("retains rollback-only malformed and stale precondition staging cases", () => {
     expect(stagingProof).toContain("This script must never be run against production");
     for (const label of ["missing", "null", "string", "object", "array", "stale-number", "missing-row"]) {
-      expect(stagingProof).toContain(`'label', '${label}'`);
+      expect(stagingProof).toContain(`'${label}'`);
     }
     expect(stagingProof).toContain("v_code <> 'inventory_conflict'");
     expect(stagingProof).toContain("rollback;");
     expect(stagingProof).toContain("restored_profile_active");
+  });
+
+  it("retains rollback-only receptionist and manager authorization coverage", () => {
+    expect(authorizationProof).toContain("This script must never be run against production");
+    expect(authorizationProof).toContain("'receptionist'");
+    expect(authorizationProof).toContain("'manager'");
+    expect(authorizationProof).toContain("Expected receptionist role_access_denied");
+    expect(authorizationProof).toContain("Expected manager role_access_denied");
+    expect(authorizationProof).toContain("release-b-manager-expense-customer-success");
+    expect(authorizationProof).toContain("created_by = v_actor");
+    expect(authorizationProof).toContain("expense_rolled_back");
+    expect(authorizationProof).toContain("customer_rolled_back");
+    expect(authorizationProof).toContain("rollback;");
   });
 });

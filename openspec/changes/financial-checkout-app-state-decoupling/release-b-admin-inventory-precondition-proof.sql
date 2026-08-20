@@ -4,6 +4,9 @@
 -- staging inventory row, rejects every malformed/missing/stale precondition in
 -- a transaction, and rolls back. No inventory, app_state, movement, audit, or
 -- event change is committed.
+--
+-- Captured staging result:
+-- 2026-08-20 16:09:27.325935+00 | passed | restored active true | restored role admin
 
 begin;
 
@@ -43,46 +46,52 @@ declare
   v_actor text := auth.uid()::text;
   v_item_id text := current_setting('release_b.item_id');
   v_stock numeric := current_setting('release_b.stock_qty')::numeric;
-  v_case jsonb;
+  v_label text;
   v_item jsonb;
   v_detail text;
   v_code text;
 begin
-  for v_case in
-    select value
-    from jsonb_array_elements(jsonb_build_array(
-      jsonb_build_object('label', 'missing', 'include', false),
-      jsonb_build_object('label', 'null', 'include', true, 'value', 'null'::jsonb),
-      jsonb_build_object('label', 'string', 'include', true, 'value', to_jsonb('stale'::text)),
-      jsonb_build_object('label', 'object', 'include', true, 'value', '{}'::jsonb),
-      jsonb_build_object('label', 'array', 'include', true, 'value', '[]'::jsonb),
-      jsonb_build_object('label', 'stale-number', 'include', true, 'value', to_jsonb(v_stock + 1)),
-      jsonb_build_object('label', 'missing-row', 'include', true, 'value', to_jsonb(0))
-    ))
+  foreach v_label in array array[
+    'missing', 'null', 'string', 'object', 'array', 'stale-number', 'missing-row'
+  ]
   loop
     v_item := jsonb_build_object(
-      'id', case when v_case->>'label' = 'missing-row' then 'release-b-missing-inventory-row' else v_item_id end
+      'id', case when v_label = 'missing-row' then 'release-b-missing-inventory-row' else v_item_id end
     );
-    if (v_case->>'include')::boolean then
-      v_item := v_item || jsonb_build_object('expectedStockQty', v_case->'value');
+    if v_label = 'null' then
+      v_item := v_item || jsonb_build_object('expectedStockQty', 'null'::jsonb);
+    elsif v_label = 'string' then
+      v_item := v_item || jsonb_build_object('expectedStockQty', to_jsonb('stale'::text));
+    elsif v_label = 'object' then
+      v_item := v_item || jsonb_build_object('expectedStockQty', '{}'::jsonb);
+    elsif v_label = 'array' then
+      v_item := v_item || jsonb_build_object('expectedStockQty', '[]'::jsonb);
+    elsif v_label = 'stale-number' then
+      v_item := v_item || jsonb_build_object('expectedStockQty', to_jsonb(v_stock + 1));
+    elsif v_label = 'missing-row' then
+      v_item := v_item || jsonb_build_object('expectedStockQty', to_jsonb(0));
     end if;
 
     begin
       perform public.commit_admin_data_change(jsonb_build_object(
         'organization_id', 'org-primary',
-        'mutation_id', 'release-b-admin-precondition-' || v_case->>'label',
+        'mutation_id', 'release-b-admin-precondition-' || v_label,
         'mutation_kind', 'commitAdminDataChange',
         'entity_type', 'admin_data',
         'entity_id', 'release-b-admin-precondition',
         'user_id', v_actor,
         'payload', jsonb_build_object('inventoryItems', jsonb_build_array(v_item))
       ));
-      raise exception 'Malformed precondition unexpectedly succeeded for %.', v_case->>'label';
+      raise exception 'Malformed precondition unexpectedly succeeded for %.', v_label;
     exception when others then
       get stacked diagnostics v_detail = pg_exception_detail;
-      v_code := coalesce((nullif(v_detail, '')::jsonb)->>'code', '');
+      v_code := case
+        when left(ltrim(coalesce(v_detail, '')), 1) = '{'
+          then coalesce((v_detail::jsonb)->>'code', '')
+        else ''
+      end;
       if v_code <> 'inventory_conflict' then
-        raise exception 'Expected inventory_conflict for %, received % / %', v_case->>'label', v_code, sqlerrm;
+        raise exception 'Expected inventory_conflict for %, received % / %', v_label, v_code, sqlerrm;
       end if;
     end;
   end loop;

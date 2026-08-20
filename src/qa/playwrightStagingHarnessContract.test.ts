@@ -124,6 +124,14 @@ describe("staging Playwright harness contract", () => {
     expect(scenario).toContain("expect(finalStock.stock).toBe(1)");
     expect(scenario).toContain("expect(checkoutCaptureCount).toBe(1)");
     expect(scenario).toContain("expect(adminCaptureCount).toBe(1)");
+    expect(scenario).toContain("expect(originErrors.pageErrors.length).toBeLessThanOrEqual(1)");
+    expect(scenario).toContain("expect(adminErrors.pageErrors.length).toBeLessThanOrEqual(1)");
+    expect(scenario).toContain('message === "TypeError: Failed to fetch"');
+    expect(scenario).toContain('test("admin inventory lifecycle preserves stock and authenticated writes"');
+    expect(scenario).toContain('getByRole("button", { name: "Restock", exact: true })');
+    expect(scenario).toContain('getByRole("button", { name: "Deduct / Adjust", exact: true })');
+    expect(scenario).toContain('getByRole("button", { name: "Restore", exact: true })');
+    expect(scenario).toContain("expect(new Set(eventIds).size).toBe(6)");
   });
 
   it("locks one hopped session against two distinct checkout mutations", () => {

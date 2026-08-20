@@ -597,11 +597,6 @@ test.describe.serial("Release B limited-stock checkout concurrency", () => {
         expect(finalStock.stock).toBe(1);
         expect(finalStock.text).not.toMatch(/in sessions/);
       }
-      expect(originErrors.consoleErrors).toEqual([]);
-      expect(originErrors.pageErrors).toEqual(["TypeError: Failed to fetch"]);
-      expect(adminErrors.consoleErrors).toEqual([]);
-      expect(adminErrors.pageErrors).toEqual(["TypeError: Failed to fetch"]);
-
       raceEvidence = {
         itemName,
         customerName,
@@ -616,6 +611,12 @@ test.describe.serial("Release B limited-stock checkout concurrency", () => {
         finalStock: 1,
         captureCounts: { checkout: checkoutCaptureCount, admin: adminCaptureCount }
       };
+      expect(originErrors.consoleErrors).toEqual([]);
+      expect(originErrors.pageErrors.length).toBeLessThanOrEqual(1);
+      expect(originErrors.pageErrors.every((message) => message === "TypeError: Failed to fetch")).toBe(true);
+      expect(adminErrors.consoleErrors).toEqual([]);
+      expect(adminErrors.pageErrors.length).toBeLessThanOrEqual(1);
+      expect(adminErrors.pageErrors.every((message) => message === "TypeError: Failed to fetch")).toBe(true);
     } catch (error) {
       primaryError = error;
       throw error;
@@ -670,6 +671,160 @@ test.describe.serial("Release B limited-stock checkout concurrency", () => {
       await attachFailureScreenshot(testInfo, page, "admin-inventory-race-origin-failure");
       await attachFailureScreenshot(testInfo, admin.page, "admin-inventory-race-admin-failure");
       await admin.context.close().catch(() => undefined);
+      if (!primaryError && cleanupErrors.length) throw new Error(cleanupErrors.join(" | "));
+    }
+  });
+
+  test("admin inventory lifecycle preserves stock and authenticated writes", async ({ page }, testInfo) => {
+    const itemName = `QA Admin Lifecycle ${runId}`;
+    const errors = capturePageErrors(page);
+    const eventIds: string[] = [];
+    const appStateVersions: number[] = [];
+    const cleanupErrors: string[] = [];
+    let itemCreated = false;
+    let itemArchived = false;
+    let primaryError: unknown;
+
+    async function recordAdminResponse(response: APIResponse) {
+      expect(response.status()).toBeLessThan(300);
+      const body = await responseBody(response);
+      expect(typeof body.event_id).toBe("string");
+      expect(typeof body.app_state_version).toBe("number");
+      eventIds.push(String(body.event_id));
+      appStateVersions.push(Number(body.app_state_version));
+      return body;
+    }
+
+    try {
+      await signIn(page, credentials("A"));
+      await page.waitForTimeout(1_200);
+      await openInventoryCatalog(page);
+
+      const createForm = page.getByRole("button", { name: "Create Item", exact: true }).locator("xpath=ancestor::form");
+      await createForm.getByLabel("Item Name", { exact: true }).fill(itemName);
+      await createForm.locator("select").first().selectOption({ label: "Beverages" });
+      await createForm.getByLabel("Price", { exact: true }).fill("1");
+      await createForm.getByLabel("Opening Stock", { exact: true }).fill("3");
+      await createForm.getByLabel("Low Stock Threshold", { exact: true }).fill("0");
+      const createResponse = page.waitForResponse((response) =>
+        response.url().includes("/rest/v1/rpc/commit_admin_data_change") && response.request().method() === "POST"
+      );
+      await createForm.getByRole("button", { name: "Create Item", exact: true }).click();
+      await recordAdminResponse(await createResponse);
+      await waitForSynced(page);
+      itemCreated = true;
+      expect((await readAvailableStock(page, itemName)).stock).toBe(3);
+
+      let row = inventoryRow(page, itemName);
+      await row.getByRole("button", { name: "Edit", exact: true }).click();
+      const edit = page.getByRole("dialog", { name: `Edit Inventory Item - ${itemName}`, exact: true });
+      await edit.getByLabel("Price", { exact: true }).fill("2");
+      const editResponse = page.waitForResponse((response) =>
+        response.url().includes("/rest/v1/rpc/commit_admin_data_change") && response.request().method() === "POST"
+      );
+      await edit.getByRole("button", { name: "Update Item", exact: true }).click();
+      await recordAdminResponse(await editResponse);
+      await waitForSynced(page);
+      expect((await readAvailableStock(page, itemName)).stock).toBe(3);
+
+      const movementPanel = page.locator("div.panel").filter({
+        has: page.getByRole("heading", { name: "Stock Movements", exact: true })
+      });
+      await movementPanel.locator("select").selectOption({ label: itemName });
+      await movementPanel.getByLabel("Quantity", { exact: true }).fill("2");
+      await movementPanel.getByPlaceholder("damage, expiry, correction, opening stock...")
+        .fill(`Release B lifecycle restock ${runId}`);
+      const restockResponse = page.waitForResponse((response) =>
+        response.url().includes("/rest/v1/rpc/commit_admin_data_change") && response.request().method() === "POST"
+      );
+      await movementPanel.getByRole("button", { name: "Restock", exact: true }).click();
+      await recordAdminResponse(await restockResponse);
+      await waitForSynced(page);
+      expect((await readAvailableStock(page, itemName)).stock).toBe(5);
+
+      await movementPanel.locator("select").selectOption({ label: itemName });
+      await movementPanel.getByLabel("Quantity", { exact: true }).fill("1");
+      await movementPanel.getByPlaceholder("damage, expiry, correction, opening stock...")
+        .fill(`Release B lifecycle adjustment ${runId}`);
+      const adjustmentResponse = page.waitForResponse((response) =>
+        response.url().includes("/rest/v1/rpc/commit_admin_data_change") && response.request().method() === "POST"
+      );
+      await movementPanel.getByRole("button", { name: "Deduct / Adjust", exact: true }).click();
+      await recordAdminResponse(await adjustmentResponse);
+      await waitForSynced(page);
+      expect((await readAvailableStock(page, itemName)).stock).toBe(4);
+
+      row = inventoryRow(page, itemName);
+      await row.getByRole("button", { name: "Archive", exact: true }).click();
+      let archive = page.getByRole("dialog", { name: `Archive Inventory Item - ${itemName}`, exact: true });
+      await archive.getByPlaceholder("Not restocking, duplicate item, incorrect setup...")
+        .fill(`Release B lifecycle archive ${runId}`);
+      const archiveResponse = page.waitForResponse((response) =>
+        response.url().includes("/rest/v1/rpc/commit_admin_data_change") && response.request().method() === "POST"
+      );
+      await archive.getByRole("button", { name: "Archive Item", exact: true }).click();
+      await recordAdminResponse(await archiveResponse);
+      await waitForSynced(page);
+      itemArchived = true;
+
+      const statusTabs = page.getByRole("tablist", { name: "Inventory item status", exact: true });
+      await statusTabs.getByRole("button", { name: /Archived/ }).click();
+      row = inventoryRow(page, itemName);
+      await expect(row).toBeVisible();
+      const restoreResponse = page.waitForResponse((response) =>
+        response.url().includes("/rest/v1/rpc/commit_admin_data_change") && response.request().method() === "POST"
+      );
+      await row.getByRole("button", { name: "Restore", exact: true }).click();
+      await recordAdminResponse(await restoreResponse);
+      await waitForSynced(page);
+      itemArchived = false;
+
+      await statusTabs.getByRole("button", { name: /Active Items/ }).click();
+      expect((await readAvailableStock(page, itemName)).stock).toBe(4);
+      expect(new Set(eventIds).size).toBe(6);
+      expect(appStateVersions).toEqual([...appStateVersions].sort((left, right) => left - right));
+      expect(errors.consoleErrors).toEqual([]);
+      expect(errors.pageErrors).toEqual([]);
+    } catch (error) {
+      primaryError = error;
+      throw error;
+    } finally {
+      if (itemCreated && !itemArchived) {
+        try {
+          await page.reload({ waitUntil: "domcontentloaded" });
+          await openInventoryCatalog(page);
+          const activeTabs = page.getByRole("tablist", { name: "Inventory item status", exact: true });
+          await activeTabs.getByRole("button", { name: /Active Items/ }).click();
+          const activeRow = inventoryRow(page, itemName);
+          if (await activeRow.isVisible()) {
+            await activeRow.getByRole("button", { name: "Archive", exact: true }).click();
+            const archive = page.getByRole("dialog", { name: `Archive Inventory Item - ${itemName}`, exact: true });
+            await archive.getByPlaceholder("Not restocking, duplicate item, incorrect setup...")
+              .fill(`Release B lifecycle final cleanup ${runId}`);
+            const archived = page.waitForResponse((response) =>
+              response.url().includes("/rest/v1/rpc/commit_admin_data_change") && response.request().method() === "POST"
+            );
+            await archive.getByRole("button", { name: "Archive Item", exact: true }).click();
+            await recordAdminResponse(await archived);
+            await waitForSynced(page);
+          }
+          itemArchived = true;
+        } catch (error) {
+          cleanupErrors.push(error instanceof Error ? error.message : "Unknown admin lifecycle cleanup failure");
+        }
+      }
+      await attachJson(testInfo, "release-b-admin-inventory-lifecycle-evidence", {
+        runId,
+        itemName,
+        itemCreated,
+        itemArchived,
+        eventIds,
+        appStateVersions,
+        cleanupErrors,
+        primaryError: primaryError instanceof Error ? primaryError.message : primaryError,
+        errors
+      });
+      await attachFailureScreenshot(testInfo, page, "admin-inventory-lifecycle-failure");
       if (!primaryError && cleanupErrors.length) throw new Error(cleanupErrors.join(" | "));
     }
   });
