@@ -47,14 +47,20 @@ describe("staging Playwright harness contract", () => {
 
     expect(support).toContain("browser.newContext");
     expect(support).toContain('const marker = "/rest/v1/rpc/"');
+    expect(support).toContain('getByText(/^Synced(?:\\s|$)/)');
     expect(scenario).toContain('entry.rpc === "edit_pause_log"');
     expect(scenario).toContain('entry.rpc === "hop_session"');
     expect(scenario).toContain('entry.rpc === "record_session_audit"');
     expect(scenario).toContain("rejectSessionIfOpen");
+    expect(support).toContain("Cleanup refused because the station no longer belongs to the exact QA customer.");
+    expect(support).toContain("Cleanup refused because the stored session customer no longer matches the exact QA customer.");
+    expect(support).toContain('modal.getByLabel("Customer Name", { exact: true })');
     expect(scenario).toContain("billNewestHoppedSession");
-    expect(scenario).toContain('changedRowIds(checkoutEvidence!, "sessions")');
-    expect(scenario).toContain("cleanupBillId = checkoutEvidence!.billId");
+    expect(scenario).toContain('changedRowIds(checkout, "sessions").includes(hopSessionId)');
+    expect(scenario).toContain('changedRowIds(committedCheckout, "sessions").includes(hopSessionId)');
+    expect(scenario).toContain("cleanupBillId = committedCheckout.billId");
     expect(scenario).toContain("cleanupBillingAttempted && !cleanupBilled");
+    expect(scenario.match(/sessionStarted = sessionStarted \|\| rpcEvidence\.some/g)).toHaveLength(2);
     expect(scenario).toContain("no automatic retry was issued");
     expect(reporter).toContain("summary-${this.runId}.json");
   });

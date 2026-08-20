@@ -3,17 +3,17 @@
 ## Scope
 
 - Project: `test/staging` (`tkbdyzxwwbhkpztgjjxh`), Southeast Asia (Singapore).
-- Current reviewed repository commit: `96f8baa3c9710daacbff4fd85aacfc6d1175952f`. The ordinary staging frontend remains the accepted build from application commit `8e964f81b77c6710907412e13ab46bf16a7c866a`; the newer commit was deployed only to the isolated fail-closed QA Worker described below. The initial Release A deployment was built from application commit `0af9c7b0cb35e521fd35bff9ba7980d792cf100e`.
+- Live-run/base Playwright-harness commit: `8e9d79ceb9000b1047e1e427127f69a3ae6d05c9`; the selector, cleanup-identity, canonical-response, contract, and evidence hardening was independently reviewed in the closeout working tree described below. The ordinary staging frontend remains the accepted build from application commit `8e964f81b77c6710907412e13ab46bf16a7c866a`; the harness did not deploy or replace that Worker. The initial Release A deployment was built from application commit `0af9c7b0cb35e521fd35bff9ba7980d792cf100e`.
 - Financial v2 remained disabled; phase 10 was not applied.
 - No production project, production database, or production deployment was accessed.
 - Staging was resumed from its paused state. The initial investigation was read-only. After the user explicitly approved the staging-only destructive reconstruction, a verified backup was retained and normalized `org-primary` was rebuilt from authoritative `app_state`.
 
 ## Evidence metadata
 
-- Execution window: `2026-08-19T19:28:17Z` through at least `2026-08-20T08:38:48.977045Z` (`2026-08-20 00:58` through at least `14:08:48` IST) for the recorded active runs; the required business-day soak remains open.
+- Execution window: `2026-08-19T19:28:17Z` through at least `2026-08-20T09:40:15.398089Z` (`2026-08-20 00:58` through at least `15:10:15` IST) for the recorded active runs; the required business-day soak remains open.
 - Operator: Codex primary agent using the user-authorized authenticated staging sessions.
 - Independent reviewer: separate read-only checkout test agent.
-- Browser surface: authenticated Codex in-app browser plus the user's independently authenticated Chrome profile through the connected browser integration.
+- Browser surface: authenticated Codex in-app browser, the user's independently authenticated Chrome profile through the connected browser integration, and the guarded local Playwright staging runner using two isolated Chrome contexts.
 - Previous accepted staging frontend version: `c76b06d6-3cab-408f-a32c-d1937b14b562`.
 - Current staging frontend version: `67dd6e80-58fc-408d-a7f0-d13742f447aa`.
 - Isolated fail-closed QA frontend version: `89b6e9e4-3558-49cf-91b1-0f9f4c499d44` at `gp-management-staging-failclosed-qa.breakperfectgaminglounge.workers.dev`; this did not replace the ordinary staging Worker.
@@ -488,14 +488,38 @@ Read-only verification at `2026-08-20T07:43:51.270898+00:00` proved zero remaini
 
 The test tab was closed through authenticated `reject_customer_tab`, using mutation `mutation-release-a-single-quantity-cleanup-20260820-1`, audit `audit-release-a-single-quantity-cleanup-20260820-1`, and event `event-6d3dd358-4f17-485c-bc49-ae413c10cd9f`. The event completed in `181.985 ms` at `2026-08-20T07:44:09.899228+00:00`; lifecycle event actors and the removal/rejection audit actors resolved to Vipin. The observer removed the tab without refresh, and hard refresh showed zero open sessions/tabs. The single compatibility cleanup advanced `app_state` exactly once from version `508` to `509`; final SHA-256 is `5733baa22366035f64350b8d8bc436e4f6da90ebf61f4d6c9adea2052cb4e781`. A final query at `2026-08-20T07:44:47.776162+00:00` showed exactly one event for each lifecycle operation: open tab, add item, update quantity, remove item, and reject tab.
 
+## Guarded Playwright pause-edit and hop/detach evidence
+
+The staging-only Playwright runner first verified the exact ordinary staging URL, deployed bundle `/assets/index-Dbvi7qP_.js`, bundle SHA-256 `c9927eb1bd2a1f7dcde91dfa76eef257c78a8679c4d4dd04647b4f02f53438bc`, staging Supabase project reference, production-reference absence, financial v2 disabled, two isolated browser contexts, and zero retries. Trace capture was disabled so password-fill values could not be retained. Production was blocked by the runner and was not accessed.
+
+The pause run ID was `releasea-20260820-1505`. Its reported Playwright status is preserved as **failed**, solely because the original cleanup guard expected the manage-dialog summary to contain the customer name after all functional assertions had completed. The deployed dialog intentionally omits that name. The run itself produced the following exact successful RPC chain for customer `QA PW Pause releasea-20260820-1505` and session `session-4f9dded3-b0d1-461f-95c1-cd03b6c35e02`:
+
+- `start_session`: event `event-c5cd2356-079c-4bff-a97c-9efab293ea3d`, mutation `op-12c02755-5b28-439e-9b0d-e3cb11dc409c`, HTTP 200;
+- `save_live_session_details`: event `event-156eed93-b833-4c7c-b194-380c3796b96b`, mutation `op-e22123d7-341d-4939-af70-e4f96e76bcc8`, HTTP 200;
+- `pause_session`: pause `pause-7495f3be-557d-4d1d-8abf-016de4664ac5`, event `event-316a4bfe-83b6-4cd2-8eee-532a53d9a1d3`, mutation `op-4ccac19e-4e74-459c-8290-5802e1737cf1`, HTTP 200;
+- `resume_session`: the same pause ID, event `event-7ee8b005-1ad3-408e-9ef8-b68a58128f7d`, mutation `op-866f1851-5eba-434a-b1be-c91a17acb112`, HTTP 200;
+- `edit_pause_log`: the same pause and session IDs, audit `audit-b120ad23-9553-4048-8408-c66318e60507`, event `event-25b90a24-fc6b-4482-96a2-a7432a5cd065`, mutation `op-a1cec2e5-cb0a-4098-ba51-e28e31cba84e`, server time `2026-08-20T09:34:41.012613+00:00`, HTTP 200.
+
+The observer context received the open session, pause, and resume without refresh. It then opened the pause edit fields and matched both edited timestamps. After a hard refresh, the same fields still matched, proving normalized reconstruction. Cleanup initially failed closed before mutation. The corrected cleanup opened the stored customer field, required the exact QA customer, and rejected that same session once. The canonical response was HTTP 200 with event `event-f9a7d3f5-042b-417a-b44a-1c49ccbe27cb`, mutation `op-ec320b62-697c-46ce-8864-9beafe06040c`, exact entity ID `session-4f9dded3-b0d1-461f-95c1-cd03b6c35e02`, and server time `2026-08-20T09:38:02.55983`.
+
+The hop run ID was `releasea-hop-20260820-1510`. Its reported Playwright status is also preserved as **failed**, solely because the harness polled for a response count before asserting a derived canonical field. The transaction had already completed; the runner did not retry it. For customer `QA PW Hop releasea-hop-20260820-1510` and session `session-367b1415-7fdd-4ccb-992f-c4f62413b613`:
+
+- `hop_session` returned HTTP 200 with event `event-04904081-7898-465b-a0d0-6eed1b40df83` and mutation `op-0d38277d-8b39-4e1d-8bb2-37f07a8400dc`;
+- `record_session_audit` returned HTTP 200 with audit `audit-8a6355a6-5242-4dde-ba4d-cb4c949f9d09`, event `event-89cbc6e9-b0e9-4760-bcb5-902d1e0fc5db`, and mutation `op-32919d6f-81be-48e7-ab72-9a4568e7e4b6`;
+- `commit_checkout_bill` returned HTTP 200 exactly once with bill `bill-3e988a17-cdd2-4d9e-96c0-b777ad773fad` / `BILL-20260820-006`, payment `payment-1e0c2053-4b42-4da8-9043-fdae75b06da0`, event `event-633622ff-390d-4c6f-9ac2-5f8a98d13972`, mutation `financial-87aa42ee-a65b-4ff4-912d-0ef2b984deab`, and server time `2026-08-20T09:40:15.398089`;
+- the checkout response's `changed_rows.sessions` contains the exact hopped session ID, and its audit IDs are `audit-fecc36b5-fa36-4e46-896b-d0bed3f39d7c` and `audit-c1329029-12c6-4ede-8411-24e44fcd1d0d`.
+
+Before billing, the observer saw Playstation become available and received both the hop and detach audits without refresh. After the canonical checkout, the dashboard showed zero open sessions and displayed the issued-bill, detached-continuation, and game-hop audits. A new read-only login proved the QA customer was absent from the continuation queue, and a separate read-only Bill Register search displayed `BILL-20260820-006`. No checkout retry or duplicate bill attempt was issued.
+
+The harness now waits for the complete canonical tuple—bill ID, hop session ID, and that exact session in checkout `changed_rows`—and its `finally` path recognizes an already committed canonical checkout without reissuing it. Rejection cleanup requires the unique QA customer on the station card and the exact stored Customer Name field before registering the confirmation handler. The final local gates pass: 37 test files / 400 tests, production build, lint with zero errors and five known warnings, Playwright discovery of exactly two scenarios with zero retries, and `git diff --check`. The independent read-only reviewer marked this behavior checkpoint GO and agreed that another live rerun is unnecessary.
+
 ## Current gate decision
 
-Database reconstruction, additive Release A installation, staging frontend deployment, authenticated normalized-read smoke, representative timed/unit/tab v1 checkout, settlement, replacement, write-off, refund, customer-history correction, actor/stock verification, independent Chrome session/item/reject and financial realtime coverage, the complete customer-tab item add/update/remove realtime matrix with exactly-once quantity mutation, no-refresh pause deletion overlay, Bill Register invalidation correction, receipt PDF export/rendering, historical receipt linkage, analytics, customer-history, Coke inventory-report parity, hard-refresh non-resurrection checks, permission persistence/restoration, the isolated live fail-closed exercise, and the Gate 6 database/error/performance capture are complete. Release A remains a no-go because the remaining Gate 5 cases and full-business-day soak are not yet evidenced. No production promotion claim is made.
+Database reconstruction, additive Release A installation, staging frontend deployment, authenticated normalized-read smoke, representative timed/unit/tab v1 checkout, settlement, replacement, write-off, refund, customer-history correction, actor/stock verification, independent Chrome session/item/reject and financial realtime coverage, the complete customer-tab item add/update/remove realtime matrix with exactly-once quantity mutation, no-refresh pause deletion overlay, two-browser pause edit, two-browser hop/detach with exact-session billing reconciliation, Bill Register invalidation correction, receipt PDF export/rendering, historical receipt linkage, analytics, customer-history, Coke inventory-report parity, hard-refresh non-resurrection checks, permission persistence/restoration, the isolated live fail-closed exercise, and the Gate 6 database/error/performance capture are complete. Release A remains a no-go because the remaining export/inventory matrix and full-business-day soak are not yet evidenced. No production promotion claim is made.
 
 ## Remaining gated work
 
-1. Retain two-browser evidence for hop/detach and pause edit. Customer-tab item add/update/remove, pause deletion, no-refresh overlay replacement, and independent hard-refresh reconstruction now pass.
-2. Complete report exports beyond the receipt PDF and the inventory combo, variant, cigarette-pack, and reservation before/after-refresh matrix.
-3. Complete the full representative staging business-day soak and independent sign-off.
+1. Complete report exports beyond the receipt PDF and the inventory combo, variant, cigarette-pack, and reservation before/after-refresh matrix.
+2. Complete the full representative staging business-day soak and independent sign-off.
 
 No production action is authorized by this evidence.

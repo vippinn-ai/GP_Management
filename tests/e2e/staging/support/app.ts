@@ -52,7 +52,7 @@ export async function signIn(page: Page, account: StagingCredentials) {
 }
 
 export async function waitForSynced(page: Page) {
-  await expect(page.getByText("Synced", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText(/^Synced(?:\s|$)/).first()).toBeVisible();
   await expect(page.getByText("Pending sync.", { exact: false })).toHaveCount(0);
 }
 
@@ -161,11 +161,16 @@ export function assertNoPageErrors(...captures: PageErrorCapture[]) {
   expect({ consoleErrors, pageErrors }).toEqual({ consoleErrors: [], pageErrors: [] });
 }
 
-export async function rejectSessionIfOpen(page: Page, stationName: string, reason: string) {
+export async function rejectSessionIfOpen(page: Page, stationName: string, customerName: string, reason: string) {
   await page.getByRole("button", { name: "Live Dashboard", exact: true }).click().catch(() => undefined);
   const card = stationCard(page, stationName);
   if (!(await card.count()) || (await card.textContent())?.includes("Available")) return false;
+  await expect(card, "Cleanup refused because the station no longer belongs to the exact QA customer.").toContainText(customerName);
   const modal = await openManagedSession(page, stationName);
+  await modal.getByRole("button", { name: "Edit Customer Details", exact: true }).click();
+  const customerField = modal.getByLabel("Customer Name", { exact: true });
+  await expect(customerField, "Cleanup refused because the stored session customer no longer matches the exact QA customer.").toHaveValue(customerName);
+  await customerField.locator("xpath=ancestor::form").getByRole("button", { name: "Cancel", exact: true }).click();
   page.once("dialog", (dialog) => dialog.accept(reason));
   await modal.getByRole("button", { name: "Reject Session", exact: true }).click();
   await expect(modal).toBeHidden();

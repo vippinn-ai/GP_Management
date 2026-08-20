@@ -81,10 +81,11 @@ test.describe.serial("Release A staging two-browser operational maintenance", ()
       expect(rpcEvidence.some((entry) => entry.rpc === "edit_pause_log" && entry.status < 300)).toBe(true);
       assertNoPageErrors(originErrors, observerErrors);
     } finally {
+      sessionStarted = sessionStarted || rpcEvidence.some((entry) => entry.rpc === "start_session" && entry.status < 300);
       if (sessionStarted) {
         try {
           await page.getByRole("dialog").getByRole("button", { name: "Close", exact: true }).click().catch(() => undefined);
-          cleanupRejected = await rejectSessionIfOpen(page, pauseStation, `Playwright Release A pause cleanup ${runId}`);
+          cleanupRejected = await rejectSessionIfOpen(page, pauseStation, customerName, `Playwright Release A pause cleanup ${runId}`);
           await expect(stationCard(observer.page, pauseStation)).toContainText("Available");
         } catch (error) {
           cleanupError = error instanceof Error ? error.message : "Unknown pause cleanup failure";
@@ -138,11 +139,11 @@ test.describe.serial("Release A staging two-browser operational maintenance", ()
       await expect(checkout).toBeHidden();
       await waitForSynced(page);
 
-      await expect.poll(() => rpcEvidence.filter((entry) => entry.rpc === "commit_checkout_bill" && entry.status < 300).length).toBeGreaterThan(0);
+      await expect.poll(() => {
+        const checkout = rpcEvidence.findLast((entry) => entry.rpc === "commit_checkout_bill" && entry.status < 300);
+        return Boolean(checkout?.billId && hopSessionId && changedRowIds(checkout, "sessions").includes(hopSessionId));
+      }).toBe(true);
       const checkoutEvidence = rpcEvidence.findLast((entry) => entry.rpc === "commit_checkout_bill" && entry.status < 300);
-      expect(checkoutEvidence?.billId).toBeTruthy();
-      expect(hopSessionId).toBeTruthy();
-      expect(changedRowIds(checkoutEvidence!, "sessions")).toContain(hopSessionId);
       cleanupBillId = checkoutEvidence!.billId;
       cleanupBilled = true;
     }
@@ -174,17 +175,22 @@ test.describe.serial("Release A staging two-browser operational maintenance", ()
       await waitForSynced(page);
       await expect(observer.page.getByText(new RegExp(`Detached post-hop continuation.*${hopStation}`)).first()).toBeVisible();
 
-      await expect.poll(() => rpcEvidence.filter((entry) => entry.rpc === "hop_session" && entry.status < 300).length).toBeGreaterThan(0);
+      await expect.poll(() => rpcEvidence.findLast((entry) => entry.rpc === "hop_session" && entry.status < 300)?.entityId).toBeTruthy();
       const hopEvidence = rpcEvidence.findLast((entry) => entry.rpc === "hop_session" && entry.status < 300);
-      expect(hopEvidence?.entityId).toBeTruthy();
       hopSessionId = hopEvidence!.entityId;
       expect(rpcEvidence.some((entry) => entry.rpc === "record_session_audit" && entry.status < 300)).toBe(true);
       await billNewestHoppedSession();
-      expect(cleanupBillId).toBeTruthy();
       await observer.page.reload({ waitUntil: "domcontentloaded" });
       await expect(stationCard(observer.page, hopStation)).toContainText("Available");
       assertNoPageErrors(originErrors, observerErrors);
     } finally {
+      sessionStarted = sessionStarted || rpcEvidence.some((entry) => entry.rpc === "start_session" && entry.status < 300);
+      hopSessionId ??= rpcEvidence.findLast((entry) => entry.rpc === "hop_session" && entry.status < 300)?.entityId;
+      const committedCheckout = rpcEvidence.findLast((entry) => entry.rpc === "commit_checkout_bill" && entry.status < 300);
+      if (hopSessionId && committedCheckout?.billId && changedRowIds(committedCheckout, "sessions").includes(hopSessionId)) {
+        cleanupBillId = committedCheckout.billId;
+        cleanupBilled = true;
+      }
       try {
         if (hopConfirmed && !cleanupBilled && !cleanupBillingAttempted) {
           await billNewestHoppedSession();
@@ -192,7 +198,7 @@ test.describe.serial("Release A staging two-browser operational maintenance", ()
           cleanupError = "The cleanup bill attempt had an ambiguous outcome; no automatic retry was issued.";
         } else if (sessionStarted && !hopConfirmed) {
           await page.getByRole("dialog").getByRole("button", { name: "Close", exact: true }).click().catch(() => undefined);
-          cleanupRejected = await rejectSessionIfOpen(page, hopStation, `Playwright Release A hop cleanup ${runId}`);
+          cleanupRejected = await rejectSessionIfOpen(page, hopStation, customerName, `Playwright Release A hop cleanup ${runId}`);
         }
       } catch (error) {
         cleanupError = error instanceof Error ? error.message : "Unknown hop cleanup failure";

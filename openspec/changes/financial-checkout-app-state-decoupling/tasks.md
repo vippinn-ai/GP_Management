@@ -31,7 +31,7 @@
 
 - [x] Local unit and characterization tests pass (37 files / 400 tests on 2026-08-20).
 - [x] Add a reproducible staging-only Playwright harness with exact-host/project guards, ignored credentials, two independent contexts, zero retries, trace-disabled credential safety, compact RPC evidence, and failure-only screenshots/video.
-- [ ] Execute the Playwright pause-edit and hop/detach scenarios with staging credentials and reconcile their database evidence.
+- [x] Execute the Playwright pause-edit and hop/detach scenarios with staging credentials; retain their reported harness failures and reconcile the exact canonical RPC, observer, hard-refresh, cleanup, continuation, and Bill Register evidence without retrying checkout.
 - [ ] SQL transaction/security/idempotency/concurrency tests pass.
 - [ ] Two-browser staging test passes.
 - [ ] Performance thresholds pass on production-sized staging data.
