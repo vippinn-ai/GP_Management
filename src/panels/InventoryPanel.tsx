@@ -296,6 +296,9 @@ export function InventoryPanel(props: {
   const comboType = comboDraft.type ?? "game";
   const inventoryReportSearch = props.inventoryReportSearch;
   const hasInventoryReportSearch = inventoryReportSearch.trim().length > 0;
+  const inventoryReportUnavailable =
+    !!props.inventoryReportBackend?.enabled &&
+    (!props.inventoryReportBackend.ready || !!props.inventoryReportBackend.error);
 
   return (
     <>
@@ -588,7 +591,7 @@ export function InventoryPanel(props: {
               </div>
             )}
 
-            {props.inventoryReportBackend?.ready !== false && <>
+            {!inventoryReportUnavailable && <>
             <div className="reports-kpi-grid inventory-report-kpis">
               <div className="report-kpi-card is-primary">
                 <span className="muted">Stock Added</span>

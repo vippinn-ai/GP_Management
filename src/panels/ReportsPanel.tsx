@@ -149,7 +149,7 @@ export function ReportsPanel(props: {
     setSkippingCell(null);
   }
 
-  if (props.normalizedReports?.enabled && !props.normalizedReports.ready) {
+  if (props.normalizedReports?.enabled && (!props.normalizedReports.ready || !!props.normalizedReports.error)) {
     return (
       <div className="panel">
         <div className="panel-header">

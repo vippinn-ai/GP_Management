@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mapAnalyticsSummaryData } from "./analyticsSummary";
+import { isAnalyticsSummaryDataReady, mapAnalyticsSummaryData } from "./analyticsSummary";
 
 describe("analytics summary mapping", () => {
   it("maps compact summary payloads and pending receivables", () => {
@@ -62,5 +62,23 @@ describe("analytics summary mapping", () => {
       }
     });
     expect(result.payloadBytes).toBeGreaterThan(0);
+  });
+});
+
+describe("analytics summary readiness", () => {
+  const data = mapAnalyticsSummaryData({ summary: { gross_revenue: 1200 } });
+
+  it("accepts only matching successful data", () => {
+    expect(isAnalyticsSummaryDataReady({ data, error: "", loaded: true, dataQueryKey: "today" }, "today"))
+      .toBe(true);
+  });
+
+  it("fails closed when a refresh error leaves matching cached data behind", () => {
+    expect(isAnalyticsSummaryDataReady({
+      data,
+      error: "Backend analytics refresh failed.",
+      loaded: true,
+      dataQueryKey: "today"
+    }, "today")).toBe(false);
   });
 });

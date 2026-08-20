@@ -54,6 +54,7 @@ import {
   clearCachedNormalizedOrganizationId,
   loadInventoryReportSummaryData,
   loadAnalyticsSummaryData,
+  isAnalyticsSummaryDataReady,
   loadNormalizedCustomerSearch,
   loadNormalizedCustomerHistoryData,
   loadNormalizedReportData,
@@ -1233,9 +1234,7 @@ export default function App() {
     normalizedReportState.queryKey === normalizedReportQueryKey;
   const analyticsSummaryDataReady =
     analyticsSummaryReadsEnabled &&
-    analyticsSummaryState.loaded &&
-    !!analyticsSummaryState.data &&
-    analyticsSummaryState.dataQueryKey === normalizedReportQueryKey;
+    isAnalyticsSummaryDataReady(analyticsSummaryState, normalizedReportQueryKey);
   const analyticsSummaryData = analyticsSummaryDataReady ? analyticsSummaryState.data : null;
   const financialReportDataReady =
     (!analyticsSummaryReadsEnabled || analyticsSummaryDataReady) &&

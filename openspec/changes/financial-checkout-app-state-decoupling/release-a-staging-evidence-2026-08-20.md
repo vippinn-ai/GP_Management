@@ -10,7 +10,7 @@
 
 ## Evidence metadata
 
-- Execution window: `2026-08-19T19:28:17Z` through at least `2026-08-20T05:44:13.757055Z` (`2026-08-20 00:58` through at least `11:14` IST) for the recorded active runs; the required business-day soak remains open.
+- Execution window: `2026-08-19T19:28:17Z` through at least `2026-08-20T06:05:34.810068Z` (`2026-08-20 00:58` through at least `11:35` IST) for the recorded active runs; the required business-day soak remains open.
 - Operator: Codex primary agent using the user-authorized authenticated staging sessions.
 - Independent reviewer: separate read-only checkout test agent.
 - Browser surface: authenticated Codex in-app browser plus the user's independently authenticated Chrome profile through the connected browser integration.
@@ -349,7 +349,7 @@ The repository `phase3-performance-evidence-probes-single-result.sql` completed 
 - Probe 3, recent reports: planning `0.798 ms`, execution `0.213 ms`.
 - Probe 4, older-history search: planning `0.389 ms`, execution `0.451 ms`.
 - The four query plans use normalized tables. The script reads `app_state` only once to report document size; it performs no business-data update or compatibility rewrite.
-- The final review manifest was regenerated after this evidence change: 243 first-party files, 69,100 physical lines, 185 semantic hotspots, and 169 billing-relevant files.
+- The final review manifest was regenerated after this evidence change: 245 first-party files, 69,318 physical lines, 186 semantic hotspots, and 170 billing-relevant files.
 
 ## Gate 5 permission persistence and restoration
 
@@ -372,6 +372,34 @@ The administrator then removed the temporary Analytics permission through the sa
 - After reloading the receptionist Chrome session, Analytics disappeared and only the original three receptionist tabs remained.
 
 The temporary staging mutation is therefore fully restored. This Gate 5 permission case passes: the edit persisted through sign-out/in, changed only `profiles.tab_permissions`, and never rewrote `app_state`.
+
+## Automated fail-closed screen contract
+
+The four normalized financial screen boundaries now have explicit component-level failure cases:
+
+- Bill Register receives a stale bill but, while normalized history is unavailable, renders only the retryable read-only state and does not render that bill.
+- Customer Profiles receives a stale non-zero profile total but hides it behind the retryable normalized-history error state.
+- Operational Reports receives stale non-zero revenue but does not render the financial KPI while the normalized report reader is unavailable. Analytics readiness also rejects matching cached data whenever the latest summary refresh has an error.
+- Inventory Report receives stale stock totals and a stale item row but renders neither while the normalized inventory reader is unavailable.
+
+Each case verifies that Retry/Refresh invokes the scoped normalized-reader callback. The post-change local gates passed: 33 test files / 384 tests, production build, lint with zero errors and the same five known warnings, and `git diff --check`.
+
+This is strong automated regression evidence, but it does not replace the runbook's controlled browser failure exercise. The connected staging browser does not expose safe request interception; shared staging database grants were deliberately not revoked. The live controlled-failure item therefore remains open until it can be run in an isolated browser/deployment harness without disrupting other staging users.
+
+## Partial two-browser pause flow and cleanup
+
+A separate staging-only timed session (`session-7acf67bb-e052-4101-99bb-74fbe14ddb16`, customer `QA Pause Overlay 20260820 1125`) added evidence for the ordinary compact-realtime path:
+
+- Browser 1 started the 8 Ball Pool session at `2026-08-20T05:55:33.428+00:00`; browser 2 received the open session and customer without refresh.
+- Browser 1 paused it at `05:56:01.102+00:00`; browser 2 received `Paused`, the paused-duration indicator, and the Resume action.
+- Browser 1 resumed it at `05:56:16.893+00:00`; browser 2 returned to the running state and Pause action.
+- The normalized database contained exactly one pause row (`pause-59b162d7-9ec4-448a-8494-afa94c0324dd`) with those timestamps. All start/pause/resume audits were attributed to Vipin (`61cc2f83-69d1-46ab-9d89-9df7f7b1e497`).
+
+The browser connection timed out while submitting a pause-time edit. Read-only database verification proved that edit did not commit: the original pause timestamps remained and no edit audit existed. No blind retry or pause deletion was attempted. The still-open QA session was then closed through the existing authenticated `reject_session` purpose RPC using mutation `mutation-release-a-pause-cleanup-20260820-1`, not a direct table update.
+
+Final cleanup verification at `2026-08-20T06:05:34.810068+00:00` proved the session closed as rejected with reason `Release A pause overlay test cleanup`, audit `audit-release-a-pause-cleanup-20260820-1`, operational event `event-624bafcb-a174-4bd5-88d8-208dab0d5cb3`, matching actor, and server duration `119.436 ms`. The compatibility write advanced `app_state` once from version `503` to `504`, with final SHA-256 `4f99ee07feafbb5cb6c0a866c546ae201c8f639ecf6a930ead78efa843c99fe4`.
+
+This passes start/pause/resume two-browser propagation only. Pause edit/delete and browser-2 complete pause-log replacement after deletion remain open exactly as listed below.
 
 ## Current gate decision
 

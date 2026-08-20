@@ -40,6 +40,20 @@ export interface AnalyticsSummaryData {
   payloadBytes: number;
 }
 
+export interface AnalyticsSummaryReadState {
+  data: AnalyticsSummaryData | null;
+  error: string;
+  loaded: boolean;
+  dataQueryKey: string;
+}
+
+export function isAnalyticsSummaryDataReady(
+  state: AnalyticsSummaryReadState,
+  queryKey: string
+): boolean {
+  return state.loaded && !state.error && !!state.data && state.dataQueryKey === queryKey;
+}
+
 function toRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 }
