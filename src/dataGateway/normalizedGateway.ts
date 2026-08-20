@@ -440,13 +440,17 @@ export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): 
             }
             const overlay = await loadNormalizedRealtimeOverlay(event, _flags, client);
             if (overlay.requiresFullRefresh) {
-              lastSnapshot = await gateway.loadAppDataSnapshot();
+              lastSnapshot = {
+                ...(await gateway.loadAppDataSnapshot()),
+                refreshedSlices: overlay.refreshedSlices
+              };
             } else {
               lastSnapshot = {
                 ...lastSnapshot,
                 appData: mergeNormalizedAppDataOverlay(lastSnapshot.appData, overlay.appData),
                 version: overlay.appStateVersion ?? lastSnapshot.version,
-                sourceMutationId: overlay.sourceMutationId
+                sourceMutationId: overlay.sourceMutationId,
+                refreshedSlices: overlay.refreshedSlices
               };
             }
             recordCompactRealtimeTelemetry({

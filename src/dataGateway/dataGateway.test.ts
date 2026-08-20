@@ -969,6 +969,70 @@ describe("app_state data gateway", () => {
     );
   });
 
+  it("marks compact financial realtime snapshots so screen-specific bill readers refetch", async () => {
+    const baseSnapshot = createSnapshot(40);
+    let realtimeHandler: ((payload: { new: unknown }) => void) | undefined;
+    const channel = {
+      on: vi.fn((_kind, _config, handler) => {
+        realtimeHandler = handler;
+        return channel;
+      }),
+      subscribe: vi.fn().mockReturnThis()
+    };
+    const client = {
+      channel: vi.fn(() => channel),
+      removeChannel: vi.fn()
+    };
+    backendMocks.getSupabaseClient.mockReturnValue(client);
+    backendMocks.loadRemoteAppDataSnapshot.mockResolvedValue(baseSnapshot);
+    normalizedReadMocks.loadNormalizedAppDataOverlay.mockResolvedValueOnce({ appData: {}, organizationId: "org-primary" });
+    normalizedBillRegisterMocks.loadNormalizedBillsByIds.mockResolvedValueOnce({
+      bills: [{ id: "bill-replacement", billNumber: "BILL-REPLACEMENT" }],
+      payments: []
+    });
+    const gateway = createRemoteDataGateway({
+      ...DEFAULT_BACKEND_FEATURE_FLAGS,
+      normalizedRealtime: true
+    });
+    const onChange = vi.fn();
+
+    await gateway.loadAppDataSnapshot();
+    gateway.subscribeToAppData(onChange);
+    realtimeHandler?.({
+      new: {
+        organization_id: "org-primary",
+        id: "event-financial",
+        event_type: "financial_adjustment",
+        entity_type: "bill",
+        entity_id: "bill-replacement",
+        created_at: "2026-08-20T03:54:16.000Z",
+        metadata: {
+          mutation_id: "financial-adjustment-1",
+          app_state_version: 41,
+          changed_rows: { bills: ["bill-original", "bill-replacement"] }
+        }
+      }
+    });
+
+    await vi.waitFor(() => expect(onChange).toHaveBeenCalledTimes(1));
+    expect(onChange.mock.calls[0][0]).toMatchObject({
+      version: 41,
+      sourceMutationId: "financial-adjustment-1",
+      refreshedSlices: ["bills"],
+      appData: {
+        bills: [expect.objectContaining({ id: "bill-replacement" })]
+      }
+    });
+    expect(normalizedBillRegisterMocks.loadNormalizedBillsByIds).toHaveBeenCalledWith(
+      {
+        organizationId: "org-primary",
+        billIds: ["bill-original", "bill-replacement"],
+        paymentIds: []
+      },
+      client
+    );
+  });
+
   it("applies compact realtime changed session rows when a live event closes a session", async () => {
     const baseSnapshot = createSnapshot(30);
     baseSnapshot.appData.sessions.push({

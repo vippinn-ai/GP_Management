@@ -501,6 +501,7 @@ export default function App() {
   const [normalizedBillRegisterState, setNormalizedBillRegisterState] = useState<NormalizedBillRegisterState>(
     createEmptyNormalizedBillRegisterState
   );
+  const [normalizedBillRegisterRefreshSignal, setNormalizedBillRegisterRefreshSignal] = useState(0);
   const [customerSuggestionQuery, setCustomerSuggestionQuery] = useState("");
   const [normalizedCustomerSearchState, setNormalizedCustomerSearchState] = useState<NormalizedCustomerSearchState>(
     createEmptyNormalizedCustomerSearchState
@@ -847,6 +848,9 @@ export default function App() {
     saveAppData(rebased.appData);
     remoteVersionRef.current = snapshot.version;
     setRemoteVersion(snapshot.version);
+    if (snapshot.refreshedSlices?.includes("bills")) {
+      setNormalizedBillRegisterRefreshSignal((previous) => previous + 1);
+    }
     if (rebased.conflicts.length > 0) {
       setRemoteError(getOperationalConflictMessages(rebased.conflicts).join(" "));
     }
@@ -1900,6 +1904,7 @@ export default function App() {
     normalizedBillHistoryReadsEnabled,
     normalizedBillRegisterQuery,
     normalizedBillRegisterQueryKey,
+    normalizedBillRegisterRefreshSignal,
     hydrateNormalizedBillRegisterPage
   ]);
 
@@ -1983,7 +1988,7 @@ export default function App() {
       loaded: false,
       queryKey: `${previous.queryKey}:refresh:${Date.now()}`
     }));
-    setNormalizedBillRegisterQuery((previous) => ({ ...previous }));
+    setNormalizedBillRegisterRefreshSignal((previous) => previous + 1);
   }, []);
 
   function mutateAppData(mutator: (draft: AppData) => void) {

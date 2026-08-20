@@ -60,6 +60,7 @@ export interface RemoteAppDataSnapshot {
   version: number;
   source: RemoteAppDataSnapshotSource;
   sourceMutationId?: string;
+  refreshedSlices?: string[];
 }
 
 export interface RemoteAppStateMetadata {

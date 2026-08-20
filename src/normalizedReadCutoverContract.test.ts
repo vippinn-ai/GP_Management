@@ -17,6 +17,15 @@ describe("normalized Release A read-path contract", () => {
     expect(adjustmentSuccess).toMatch(
       /if \(normalizedBillHistoryReadsEnabled\) \{\s*refreshNormalizedBillRegister\(\);\s*\}/
     );
+    expect(appSource).toMatch(
+      /const \[normalizedBillRegisterRefreshSignal, setNormalizedBillRegisterRefreshSignal\] = useState\(0\)/
+    );
+    expect(appSource).toMatch(
+      /snapshot\.refreshedSlices\?\.includes\("bills"\)[\s\S]*?setNormalizedBillRegisterRefreshSignal/
+    );
+    expect(appSource).toMatch(
+      /normalizedBillRegisterQueryKey,\s*normalizedBillRegisterRefreshSignal,\s*hydrateNormalizedBillRegisterPage/
+    );
   });
 
   it("loads checkout-related payments and their source bills for isolated receipt pages", () => {
@@ -32,6 +41,9 @@ describe("normalized Release A read-path contract", () => {
     expect(appSource).toMatch(/if \(previous\.queryKey !== requestedQueryKey\) \{\s*return previous;\s*\}/);
     expect(appSource).toMatch(
       /const refreshNormalizedBillRegister = useCallback\(\(\) => \{\s*normalizedBillRegisterGenerationRef\.current \+= 1;/
+    );
+    expect(appSource).toMatch(
+      /const refreshNormalizedBillRegister = useCallback\([\s\S]*?setNormalizedBillRegisterRefreshSignal\(\(previous\) => previous \+ 1\);/
     );
   });
 });
