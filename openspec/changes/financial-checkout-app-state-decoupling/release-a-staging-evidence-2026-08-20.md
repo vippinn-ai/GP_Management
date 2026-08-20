@@ -10,7 +10,7 @@
 
 ## Evidence metadata
 
-- Execution window: `2026-08-19T19:28:17Z` through at least `2026-08-20T05:10Z` (`2026-08-20 00:58` through at least `10:40` IST) for the recorded active runs; the required business-day soak remains open.
+- Execution window: `2026-08-19T19:28:17Z` through at least `2026-08-20T05:44:13.757055Z` (`2026-08-20 00:58` through at least `11:14` IST) for the recorded active runs; the required business-day soak remains open.
 - Operator: Codex primary agent using the user-authorized authenticated staging sessions.
 - Independent reviewer: separate read-only checkout test agent.
 - Browser surface: authenticated Codex in-app browser plus the user's independently authenticated Chrome profile through the connected browser integration.
@@ -309,7 +309,7 @@ The repository 36-row parity query after the independent financial cases returne
 | session pause logs | 18 | 19 | +1 | The independent timed session's pause/resume row is normalized-only and survives reload; it is intentionally absent from the stale compatibility snapshot. |
 | stock movements | 279 | 283 | +4 | Two controlled Coke reservation/release pairs (`-1`, `+1`); combined net zero. All financial sale/replacement/write-off movements are present in both stores. |
 
-These deltas are explained normalized-only operational history, not missing normalized data. They demonstrate why Release A must not roll reads back to the compatibility snapshot. The following Gate 6 capture reconciles the database structure, errors, duplicates, and performance; permissions, controlled fail-closed reads, and the business-day soak remain separate open gates.
+These deltas are explained normalized-only operational history, not missing normalized data. They demonstrate why Release A must not roll reads back to the compatibility snapshot. The following Gate 6 capture reconciles the database structure, errors, duplicates, and performance; the permission case is recorded immediately after it. Controlled fail-closed reads and the business-day soak remain separate open gates.
 
 ## Gate 6 database, error, and performance capture
 
@@ -349,15 +349,39 @@ The repository `phase3-performance-evidence-probes-single-result.sql` completed 
 - Probe 3, recent reports: planning `0.798 ms`, execution `0.213 ms`.
 - Probe 4, older-history search: planning `0.389 ms`, execution `0.451 ms`.
 - The four query plans use normalized tables. The script reads `app_state` only once to report document size; it performs no business-data update or compatibility rewrite.
-- The final review manifest was regenerated after this evidence change: 243 first-party files, 69,076 physical lines, 185 semantic hotspots, and 169 billing-relevant files.
+- The final review manifest was regenerated after this evidence change: 243 first-party files, 69,100 physical lines, 185 semantic hotspots, and 169 billing-relevant files.
+
+## Gate 5 permission persistence and restoration
+
+The staging-only permission case used the `Reception Desk` receptionist profile (`05a75592-56ef-4e9e-812f-30ed49b3561a`) and the normal authenticated Users UI. No production system was accessed, and no credential is retained in this evidence.
+
+Baseline captured at `2026-08-20T05:33:17.297414+00:00`:
+
+- The profile was active, had role `receptionist`, and had `tab_permissions = null`.
+- `app_state` was version `503`, updated at `2026-08-20T04:57:04.47677+00:00` by `61cc2f83-69d1-46ab-9d89-9df7f7b1e497`.
+- The `app_state.data` SHA-256 was `e0420b050f843f4b53bf73895b22e7673ac004a99a2d5dfa6172a28811ce4ff5`.
+
+The administrator temporarily granted only the extra Analytics tab through the deployed profile editor. At `2026-08-20T05:33:54.294845+00:00`, the protected profile row had `tab_permissions = ["reports"]`; name, username, role, and active state were unchanged. The `app_state` version, update timestamp, updater, and data hash were all byte-for-byte unchanged.
+
+An independently authenticated Chrome session then performed a complete receptionist sign-out and sign-in. After sign-in, the receptionist navigation contained the three role-default tabs (`Live Dashboard`, `Consumables Tab`, and `Bill Register`) plus `Analytics`, while `Inventory`, `Customer Profiles`, `Settings`, and `Users` remained hidden. This proves the profile permission survived a new authentication session without widening unrelated access. The connected browser-control layer did not reliably activate navigation buttons in that Chrome tab, including the three default buttons, so this case asserts permission persistence and visibility only; the Analytics screen's normalized data behavior is covered by the separate authenticated read and report evidence above.
+
+The administrator then removed the temporary Analytics permission through the same deployed profile editor. Final database verification at `2026-08-20T05:44:13.757055+00:00` proved:
+
+- `tab_permissions` returned exactly to `null`; the profile's other business fields remained unchanged.
+- `app_state` remained version `503`, with the same update timestamp, updater, and SHA-256 as the baseline.
+- After reloading the receptionist Chrome session, Analytics disappeared and only the original three receptionist tabs remained.
+
+The temporary staging mutation is therefore fully restored. This Gate 5 permission case passes: the edit persisted through sign-out/in, changed only `profiles.tab_permissions`, and never rewrote `app_state`.
 
 ## Current gate decision
 
-Database reconstruction, additive Release A installation, staging frontend deployment, authenticated normalized-read smoke, controlled operational lifecycle checks, representative timed/unit/tab v1 checkout, settlement, replacement, write-off, refund, customer-history correction, actor/stock verification, independent Chrome session/item/reject and financial realtime coverage, Bill Register invalidation correction, receipt PDF export/rendering, historical receipt linkage, analytics, customer-history, inventory-report parity, hard-refresh non-resurrection checks, and the Gate 6 database/error/performance capture are complete. The remaining Gate 5 fail-closed/permissions cases and full-business-day soak gate remain open. No production promotion claim is made.
+Database reconstruction, additive Release A installation, staging frontend deployment, authenticated normalized-read smoke, representative timed/unit/tab v1 checkout, settlement, replacement, write-off, refund, customer-history correction, actor/stock verification, independent Chrome session/item/reject and financial realtime coverage, Bill Register invalidation correction, receipt PDF export/rendering, historical receipt linkage, analytics, customer-history, Coke inventory-report parity, hard-refresh non-resurrection checks, permission persistence/restoration, and the Gate 6 database/error/performance capture are complete. The permission checkpoint passes, but Release A remains a no-go because the remaining Gate 5 cases and full-business-day soak are not yet evidenced. No production promotion claim is made.
 
 ## Remaining gated work
 
-1. Complete permissions and controlled fail-closed read cases.
-2. Complete the full representative staging business-day soak and independent sign-off.
+1. Complete the controlled fail-closed history, report, customer, and inventory read cases.
+2. Retain two-browser evidence for hop/detach, remaining customer-tab item mutations, pause edit/delete, and complete pause-log overlay replacement after deletion.
+3. Complete report exports beyond the receipt PDF and the inventory combo, variant, cigarette-pack, and reservation before/after-refresh matrix.
+4. Complete the full representative staging business-day soak and independent sign-off.
 
 No production action is authorized by this evidence.

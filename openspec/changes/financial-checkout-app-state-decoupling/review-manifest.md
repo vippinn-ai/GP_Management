@@ -9,7 +9,7 @@ The generated CSV is the per-file evidence. Its columns record path, physical li
 Current generated snapshot:
 
 - First-party text/configuration files: 243.
-- Physical lines mechanically screened: 69,076.
+- Physical lines mechanically screened: 69,100.
 - Semantic billing/data-gateway/compatibility hotspots: 185.
 - Files with billing/financial vocabulary: 169.
 - Files containing an `app_state`, `appState`, or base-version reference: 76; none remain in the unclassified bucket.
@@ -38,7 +38,7 @@ Current generated snapshot:
 
 | Collection/capability | Startup/refresh | Purpose writes | Realtime/hydration | Downstream consumers | Evidence |
 | --- | --- | --- | --- | --- | --- |
-| Profiles and permissions | `profiles`, normalized organization membership | Authenticated edge admin APIs; `profiles.tab_permissions` | Profile refresh/sign-in | Navigation and write authorization | Backend/useAppSync tests; Release A staging permission case pending |
+| Profiles and permissions | `profiles`, normalized organization membership | Authenticated edge admin APIs; `profiles.tab_permissions` | Profile refresh/sign-in | Navigation and write authorization | Backend/useAppSync tests; Release A staging permission persistence/restoration passed |
 | Business/config/stations/pricing | Normalized bootstrap | Admin data RPC | Compact event/by-ID or targeted bootstrap refresh | Sale, settings, receipts, timing | Data-gateway/admin patch tests |
 | Sessions and pause logs | Open plus recoverable unbilled hopped sessions | Operational RPCs, including phase-11 pause edit/delete | Changed session IDs replace that session’s complete pause-log set | Sale, carryovers, checkout pricing, dashboard | Operational sync and normalized overlay tests |
 | Customer tabs/items | Open tabs and item snapshots | Operational customer-tab RPCs | Changed tab/item IDs | Sale, continuation, checkout | Operational RPC tests and two-browser staging contract |
