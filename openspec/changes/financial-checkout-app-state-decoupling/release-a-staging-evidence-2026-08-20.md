@@ -10,7 +10,7 @@
 
 ## Evidence metadata
 
-- Execution window: `2026-08-19T19:28:17Z` through at least `2026-08-20T07:03:46.231Z` (`2026-08-20 00:58` through at least `12:33` IST) for the recorded active runs; the required business-day soak remains open.
+- Execution window: `2026-08-19T19:28:17Z` through at least `2026-08-20T07:14:23.327Z` (`2026-08-20 00:58` through at least `12:44` IST) for the recorded active runs; the required business-day soak remains open.
 - Operator: Codex primary agent using the user-authorized authenticated staging sessions.
 - Independent reviewer: separate read-only checkout test agent.
 - Browser surface: authenticated Codex in-app browser plus the user's independently authenticated Chrome profile through the connected browser integration.
@@ -349,7 +349,7 @@ The repository `phase3-performance-evidence-probes-single-result.sql` completed 
 - Probe 3, recent reports: planning `0.798 ms`, execution `0.213 ms`.
 - Probe 4, older-history search: planning `0.389 ms`, execution `0.451 ms`.
 - The four query plans use normalized tables. The script reads `app_state` only once to report document size; it performs no business-data update or compatibility rewrite.
-- The final review manifest was regenerated after this evidence change: 245 first-party files, 69,396 physical lines, 186 semantic hotspots, and 170 billing-relevant files.
+- The final review manifest was regenerated after this evidence change: 245 first-party files, 69,421 physical lines, 186 semantic hotspots, and 170 billing-relevant files.
 
 ## Gate 5 permission persistence and restoration
 
@@ -429,14 +429,39 @@ Both QA sessions were finally closed through the existing authenticated `reject_
 
 Both sessions are `closed`/`rejected` with their exact QA cleanup reasons, all audit/event actors are Vipin, the combined pause-row count is zero, and final `app_state` SHA-256 is `ea1b4001d668236fe2c54530b59c5d3ef56c763c7b550845ee36a38e96e29025`.
 
+## No-refresh two-browser pause deletion overlay
+
+The previously open deletion-overlay case was repeated on deployment `5f408587-bdcb-4333-94fc-abedc030bf50` with the in-app browser as the mutation origin and a continuously connected Chrome tab as the independent observer. The staging-only timed session was:
+
+- session `session-76b2814e-b87f-42d6-8f56-8f2719fd6afc`;
+- customer `QA Realtime Pause Delete 20260820 1239`;
+- started on 8 Ball Pool at `2026-08-20T07:08:24.796Z`;
+- paused at `07:08:40.849Z` and resumed at `07:08:50.373Z`;
+- pause row `pause-863aae60-3cab-411e-a381-a8ba7803fc5f`.
+
+Chrome first observed the open session as the independent Reception Desk user, then received `Paused`, the live pause indicator, `Resume`, and the return to `Running` without refresh. It was then signed into the supplied staging Vipin account so both browsers had the same admin visibility. The origin displayed the completed row in Pause History before deletion.
+
+The origin deleted the completed row through `delete_pause_log`. No observer reload occurred. Chrome immediately received `Deleted pause log entry for 8 Ball Pool.` at `12:42 pm`; its active-session live bill changed from `Rs 11.28` before the operation to `Rs 12.58` after the compact event, reflecting recalculation without the removed pause interval. The origin's still-open management modal simultaneously removed the entire Pause History section and recalculated the game summary as one uninterrupted charge.
+
+Database evidence at `2026-08-20T07:12:10.150358+00:00` proves the observer change corresponded to the canonical deletion:
+
+- `session_pause_logs` count for the session is `0`, and both typed and raw session `pauseLogIds` are empty;
+- audit `audit-42e520c7-67cc-4ffe-8cc2-54c23cc2cdfa` is `pause_log_deleted`, attributed to Vipin, with identical timezone-qualified typed `audit_at` and raw `createdAt` values of `2026-08-20T07:12:10.150358+00:00`;
+- event `event-f4d6f866-461e-41b4-a0bd-45116d773ed3`, created at `2026-08-20T07:12:10.150358+00:00` with mutation `op-ca8ad0db-938f-4697-9512-c2bbb62e1a02`, names the deleted pause ID in `changed_rows.session_pause_logs`;
+- normalized start/pause/resume/delete operations left compatibility `app_state` unchanged at version `506`, timestamp `2026-08-20T06:55:37.339448+00:00`, and SHA-256 `ea1b4001d668236fe2c54530b59c5d3ef56c763c7b550845ee36a38e96e29025`.
+
+The session was cleaned up through the authenticated `reject_session` purpose RPC with mutation `mutation-release-a-realtime-pause-delete-cleanup-20260820-1`. At `2026-08-20T07:13:34.090532+00:00`, event `event-6fb27909-8af6-43e4-af18-36fd0a3a4e50` completed in `83.463 ms`, audit `audit-release-a-realtime-pause-delete-cleanup-20260820-1` and the event actor both resolved to Vipin, and compatibility version advanced exactly once to `507`. Final SHA-256 is `f053ed3d7876fe9957f40a2c843fafbff08e8ec0c0418e4bbfd74cd3a2abee2a`.
+
+Both browsers removed the session and showed zero open sessions without refresh. A subsequent independent Chrome hard reload still showed 8 Ball Pool available, zero open sessions, the deletion audit at `12:42 pm`, and the cleanup rejection at `12:43 pm`. This passes the no-refresh second-browser deletion-overlay and hard-refresh non-resurrection case. Pause edit remains open because the connected automation cannot populate the native `datetime-local` control.
+
 ## Current gate decision
 
-Database reconstruction, additive Release A installation, staging frontend deployment, authenticated normalized-read smoke, representative timed/unit/tab v1 checkout, settlement, replacement, write-off, refund, customer-history correction, actor/stock verification, independent Chrome session/item/reject and financial realtime coverage, Bill Register invalidation correction, receipt PDF export/rendering, historical receipt linkage, analytics, customer-history, Coke inventory-report parity, hard-refresh non-resurrection checks, permission persistence/restoration, and the Gate 6 database/error/performance capture are complete. The permission checkpoint passes, but Release A remains a no-go because the remaining Gate 5 cases and full-business-day soak are not yet evidenced. No production promotion claim is made.
+Database reconstruction, additive Release A installation, staging frontend deployment, authenticated normalized-read smoke, representative timed/unit/tab v1 checkout, settlement, replacement, write-off, refund, customer-history correction, actor/stock verification, independent Chrome session/item/reject and financial realtime coverage, no-refresh pause deletion overlay, Bill Register invalidation correction, receipt PDF export/rendering, historical receipt linkage, analytics, customer-history, Coke inventory-report parity, hard-refresh non-resurrection checks, permission persistence/restoration, and the Gate 6 database/error/performance capture are complete. The permission checkpoint passes, but Release A remains a no-go because the remaining Gate 5 cases and full-business-day soak are not yet evidenced. No production promotion claim is made.
 
 ## Remaining gated work
 
 1. Complete the controlled fail-closed history, report, customer, and inventory read cases.
-2. Retain two-browser evidence for hop/detach, remaining customer-tab item mutations, pause edit, and no-refresh complete pause-log overlay replacement after deletion. Pause deletion plus independent hard-refresh reconstruction now pass.
+2. Retain two-browser evidence for hop/detach, remaining customer-tab item mutations, and pause edit. Pause deletion, no-refresh overlay replacement, and independent hard-refresh reconstruction now pass.
 3. Complete report exports beyond the receipt PDF and the inventory combo, variant, cigarette-pack, and reservation before/after-refresh matrix.
 4. Complete the full representative staging business-day soak and independent sign-off.
 
