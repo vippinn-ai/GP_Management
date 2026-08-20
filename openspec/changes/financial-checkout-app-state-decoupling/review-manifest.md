@@ -22,7 +22,7 @@ Current generated snapshot:
 
 | Disposition | Current count | Release meaning |
 | --- | ---: | --- |
-| Documentation or test reference | 31 | Evidence, characterization, or explicitly documented legacy behavior. |
+| Documentation or test reference | 32 | Evidence, characterization, or explicitly documented legacy behavior. |
 | Runtime legacy compatibility boundary | 14 | Gated v1/local contracts retained for rollback; normalized mode cannot use them as a financial read fallback. |
 | Migration, diagnostic, or reconstruction | 9 | Offline parity/backfill/evidence tooling; not a v2 runtime dependency. |
 | Legacy-v1 purpose writer | 8 | Existing v1 operational/financial/admin behavior retained while v2 is off. |
@@ -38,7 +38,7 @@ Current generated snapshot:
 
 | Collection/capability | Startup/refresh | Purpose writes | Realtime/hydration | Downstream consumers | Evidence |
 | --- | --- | --- | --- | --- | --- |
-| Profiles and permissions | `profiles`, normalized organization membership | Authenticated edge admin APIs; `profiles.tab_permissions` | Profile refresh/sign-in | Navigation and write authorization | Backend/useAppSync tests; Release A staging permission case |
+| Profiles and permissions | `profiles`, normalized organization membership | Authenticated edge admin APIs; `profiles.tab_permissions` | Profile refresh/sign-in | Navigation and write authorization | Backend/useAppSync tests; Release A staging permission case pending |
 | Business/config/stations/pricing | Normalized bootstrap | Admin data RPC | Compact event/by-ID or targeted bootstrap refresh | Sale, settings, receipts, timing | Data-gateway/admin patch tests |
 | Sessions and pause logs | Open plus recoverable unbilled hopped sessions | Operational RPCs, including phase-11 pause edit/delete | Changed session IDs replace that session’s complete pause-log set | Sale, carryovers, checkout pricing, dashboard | Operational sync and normalized overlay tests |
 | Customer tabs/items | Open tabs and item snapshots | Operational customer-tab RPCs | Changed tab/item IDs | Sale, continuation, checkout | Operational RPC tests and two-browser staging contract |
