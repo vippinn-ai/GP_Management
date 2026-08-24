@@ -108,6 +108,22 @@ describe("staging Playwright harness contract", () => {
     expect(app).not.toContain("observedNormalizedHoppedSessionIdsRef");
   });
 
+  it("requires server acknowledgement and same-ID recovery for every backend rejection", () => {
+    const app = read("src/App.tsx");
+    const sessionReject = app.match(/async function rejectSession\([\s\S]*?async function hopSession/)?.[0] ?? "";
+    const tabReject = app.match(/async function rejectCustomerTab\([\s\S]*?function openBillReplacement/)?.[0] ?? "";
+
+    for (const source of [sessionReject, tabReject]) {
+      expect(source).toContain('retryPolicy: "manual"');
+      expect(source).toContain("optimistic: false");
+      expect(source).toContain("acknowledgementRequired: true");
+      expect(source).toContain('mutation.status === "failed"');
+      expect(source).toContain("existingMutation: true");
+      expect(source).toContain("await commitCriticalOperationalChange");
+      expect(source).not.toContain("commitOperationalChange(mutation");
+    }
+  });
+
   it("serializes a two-reservation limited-stock race and cleans its dedicated fixture", () => {
     const scenario = read("tests/e2e/staging/release-b-limited-stock-v2.e2e.ts");
 
@@ -289,6 +305,15 @@ describe("staging Playwright harness contract", () => {
     expect(scenario).toContain("const response = await command.submit(envelope)");
     expect(scenario).toContain("expect(command.captureCount()).toBe(1)");
     expect(scenario).toContain("reconcile its mutation ID before any cleanup or retry");
+  });
+
+  it("captures the pending operational conflict queue in multi-hop failure evidence", () => {
+    const scenario = read("tests/e2e/staging/release-b-multihop-concurrency-v2.e2e.ts");
+    const support = read("tests/e2e/staging/support/app.ts");
+
+    expect(support).toContain("game-parlour-management-system/pending-operations/v1");
+    expect(scenario).toContain("readPendingOperationalMutations(page)");
+    expect(scenario).toContain("pendingOperationalMutations,");
   });
 
   it("serializes both checkout versus rejection orderings with exact reconciliation", () => {

@@ -858,8 +858,25 @@ export function isHoppedSessionContinuationRecoverable(
   ) {
     return false;
   }
-  return !sessions.some((session) => session.continuedFromSessionIds?.includes(sessionId)) &&
-    !customerTabs.some((tab) => tab.continuedFromSessionIds?.includes(sessionId));
+  return !sessions.some(
+    (session) =>
+      !isReleasedRejectedContinuationConsumer(session) &&
+      session.continuedFromSessionIds?.includes(sessionId)
+  ) &&
+    !customerTabs.some(
+      (tab) =>
+        !isReleasedRejectedContinuationConsumer(tab) &&
+        tab.continuedFromSessionIds?.includes(sessionId)
+    );
+}
+
+export function isReleasedRejectedContinuationConsumer(
+  consumer: Pick<Session, "status" | "closeDisposition" | "closedBillId"> |
+    Pick<CustomerTab, "status" | "closeDisposition" | "closedBillId">
+): boolean {
+  return consumer.status === "closed" &&
+    consumer.closeDisposition === "rejected" &&
+    !consumer.closedBillId;
 }
 
 export function hasHoppedSessionContinuationTerminalEvidence(
@@ -876,8 +893,16 @@ export function hasHoppedSessionContinuationTerminalEvidence(
     (source.closedBillId || source.closeDisposition === "billed" || source.closeDisposition === "rejected")
   );
   const continuationConsumed =
-    sessions.some((session) => session.continuedFromSessionIds?.includes(sessionId)) ||
-    customerTabs.some((tab) => tab.continuedFromSessionIds?.includes(sessionId));
+    sessions.some(
+      (session) =>
+        !isReleasedRejectedContinuationConsumer(session) &&
+        session.continuedFromSessionIds?.includes(sessionId)
+    ) ||
+    customerTabs.some(
+      (tab) =>
+        !isReleasedRejectedContinuationConsumer(tab) &&
+        tab.continuedFromSessionIds?.includes(sessionId)
+    );
   return sourceTerminal || continuationConsumed;
 }
 

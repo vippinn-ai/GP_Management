@@ -63,6 +63,18 @@ export async function waitForSynced(page: Page) {
   await expect(page.getByText("Pending sync.", { exact: false })).toHaveCount(0);
 }
 
+export async function readPendingOperationalMutations(page: Page) {
+  return page.evaluate(() => {
+    const raw = window.localStorage.getItem("game-parlour-management-system/pending-operations/v1");
+    if (!raw) return [];
+    try {
+      return JSON.parse(raw) as unknown;
+    } catch {
+      return { invalidJson: raw };
+    }
+  });
+}
+
 export function stationCard(page: Page, stationName: string) {
   return page.locator("article.station-card").filter({
     has: page.getByRole("heading", { name: stationName, exact: true })

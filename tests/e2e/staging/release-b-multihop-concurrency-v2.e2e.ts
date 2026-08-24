@@ -13,6 +13,7 @@ import {
   interceptSingleRpcCommand,
   openManagedSession,
   readApiResponseBody,
+  readPendingOperationalMutations,
   readRestRows,
   rejectSessionIfOpen,
   rpcRejectionCode,
@@ -91,6 +92,7 @@ test.describe.serial("Release B admin multi-hop checkout concurrency", () => {
     let raceResolved = false;
     let primaryError: unknown;
     let cleanupError: string | undefined;
+    let pendingOperationalMutations: unknown = [];
     let raceEvidence: Record<string, unknown> | undefined;
     let originCommand: Awaited<ReturnType<typeof interceptSingleRpcCommand>> | undefined;
     let observerCommand: Awaited<ReturnType<typeof interceptSingleRpcCommand>> | undefined;
@@ -569,6 +571,9 @@ test.describe.serial("Release B admin multi-hop checkout concurrency", () => {
       } else if (raceStarted && !raceResolved) {
         cleanupError = "Multi-hop checkout commands were sent; reconcile both mutation IDs before any cleanup or retry.";
       }
+      pendingOperationalMutations = await readPendingOperationalMutations(page).catch((error) => ({
+        captureError: error instanceof Error ? error.message : "Unable to read the pending operational queue."
+      }));
       await attachJson(testInfo, "release-b-multihop-concurrency-v2-evidence", {
         runId,
         station,
@@ -578,6 +583,7 @@ test.describe.serial("Release B admin multi-hop checkout concurrency", () => {
         raceStarted,
         raceResolved,
         cleanupError,
+        pendingOperationalMutations,
         dialogMessages,
         originErrors,
         observerErrors,

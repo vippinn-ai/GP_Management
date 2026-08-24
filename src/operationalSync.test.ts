@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AppData } from "./types";
+import { isHoppedSessionContinuationRecoverable } from "./utils";
 import {
   applyOperationalMutation,
   createOperationalMutationAcknowledgementRegistry,
@@ -522,7 +523,8 @@ describe("operational sync", () => {
       pricingSnapshot: [],
       items: [],
       comboApplications: [],
-      pauseLogIds: ["pause-1"]
+      pauseLogIds: ["pause-1"],
+      continuedFromSessionIds: ["session-hop-1"]
     });
     appData.sessionPauseLogs.push({
       id: "pause-1",
@@ -559,7 +561,8 @@ describe("operational sync", () => {
     expect(nextData.sessions[0]).toMatchObject({
       status: "closed",
       closeDisposition: "rejected",
-      closeReason: "Wrong start"
+      closeReason: "Wrong start",
+      continuedFromSessionIds: []
     });
     expect(nextData.sessionPauseLogs[0].resumedAt).toBe("2026-06-09T10:00:00.000Z");
     expect(nextData.auditLogs[0].id).toBe("audit-reject-session");
@@ -628,7 +631,8 @@ describe("operational sync", () => {
       customerName: "Vipin",
       status: "open",
       createdAt: "2026-06-09T09:00:00.000Z",
-      items: []
+      items: [],
+      continuedFromSessionIds: ["session-hop-1"]
     });
 
     const nextData = applyOperationalMutation(
@@ -656,9 +660,111 @@ describe("operational sync", () => {
     expect(nextData.customerTabs[0]).toMatchObject({
       status: "closed",
       closeDisposition: "rejected",
-      closeReason: "Duplicate tab"
+      closeReason: "Duplicate tab",
+      continuedFromSessionIds: []
     });
     expect(nextData.auditLogs[0].id).toBe("audit-reject-tab");
+  });
+
+  it("keeps a prior hopped source consumed while a continuation rejection is unconfirmed", () => {
+    const appData = createAppData();
+    appData.sessions.push(
+      {
+        id: "session-hop-1",
+        stationId: "station-old",
+        stationNameSnapshot: "Pool Old",
+        mode: "timed",
+        startedAt: "2026-06-09T08:00:00.000Z",
+        endedAt: "2026-06-09T09:00:00.000Z",
+        status: "closed",
+        closeDisposition: "hopped",
+        playMode: "group",
+        ltpEligible: false,
+        pricingSnapshot: [],
+        items: [],
+        pauseLogIds: []
+      },
+      {
+        id: "session-2",
+        stationId: "station-1",
+        stationNameSnapshot: "Pool 1",
+        mode: "timed",
+        startedAt: "2026-06-09T09:00:00.000Z",
+        status: "active",
+        continuedFromSessionIds: ["session-hop-1"],
+        playMode: "group",
+        ltpEligible: false,
+        pricingSnapshot: [],
+        items: [],
+        pauseLogIds: []
+      }
+    );
+    const pendingReject = {
+      ...mutation("rejectSession", "session", "session-2", {
+        session: {
+          ...appData.sessions[1],
+          status: "closed",
+          endedAt: "2026-06-09T10:00:00.000Z",
+          closeDisposition: "rejected",
+          closeReason: "QA conflict",
+          continuedFromSessionIds: []
+        },
+        auditLog: {
+          id: "audit-reject-session-2",
+          action: "session_rejected",
+          entityType: "session",
+          entityId: "session-2",
+          message: "Rejected Pool 1.",
+          createdAt: "2026-06-09T10:00:00.000Z",
+          userId: "user-1"
+        }
+      }),
+      optimistic: false,
+      retryPolicy: "manual" as const,
+      acknowledgementRequired: true
+    };
+
+    const rebased = rebasePendingMutations(appData, [pendingReject]);
+
+    expect(rebased.conflicts).toEqual([]);
+    expect(rebased.appData.sessions.find((session) => session.id === "session-2")).toMatchObject({
+      status: "active",
+      continuedFromSessionIds: ["session-hop-1"]
+    });
+    expect(rebased.pendingMutations[0]).toMatchObject({ optimistic: false, status: "pending" });
+    expect(isHoppedSessionContinuationRecoverable(
+      rebased.appData.sessions,
+      rebased.appData.customerTabs,
+      "session-hop-1"
+    )).toBe(false);
+
+    const conflictData = {
+      ...appData,
+      sessions: appData.sessions.map((session) =>
+        session.id === "session-2"
+          ? {
+              ...session,
+              status: "closed" as const,
+              closeDisposition: "billed" as const,
+              closedBillId: "bill-concurrent"
+            }
+          : session
+      )
+    };
+    const conflicted = rebasePendingMutations(conflictData, [pendingReject]);
+    expect(conflicted.pendingMutations).toEqual([]);
+    expect(conflicted.conflicts).toHaveLength(1);
+    expect(conflicted.appData.sessions.find((session) => session.id === "session-2")).toMatchObject({
+      status: "closed",
+      closeDisposition: "billed",
+      closedBillId: "bill-concurrent",
+      continuedFromSessionIds: ["session-hop-1"]
+    });
+    expect(isHoppedSessionContinuationRecoverable(
+      conflicted.appData.sessions,
+      conflicted.appData.customerTabs,
+      "session-hop-1"
+    )).toBe(false);
   });
 
   it("applies a consumables combo to a customer tab", () => {

@@ -89,6 +89,8 @@ declare
   v_mutation_id text := nullif(payload->>'mutation_id', '');
   v_mutation_kind text := nullif(payload->>'mutation_kind', '');
   v_user_id text := nullif(payload->>'user_id', '');
+  v_actor uuid := auth.uid();
+  v_actor_role public.app_role;
   v_expected_version integer := nullif(payload->>'base_app_state_version', '')::integer;
   v_session jsonb := coalesce(payload #> '{payload,session}', '{}'::jsonb);
   v_pause_log jsonb := payload #> '{payload,pauseLog}';
@@ -98,12 +100,18 @@ declare
   v_audit_log_id text := nullif(v_audit_log->>'id', '');
   v_event_id text;
   v_event_metadata jsonb := '{}'::jsonb;
+  v_existing_event_type text;
+  v_existing_entity_type text;
+  v_existing_entity_id text;
   v_app_state_data jsonb;
   v_next_app_state_data jsonb;
   v_app_state_version integer;
   v_next_app_state_version integer;
   v_updated_by uuid;
   v_current_status text;
+  v_released_continuation_ids jsonb := '[]'::jsonb;
+  v_station_name text;
+  v_audit_message text;
   v_server_duration_ms numeric;
   v_changed_rows jsonb;
 begin
@@ -111,7 +119,13 @@ begin
     perform public.raise_operational_rpc_error('invalid_payload', 'The operational change is missing an organization.', '{}'::jsonb);
   end if;
 
-  if not (select public.current_user_has_org_access(v_organization_id)) then
+  v_actor_role := public.current_user_org_role(v_organization_id);
+  if v_actor is null
+    or not (select public.current_user_has_org_access(v_organization_id))
+    or v_user_id is distinct from v_actor::text
+    or v_actor_role is null
+    or v_actor_role not in ('admin'::public.app_role, 'manager'::public.app_role, 'receptionist'::public.app_role)
+  then
     perform public.raise_operational_rpc_error(
       'organization_access_denied',
       'You do not have access to this organization.',
@@ -127,7 +141,11 @@ begin
     );
   end if;
 
-  if v_session_id is null or v_session->>'status' <> 'closed' or v_session->>'closeDisposition' <> 'rejected' then
+  if v_session_id is null
+    or v_session->>'status' <> 'closed'
+    or v_session->>'closeDisposition' <> 'rejected'
+    or nullif(btrim(v_session->>'closeReason'), '') is null
+  then
     perform public.raise_operational_rpc_error(
       'invalid_payload',
       'The reject session payload is missing a closed rejected session.',
@@ -135,8 +153,25 @@ begin
     );
   end if;
 
-  select operational_events.id, operational_events.metadata
-  into v_event_id, v_event_metadata
+  if jsonb_typeof(v_audit_log) <> 'object'
+    or v_audit_log_id is null
+    or v_audit_log->>'action' <> 'session_rejected'
+    or v_audit_log->>'entityType' <> 'session'
+    or v_audit_log->>'entityId' <> v_session_id
+  then
+    perform public.raise_operational_rpc_error(
+      'invalid_payload',
+      'The reject session audit data is invalid.',
+      jsonb_build_object('session_id', v_session_id)
+    );
+  end if;
+
+  perform pg_advisory_xact_lock(hashtextextended(v_organization_id || chr(31) || v_mutation_id, 0));
+  perform pg_advisory_xact_lock(hashtextextended(v_organization_id || chr(31) || 'reject-session' || chr(31) || v_session_id, 0));
+
+  select operational_events.id, operational_events.metadata, operational_events.event_type,
+    operational_events.entity_type, operational_events.entity_id
+  into v_event_id, v_event_metadata, v_existing_event_type, v_existing_entity_type, v_existing_entity_id
   from public.operational_events
   where operational_events.organization_id = v_organization_id
     and operational_events.metadata->>'mutation_id' = v_mutation_id
@@ -144,6 +179,17 @@ begin
   limit 1;
 
   if v_event_id is not null then
+    if v_existing_event_type <> 'reject_session'
+      or v_existing_entity_type <> 'session'
+      or v_existing_entity_id <> v_session_id
+      or v_event_metadata->>'mutation_kind' <> v_mutation_kind
+    then
+      perform public.raise_operational_rpc_error(
+        'mutation_identity_mismatch',
+        'This mutation ID belongs to a different operation.',
+        jsonb_build_object('mutation_id', v_mutation_id)
+      );
+    end if;
     return jsonb_build_object(
       'mutation_id', v_mutation_id,
       'organization_id', v_organization_id,
@@ -157,8 +203,6 @@ begin
       'changed_rows', coalesce(v_event_metadata->'changed_rows', '{}'::jsonb)
     );
   end if;
-
-  perform pg_advisory_xact_lock(hashtext(v_organization_id || ':reject-session:' || v_session_id));
 
   select app_state.data, app_state.version
   into v_app_state_data, v_app_state_version
@@ -178,8 +222,15 @@ begin
     );
   end if;
 
-  select sessions.status
-  into v_current_status
+  select
+    sessions.status,
+    case
+      when jsonb_typeof(coalesce(sessions.continued_from_session_ids, '[]'::jsonb)) = 'array'
+        then coalesce(sessions.continued_from_session_ids, '[]'::jsonb)
+      else '[]'::jsonb
+    end,
+    sessions.station_name_snapshot
+  into v_current_status, v_released_continuation_ids, v_station_name
   from public.sessions
   where sessions.organization_id = v_organization_id
     and sessions.id = v_session_id
@@ -193,13 +244,26 @@ begin
     );
   end if;
 
+  v_session := jsonb_set(v_session, '{continuedFromSessionIds}', '[]'::jsonb, true);
+  v_session := jsonb_set(v_session, '{closedBillId}', 'null'::jsonb, true);
+  v_audit_message := 'Rejected ' || coalesce(nullif(v_station_name, ''), 'session') ||
+    '. Reason: ' || coalesce(nullif(btrim(v_session->>'closeReason'), ''), 'No reason provided.') ||
+    case
+      when jsonb_array_length(v_released_continuation_ids) = 0 then ''
+      else ' Released ' || jsonb_array_length(v_released_continuation_ids)::text ||
+        ' prior game continuation' || case when jsonb_array_length(v_released_continuation_ids) = 1 then '' else 's' end || '.'
+    end;
+  v_audit_log := jsonb_set(v_audit_log, '{userId}', to_jsonb(v_actor::text), true);
+  v_audit_log := jsonb_set(v_audit_log, '{message}', to_jsonb(v_audit_message), true);
+
   update public.sessions
   set
     ended_at = nullif(v_session->>'endedAt', '')::timestamptz,
     status = 'closed',
-    closed_bill_id = nullif(v_session->>'closedBillId', ''),
+    closed_bill_id = null,
     close_disposition = 'rejected',
     close_reason = nullif(v_session->>'closeReason', ''),
+    continued_from_session_ids = '[]'::jsonb,
     raw_data = v_session,
     updated_at = timezone('utc', now())
   where sessions.organization_id = v_organization_id
@@ -249,10 +313,17 @@ begin
       nullif(v_audit_log->>'entityId', ''),
       nullif(v_audit_log->>'message', ''),
       nullif(v_audit_log->>'createdAt', '')::timestamptz,
-      nullif(v_audit_log->>'userId', ''),
+      v_actor::text,
       v_audit_log
     )
     on conflict (organization_id, id) do nothing;
+    if not found then
+      perform public.raise_operational_rpc_error(
+        'audit_id_conflict',
+        'The reject session audit ID is already in use.',
+        jsonb_build_object('audit_log_id', v_audit_log_id)
+      );
+    end if;
   end if;
 
   v_next_app_state_data := coalesce(v_app_state_data, '{}'::jsonb);
@@ -279,9 +350,7 @@ begin
     );
   end if;
 
-  if v_user_id ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then
-    v_updated_by := v_user_id::uuid;
-  end if;
+  v_updated_by := v_actor;
 
   update public.app_state
   set
@@ -312,12 +381,13 @@ begin
     'reject_session',
     'session',
     v_session_id,
-    v_user_id,
+    v_actor::text,
     jsonb_build_object(
       'mutation_id', v_mutation_id,
       'mutation_kind', v_mutation_kind,
       'app_state_version', v_next_app_state_version,
       'server_duration_ms', v_server_duration_ms,
+      'released_continued_from_session_ids', v_released_continuation_ids,
       'changed_rows', v_changed_rows
     )
   )
@@ -353,6 +423,8 @@ declare
   v_mutation_id text := nullif(payload->>'mutation_id', '');
   v_mutation_kind text := nullif(payload->>'mutation_kind', '');
   v_user_id text := nullif(payload->>'user_id', '');
+  v_actor uuid := auth.uid();
+  v_actor_role public.app_role;
   v_expected_version integer := nullif(payload->>'base_app_state_version', '')::integer;
   v_tab jsonb := coalesce(payload #> '{payload,tab}', '{}'::jsonb);
   v_audit_log jsonb := payload #> '{payload,auditLog}';
@@ -360,12 +432,18 @@ declare
   v_audit_log_id text := nullif(v_audit_log->>'id', '');
   v_event_id text;
   v_event_metadata jsonb := '{}'::jsonb;
+  v_existing_event_type text;
+  v_existing_entity_type text;
+  v_existing_entity_id text;
   v_app_state_data jsonb;
   v_next_app_state_data jsonb;
   v_app_state_version integer;
   v_next_app_state_version integer;
   v_updated_by uuid;
   v_current_status text;
+  v_released_continuation_ids jsonb := '[]'::jsonb;
+  v_customer_name text;
+  v_audit_message text;
   v_server_duration_ms numeric;
   v_changed_rows jsonb;
 begin
@@ -373,7 +451,13 @@ begin
     perform public.raise_operational_rpc_error('invalid_payload', 'The operational change is missing an organization.', '{}'::jsonb);
   end if;
 
-  if not (select public.current_user_has_org_access(v_organization_id)) then
+  v_actor_role := public.current_user_org_role(v_organization_id);
+  if v_actor is null
+    or not (select public.current_user_has_org_access(v_organization_id))
+    or v_user_id is distinct from v_actor::text
+    or v_actor_role is null
+    or v_actor_role not in ('admin'::public.app_role, 'manager'::public.app_role, 'receptionist'::public.app_role)
+  then
     perform public.raise_operational_rpc_error(
       'organization_access_denied',
       'You do not have access to this organization.',
@@ -389,7 +473,11 @@ begin
     );
   end if;
 
-  if v_customer_tab_id is null or v_tab->>'status' <> 'closed' or v_tab->>'closeDisposition' <> 'rejected' then
+  if v_customer_tab_id is null
+    or v_tab->>'status' <> 'closed'
+    or v_tab->>'closeDisposition' <> 'rejected'
+    or nullif(btrim(v_tab->>'closeReason'), '') is null
+  then
     perform public.raise_operational_rpc_error(
       'invalid_payload',
       'The reject customer tab payload is missing a closed rejected tab.',
@@ -397,8 +485,25 @@ begin
     );
   end if;
 
-  select operational_events.id, operational_events.metadata
-  into v_event_id, v_event_metadata
+  if jsonb_typeof(v_audit_log) <> 'object'
+    or v_audit_log_id is null
+    or v_audit_log->>'action' <> 'customer_tab_rejected'
+    or v_audit_log->>'entityType' <> 'customer_tab'
+    or v_audit_log->>'entityId' <> v_customer_tab_id
+  then
+    perform public.raise_operational_rpc_error(
+      'invalid_payload',
+      'The reject customer tab audit data is invalid.',
+      jsonb_build_object('customer_tab_id', v_customer_tab_id)
+    );
+  end if;
+
+  perform pg_advisory_xact_lock(hashtextextended(v_organization_id || chr(31) || v_mutation_id, 0));
+  perform pg_advisory_xact_lock(hashtextextended(v_organization_id || chr(31) || 'reject-customer-tab' || chr(31) || v_customer_tab_id, 0));
+
+  select operational_events.id, operational_events.metadata, operational_events.event_type,
+    operational_events.entity_type, operational_events.entity_id
+  into v_event_id, v_event_metadata, v_existing_event_type, v_existing_entity_type, v_existing_entity_id
   from public.operational_events
   where operational_events.organization_id = v_organization_id
     and operational_events.metadata->>'mutation_id' = v_mutation_id
@@ -406,6 +511,17 @@ begin
   limit 1;
 
   if v_event_id is not null then
+    if v_existing_event_type <> 'reject_customer_tab'
+      or v_existing_entity_type <> 'customer_tab'
+      or v_existing_entity_id <> v_customer_tab_id
+      or v_event_metadata->>'mutation_kind' <> v_mutation_kind
+    then
+      perform public.raise_operational_rpc_error(
+        'mutation_identity_mismatch',
+        'This mutation ID belongs to a different operation.',
+        jsonb_build_object('mutation_id', v_mutation_id)
+      );
+    end if;
     return jsonb_build_object(
       'mutation_id', v_mutation_id,
       'organization_id', v_organization_id,
@@ -419,8 +535,6 @@ begin
       'changed_rows', coalesce(v_event_metadata->'changed_rows', '{}'::jsonb)
     );
   end if;
-
-  perform pg_advisory_xact_lock(hashtext(v_organization_id || ':reject-customer-tab:' || v_customer_tab_id));
 
   select app_state.data, app_state.version
   into v_app_state_data, v_app_state_version
@@ -440,8 +554,15 @@ begin
     );
   end if;
 
-  select customer_tabs.status
-  into v_current_status
+  select
+    customer_tabs.status,
+    case
+      when jsonb_typeof(coalesce(customer_tabs.continued_from_session_ids, '[]'::jsonb)) = 'array'
+        then coalesce(customer_tabs.continued_from_session_ids, '[]'::jsonb)
+      else '[]'::jsonb
+    end,
+    customer_tabs.customer_name
+  into v_current_status, v_released_continuation_ids, v_customer_name
   from public.customer_tabs
   where customer_tabs.organization_id = v_organization_id
     and customer_tabs.id = v_customer_tab_id
@@ -455,13 +576,26 @@ begin
     );
   end if;
 
+  v_tab := jsonb_set(v_tab, '{continuedFromSessionIds}', '[]'::jsonb, true);
+  v_tab := jsonb_set(v_tab, '{closedBillId}', 'null'::jsonb, true);
+  v_audit_message := 'Rejected customer tab for ' || coalesce(nullif(v_customer_name, ''), 'customer') ||
+    '. Reason: ' || coalesce(nullif(btrim(v_tab->>'closeReason'), ''), 'No reason provided.') ||
+    case
+      when jsonb_array_length(v_released_continuation_ids) = 0 then ''
+      else ' Released ' || jsonb_array_length(v_released_continuation_ids)::text ||
+        ' prior game continuation' || case when jsonb_array_length(v_released_continuation_ids) = 1 then '' else 's' end || '.'
+    end;
+  v_audit_log := jsonb_set(v_audit_log, '{userId}', to_jsonb(v_actor::text), true);
+  v_audit_log := jsonb_set(v_audit_log, '{message}', to_jsonb(v_audit_message), true);
+
   update public.customer_tabs
   set
     status = 'closed',
     closed_at = nullif(v_tab->>'closedAt', '')::timestamptz,
-    closed_bill_id = nullif(v_tab->>'closedBillId', ''),
+    closed_bill_id = null,
     close_disposition = 'rejected',
     close_reason = nullif(v_tab->>'closeReason', ''),
+    continued_from_session_ids = '[]'::jsonb,
     raw_data = v_tab,
     updated_at = timezone('utc', now())
   where customer_tabs.organization_id = v_organization_id
@@ -487,10 +621,17 @@ begin
       nullif(v_audit_log->>'entityId', ''),
       nullif(v_audit_log->>'message', ''),
       nullif(v_audit_log->>'createdAt', '')::timestamptz,
-      nullif(v_audit_log->>'userId', ''),
+      v_actor::text,
       v_audit_log
     )
     on conflict (organization_id, id) do nothing;
+    if not found then
+      perform public.raise_operational_rpc_error(
+        'audit_id_conflict',
+        'The reject customer tab audit ID is already in use.',
+        jsonb_build_object('audit_log_id', v_audit_log_id)
+      );
+    end if;
   end if;
 
   v_next_app_state_data := coalesce(v_app_state_data, '{}'::jsonb);
@@ -509,9 +650,7 @@ begin
     );
   end if;
 
-  if v_user_id ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then
-    v_updated_by := v_user_id::uuid;
-  end if;
+  v_updated_by := v_actor;
 
   update public.app_state
   set
@@ -541,12 +680,13 @@ begin
     'reject_customer_tab',
     'customer_tab',
     v_customer_tab_id,
-    v_user_id,
+    v_actor::text,
     jsonb_build_object(
       'mutation_id', v_mutation_id,
       'mutation_kind', v_mutation_kind,
       'app_state_version', v_next_app_state_version,
       'server_duration_ms', v_server_duration_ms,
+      'released_continued_from_session_ids', v_released_continuation_ids,
       'changed_rows', v_changed_rows
     )
   )

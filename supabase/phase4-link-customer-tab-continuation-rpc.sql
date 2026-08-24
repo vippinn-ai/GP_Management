@@ -178,6 +178,11 @@ begin
       from public.sessions child
       where child.organization_id = v_organization_id
         and not (child.id = any(v_session_ids))
+        and not (
+          child.status = 'closed'
+          and child.close_disposition is not distinct from 'rejected'
+          and child.closed_bill_id is null
+        )
         and case
           when jsonb_typeof(coalesce(child.continued_from_session_ids, '[]'::jsonb)) = 'array'
             then coalesce(child.continued_from_session_ids, '[]'::jsonb) @> jsonb_build_array(requested.session_id)
@@ -189,6 +194,11 @@ begin
       from public.customer_tabs consumer_tab
       where consumer_tab.organization_id = v_organization_id
         and consumer_tab.id <> v_customer_tab_id
+        and not (
+          consumer_tab.status = 'closed'
+          and consumer_tab.close_disposition is not distinct from 'rejected'
+          and consumer_tab.closed_bill_id is null
+        )
         and case
           when jsonb_typeof(coalesce(consumer_tab.continued_from_session_ids, '[]'::jsonb)) = 'array'
             then coalesce(consumer_tab.continued_from_session_ids, '[]'::jsonb) @> jsonb_build_array(requested.session_id)

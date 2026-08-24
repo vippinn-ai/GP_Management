@@ -186,6 +186,7 @@ import {
   getUnbilledHoppedSessionsForCustomer,
   hasHoppedSessionContinuationTerminalEvidence,
   isHoppedSessionContinuationRecoverable,
+  isReleasedRejectedContinuationConsumer,
   shouldClearHoppedSessionContinuation,
   normalizeCustomerName,
   normalizeCustomerPhone,
@@ -919,8 +920,16 @@ export default function App() {
       return;
     }
     const continuationConsumed =
-      appData.sessions.some((session) => session.continuedFromSessionIds?.includes(hoppedSession.id)) ||
-      appData.customerTabs.some((tab) => tab.continuedFromSessionIds?.includes(hoppedSession.id));
+      appData.sessions.some(
+        (session) =>
+          !isReleasedRejectedContinuationConsumer(session) &&
+          session.continuedFromSessionIds?.includes(hoppedSession.id)
+      ) ||
+      appData.customerTabs.some(
+        (tab) =>
+          !isReleasedRejectedContinuationConsumer(tab) &&
+          tab.continuedFromSessionIds?.includes(hoppedSession.id)
+      );
     if (continuationConsumed) {
       setCheckoutState(null);
       setIsHopMode(false);
@@ -4837,7 +4846,7 @@ export default function App() {
     });
   }
 
-  function rejectSession(sessionId: string) {
+  async function rejectSession(sessionId: string) {
     if (!activeUser) {
       return;
     }
@@ -4845,9 +4854,35 @@ export default function App() {
     if (!session || session.status === "closed") {
       return;
     }
-    if (hasPendingOperationalForSession(sessionId)) {
+    const finishReject = () => {
+      setCheckoutState((previous) =>
+        previous?.mode === "session" && previous.sessionId === sessionId ? null : previous
+      );
+      setManageSessionId((previous) => (previous === sessionId ? null : previous));
+    };
+    const retryMutation = pendingOperationalMutationsRef.current.find(
+      (mutation) =>
+        mutation.kind === "rejectSession" &&
+        mutation.entityId === sessionId &&
+        mutation.retryPolicy === "manual" &&
+        mutation.status === "failed"
+    );
+    if (hasPendingOperationalForSession(sessionId) && !retryMutation) {
       window.alert("This session has pending sync changes. Please wait for sync to finish before rejecting it.");
       scheduleOperationalSync(0);
+      return;
+    }
+    if (retryMutation) {
+      const outcome = await commitCriticalOperationalChange(
+        retryMutation,
+        `reject-session:${sessionId}`,
+        { existingMutation: true }
+      );
+      if (outcome.status !== "synced") {
+        window.alert(`The previous rejection is still unconfirmed. The session remains open locally. ${outcome.failureReason}`);
+        return;
+      }
+      finishReject();
       return;
     }
     const reason = window.prompt("Enter reason for rejecting this session:");
@@ -4856,6 +4891,7 @@ export default function App() {
     }
     const rejectedAt = new Date().toISOString();
     const rejectedSession = cloneValue(session);
+    const releasedContinuationIds = [...(rejectedSession.continuedFromSessionIds ?? [])];
     const openPause =
       rejectedSession.status === "paused"
         ? appData.sessionPauseLogs.find((entry) => entry.sessionId === sessionId && !entry.resumedAt)
@@ -4868,7 +4904,8 @@ export default function App() {
     rejectedSession.endedAt = rejectedAt;
     rejectedSession.closeDisposition = "rejected";
     rejectedSession.closeReason = reason.trim();
-    commitOperationalChange(createOperationalMutation(
+    rejectedSession.continuedFromSessionIds = [];
+    const mutation = createOperationalMutation(
       "rejectSession",
       "Rejecting session",
       "session",
@@ -4881,17 +4918,23 @@ export default function App() {
           action: "session_rejected",
           entityType: "session",
           entityId: sessionId,
-          message: `Rejected ${rejectedSession.stationNameSnapshot}. Reason: ${reason.trim()}`,
+          message: `Rejected ${rejectedSession.stationNameSnapshot}. Reason: ${reason.trim()}${releasedContinuationIds.length > 0 ? ` Released ${releasedContinuationIds.length} prior game continuation${releasedContinuationIds.length === 1 ? "" : "s"}.` : ""}`,
           createdAt: rejectedAt,
           userId: activeUser.id
         }
-      }
-    ), () => {
-      setCheckoutState((previous) =>
-        previous?.mode === "session" && previous.sessionId === sessionId ? null : previous
+      },
+      { retryPolicy: "manual", optimistic: false, acknowledgementRequired: true }
+    );
+    const outcome = await commitCriticalOperationalChange(mutation, `reject-session:${sessionId}`);
+    if (outcome.status !== "synced") {
+      window.alert(
+        outcome.status === "conflict"
+          ? "The session was not rejected because the latest server state changed. Its prior game remains linked. Refresh and review before trying again."
+          : `The session was not rejected. Its prior game remains linked. ${outcome.failureReason}`
       );
-      setManageSessionId((previous) => (previous === sessionId ? null : previous));
-    });
+      return;
+    }
+    finishReject();
   }
 
   async function hopSession() {
@@ -5177,7 +5220,7 @@ export default function App() {
     }
   }
 
-  function rejectCustomerTab(customerTabId: string) {
+  async function rejectCustomerTab(customerTabId: string) {
     if (!activeUser) {
       return;
     }
@@ -5185,9 +5228,35 @@ export default function App() {
     if (!tab || tab.status !== "open") {
       return;
     }
-    if (hasPendingOperationalForCustomerTab(customerTabId)) {
+    const finishReject = () => {
+      setCheckoutState((previous) =>
+        previous?.mode === "customer_tab" && previous.customerTabId === customerTabId ? null : previous
+      );
+      setSelectedCustomerTabId((previous) => (previous === customerTabId ? null : previous));
+    };
+    const retryMutation = pendingOperationalMutationsRef.current.find(
+      (mutation) =>
+        mutation.kind === "rejectCustomerTab" &&
+        mutation.entityId === customerTabId &&
+        mutation.retryPolicy === "manual" &&
+        mutation.status === "failed"
+    );
+    if (hasPendingOperationalForCustomerTab(customerTabId) && !retryMutation) {
       window.alert("This customer tab has pending sync changes. Please wait for sync to finish before rejecting it.");
       scheduleOperationalSync(0);
+      return;
+    }
+    if (retryMutation) {
+      const outcome = await commitCriticalOperationalChange(
+        retryMutation,
+        `reject-customer-tab:${customerTabId}`,
+        { existingMutation: true }
+      );
+      if (outcome.status !== "synced") {
+        window.alert(`The previous tab rejection is still unconfirmed. The tab remains open locally. ${outcome.failureReason}`);
+        return;
+      }
+      finishReject();
       return;
     }
     const reason = window.prompt("Enter reason for rejecting this consumables tab:");
@@ -5196,11 +5265,13 @@ export default function App() {
     }
     const rejectedAt = new Date().toISOString();
     const rejectedTab = cloneValue(tab);
+    const releasedContinuationIds = [...(rejectedTab.continuedFromSessionIds ?? [])];
     rejectedTab.status = "closed";
     rejectedTab.closedAt = rejectedAt;
     rejectedTab.closeDisposition = "rejected";
     rejectedTab.closeReason = reason.trim();
-    commitOperationalChange(createOperationalMutation(
+    rejectedTab.continuedFromSessionIds = [];
+    const mutation = createOperationalMutation(
       "rejectCustomerTab",
       "Rejecting customer tab",
       "customer_tab",
@@ -5212,17 +5283,23 @@ export default function App() {
           action: "customer_tab_rejected",
           entityType: "customer_tab",
           entityId: customerTabId,
-          message: `Rejected ${rejectedTab.customerName}'s tab. Reason: ${reason.trim()}`,
+          message: `Rejected ${rejectedTab.customerName}'s tab. Reason: ${reason.trim()}${releasedContinuationIds.length > 0 ? ` Released ${releasedContinuationIds.length} prior game continuation${releasedContinuationIds.length === 1 ? "" : "s"}.` : ""}`,
           createdAt: rejectedAt,
           userId: activeUser.id
         }
-      }
-    ), () => {
-      setCheckoutState((previous) =>
-        previous?.mode === "customer_tab" && previous.customerTabId === customerTabId ? null : previous
+      },
+      { retryPolicy: "manual", optimistic: false, acknowledgementRequired: true }
+    );
+    const outcome = await commitCriticalOperationalChange(mutation, `reject-customer-tab:${customerTabId}`);
+    if (outcome.status !== "synced") {
+      window.alert(
+        outcome.status === "conflict"
+          ? "The customer tab was not rejected because the latest server state changed. Its prior game remains linked. Refresh and review before trying again."
+          : `The customer tab was not rejected. Its prior game remains linked. ${outcome.failureReason}`
       );
-      setSelectedCustomerTabId((previous) => (previous === customerTabId ? null : previous));
-    });
+      return;
+    }
+    finishReject();
   }
 
   function openBillReplacement(billId: string) {
@@ -7420,8 +7497,12 @@ export default function App() {
       })
     : undefined;
   const consumedHoppedSessionIds = new Set([
-    ...appData.sessions.flatMap((session) => session.continuedFromSessionIds ?? []),
-    ...appData.customerTabs.flatMap((tab) => tab.continuedFromSessionIds ?? [])
+    ...appData.sessions
+      .filter((session) => !isReleasedRejectedContinuationConsumer(session))
+      .flatMap((session) => session.continuedFromSessionIds ?? []),
+    ...appData.customerTabs
+      .filter((tab) => !isReleasedRejectedContinuationConsumer(tab))
+      .flatMap((tab) => tab.continuedFromSessionIds ?? [])
   ]);
   const recoverableHoppedSessions = appData.sessions
     .filter(

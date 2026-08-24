@@ -1382,8 +1382,66 @@ describe("isHoppedSessionContinuationRecoverable", () => {
       source.id
     )).toBe(false);
     expect(isHoppedSessionContinuationRecoverable(
+      [source, {
+        ...makeHoppedSession("rejected-next", "Alice", "9876543210"),
+        status: "closed",
+        closeDisposition: "rejected",
+        continuedFromSessionIds: [source.id]
+      }],
+      [],
+      source.id
+    )).toBe(true);
+    expect(isHoppedSessionContinuationRecoverable(
+      [source, {
+        ...makeHoppedSession("rejected-billed-next", "Alice", "9876543210"),
+        status: "closed",
+        closeDisposition: "rejected",
+        closedBillId: "bill-1",
+        continuedFromSessionIds: [source.id]
+      }],
+      [],
+      source.id
+    )).toBe(false);
+    expect(isHoppedSessionContinuationRecoverable(
+      [source, {
+        ...makeHoppedSession("closed-legacy-next", "Alice", "9876543210"),
+        status: "closed",
+        closeDisposition: undefined,
+        continuedFromSessionIds: [source.id]
+      }],
+      [],
+      source.id
+    )).toBe(false);
+    expect(isHoppedSessionContinuationRecoverable(
       [source],
       [{ id: "tab-1", customerName: "Alice", status: "open", createdAt: source.endedAt!, items: [], continuedFromSessionIds: [source.id] }],
+      source.id
+    )).toBe(false);
+    expect(isHoppedSessionContinuationRecoverable(
+      [source],
+      [{
+        id: "rejected-tab",
+        customerName: "Alice",
+        status: "closed",
+        closeDisposition: "rejected",
+        createdAt: source.endedAt!,
+        items: [],
+        continuedFromSessionIds: [source.id]
+      }],
+      source.id
+    )).toBe(true);
+    expect(isHoppedSessionContinuationRecoverable(
+      [source],
+      [{
+        id: "rejected-billed-tab",
+        customerName: "Alice",
+        status: "closed",
+        closeDisposition: "rejected",
+        closedBillId: "bill-1",
+        createdAt: source.endedAt!,
+        items: [],
+        continuedFromSessionIds: [source.id]
+      }],
       source.id
     )).toBe(false);
     expect(isHoppedSessionContinuationRecoverable([], [], source.id)).toBe(false);
@@ -1463,6 +1521,29 @@ describe("hasHoppedSessionContinuationTerminalEvidence", () => {
       [{ id: "tab-1", continuedFromSessionIds: [source.id] } as CustomerTab],
       source.id
     )).toBe(true);
+  });
+
+  it("does not treat rejected continuation consumers as terminal", () => {
+    expect(hasHoppedSessionContinuationTerminalEvidence(
+      [source, {
+        ...makeHoppedSession("rejected-next", "Alice", "9876543210"),
+        status: "closed",
+        closeDisposition: "rejected",
+        continuedFromSessionIds: [source.id]
+      }],
+      [],
+      source.id
+    )).toBe(false);
+    expect(hasHoppedSessionContinuationTerminalEvidence(
+      [source],
+      [{
+        id: "rejected-tab",
+        status: "closed",
+        closeDisposition: "rejected",
+        continuedFromSessionIds: [source.id]
+      } as CustomerTab],
+      source.id
+    )).toBe(false);
   });
 });
 

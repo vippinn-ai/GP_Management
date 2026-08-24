@@ -153,6 +153,25 @@ describe("normalized overlay collection merging", () => {
       .toBe("2026-08-19T11:05:00.000Z");
   });
 
+  it("lets an open normalized session replace a stale open base session on the same station", () => {
+    const base = createAppData();
+    base.sessions = [{
+      id: "session-stale",
+      stationId: "station-shared",
+      status: "active"
+    } as never];
+    const merged = mergeNormalizedAppDataOverlay(base, {
+      sessions: [{
+        id: "session-current",
+        stationId: "station-shared",
+        status: "active"
+      } as never],
+      sessionPauseLogs: []
+    });
+
+    expect(merged.sessions.map((session) => session.id)).toEqual(["session-current"]);
+  });
+
   it("accepts a canonical closed hop-to-billed transition without resurrecting a closed session", () => {
     const base = createAppData();
     base.sessions = [{
@@ -186,6 +205,35 @@ describe("normalized overlay collection merging", () => {
       status: "closed",
       closeDisposition: "billed",
       closedBillId: "bill-1"
+    });
+  });
+
+  it("does not let an ID-scoped closed hop patch evict a newer active session on the same station", () => {
+    const base = createAppData();
+    const hopped = {
+      id: "session-hop",
+      stationId: "station-1",
+      status: "closed",
+      closeDisposition: "hopped"
+    } as never;
+    const activeContinuation = {
+      id: "session-next",
+      stationId: "station-1",
+      status: "active",
+      continuedFromSessionIds: ["session-hop"]
+    } as never;
+    base.sessions = [hopped, activeContinuation];
+
+    const merged = mergeNormalizedAppDataOverlay(base, { sessions: [hopped] });
+
+    expect(merged.sessions).toHaveLength(2);
+    expect(merged.sessions.find((session) => session.id === "session-hop")).toMatchObject({
+      status: "closed",
+      closeDisposition: "hopped"
+    });
+    expect(merged.sessions.find((session) => session.id === "session-next")).toMatchObject({
+      status: "active",
+      continuedFromSessionIds: ["session-hop"]
     });
   });
 

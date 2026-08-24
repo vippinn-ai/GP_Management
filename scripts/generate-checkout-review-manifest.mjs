@@ -43,6 +43,9 @@ function classifyAppState(path, content) {
   if (path === "scripts/bootstrap-production.mjs" || path === "scripts/fix-pricing-bands.mjs") {
     return "legacy-maintenance-script";
   }
+  if (path === "scripts/inspect-staging-sessions.mjs" || path === "scripts/reconcile-financial-v2-staging.mjs") {
+    return "migration-diagnostic-or-reconstruction";
+  }
   if (path === "supabase/phase3-read-performance-indexes.sql" || path === "supabase/phase7-analytics-summary-rpc.sql") {
     return "normalized-source-no-app-state-access";
   }
@@ -163,6 +166,16 @@ function inferDirectTests(path) {
   }
   if (path === "supabase/phase4-hop-session-rpc.sql") {
     tests.push("src/dataGateway/operationalSqlContract.test.ts");
+  }
+  if ([
+    "supabase/phase4-reject-rpcs.sql",
+    "supabase/phase4-start-session-rpc.sql",
+    "supabase/phase4-link-customer-tab-continuation-rpc.sql"
+  ].includes(path)) {
+    tests.push("src/dataGateway/operationalSqlContract.test.ts");
+  }
+  if (path === "scripts/inspect-staging-sessions.mjs") {
+    tests.push("src/qa/playwrightStagingHarnessContract.test.ts");
   }
   return [...new Set(tests)].join("; ");
 }

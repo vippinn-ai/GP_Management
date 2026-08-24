@@ -49,12 +49,17 @@ function mergeLiveSessions(baseSessions: Session[], normalizedSessions: Session[
     return !(existing?.status === "closed" && session.status !== "closed");
   });
   const normalizedSessionIds = new Set(effectiveNormalizedSessions.map((session) => session.id));
-  const normalizedStationIds = new Set(effectiveNormalizedSessions.map((session) => session.stationId).filter(Boolean));
+  const normalizedOpenStationIds = new Set(
+    effectiveNormalizedSessions
+      .filter((session) => session.status !== "closed")
+      .map((session) => session.stationId)
+      .filter(Boolean)
+  );
   const retainedBaseSessions = baseSessions.filter((session) => {
     if (normalizedSessionIds.has(session.id)) {
       return false;
     }
-    if (session.status !== "closed" && normalizedStationIds.has(session.stationId)) {
+    if (session.status !== "closed" && normalizedOpenStationIds.has(session.stationId)) {
       return false;
     }
     return true;

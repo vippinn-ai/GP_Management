@@ -869,7 +869,10 @@ export function applyOperationalMutation(
       const payload = mutation.payload as RejectSessionPayload;
       const sessionIndex = appData.sessions.findIndex((entry) => entry.id === payload.session.id);
       if (sessionIndex >= 0) {
-        appData.sessions[sessionIndex] = cloneValue(payload.session);
+        appData.sessions[sessionIndex] = {
+          ...cloneValue(payload.session),
+          continuedFromSessionIds: []
+        };
       }
       if (payload.pauseLog) {
         const pauseIndex = appData.sessionPauseLogs.findIndex((entry) => entry.id === payload.pauseLog?.id);
@@ -984,7 +987,10 @@ export function applyOperationalMutation(
       const payload = mutation.payload as RejectCustomerTabPayload;
       const tabIndex = appData.customerTabs.findIndex((entry) => entry.id === payload.tab.id);
       if (tabIndex >= 0) {
-        appData.customerTabs[tabIndex] = cloneValue(payload.tab);
+        appData.customerTabs[tabIndex] = {
+          ...cloneValue(payload.tab),
+          continuedFromSessionIds: []
+        };
       }
       insertFirstUnique(appData.auditLogs, payload.auditLog);
       break;
