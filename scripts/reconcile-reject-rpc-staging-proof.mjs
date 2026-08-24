@@ -79,7 +79,13 @@ const supabase = createClient(supabaseUrl, supabaseAnonKey, {
 const lookup = await supabase.functions.invoke("resolve-login-email", {
   body: { username: env.E2E_USER_A.trim() }
 });
-if (lookup.error || !lookup.data?.email) throw new Error("Unable to resolve the staging test username.");
+if (lookup.error || !lookup.data?.email) {
+  const status = lookup.error?.context?.status;
+  const detail = lookup.error?.message ?? "response did not contain an email";
+  throw new Error(
+    `Unable to resolve the staging test username${status ? ` (HTTP ${status})` : ""}: ${detail}`
+  );
+}
 const login = await supabase.auth.signInWithPassword({ email: lookup.data.email, password: env.E2E_PASSWORD_A });
 if (login.error || !login.data.user) throw new Error("Unable to authenticate the staging test account.");
 const role = await supabase.rpc("current_user_org_role", { target_organization_id: organizationId });
