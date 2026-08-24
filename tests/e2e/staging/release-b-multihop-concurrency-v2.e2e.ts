@@ -26,12 +26,16 @@ import {
 
 const runId = process.env.E2E_RUN_ID ?? "missing-run-id";
 const station = process.env.E2E_V2_MULTIHOP_STATION?.trim() || "Playstation";
+const guardedCleanupSessionId = process.env.E2E_GUARDED_HOPPED_SESSION_ID?.trim();
+const guardedCleanupCustomer = process.env.E2E_GUARDED_HOPPED_CUSTOMER?.trim();
+const guardedCleanupStation = process.env.E2E_GUARDED_HOPPED_STATION?.trim();
 
 type CheckoutEnvelope = {
   payload: {
     organization_id: string;
     mutation_id: string;
     mutation_kind: string;
+    entity_id: string;
     payload: {
       source_session_ids: string[];
       primary_bill: { id: string; billNumber: string };
@@ -46,7 +50,7 @@ function appStateDataHash(data: unknown) {
   return createHash("sha256").update(JSON.stringify(data)).digest("hex");
 }
 
-function prepareCheckoutCommand(captured: CapturedRpcRequest, suffix: "A" | "B") {
+function prepareCheckoutCommand(captured: CapturedRpcRequest, suffix: "A" | "B" | "C") {
   const envelope = structuredClone(captured.body) as CheckoutEnvelope;
   const billNumber = `BILL-QA-MULTIHOP-${runId}-${suffix}`;
   envelope.payload.mutation_id = `financial-multihop-${runId}-${suffix.toLowerCase()}`;
@@ -114,7 +118,10 @@ test.describe.serial("Release B admin multi-hop checkout concurrency", () => {
 
     async function continueOnReleasedStation(continuationCount: number) {
       const continuation = page.getByRole("dialog", { name: "Continue Customer", exact: true });
-      await continuation.getByLabel("Station", { exact: true }).selectOption({ label: station });
+      const stationSelect = continuation.getByText("Station", { exact: true })
+        .locator("xpath=ancestor::label")
+        .locator("select");
+      await stationSelect.selectOption({ label: station });
       await continuation.getByRole("button", { name: "Start Session", exact: true }).click();
       await expect(continuation).toBeHidden();
       await waitForSynced(page);
@@ -517,6 +524,240 @@ test.describe.serial("Release B admin multi-hop checkout concurrency", () => {
       await attachFailureScreenshot(testInfo, page, "multihop-race-origin-failure");
       await attachFailureScreenshot(testInfo, observer.page, "multihop-race-observer-failure");
       await observer.context.close();
+      if (!primaryError && cleanupError) throw new Error(cleanupError);
+    }
+  });
+
+  test("guardedly bills one exact abandoned hopped QA session", async ({ page }, testInfo) => {
+    test.skip(
+      !guardedCleanupSessionId || !guardedCleanupCustomer || !guardedCleanupStation,
+      "Exact guarded cleanup identity was not supplied."
+    );
+    const rpcEvidence: RpcEvidence[] = [];
+    const pageErrors = capturePageErrors(page);
+    captureRpcEvidence(page, "origin", rpcEvidence);
+    let command: Awaited<ReturnType<typeof interceptSingleRpcCommand>> | undefined;
+    let checkoutSent = false;
+    let checkoutResolved = false;
+    let cleanupError: string | undefined;
+    let primaryError: unknown;
+    let cleanupEvidence: Record<string, unknown> | undefined;
+
+    try {
+      await signIn(page, credentials("A"));
+      await page.getByRole("button", { name: "Continue", exact: true }).click();
+      const continuation = page.getByRole("dialog", { name: "Continue Customer", exact: true });
+      await expect(continuation).toContainText(guardedCleanupCustomer!);
+      await expect(continuation).toContainText(guardedCleanupStation!);
+      await continuation.getByRole("button", { name: "Bill & Done", exact: true }).click();
+      const checkout = page.getByRole("dialog", { name: "Bill Hopped Session", exact: true });
+      await expect(checkout.getByLabel("Customer Name", { exact: true })).toHaveValue(guardedCleanupCustomer!);
+      await expect(checkout.getByRole("button", { name: "Issue Bill", exact: true })).toBeEnabled();
+
+      command = await interceptSingleRpcCommand(page, "**/rest/v1/rpc/commit_checkout_bill_v2");
+      await checkout.getByRole("button", { name: "Issue Bill", exact: true }).click();
+      const captured = await command.captured;
+      expect(command.captureCount()).toBe(1);
+      const envelope = prepareCheckoutCommand(captured, "C");
+      expect(envelope.payload.entity_id).toBe(guardedCleanupSessionId);
+      expect(envelope.payload.payload.source_session_ids).toEqual([guardedCleanupSessionId]);
+      expect(envelope.payload.payload.session_updates.map((session) => session.id))
+        .toEqual([guardedCleanupSessionId]);
+      const actorId = authenticatedJwtSubject(captured.headers);
+      const headers = {
+        apikey: captured.headers.apikey,
+        authorization: captured.headers.authorization,
+        "content-type": "application/json",
+        prefer: captured.headers.prefer || "return=representation"
+      };
+      const restBase = captured.url.replace(/\/rpc\/[^/]+$/, "");
+      const restHeaders = { apikey: headers.apikey, authorization: headers.authorization };
+      const preCleanupSessionRows = await readRestRows<{
+        id: string;
+        station_name_snapshot: string;
+        customer_name: string | null;
+        status: string;
+        close_disposition: string | null;
+        closed_bill_id: string | null;
+      }>(page, restBase, restHeaders, "sessions", {
+        organization_id: "eq.org-primary",
+        id: `eq.${guardedCleanupSessionId}`,
+        select: "id,station_name_snapshot,customer_name,status,close_disposition,closed_bill_id"
+      });
+      expect(preCleanupSessionRows).toEqual([{
+        id: guardedCleanupSessionId,
+        station_name_snapshot: guardedCleanupStation,
+        customer_name: guardedCleanupCustomer,
+        status: "closed",
+        close_disposition: "hopped",
+        closed_bill_id: null
+      }]);
+      const roleResponse = await page.request.post(`${restBase}/rpc/current_user_org_role`, {
+        headers,
+        data: { target_organization_id: envelope.payload.organization_id }
+      });
+      expect(roleResponse.status()).toBe(200);
+      expect(await roleResponse.json()).toBe("admin");
+      const beforeAppState = await readRestRows<{ version: number; data: unknown }>(
+        page,
+        restBase,
+        restHeaders,
+        "app_state",
+        { id: "eq.primary", select: "version,data" }
+      );
+      expect(beforeAppState).toHaveLength(1);
+      const appStateHashBefore = appStateDataHash(beforeAppState[0].data);
+      cleanupEvidence = {
+        guardedCleanupSessionId,
+        guardedCleanupCustomer,
+        guardedCleanupStation,
+        mutationId: envelope.payload.mutation_id,
+        billId: envelope.payload.payload.primary_bill.id,
+        billNumber: envelope.payload.payload.primary_bill.billNumber,
+        actorId,
+        preCleanupSession: preCleanupSessionRows[0],
+        appStateVersionBefore: beforeAppState[0].version,
+        appStateHashBefore
+      };
+
+      checkoutSent = true;
+      const response = await command.submit(envelope);
+      const body = await readApiResponseBody(response);
+      expect(response.status()).toBe(200);
+      expect(body.bill_id).toBe(envelope.payload.payload.primary_bill.id);
+      expect(changedRowIds({ changedRows: body.changed_rows } as RpcEvidence, "sessions"))
+        .toEqual([guardedCleanupSessionId]);
+      const statusResponse = await page.request.post(
+        captured.url.replace("commit_checkout_bill_v2", "get_financial_mutation_result"),
+        {
+          headers,
+          data: {
+            payload: {
+              organization_id: envelope.payload.organization_id,
+              mutation_id: envelope.payload.mutation_id,
+              mutation_kind: envelope.payload.mutation_kind
+            }
+          }
+        }
+      );
+      expect(statusResponse.status()).toBe(200);
+      const mutationStatus = await statusResponse.json() as Record<string, unknown> | null;
+      expect(mutationStatus?.bill_id).toBe(envelope.payload.payload.primary_bill.id);
+      const billId = envelope.payload.payload.primary_bill.id;
+      const auditIds = envelope.payload.payload.audit_logs.map((audit) => audit.id);
+      const [sessionRows, billRows, paymentRows, eventRows, auditRows, afterAppState] = await Promise.all([
+        readRestRows<{ id: string; status: string; close_disposition: string; closed_bill_id: string | null }>(
+          page,
+          restBase,
+          restHeaders,
+          "sessions",
+          {
+            organization_id: "eq.org-primary",
+            id: `eq.${guardedCleanupSessionId}`,
+            select: "id,status,close_disposition,closed_bill_id"
+          }
+        ),
+        readRestRows<{ id: string; status: string; total: number; amount_paid: number; amount_due: number; issued_by_user_id: string }>(
+          page,
+          restBase,
+          restHeaders,
+          "bills",
+          {
+            organization_id: "eq.org-primary",
+            id: `eq.${billId}`,
+            select: "id,status,total,amount_paid,amount_due,issued_by_user_id"
+          }
+        ),
+        readRestRows<{ id: string; amount: number; received_by_user_id: string }>(page, restBase, restHeaders, "payments", {
+          organization_id: "eq.org-primary",
+          bill_id: `eq.${billId}`,
+          select: "id,amount,received_by_user_id"
+        }),
+        readRestRows<{ id: string; created_by: string }>(page, restBase, restHeaders, "operational_events", {
+          organization_id: "eq.org-primary",
+          "metadata->>mutation_id": `eq.${envelope.payload.mutation_id}`,
+          select: "id,created_by"
+        }),
+        readRestRows<{ id: string; user_id: string }>(page, restBase, restHeaders, "audit_logs", {
+          organization_id: "eq.org-primary",
+          id: `in.(${auditIds.join(",")})`,
+          select: "id,user_id"
+        }),
+        readRestRows<{ version: number; data: unknown }>(page, restBase, restHeaders, "app_state", {
+          id: "eq.primary",
+          select: "version,data"
+        })
+      ]);
+      expect(sessionRows).toEqual([{
+        id: guardedCleanupSessionId,
+        status: "closed",
+        close_disposition: "billed",
+        closed_bill_id: billId
+      }]);
+      expect(billRows).toHaveLength(1);
+      expect(billRows[0].status).toBe("issued");
+      expect(Number(billRows[0].total)).toBeGreaterThan(0);
+      expect(Number(billRows[0].amount_due)).toBe(0);
+      expect(Number(billRows[0].amount_paid)).toBe(Number(billRows[0].total));
+      expect(paymentRows).toHaveLength(1);
+      expect(Number(paymentRows[0].amount)).toBe(Number(billRows[0].amount_paid));
+      expect(eventRows).toHaveLength(1);
+      expect(auditRows).toHaveLength(auditIds.length);
+      expect(new Set([
+        billRows[0].issued_by_user_id,
+        paymentRows[0].received_by_user_id,
+        eventRows[0].created_by,
+        ...auditRows.map((audit) => audit.user_id)
+      ])).toEqual(new Set([actorId]));
+      expect(afterAppState).toHaveLength(1);
+      const appStateHashAfter = appStateDataHash(afterAppState[0].data);
+      expect(afterAppState[0].version).toBe(beforeAppState[0].version);
+      expect(appStateHashAfter).toBe(appStateHashBefore);
+      expect(command.wasSubmitted()).toBe(true);
+      expect(command.captureCount()).toBe(1);
+      checkoutResolved = true;
+      cleanupEvidence = {
+        ...cleanupEvidence,
+        responseStatus: response.status(),
+        responseBody: body,
+        mutationStatus,
+        session: sessionRows[0],
+        bill: billRows[0],
+        payment: paymentRows[0],
+        eventCount: eventRows.length,
+        auditCount: auditRows.length,
+        appStateVersionAfter: afterAppState[0].version,
+        appStateHashAfter
+      };
+
+      await page.waitForTimeout(750);
+      await page.unroute("**/rest/v1/rpc/commit_checkout_bill_v2");
+      await page.reload({ waitUntil: "domcontentloaded" });
+      await waitForSynced(page);
+      await expect(stationCard(page, guardedCleanupStation!)).toContainText("Available");
+      expect(pageErrors).toEqual({ consoleErrors: [], pageErrors: [] });
+    } catch (error) {
+      primaryError = error;
+      throw error;
+    } finally {
+      command?.cancel();
+      await page.unroute("**/rest/v1/rpc/commit_checkout_bill_v2").catch(() => undefined);
+      if (checkoutSent && !checkoutResolved) {
+        cleanupError = "Guarded hopped-session checkout was sent; reconcile its mutation ID before any cleanup or retry.";
+      }
+      await attachJson(testInfo, "release-b-guarded-hopped-cleanup-evidence", {
+        runId,
+        guardedCleanupSessionId,
+        guardedCleanupCustomer,
+        guardedCleanupStation,
+        checkoutSent,
+        checkoutResolved,
+        cleanupError,
+        pageErrors,
+        cleanupEvidence,
+        rpcEvidence
+      });
+      await attachFailureScreenshot(testInfo, page, "guarded-hopped-cleanup-failure");
       if (!primaryError && cleanupError) throw new Error(cleanupError);
     }
   });

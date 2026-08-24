@@ -162,6 +162,8 @@ describe("staging Playwright harness contract", () => {
     expect(scenario).toContain('test.describe.serial("Release B admin multi-hop checkout concurrency"');
     expect(scenario).toContain("await editAndHop(-12, -9, 1)");
     expect(scenario).toContain("await editAndHop(-8, -5, 2)");
+    expect(scenario).toContain('getByText("Station", { exact: true })');
+    expect(scenario).toContain('locator("xpath=ancestor::label")');
     expect(scenario).toContain("expect(new Set(chainSessionIds).size).toBe(3)");
     expect(scenario).toContain('interceptSingleRpcCommand(page, "**/rest/v1/rpc/commit_checkout_bill_v2")');
     expect(scenario).toContain('interceptSingleRpcCommand(observer.page, "**/rest/v1/rpc/commit_checkout_bill_v2")');
@@ -180,6 +182,23 @@ describe("staging Playwright harness contract", () => {
     expect(scenario).not.toContain("replay");
     expect(manifestGenerator).toContain('path === "tests/e2e/staging/release-b-multihop-concurrency-v2.e2e.ts"');
     expect(manifestGenerator).toContain('"bill_lines"');
+  });
+
+  it("retains an exact-identity single-send recovery for an abandoned staging hopped session", () => {
+    const scenario = read("tests/e2e/staging/release-b-multihop-concurrency-v2.e2e.ts");
+
+    expect(scenario).toContain('test("guardedly bills one exact abandoned hopped QA session"');
+    expect(scenario).toContain("E2E_GUARDED_HOPPED_SESSION_ID");
+    expect(scenario).toContain("E2E_GUARDED_HOPPED_CUSTOMER");
+    expect(scenario).toContain("E2E_GUARDED_HOPPED_STATION");
+    expect(scenario).toContain("expect(envelope.payload.entity_id).toBe(guardedCleanupSessionId)");
+    expect(scenario).toContain("expect(envelope.payload.payload.source_session_ids).toEqual([guardedCleanupSessionId])");
+    expect(scenario).toContain('close_disposition: "hopped"');
+    expect(scenario).toContain("station_name_snapshot: guardedCleanupStation");
+    expect(scenario).toContain("customer_name: guardedCleanupCustomer");
+    expect(scenario).toContain("const response = await command.submit(envelope)");
+    expect(scenario).toContain("expect(command.captureCount()).toBe(1)");
+    expect(scenario).toContain("reconcile its mutation ID before any cleanup or retry");
   });
 
   it("serializes both checkout versus rejection orderings with exact reconciliation", () => {
