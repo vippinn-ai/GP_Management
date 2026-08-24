@@ -155,6 +155,33 @@ describe("staging Playwright harness contract", () => {
     expect(scenario).toContain("expect(replayBody.event_id).toBe(bodies[winnerIndex].event_id)");
   });
 
+  it("locks a complete three-session hop chain against two single-send checkout commands", () => {
+    const scenario = read("tests/e2e/staging/release-b-multihop-concurrency-v2.e2e.ts");
+    const manifestGenerator = read("scripts/generate-checkout-review-manifest.mjs");
+
+    expect(scenario).toContain('test.describe.serial("Release B admin multi-hop checkout concurrency"');
+    expect(scenario).toContain("await editAndHop(-12, -9, 1)");
+    expect(scenario).toContain("await editAndHop(-8, -5, 2)");
+    expect(scenario).toContain("expect(new Set(chainSessionIds).size).toBe(3)");
+    expect(scenario).toContain('interceptSingleRpcCommand(page, "**/rest/v1/rpc/commit_checkout_bill_v2")');
+    expect(scenario).toContain('interceptSingleRpcCommand(observer.page, "**/rest/v1/rpc/commit_checkout_bill_v2")');
+    expect(scenario).toContain("originCommand.submit(envelopes[0])");
+    expect(scenario).toContain("observerCommand.submit(envelopes[1])");
+    expect(scenario).toContain('expect(rpcRejectionCode(bodies[loserIndex])).toBe("session_not_billable")');
+    expect(scenario).toContain("expect(mutationStatusBodies[loserIndex]).toBeNull()");
+    expect(scenario).toContain('changedRowIds({ changedRows: bodies[winnerIndex].changed_rows } as RpcEvidence, "sessions")');
+    expect(scenario).toContain("expect(sessionChargeRows).toHaveLength(3)");
+    expect(scenario).toContain("expect(appStateHashAfter).toBe(appStateHashBefore)");
+    expect(scenario).toContain("expect(originCommand.captureCount()).toBe(1)");
+    expect(scenario).toContain("expect(observerCommand.captureCount()).toBe(1)");
+    expect(scenario).toContain("expect(errorCaptures[winnerIndex].pageErrors).toEqual([])");
+    expect(scenario).toContain("expect(errorCaptures[loserIndex].pageErrors).toHaveLength(1)");
+    expect(scenario).toContain("if (hasCommittedHop || !rejected)");
+    expect(scenario).not.toContain("replay");
+    expect(manifestGenerator).toContain('path === "tests/e2e/staging/release-b-multihop-concurrency-v2.e2e.ts"');
+    expect(manifestGenerator).toContain('"bill_lines"');
+  });
+
   it("serializes both checkout versus rejection orderings with exact reconciliation", () => {
     const scenario = read("tests/e2e/staging/release-b-checkout-reject-race-v2.e2e.ts");
     const manifestGenerator = read("scripts/generate-checkout-review-manifest.mjs");

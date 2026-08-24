@@ -80,6 +80,7 @@ const collectionPatterns = [
   ["combos", /\bcombos\b|combo_/i],
   ["stock_movements", /stockMovements|stock_movements/i],
   ["bills", /\bbills\b|bill_id|billId/i],
+  ["bill_lines", /\bbill_lines\b|billLines|linked_session_id|linkedSessionId/i],
   ["payments", /\bpayments\b|payment_/i],
   ["audit_logs", /auditLogs|audit_logs/i],
   ["expenses", /\bexpenses\b|expense_/i],
@@ -102,7 +103,8 @@ function inferCollections(path, content) {
   }
   if ([
     "tests/e2e/staging/release-b-checkout-reject-race-v2.e2e.ts",
-    "tests/e2e/staging/release-b-checkout-hop-race-v2.e2e.ts"
+    "tests/e2e/staging/release-b-checkout-hop-race-v2.e2e.ts",
+    "tests/e2e/staging/release-b-multihop-concurrency-v2.e2e.ts"
   ].includes(path)) {
     names.add("customers");
   }
@@ -130,6 +132,16 @@ function inferRpcs(path, content) {
       "save_live_session_details",
       "commit_checkout_bill_v2",
       "hop_session",
+      "get_financial_mutation_result",
+      "current_user_org_role"
+    ].forEach((name) => names.add(name));
+  }
+  if (path === "tests/e2e/staging/release-b-multihop-concurrency-v2.e2e.ts") {
+    [
+      "start_session",
+      "save_live_session_details",
+      "hop_session",
+      "commit_checkout_bill_v2",
       "get_financial_mutation_result",
       "current_user_org_role"
     ].forEach((name) => names.add(name));
