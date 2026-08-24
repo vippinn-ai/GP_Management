@@ -126,10 +126,14 @@ describe("staging Playwright harness contract", () => {
     expect(generator).toContain('"savepoint qa_reject_rpc_proof;"');
     expect(generator).toContain('"rollback to savepoint qa_reject_rpc_proof;"');
     expect(generator).toContain('"release savepoint qa_reject_rpc_proof;"');
+    expect(generator).toContain('"begin;"');
+    expect(generator).toContain("commit;");
     expect(generator).toContain("qa_reject_rpc_fixture_ids_before");
     expect(generator).toContain("SAVEPOINT rollback left one or more proof fixtures behind");
     expect(generator).toContain("verified_in_savepoint_app_state_version_delta");
-    expect(generator).toContain("one SAVEPOINT, rollback, and release with no BEGIN, full ROLLBACK, or COMMIT");
+    expect(generator).toContain("const requiredOrder = [");
+    expect(generator).toContain("const hasRequiredOrder = requiredOrder.every(");
+    expect(generator).toContain("one correctly ordered outer BEGIN/COMMIT, one SAVEPOINT/ROLLBACK TO/RELEASE");
     expect(generator).toContain("contains COMMIT");
     expect(proof).toContain("QA_REJECT_RPC_PROOF_BODY");
     expect(proof).toContain("set local role authenticated");

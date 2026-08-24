@@ -207,6 +207,8 @@ drop table qa_reject_rpc_definition_before;
 drop table qa_reject_rpc_app_state_before;
 drop table qa_reject_rpc_fixture_ids_before;
 
+commit;
+
 select
   'passed' as proof_result,
   3 as verified_in_savepoint_app_state_version_delta,
@@ -221,6 +223,7 @@ const generated = [
   "-- Staging-only exact-definition proof. Every function and fixture change is rolled back to a savepoint.",
   ...definitions.map((entry) => `-- ${entry.relativePath} SHA-256 ${entry.sha256}`),
   `-- ${proofBodyPath} SHA-256 ${createHash("sha256").update(proofBody).digest("hex")}`,
+  "begin;",
   beforeSnapshot,
   "savepoint qa_reject_rpc_proof;",
   "set local lock_timeout = '3s';",
@@ -241,15 +244,33 @@ const generated = [
 const savepointCount = (generated.match(/^savepoint qa_reject_rpc_proof;$/gim) ?? []).length;
 const rollbackToCount = (generated.match(/^rollback to savepoint qa_reject_rpc_proof;$/gim) ?? []).length;
 const releaseCount = (generated.match(/^release savepoint qa_reject_rpc_proof;$/gim) ?? []).length;
+const beginCount = (generated.match(/^begin;$/gim) ?? []).length;
+const commitCount = (generated.match(/^commit;$/gim) ?? []).length;
+const fullRollbackCount = (generated.match(/^rollback;$/gim) ?? []).length;
+const normalizedGenerated = generated.replace(/\r\n/g, "\n");
+const requiredOrder = [
+  "\nbegin;\n",
+  "create temp table qa_reject_rpc_definition_before",
+  "\nsavepoint qa_reject_rpc_proof;\n",
+  "\nrollback to savepoint qa_reject_rpc_proof;\n",
+  "\nrelease savepoint qa_reject_rpc_proof;\n",
+  "drop table qa_reject_rpc_fixture_ids_before;",
+  "\ncommit;\n",
+  "3 as verified_in_savepoint_app_state_version_delta"
+].map((marker) => normalizedGenerated.indexOf(marker));
+const hasRequiredOrder = requiredOrder.every(
+  (position, index) => position >= 0 && (index === 0 || position > requiredOrder[index - 1])
+);
 if (
   savepointCount !== 1 ||
   rollbackToCount !== 1 ||
   releaseCount !== 1 ||
-  /^begin;$/im.test(generated) ||
-  /^rollback;$/im.test(generated) ||
-  /\bcommit\s*;/i.test(generated)
+  beginCount !== 1 ||
+  commitCount !== 1 ||
+  fullRollbackCount !== 0 ||
+  !hasRequiredOrder
 ) {
-  throw new Error("Generated proof must contain one SAVEPOINT, rollback, and release with no BEGIN, full ROLLBACK, or COMMIT.");
+  throw new Error("Generated proof must contain one correctly ordered outer BEGIN/COMMIT, one SAVEPOINT/ROLLBACK TO/RELEASE, post-rollback cleanup and assertions, and no full ROLLBACK.");
 }
 const outputDirectory = path.dirname(path.join(root, outputPath));
 fs.mkdirSync(outputDirectory, { recursive: true });
