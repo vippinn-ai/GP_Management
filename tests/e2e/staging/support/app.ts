@@ -1,4 +1,4 @@
-import { expect, type Browser, type BrowserContext, type Page, type TestInfo } from "@playwright/test";
+import { expect, type APIResponse, type Browser, type BrowserContext, type Page, type TestInfo } from "@playwright/test";
 import { writeFile } from "node:fs/promises";
 
 export interface StagingCredentials {
@@ -23,6 +23,12 @@ export interface RpcEvidence {
 export interface PageErrorCapture {
   consoleErrors: string[];
   pageErrors: string[];
+}
+
+export interface CapturedRpcRequest {
+  url: string;
+  headers: Record<string, string>;
+  body: unknown;
 }
 
 export function credentials(slot: "A" | "B"): StagingCredentials {
@@ -132,6 +138,104 @@ export function captureRpcEvidence(page: Page, pageName: RpcEvidence["page"], ta
       changedRows: body.changed_rows && typeof body.changed_rows === "object" ? body.changed_rows as Record<string, unknown> : undefined
     });
   });
+}
+
+export async function readApiResponseBody(response: APIResponse) {
+  const body = await response.text();
+  try {
+    return JSON.parse(body) as Record<string, unknown>;
+  } catch {
+    return { raw: body };
+  }
+}
+
+export function rpcRejectionCode(body: Record<string, unknown>) {
+  try {
+    return (JSON.parse(String(body.details)) as { code?: string }).code ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export function authenticatedJwtSubject(headers: Record<string, string>) {
+  const token = headers.authorization?.replace(/^Bearer\s+/i, "");
+  const payload = token?.split(".")[1];
+  if (!payload) throw new Error("The captured RPC request omitted its authenticated JWT.");
+  const decoded = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as { sub?: string };
+  if (!decoded.sub) throw new Error("The captured authenticated JWT omitted its subject.");
+  return decoded.sub;
+}
+
+export async function readRestRows<T>(
+  page: Page,
+  restBase: string,
+  headers: Record<string, string>,
+  table: string,
+  query: Record<string, string>
+) {
+  const params = new URLSearchParams(query);
+  const response = await page.request.get(`${restBase}/${table}?${params.toString()}`, { headers });
+  expect(response.status(), `${table} reconciliation status`).toBe(200);
+  return await response.json() as T[];
+}
+
+export async function interceptSingleRpcCommand(page: Page, pattern: string) {
+  let captureCount = 0;
+  let submitted = false;
+  let decided = false;
+  let resolveCaptured!: (value: CapturedRpcRequest) => void;
+  let resolveDecision!: (value: { action: "submit"; body: unknown } | { action: "cancel" }) => void;
+  let resolveResponse!: (value: APIResponse) => void;
+  let rejectResponse!: (reason: unknown) => void;
+  const captured = new Promise<CapturedRpcRequest>((resolve) => { resolveCaptured = resolve; });
+  const decision = new Promise<{ action: "submit"; body: unknown } | { action: "cancel" }>((resolve) => {
+    resolveDecision = resolve;
+  });
+  const response = new Promise<APIResponse>((resolve, reject) => {
+    resolveResponse = resolve;
+    rejectResponse = reject;
+  });
+
+  await page.route(pattern, async (route) => {
+    captureCount += 1;
+    if (captureCount > 1) {
+      await route.abort("blockedbyclient");
+      return;
+    }
+    const request = route.request();
+    resolveCaptured({ url: request.url(), headers: request.headers(), body: request.postDataJSON() });
+    const next = await decision;
+    if (next.action === "cancel") {
+      await route.abort("aborted");
+      return;
+    }
+    try {
+      const serverResponse = await route.fetch({ postData: JSON.stringify(next.body), timeout: 30_000 });
+      await route.fulfill({ response: serverResponse });
+      resolveResponse(serverResponse);
+    } catch (error) {
+      await route.abort("aborted").catch(() => undefined);
+      rejectResponse(error);
+    }
+  });
+
+  return {
+    captured,
+    submit(body: unknown) {
+      if (submitted || decided) throw new Error(`The intercepted ${pattern} command can only be submitted once.`);
+      submitted = true;
+      decided = true;
+      resolveDecision({ action: "submit", body });
+      return response;
+    },
+    cancel() {
+      if (decided) return;
+      decided = true;
+      resolveDecision({ action: "cancel" });
+    },
+    captureCount: () => captureCount,
+    wasSubmitted: () => submitted
+  };
 }
 
 export function changedRowIds(entry: RpcEvidence, collection: string) {

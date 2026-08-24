@@ -23,8 +23,9 @@ import {
 } from "./support/app";
 
 const runId = process.env.E2E_RUN_ID ?? "missing-run-id";
-const station = process.env.E2E_V2_REJECT_RACE_STATION?.trim() || "8 Ball Pool";
+const station = process.env.E2E_V2_HOP_RACE_STATION?.trim() || "Playstation";
 
+type Ordering = "checkout-first" | "hop-first" | "concurrent";
 type CheckoutEnvelope = {
   payload: {
     organization_id: string;
@@ -39,23 +40,26 @@ type CheckoutEnvelope = {
   };
 };
 
-function makeUniqueBillNumber(captured: CapturedRpcRequest, suffix: "C" | "D") {
+function makeUniqueBillNumber(captured: CapturedRpcRequest, ordering: Ordering) {
   const envelope = structuredClone(captured.body) as CheckoutEnvelope;
-  const number = `BILL-QA-REJECT-${runId}-${suffix}`;
+  const suffix = ordering === "checkout-first" ? "A" : ordering === "hop-first" ? "B" : "C";
+  const number = `BILL-QA-HOP-${runId}-${suffix}`;
   envelope.payload.payload.primary_bill.billNumber = number;
   const primaryUpdate = envelope.payload.payload.bill_updates.find(
     (bill) => bill.id === envelope.payload.payload.primary_bill.id
   );
-  if (!primaryUpdate) throw new Error("Captured reject-race checkout omitted its primary bill update.");
+  if (!primaryUpdate) throw new Error("Captured hop-race checkout omitted its primary bill update.");
   primaryUpdate.billNumber = number;
   return envelope;
 }
 
-test.describe.serial("Release B checkout versus rejection concurrency", () => {
-  for (const ordering of ["checkout-first", "reject-first"] as const) {
+test.describe.serial("Release B admin checkout versus game-hop concurrency", () => {
+  for (const ordering of ["checkout-first", "hop-first", "concurrent"] as const) {
     const title = ordering === "checkout-first"
-      ? "checkout commits before a stale rejection and remains the only financial result"
-      : "rejection commits before checkout and prevents every financial result";
+      ? "checkout commits before hop and stale hop is rejected"
+      : ordering === "hop-first"
+        ? "hop commits before checkout and the unbilled hop is consumed once"
+        : "simultaneous checkout and hop resolve to one bill without an orphan";
 
     test(title, async ({ browser, page }, testInfo) => {
       const observer = await createObserver(browser);
@@ -64,9 +68,15 @@ test.describe.serial("Release B checkout versus rejection concurrency", () => {
       const observerErrors = capturePageErrors(observer.page);
       captureRpcEvidence(page, "origin", rpcEvidence);
       captureRpcEvidence(observer.page, "observer", rpcEvidence);
-      const orderingLabel = ordering === "checkout-first" ? "Checkout First" : "Reject First";
-      const customerName = `QA Checkout Reject ${orderingLabel} ${runId}`;
-      const rejectReason = `Playwright ${orderingLabel} reject race ${runId}`;
+      const orderingLabel = ordering === "checkout-first"
+        ? "Checkout First"
+        : ordering === "hop-first" ? "Hop First" : "Concurrent";
+      const customerName = `QA Checkout Hop ${orderingLabel} ${runId}`;
+      const observerDialogs: string[] = [];
+      const dismissObserverDialog = (dialog: { message(): string; dismiss(): Promise<void> }) => {
+        observerDialogs.push(dialog.message());
+        void dialog.dismiss();
+      };
       let sessionStarted = false;
       let raceStarted = false;
       let raceResolved = false;
@@ -75,13 +85,12 @@ test.describe.serial("Release B checkout versus rejection concurrency", () => {
       let cleanupError: string | undefined;
       let raceEvidence: Record<string, unknown> | undefined;
       let checkoutCommand: Awaited<ReturnType<typeof interceptSingleRpcCommand>> | undefined;
-      let rejectCommand: Awaited<ReturnType<typeof interceptSingleRpcCommand>> | undefined;
-      const dismissOriginDialog = (dialog: { dismiss(): Promise<void> }) => void dialog.dismiss();
+      let hopCommand: Awaited<ReturnType<typeof interceptSingleRpcCommand>> | undefined;
 
       try {
         await Promise.all([signIn(page, credentials("A")), signIn(observer.page, credentials("B"))]);
         await Promise.all([page.waitForTimeout(1_200), observer.page.waitForTimeout(1_200)]);
-        expect(await stationCard(page, station).innerText(), "The checkout/reject race station is occupied.").toContain("Available");
+        expect(await stationCard(page, station).innerText(), "The checkout/hop race station is occupied.").toContain("Available");
         await startSession(page, station, customerName);
         sessionStarted = true;
 
@@ -95,117 +104,161 @@ test.describe.serial("Release B checkout versus rejection concurrency", () => {
         await expect(stationCard(observer.page, station)).toContainText(customerName);
 
         await originSession.getByRole("button", { name: "Proceed to Checkout", exact: true }).click();
-        checkoutCommand = await interceptSingleRpcCommand(page, "**/rest/v1/rpc/commit_checkout_bill_v2");
-        page.on("dialog", dismissOriginDialog);
         const checkout = page.getByRole("dialog", { name: "Close Session Bill", exact: true });
-        await checkout.getByLabel("Session End Time", { exact: true }).fill(await browserDateTimeLocal(page, -1));
+        const checkoutEndAt = await browserDateTimeLocal(page, -1);
+        const hopEndAt = await browserDateTimeLocal(page, -2);
+        await checkout.getByLabel("Session End Time", { exact: true }).fill(checkoutEndAt);
         await expect(checkout.getByRole("button", { name: "Issue Bill", exact: true })).toBeEnabled();
-        await checkout.getByRole("button", { name: "Issue Bill", exact: true }).click();
-        const capturedCheckout = await checkoutCommand.captured;
-        const checkoutEnvelope = makeUniqueBillNumber(capturedCheckout, ordering === "checkout-first" ? "C" : "D");
 
         const observerSession = await openManagedSession(observer.page, station);
-        await observerSession.getByRole("button", { name: "Edit Customer Details", exact: true }).click();
-        const observerCustomer = observerSession.getByLabel("Customer Name", { exact: true });
-        await expect(observerCustomer).toHaveValue(customerName);
-        await observerCustomer.locator("xpath=ancestor::form")
-          .getByRole("button", { name: "Cancel", exact: true }).click();
-        rejectCommand = await interceptSingleRpcCommand(observer.page, "**/rest/v1/rpc/reject_session");
-        observer.page.once("dialog", (dialog) => dialog.accept(rejectReason));
-        await observerSession.getByRole("button", { name: "Reject Session", exact: true }).click();
-        const capturedReject = await rejectCommand.captured;
-        expect(checkoutCommand.captureCount()).toBe(1);
-        expect(rejectCommand.captureCount()).toBe(1);
+        await observerSession.getByRole("button", { name: "Proceed to Checkout", exact: true }).click();
+        const hopCheckout = observer.page.getByRole("dialog", { name: "Close Session Bill", exact: true });
+        await hopCheckout.getByLabel("Session End Time", { exact: true }).fill(hopEndAt);
+        await hopCheckout.getByLabel(/Game hop - close station without billing/).check();
+        await expect(hopCheckout.getByRole("button", { name: "Confirm Game Hop", exact: true })).toBeEnabled();
 
+        checkoutCommand = await interceptSingleRpcCommand(page, "**/rest/v1/rpc/commit_checkout_bill_v2");
+        hopCommand = await interceptSingleRpcCommand(observer.page, "**/rest/v1/rpc/hop_session");
+        observer.page.on("dialog", dismissObserverDialog);
+        await Promise.all([
+          checkout.getByRole("button", { name: "Issue Bill", exact: true }).click(),
+          hopCheckout.getByRole("button", { name: "Confirm Game Hop", exact: true }).click()
+        ]);
+        const [capturedCheckout, capturedHop] = await Promise.all([
+          checkoutCommand.captured,
+          hopCommand.captured
+        ]);
+        expect(checkoutCommand.captureCount()).toBe(1);
+        expect(hopCommand.captureCount()).toBe(1);
+
+        const checkoutEnvelope = makeUniqueBillNumber(capturedCheckout, ordering);
+        const checkoutIdentity = checkoutEnvelope;
+        const hopIdentity = capturedHop.body as {
+          payload: {
+            organization_id: string;
+            mutation_id: string;
+            payload: { session: { id: string }; auditLog: { id: string } };
+          };
+        };
+        sessionId = checkoutIdentity.payload.payload.source_session_ids[0];
+        expect(sessionId).toBeTruthy();
+        expect(hopIdentity.payload.payload.session.id).toBe(sessionId);
+        const billId = checkoutIdentity.payload.payload.primary_bill.id;
+        const checkoutMutationId = checkoutIdentity.payload.mutation_id;
+        const hopMutationId = hopIdentity.payload.mutation_id;
+        const checkoutAuditIds = checkoutIdentity.payload.payload.audit_logs.map((audit) => audit.id);
+        const hopAuditId = hopIdentity.payload.payload.auditLog.id;
+        expect(checkoutAuditIds.length).toBeGreaterThan(0);
+        const checkoutActorId = authenticatedJwtSubject(capturedCheckout.headers);
+        const hopActorId = authenticatedJwtSubject(capturedHop.headers);
         const checkoutHeaders = {
           apikey: capturedCheckout.headers.apikey,
           authorization: capturedCheckout.headers.authorization,
           "content-type": "application/json",
           prefer: capturedCheckout.headers.prefer || "return=representation"
         };
-        const rejectHeaders = {
-          apikey: capturedReject.headers.apikey,
-          authorization: capturedReject.headers.authorization,
+        const hopHeaders = {
+          apikey: capturedHop.headers.apikey,
+          authorization: capturedHop.headers.authorization,
           "content-type": "application/json",
-          prefer: capturedReject.headers.prefer || "return=representation"
+          prefer: capturedHop.headers.prefer || "return=representation"
         };
-        const checkoutIdentity = checkoutEnvelope;
-        const rejectIdentity = capturedReject.body as {
-          payload: {
-            organization_id: string;
-            mutation_id: string;
-            payload: {
-              session: { id: string };
-              auditLog: { id: string };
-            };
-          };
-        };
-        sessionId = checkoutIdentity.payload.payload.source_session_ids[0];
-        expect(sessionId).toBeTruthy();
-        expect(rejectIdentity.payload.payload.session.id).toBe(sessionId);
-        const billId = checkoutIdentity.payload.payload.primary_bill.id;
-        const checkoutMutationId = checkoutIdentity.payload.mutation_id;
-        const rejectMutationId = rejectIdentity.payload.mutation_id;
-        const rejectAuditId = rejectIdentity.payload.payload.auditLog.id;
-        const checkoutAuditIds = checkoutIdentity.payload.payload.audit_logs.map((audit) => audit.id);
-        expect(checkoutAuditIds.length).toBeGreaterThan(0);
-        const checkoutActorId = authenticatedJwtSubject(capturedCheckout.headers);
-        const rejectActorId = authenticatedJwtSubject(capturedReject.headers);
         const restBase = capturedCheckout.url.replace(/\/rpc\/[^/]+$/, "");
         const restHeaders = { apikey: checkoutHeaders.apikey, authorization: checkoutHeaders.authorization };
+        const checkoutActorProfiles = await readRestRows<{ id: string; role: string; active: boolean }>(
+          page,
+          restBase,
+          restHeaders,
+          "profiles",
+          { id: `eq.${checkoutActorId}`, select: "id,role,active" }
+        );
+        expect(checkoutActorProfiles).toHaveLength(1);
+        expect(checkoutActorProfiles[0]).toMatchObject({ id: checkoutActorId, role: "admin", active: true });
+        const [checkoutOrgRoleResponse, hopOrgRoleResponse] = await Promise.all([
+          page.request.post(`${restBase}/rpc/current_user_org_role`, {
+            headers: checkoutHeaders,
+            data: { target_organization_id: checkoutIdentity.payload.organization_id }
+          }),
+          observer.page.request.post(`${restBase}/rpc/current_user_org_role`, {
+            headers: hopHeaders,
+            data: { target_organization_id: hopIdentity.payload.organization_id }
+          })
+        ]);
+        expect(checkoutOrgRoleResponse.status()).toBe(200);
+        expect(hopOrgRoleResponse.status()).toBe(200);
+        const [checkoutOrgRole, hopOrgRole] = await Promise.all([
+          checkoutOrgRoleResponse.json() as Promise<string | null>,
+          hopOrgRoleResponse.json() as Promise<string | null>
+        ]);
+        expect(checkoutOrgRole).toBe("admin");
+        expect(hopOrgRole).toBe("admin");
         raceEvidence = {
           ordering,
           customerName,
           sessionId,
           billId,
           checkoutMutationId,
-          rejectMutationId,
-          rejectAuditId,
+          hopMutationId,
           checkoutAuditIds,
-          expectedWinnerActorId: ordering === "checkout-first" ? checkoutActorId : rejectActorId,
+          hopAuditId,
+          expectedCheckoutActorId: checkoutActorId,
+          expectedHopActorId: hopActorId,
+          checkoutActorRole: checkoutActorProfiles[0].role,
+          authoritativeCheckoutOrgRole: checkoutOrgRole,
+          authoritativeHopOrgRole: hopOrgRole,
+          checkoutEndAt,
+          hopEndAt,
           captureCountsBeforeSend: {
             checkout: checkoutCommand.captureCount(),
-            reject: rejectCommand.captureCount()
+            hop: hopCommand.captureCount()
           }
         };
-        const beforeAppState = await readRestRows<{ version: number; updated_at: string; updated_by: string }>(
+        const beforeAppState = await readRestRows<{ version: number }>(
           page,
           restBase,
           restHeaders,
           "app_state",
-          { id: "eq.primary", select: "version,updated_at,updated_by" }
+          { id: "eq.primary", select: "version" }
         );
         expect(beforeAppState).toHaveLength(1);
         raceEvidence.appStateVersionBefore = beforeAppState[0].version;
+
         raceStarted = true;
         let checkoutResponse: APIResponse;
-        let rejectResponse: APIResponse;
+        let hopResponse: APIResponse;
         if (ordering === "checkout-first") {
           checkoutResponse = await checkoutCommand.submit(checkoutEnvelope);
-          rejectResponse = await rejectCommand.submit(capturedReject.body);
-        } else {
-          rejectResponse = await rejectCommand.submit(capturedReject.body);
+          hopResponse = await hopCommand.submit(capturedHop.body);
+        } else if (ordering === "hop-first") {
+          hopResponse = await hopCommand.submit(capturedHop.body);
+          await expect(observer.page.getByRole("dialog", { name: "Continue Customer", exact: true })).toBeVisible();
           checkoutResponse = await checkoutCommand.submit(checkoutEnvelope);
+        } else {
+          [checkoutResponse, hopResponse] = await Promise.all([
+            checkoutCommand.submit(checkoutEnvelope),
+            hopCommand.submit(capturedHop.body)
+          ]);
         }
-
-        const [checkoutBody, rejectBody] = await Promise.all([
+        const [checkoutBody, hopBody] = await Promise.all([
           readApiResponseBody(checkoutResponse),
-          readApiResponseBody(rejectResponse)
+          readApiResponseBody(hopResponse)
         ]);
+        expect(checkoutResponse.status()).toBe(200);
         if (ordering === "checkout-first") {
-          expect(checkoutResponse.status()).toBe(200);
-          expect(rejectResponse.status()).toBe(400);
-          expect(rpcRejectionCode(rejectBody)).toBe("session_not_open");
+          expect(hopResponse.status()).toBe(400);
+          expect(rpcRejectionCode(hopBody)).toBe("session_not_open");
+        } else if (ordering === "hop-first") {
+          expect(hopResponse.status()).toBe(200);
         } else {
-          expect(rejectResponse.status()).toBe(200);
-          expect(checkoutResponse.status()).toBe(400);
-          expect(rpcRejectionCode(checkoutBody)).toBe("session_not_billable");
+          expect([200, 400]).toContain(hopResponse.status());
+          if (hopResponse.status() === 400) expect(rpcRejectionCode(hopBody)).toBe("session_not_open");
         }
-
+        const hopCommitted = hopResponse.status() === 200;
         raceEvidence.checkoutStatus = checkoutResponse.status();
-        raceEvidence.rejectStatus = rejectResponse.status();
+        raceEvidence.hopStatus = hopResponse.status();
+        raceEvidence.hopCommitted = hopCommitted;
         raceEvidence.checkoutBody = checkoutBody;
-        raceEvidence.rejectBody = rejectBody;
+        raceEvidence.hopBody = hopBody;
 
         const mutationStatusResponse = await page.request.post(
           capturedCheckout.url.replace("commit_checkout_bill_v2", "get_financial_mutation_result"),
@@ -227,9 +280,9 @@ test.describe.serial("Release B checkout versus rejection concurrency", () => {
           billRows,
           paymentRows,
           checkoutEventRows,
-          rejectEventRows,
+          hopEventRows,
           checkoutAuditRows,
-          rejectAuditRows,
+          hopAuditRows,
           afterAppState
         ] = await Promise.all([
           readRestRows<{
@@ -267,7 +320,7 @@ test.describe.serial("Release B checkout versus rejection concurrency", () => {
           }),
           readRestRows<{ id: string; created_by: string }>(page, restBase, restHeaders, "operational_events", {
             organization_id: "eq.org-primary",
-            "metadata->>mutation_id": `eq.${rejectMutationId}`,
+            "metadata->>mutation_id": `eq.${hopMutationId}`,
             select: "id,created_by"
           }),
           readRestRows<{ id: string; action: string; user_id: string }>(page, restBase, restHeaders, "audit_logs", {
@@ -277,119 +330,123 @@ test.describe.serial("Release B checkout versus rejection concurrency", () => {
           }),
           readRestRows<{ id: string; action: string; user_id: string }>(page, restBase, restHeaders, "audit_logs", {
             organization_id: "eq.org-primary",
-            id: `eq.${rejectAuditId}`,
+            id: `eq.${hopAuditId}`,
             select: "id,action,user_id"
           }),
-          readRestRows<{ version: number; updated_at: string; updated_by: string }>(page, restBase, restHeaders, "app_state", {
+          readRestRows<{ version: number }>(page, restBase, restHeaders, "app_state", {
             id: "eq.primary",
-            select: "version,updated_at,updated_by"
+            select: "version"
           })
         ]);
+
         expect(sessionRows).toHaveLength(1);
+        expect(sessionRows[0]).toMatchObject({
+          status: "closed",
+          close_disposition: "billed",
+          close_reason: null,
+          closed_bill_id: billId
+        });
+        expect(billRows).toHaveLength(1);
+        expect(paymentRows).toHaveLength(1);
+        expect(checkoutEventRows).toHaveLength(1);
+        expect(checkoutAuditRows).toHaveLength(checkoutAuditIds.length);
+        expect(mutationStatus?.bill_id).toBe(billId);
+        expect(billRows[0].status).toBe("issued");
+        expect(Number(billRows[0].total)).toBeGreaterThan(0);
+        expect(Number(billRows[0].amount_due)).toBe(0);
+        expect(Number(billRows[0].amount_paid)).toBe(Number(billRows[0].total));
+        expect(paymentRows.reduce((sum, payment) => sum + Number(payment.amount), 0))
+          .toBe(Number(billRows[0].amount_paid));
+        const checkoutActorIds = new Set([
+          billRows[0].issued_by_user_id,
+          paymentRows[0].received_by_user_id,
+          checkoutEventRows[0].created_by,
+          ...checkoutAuditRows.map((audit) => audit.user_id)
+        ]);
+        expect([...checkoutActorIds]).toEqual([checkoutActorId]);
         expect(afterAppState).toHaveLength(1);
-        expect(sessionRows[0].status).toBe("closed");
-        const actorIds = new Set<string>();
-        if (ordering === "checkout-first") {
-          expect(sessionRows[0].close_disposition).toBe("billed");
-          expect(sessionRows[0].closed_bill_id).toBe(billId);
-          expect(billRows).toHaveLength(1);
-          expect(paymentRows).toHaveLength(1);
-          expect(checkoutEventRows).toHaveLength(1);
-          expect(rejectEventRows).toHaveLength(0);
-          expect(checkoutAuditRows).toHaveLength(checkoutAuditIds.length);
-          expect(rejectAuditRows).toHaveLength(0);
-          expect(mutationStatus?.bill_id).toBe(billId);
-          expect(afterAppState[0].version).toBe(beforeAppState[0].version);
-          expect(billRows[0].status).toBe("issued");
-          expect(Number(billRows[0].total)).toBeGreaterThan(0);
-          expect(Number(billRows[0].amount_due)).toBe(0);
-          expect(Number(billRows[0].amount_paid)).toBe(Number(billRows[0].total));
-          expect(paymentRows.reduce((sum, payment) => sum + Number(payment.amount), 0))
-            .toBe(Number(billRows[0].amount_paid));
-          actorIds.add(billRows[0].issued_by_user_id);
-          actorIds.add(paymentRows[0].received_by_user_id);
-          actorIds.add(checkoutEventRows[0].created_by);
-          checkoutAuditRows.forEach((audit) => actorIds.add(audit.user_id));
-        } else {
-          expect(sessionRows[0].close_disposition).toBe("rejected");
-          expect(sessionRows[0].closed_bill_id).toBeNull();
-          expect(sessionRows[0].close_reason).toBe(rejectReason);
-          expect(billRows).toHaveLength(0);
-          expect(paymentRows).toHaveLength(0);
-          expect(checkoutEventRows).toHaveLength(0);
-          expect(rejectEventRows).toHaveLength(1);
-          expect(checkoutAuditRows).toHaveLength(0);
-          expect(rejectAuditRows).toHaveLength(1);
-          expect(rejectAuditRows[0].action).toBe("session_rejected");
-          expect(mutationStatus).toBeNull();
+        if (hopCommitted) {
+          expect(hopEventRows).toHaveLength(1);
+          expect(hopAuditRows).toHaveLength(1);
+          expect(hopAuditRows[0].action).toBe("session_hopped");
+          expect(new Set([hopEventRows[0].created_by, hopAuditRows[0].user_id]))
+            .toEqual(new Set([hopActorId]));
           expect(afterAppState[0].version).toBe(beforeAppState[0].version + 1);
-          actorIds.add(rejectEventRows[0].created_by);
-          actorIds.add(rejectAuditRows[0].user_id);
+        } else {
+          expect(hopEventRows).toHaveLength(0);
+          expect(hopAuditRows).toHaveLength(0);
+          expect(afterAppState[0].version).toBe(beforeAppState[0].version);
         }
-        const expectedWinnerActorId = ordering === "checkout-first" ? checkoutActorId : rejectActorId;
-        expect([...actorIds]).toEqual([expectedWinnerActorId]);
         raceEvidence.databaseEvidence = {
           session: sessionRows[0],
-          billCount: billRows.length,
+          bill: billRows[0],
           paymentCount: paymentRows.length,
           checkoutEventCount: checkoutEventRows.length,
-          rejectEventCount: rejectEventRows.length,
+          hopEventCount: hopEventRows.length,
           checkoutAuditCount: checkoutAuditRows.length,
-          rejectAuditCount: rejectAuditRows.length,
+          hopAuditCount: hopAuditRows.length,
           mutationStatus,
           appStateVersionBefore: beforeAppState[0].version,
           appStateVersionAfter: afterAppState[0].version,
-          actorIds: [...actorIds],
-          expectedWinnerActorId
+          checkoutActorIds: [...checkoutActorIds],
+          expectedCheckoutActorId: checkoutActorId,
+          expectedHopActorId: hopActorId
         };
         raceResolved = true;
 
+        if (hopCommitted) {
+          await expect(observer.page.getByRole("dialog", { name: "Continue Customer", exact: true }))
+            .toHaveCount(0, { timeout: 10_000 });
+          raceEvidence.staleContinuationClosedBeforeReload = true;
+        }
+
         await Promise.all([page.waitForTimeout(750), observer.page.waitForTimeout(750)]);
         expect(checkoutCommand.wasSubmitted()).toBe(true);
-        expect(rejectCommand.wasSubmitted()).toBe(true);
+        expect(hopCommand.wasSubmitted()).toBe(true);
         expect(checkoutCommand.captureCount()).toBe(1);
-        expect(rejectCommand.captureCount()).toBe(1);
+        expect(hopCommand.captureCount()).toBe(1);
         raceEvidence.finalCaptureCounts = {
           checkout: checkoutCommand.captureCount(),
-          reject: rejectCommand.captureCount()
+          hop: hopCommand.captureCount()
         };
-        page.off("dialog", dismissOriginDialog);
+        const losingHopAlert = "The game hop was not completed. Latest data has been refreshed; review the session and try again.";
+        if (hopCommitted) {
+          expect(observerDialogs).not.toContain(losingHopAlert);
+        } else {
+          await expect.poll(() => observerDialogs.join("\n"), { timeout: 5_000 })
+            .toContain(losingHopAlert);
+          raceEvidence.losingHopAlert = observerDialogs;
+        }
+        observer.page.off("dialog", dismissObserverDialog);
         await page.unroute("**/rest/v1/rpc/commit_checkout_bill_v2");
-        await observer.page.unroute("**/rest/v1/rpc/reject_session");
+        await observer.page.unroute("**/rest/v1/rpc/hop_session");
         await Promise.all([
           page.reload({ waitUntil: "domcontentloaded" }),
           observer.page.reload({ waitUntil: "domcontentloaded" })
         ]);
-        if (ordering === "checkout-first") {
+        if (hopCommitted) {
+          await Promise.all([waitForSynced(page), waitForSynced(observer.page)]);
+        } else {
           await waitForSynced(page);
           await expect(observer.page.getByText("1 conflict", { exact: true })).toBeVisible();
           await expect(observer.page.getByText("Pending sync.", { exact: false })).toHaveCount(0);
           raceEvidence.loserConflictVisible = true;
           await observer.page.getByRole("button", { name: "Clear", exact: true }).click();
           await waitForSynced(observer.page);
-        } else {
-          await Promise.all([waitForSynced(page), waitForSynced(observer.page)]);
         }
         await expect(stationCard(page, station)).toContainText("Available");
         await expect(stationCard(observer.page, station)).toContainText("Available");
-        expect(originErrors.consoleErrors).toEqual([]);
-        expect(observerErrors.consoleErrors).toEqual([]);
-        expect(observerErrors.pageErrors).toEqual([]);
-        if (ordering === "checkout-first") {
-          expect(originErrors.pageErrors).toEqual([]);
-        } else {
-          expect(originErrors.pageErrors).toHaveLength(1);
-          expect(originErrors.pageErrors[0]).toMatch(/The primary session is no longer billable\.?/i);
-        }
+        expect(originErrors).toEqual({ consoleErrors: [], pageErrors: [] });
+        expect(observerErrors).toEqual({ consoleErrors: [], pageErrors: [] });
       } catch (error) {
         primaryError = error;
         throw error;
       } finally {
-        page.off("dialog", dismissOriginDialog);
+        observer.page.off("dialog", dismissObserverDialog);
         checkoutCommand?.cancel();
-        rejectCommand?.cancel();
+        hopCommand?.cancel();
         await page.unroute("**/rest/v1/rpc/commit_checkout_bill_v2").catch(() => undefined);
-        await observer.page.unroute("**/rest/v1/rpc/reject_session").catch(() => undefined);
+        await observer.page.unroute("**/rest/v1/rpc/hop_session").catch(() => undefined);
         sessionStarted = sessionStarted || rpcEvidence.some(
           (entry) => entry.rpc === "start_session" && entry.status < 300
         );
@@ -405,31 +462,31 @@ test.describe.serial("Release B checkout versus rejection concurrency", () => {
                 else break;
               }
             }
-            await rejectSessionIfOpen(page, station, customerName, `Playwright pre-race cleanup ${runId}`);
+            await rejectSessionIfOpen(page, station, customerName, `Playwright pre-race hop cleanup ${runId}`);
           } catch (error) {
-            cleanupError = error instanceof Error ? error.message : "Unknown checkout/reject pre-race cleanup failure";
+            cleanupError = error instanceof Error ? error.message : "Unknown checkout/hop pre-race cleanup failure";
           }
         } else if (raceStarted && !raceResolved) {
-          cleanupError = "Checkout/reject commands were sent; reconcile their mutation IDs before any cleanup or retry.";
+          cleanupError = "Checkout/hop commands were sent; reconcile their mutation IDs before any cleanup or retry.";
         }
-        await attachJson(testInfo, `release-b-checkout-reject-${ordering}-evidence`, {
+        await attachJson(testInfo, `release-b-checkout-hop-${ordering}-evidence`, {
           runId,
           ordering,
           station,
           customerName,
-          rejectReason,
           sessionStarted,
           raceStarted,
           raceResolved,
           sessionId,
           cleanupError,
+          observerDialogs,
           originErrors,
           observerErrors,
           raceEvidence,
           rpcEvidence
         });
-        await attachFailureScreenshot(testInfo, page, `checkout-reject-${ordering}-origin-failure`);
-        await attachFailureScreenshot(testInfo, observer.page, `checkout-reject-${ordering}-observer-failure`);
+        await attachFailureScreenshot(testInfo, page, `checkout-hop-${ordering}-origin-failure`);
+        await attachFailureScreenshot(testInfo, observer.page, `checkout-hop-${ordering}-observer-failure`);
         await observer.context.close();
         if (!primaryError && cleanupError) throw new Error(cleanupError);
       }

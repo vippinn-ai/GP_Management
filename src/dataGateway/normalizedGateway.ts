@@ -43,10 +43,11 @@ const NORMALIZED_BOOTSTRAP_MAX_STOCK_MOVEMENTS = 5_000;
 const NORMALIZED_BOOTSTRAP_RECENT_AUDIT_LOGS = 20;
 
 function mergeLiveSessions(baseSessions: Session[], normalizedSessions: Session[]): Session[] {
-  const closedBaseSessionIds = new Set(
-    baseSessions.filter((session) => session.status === "closed").map((session) => session.id)
-  );
-  const effectiveNormalizedSessions = normalizedSessions.filter((session) => !closedBaseSessionIds.has(session.id));
+  const baseSessionsById = new Map(baseSessions.map((session) => [session.id, session]));
+  const effectiveNormalizedSessions = normalizedSessions.filter((session) => {
+    const existing = baseSessionsById.get(session.id);
+    return !(existing?.status === "closed" && session.status !== "closed");
+  });
   const normalizedSessionIds = new Set(effectiveNormalizedSessions.map((session) => session.id));
   const normalizedStationIds = new Set(effectiveNormalizedSessions.map((session) => session.stationId).filter(Boolean));
   const retainedBaseSessions = baseSessions.filter((session) => {

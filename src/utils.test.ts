@@ -13,6 +13,7 @@ import {
   findExactCustomerProfileMatch,
   getCustomerTabContinuationCandidates,
   getMostRecentHoppedSession,
+  isHoppedSessionContinuationRecoverable,
   getUnbilledHoppedSessionsForCustomer,
   formatBillNumber,
   getReportRange,
@@ -1362,6 +1363,30 @@ function makeHoppedSession(id: string, customerName: string, customerPhone: stri
     closedBillId
   } as unknown as Session;
 }
+
+describe("isHoppedSessionContinuationRecoverable", () => {
+  it("keeps only an unbilled, unconsumed hopped source recoverable", () => {
+    const source = makeHoppedSession("hop-source", "Alice", "9876543210");
+
+    expect(isHoppedSessionContinuationRecoverable([source], [], source.id)).toBe(true);
+    expect(isHoppedSessionContinuationRecoverable(
+      [{ ...source, closedBillId: "bill-1", closeDisposition: "billed" }],
+      [],
+      source.id
+    )).toBe(false);
+    expect(isHoppedSessionContinuationRecoverable(
+      [source, { ...makeHoppedSession("next", "Alice", "9876543210"), continuedFromSessionIds: [source.id] }],
+      [],
+      source.id
+    )).toBe(false);
+    expect(isHoppedSessionContinuationRecoverable(
+      [source],
+      [{ id: "tab-1", customerName: "Alice", status: "open", createdAt: source.endedAt!, items: [], continuedFromSessionIds: [source.id] }],
+      source.id
+    )).toBe(false);
+    expect(isHoppedSessionContinuationRecoverable([], [], source.id)).toBe(false);
+  });
+});
 
 describe("getUnbilledHoppedSessionsForCustomer", () => {
   it("returns sessions matched by phone number", () => {

@@ -184,6 +184,7 @@ import {
   getPendingReceivableGroups,
   buildInventoryReportModel,
   getUnbilledHoppedSessionsForCustomer,
+  isHoppedSessionContinuationRecoverable,
   normalizeCustomerName,
   normalizeCustomerPhone,
   parseDateTimeInputValue,
@@ -243,6 +244,20 @@ interface PostHopTabLinkDraft {
   continuedFromSessionIds: string[];
   candidateTabIds: string[];
   selectedTabId: string;
+}
+
+function createBlankStartSessionDraft(): StartSessionDraft {
+  return {
+    stationId: "",
+    customerId: undefined,
+    customerName: "",
+    customerPhone: "",
+    playMode: "group",
+    arcadeItemId: "",
+    arcadeQuantity: 1,
+    comboId: "",
+    comboChoices: {}
+  };
 }
 
 interface NormalizedBillRegisterState {
@@ -917,6 +932,24 @@ export default function App() {
     }));
     setShowStartSessionModal(true);
   }, [appData.customerTabs, appData.sessions, checkoutState, isHopMode]);
+
+  useEffect(() => {
+    if (
+      !lastHoppedSessionId ||
+      isHoppedSessionContinuationRecoverable(appData.sessions, appData.customerTabs, lastHoppedSessionId)
+    ) {
+      return;
+    }
+    const reconciliationTimer = window.setTimeout(() => {
+      setShowStartSessionModal(false);
+      setLastHoppedSessionId(null);
+      setPostHopContinuationMode("gaming");
+      setPostHopCustomerLocked(true);
+      setPostHopTabLinkDraft(null);
+      setStartSessionDraft(createBlankStartSessionDraft());
+    }, 0);
+    return () => window.clearTimeout(reconciliationTimer);
+  }, [appData.customerTabs, appData.sessions, lastHoppedSessionId]);
 
   useEffect(() => {
     const attentionMutations = pendingOperationalMutations.filter(
@@ -2822,15 +2855,9 @@ export default function App() {
 
   function createStartSessionDraft(station?: Station | null): StartSessionDraft {
     return {
+      ...createBlankStartSessionDraft(),
       stationId: station?.id ?? "",
-      customerId: undefined,
-      customerName: "",
-      customerPhone: "",
-      playMode: "group",
       arcadeItemId: station?.mode === "unit_sale" ? defaultArcadeInventoryItem?.id ?? "" : "",
-      arcadeQuantity: 1,
-      comboId: "",
-      comboChoices: {}
     };
   }
 

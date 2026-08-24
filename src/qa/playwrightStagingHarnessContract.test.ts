@@ -162,8 +162,8 @@ describe("staging Playwright harness contract", () => {
     expect(scenario).toContain('for (const ordering of ["checkout-first", "reject-first"] as const)');
     expect(scenario).toContain("checkoutResponse = await checkoutCommand.submit(checkoutEnvelope)");
     expect(scenario).toContain("rejectResponse = await rejectCommand.submit(capturedReject.body)");
-    expect(scenario).toContain('expect(rejectionCode(rejectBody)).toBe("session_not_open")');
-    expect(scenario).toContain('expect(rejectionCode(checkoutBody)).toBe("session_not_billable")');
+    expect(scenario).toContain('expect(rpcRejectionCode(rejectBody)).toBe("session_not_open")');
+    expect(scenario).toContain('expect(rpcRejectionCode(checkoutBody)).toBe("session_not_billable")');
     expect(scenario).toContain('capturedCheckout.url.replace("commit_checkout_bill_v2", "get_financial_mutation_result")');
     expect(scenario).toContain("expect(mutationStatus).toBeNull()");
     expect(scenario).toContain("expect(afterAppState[0].version).toBe(beforeAppState[0].version)");
@@ -188,6 +188,44 @@ describe("staging Playwright harness contract", () => {
     expect(manifestGenerator).toContain('"commit_checkout_bill_v2"');
     expect(manifestGenerator).toContain('"reject_session"');
     expect(manifestGenerator).toContain('"get_financial_mutation_result"');
+  });
+
+  it("reuses a single-send controller for checkout versus hop in both orders and concurrently", () => {
+    const support = read("tests/e2e/staging/support/app.ts");
+    const scenario = read("tests/e2e/staging/release-b-checkout-hop-race-v2.e2e.ts");
+    const manifestGenerator = read("scripts/generate-checkout-review-manifest.mjs");
+
+    expect(support).toContain("export async function interceptSingleRpcCommand");
+    expect(scenario).toContain('test.describe.serial("Release B admin checkout versus game-hop concurrency"');
+    expect(support).toContain('await route.abort("blockedbyclient")');
+    expect(support).toContain("await route.fetch({ postData: JSON.stringify(next.body), timeout: 30_000 })");
+    expect(support).toContain("await route.fulfill({ response: serverResponse })");
+    expect(support).toContain("command can only be submitted once");
+    expect(scenario).toContain('for (const ordering of ["checkout-first", "hop-first", "concurrent"] as const)');
+    expect(scenario).toContain('interceptSingleRpcCommand(observer.page, "**/rest/v1/rpc/hop_session")');
+    expect(scenario).toContain('fill(checkoutEndAt)');
+    expect(scenario).toContain('fill(hopEndAt)');
+    expect(scenario).toContain('role: "admin", active: true');
+    expect(scenario).toContain('rpc/current_user_org_role');
+    expect(scenario).toContain('expect(checkoutOrgRole).toBe("admin")');
+    expect(scenario).toContain('expect(hopOrgRole).toBe("admin")');
+    expect(scenario).toContain("checkoutResponse = await checkoutCommand.submit(checkoutEnvelope)");
+    expect(scenario).toContain("hopResponse = await hopCommand.submit(capturedHop.body)");
+    expect(scenario).toContain("[checkoutResponse, hopResponse] = await Promise.all([");
+    expect(scenario).toContain("expect(checkoutResponse.status()).toBe(200)");
+    expect(scenario).toContain('expect(rpcRejectionCode(hopBody)).toBe("session_not_open")');
+    expect(scenario).toContain('close_disposition: "billed"');
+    expect(scenario).toContain("expect(afterAppState[0].version).toBe(beforeAppState[0].version + 1)");
+    expect(scenario).toContain("expect(afterAppState[0].version).toBe(beforeAppState[0].version)");
+    expect(scenario).toContain("expect([...checkoutActorIds]).toEqual([checkoutActorId])");
+    expect(scenario).toContain("expect(checkoutCommand.captureCount()).toBe(1)");
+    expect(scenario).toContain("expect(hopCommand.captureCount()).toBe(1)");
+    expect(scenario).toContain('getByText("1 conflict", { exact: true })');
+    expect(scenario).toContain("staleContinuationClosedBeforeReload");
+    expect(scenario).toContain("The game hop was not completed. Latest data has been refreshed; review the session and try again.");
+    expect(scenario).toContain("reconcile their mutation IDs before any cleanup or retry");
+    expect(manifestGenerator).toContain('path === "tests/e2e/staging/release-b-checkout-hop-race-v2.e2e.ts"');
+    expect(manifestGenerator).toContain('"hop_session"');
   });
 
   it("retains a rollback-only staging role-authorization proof", () => {

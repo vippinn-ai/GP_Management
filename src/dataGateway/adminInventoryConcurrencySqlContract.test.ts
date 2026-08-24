@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 const sql = readFileSync(
   resolve(process.cwd(), "supabase/phase6-admin-data-change-rpc.sql"),
   "utf8"
-);
+).replace(/\r\n/g, "\n");
 const stagingProof = readFileSync(
   resolve(
     process.cwd(),

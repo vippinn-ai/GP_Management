@@ -153,6 +153,42 @@ describe("normalized overlay collection merging", () => {
       .toBe("2026-08-19T11:05:00.000Z");
   });
 
+  it("accepts a canonical closed hop-to-billed transition without resurrecting a closed session", () => {
+    const base = createAppData();
+    base.sessions = [{
+      id: "session-hop",
+      stationId: "station-1",
+      status: "closed",
+      closeDisposition: "hopped"
+    } as never];
+
+    const billed = mergeNormalizedAppDataOverlay(base, {
+      sessions: [{
+        id: "session-hop",
+        stationId: "station-1",
+        status: "closed",
+        closeDisposition: "billed",
+        closedBillId: "bill-1"
+      } as never]
+    });
+
+    expect(billed.sessions).toHaveLength(1);
+    expect(billed.sessions[0]).toMatchObject({
+      status: "closed",
+      closeDisposition: "billed",
+      closedBillId: "bill-1"
+    });
+
+    const staleOpen = mergeNormalizedAppDataOverlay(billed, {
+      sessions: [{ id: "session-hop", stationId: "station-1", status: "active" } as never]
+    });
+    expect(staleOpen.sessions[0]).toMatchObject({
+      status: "closed",
+      closeDisposition: "billed",
+      closedBillId: "bill-1"
+    });
+  });
+
   it("hydrates historical bill-register pages by ID without dropping bootstrap financial rows", () => {
     const base = createAppData();
     base.bills = [

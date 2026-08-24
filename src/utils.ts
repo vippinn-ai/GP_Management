@@ -844,6 +844,24 @@ export function getMostRecentHoppedSession(sessions: Session[]): Session | null 
     .sort((a, b) => (b.endedAt ?? b.startedAt).localeCompare(a.endedAt ?? a.startedAt))[0] ?? null;
 }
 
+export function isHoppedSessionContinuationRecoverable(
+  sessions: Session[],
+  customerTabs: CustomerTab[],
+  sessionId: string
+): boolean {
+  const source = sessions.find((session) => session.id === sessionId);
+  if (
+    !source ||
+    source.status !== "closed" ||
+    source.closeDisposition !== "hopped" ||
+    Boolean(source.closedBillId)
+  ) {
+    return false;
+  }
+  return !sessions.some((session) => session.continuedFromSessionIds?.includes(sessionId)) &&
+    !customerTabs.some((tab) => tab.continuedFromSessionIds?.includes(sessionId));
+}
+
 export function getUnbilledHoppedSessionsForCustomer(
   sessions: Session[],
   name: string,
