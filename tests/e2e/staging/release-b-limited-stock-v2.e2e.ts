@@ -468,10 +468,16 @@ test.describe.serial("Release B limited-stock checkout concurrency", () => {
     }
   });
 
-  test("concurrent admin metadata save cannot restore checkout-consumed stock", async ({ browser, page }, testInfo) => {
+  for (const ordering of ["concurrent", "checkout-first"] as const) {
+    const title = ordering === "concurrent"
+      ? "concurrent admin metadata save cannot restore checkout-consumed stock"
+      : "checkout-first stale-admin metadata save is rejected without restoring stock";
+
+    test(title, async ({ browser, page }, testInfo) => {
     const admin = await createObserver(browser);
-    const itemName = `QA Admin Stock Race ${runId}`;
-    const customerName = `QA Admin Race ${runId}`;
+    const orderingLabel = ordering === "concurrent" ? "Concurrent" : "Checkout First";
+    const itemName = `QA Admin Stock Race ${orderingLabel} ${runId}`;
+    const customerName = `QA Admin Race ${orderingLabel} ${runId}`;
     const originErrors = capturePageErrors(page);
     const adminErrors = capturePageErrors(admin.page);
     const cleanupErrors: string[] = [];
@@ -517,7 +523,7 @@ test.describe.serial("Release B limited-stock checkout concurrency", () => {
       const capturedCheckout = await captureCheckout(page, customerName, () => {
         checkoutCaptureCount += 1;
       });
-      const checkoutEnvelope = makeUniqueBillNumber(capturedCheckout, "A");
+      const checkoutEnvelope = makeUniqueBillNumber(capturedCheckout, ordering === "concurrent" ? "A" : "B");
 
       await admin.page.reload({ waitUntil: "domcontentloaded" });
       await openInventoryCatalog(admin.page);
@@ -556,24 +562,29 @@ test.describe.serial("Release B limited-stock checkout concurrency", () => {
         "content-type": "application/json",
         prefer: capturedAdmin.headers.prefer || "return=representation"
       };
-      const [checkoutResponse, adminResponse] = await Promise.all([
-        page.request.post(capturedCheckout.url, {
+      const submitCheckout = () => page.request.post(capturedCheckout.url, {
           headers: checkoutHeaders,
           data: checkoutEnvelope,
           timeout: 30_000
-        }),
-        admin.context.request.post(capturedAdmin.url, {
+        });
+      const submitAdmin = () => admin.context.request.post(capturedAdmin.url, {
           headers: adminHeaders,
           data: capturedAdmin.body,
           timeout: 30_000
-        })
-      ]);
+        });
+      const [checkoutResponse, adminResponse] = ordering === "concurrent"
+        ? await Promise.all([submitCheckout(), submitAdmin()])
+        : [await submitCheckout(), await submitAdmin()];
       const [checkoutBody, adminBody] = await Promise.all([
         responseBody(checkoutResponse),
         responseBody(adminResponse)
       ]);
       expect(checkoutResponse.status()).toBe(200);
-      expect([200, 400]).toContain(adminResponse.status());
+      if (ordering === "checkout-first") {
+        expect(adminResponse.status()).toBe(400);
+      } else {
+        expect([200, 400]).toContain(adminResponse.status());
+      }
       let adminRejectionCode: string | null = null;
       if (adminResponse.status() === 400) {
         adminRejectionCode = (JSON.parse(String(adminBody.details)) as { code?: string }).code ?? null;
@@ -597,19 +608,126 @@ test.describe.serial("Release B limited-stock checkout concurrency", () => {
         expect(finalStock.stock).toBe(1);
         expect(finalStock.text).not.toMatch(/in sessions/);
       }
+      const itemId = changedItem?.id;
+      const checkoutMutationId = String(checkoutBody.mutation_id);
+      const checkoutBillId = String(checkoutBody.bill_id);
+      const checkoutEventId = String(checkoutBody.event_id);
+      const adminMutationId = String((capturedAdmin.body as { payload: { mutation_id: string } }).payload.mutation_id);
+      expect(itemId).toBeTruthy();
       raceEvidence = {
+        ordering,
         itemName,
         customerName,
         checkoutStatus: checkoutResponse.status(),
         adminStatus: adminResponse.status(),
         adminRejectionCode,
-        checkoutMutationId: checkoutBody.mutation_id,
-        checkoutBillId: checkoutBody.bill_id,
-        checkoutEventId: checkoutBody.event_id,
+        checkoutMutationId,
+        checkoutBillId,
+        checkoutEventId,
         adminEventId: adminBody.event_id ?? null,
         expectedStockQty: changedItem?.expectedStockQty,
         finalStock: 1,
         captureCounts: { checkout: checkoutCaptureCount, admin: adminCaptureCount }
+      };
+      const restBase = capturedCheckout.url.replace(/\/rpc\/[^/]+$/, "");
+      const restHeaders = { apikey: checkoutHeaders.apikey, authorization: checkoutHeaders.authorization };
+      const readRows = async <T,>(table: string, query: Record<string, string>) => {
+        const params = new URLSearchParams(query);
+        const response = await page.request.get(`${restBase}/${table}?${params.toString()}`, { headers: restHeaders });
+        expect(response.status(), `${table} reconciliation status`).toBe(200);
+        return await response.json() as T[];
+      };
+      const checkoutPayloadIdentity = (checkoutEnvelope as {
+        payload: { organization_id: string; mutation_id: string; mutation_kind: string };
+      }).payload;
+      const mutationStatusResponse = await page.request.post(
+        capturedCheckout.url.replace("commit_checkout_bill_v2", "get_financial_mutation_result"),
+        {
+          headers: { ...restHeaders, "content-type": "application/json", prefer: "return=representation" },
+          data: {
+            payload: {
+              organization_id: checkoutPayloadIdentity.organization_id,
+              mutation_id: checkoutPayloadIdentity.mutation_id,
+              mutation_kind: checkoutPayloadIdentity.mutation_kind
+            }
+          }
+        }
+      );
+      expect(mutationStatusResponse.status()).toBe(200);
+      const mutationStatus = await mutationStatusResponse.json() as {
+        mutation_id: string; bill_id: string; event_id: string;
+      };
+      const [billRows, paymentRows, movementRows, checkoutEventRows, adminEventRows, inventoryRows, appStateRows] = await Promise.all([
+        readRows<{ id: string; bill_number: string; total: number; amount_paid: number; amount_due: number; issued_by_user_id: string }>("bills", {
+          organization_id: "eq.org-primary", id: `eq.${checkoutBillId}`,
+          select: "id,bill_number,total,amount_paid,amount_due,issued_by_user_id"
+        }),
+        readRows<{ id: string; amount: number; mode: string; received_by_user_id: string }>("payments", {
+          organization_id: "eq.org-primary", bill_id: `eq.${checkoutBillId}`,
+          select: "id,amount,mode,received_by_user_id"
+        }),
+        readRows<{ id: string; type: string; quantity: number; user_id: string; related_bill_id: string }>("stock_movements", {
+          organization_id: "eq.org-primary", item_id: `eq.${itemId}`, related_bill_id: `eq.${checkoutBillId}`,
+          select: "id,type,quantity,user_id,related_bill_id"
+        }),
+        readRows<{ id: string; created_by: string }>("operational_events", {
+          organization_id: "eq.org-primary", id: `eq.${checkoutEventId}`, select: "id,created_by"
+        }),
+        readRows<{ id: string }>("operational_events", {
+          organization_id: "eq.org-primary", "metadata->>mutation_id": `eq.${adminMutationId}`, select: "id"
+        }),
+        readRows<{ id: string; stock_qty: number; price: number; active: boolean; raw_data: Record<string, unknown> }>("inventory_items", {
+          organization_id: "eq.org-primary", id: `eq.${itemId}`,
+          select: "id,stock_qty,price,active,raw_data"
+        }),
+        readRows<{ version: number; updated_at: string; updated_by: string; data: { inventoryItems?: Array<Record<string, unknown>> } }>("app_state", {
+          id: "eq.primary", select: "version,updated_at,updated_by,data"
+        })
+      ]);
+      expect(billRows).toHaveLength(1);
+      expect(paymentRows).toHaveLength(1);
+      expect(movementRows).toHaveLength(1);
+      expect(checkoutEventRows).toHaveLength(1);
+      expect(inventoryRows).toHaveLength(1);
+      expect(appStateRows).toHaveLength(1);
+      if (adminResponse.status() === 400) expect(adminEventRows).toHaveLength(0);
+      expect(Number(inventoryRows[0].stock_qty)).toBe(1);
+      expect(Number(inventoryRows[0].price)).toBe(adminResponse.status() === 200 ? 2 : 1);
+      expect(inventoryRows[0].raw_data).not.toHaveProperty("expectedStockQty");
+      expect(Number(billRows[0].total)).toBe(1);
+      expect(Number(billRows[0].amount_paid)).toBe(1);
+      expect(Number(billRows[0].amount_due)).toBe(0);
+      expect(Number(paymentRows[0].amount)).toBe(1);
+      expect(movementRows[0].type).toBe("sale");
+      expect(Number(movementRows[0].quantity)).toBe(-1);
+      expect(mutationStatus.mutation_id).toBe(checkoutMutationId);
+      expect(mutationStatus.bill_id).toBe(checkoutBillId);
+      expect(mutationStatus.event_id).toBe(checkoutEventId);
+      const actorIds = new Set([
+        billRows[0].issued_by_user_id,
+        paymentRows[0].received_by_user_id,
+        movementRows[0].user_id,
+        checkoutEventRows[0].created_by
+      ]);
+      expect(actorIds.size).toBe(1);
+      const compatibilityItem = appStateRows[0].data.inventoryItems?.find((entry) => entry.id === itemId);
+      expect(compatibilityItem).toBeTruthy();
+      expect(JSON.stringify(appStateRows[0].data)).not.toContain("expectedStockQty");
+      raceEvidence.databaseEvidence = {
+          billCount: billRows.length,
+          paymentCount: paymentRows.length,
+          movementCount: movementRows.length,
+          mutationStatusMatched: true,
+          checkoutEventCount: checkoutEventRows.length,
+          rejectedAdminEventCount: adminEventRows.length,
+          actorIds: [...actorIds],
+          normalizedStock: Number(inventoryRows[0].stock_qty),
+          normalizedPrice: Number(inventoryRows[0].price),
+          normalizedContainsExpectedStockQty: Object.hasOwn(inventoryRows[0].raw_data, "expectedStockQty"),
+          appStateVersion: appStateRows[0].version,
+          appStateUpdatedAt: appStateRows[0].updated_at,
+          appStateUpdatedBy: appStateRows[0].updated_by,
+          appStateContainsExpectedStockQty: JSON.stringify(appStateRows[0].data).includes("expectedStockQty")
       };
       expect(originErrors.consoleErrors).toEqual([]);
       expect(originErrors.pageErrors.length).toBeLessThanOrEqual(1);
@@ -672,8 +790,9 @@ test.describe.serial("Release B limited-stock checkout concurrency", () => {
       await attachFailureScreenshot(testInfo, admin.page, "admin-inventory-race-admin-failure");
       await admin.context.close().catch(() => undefined);
       if (!primaryError && cleanupErrors.length) throw new Error(cleanupErrors.join(" | "));
-    }
-  });
+      }
+    });
+  }
 
   test("admin inventory lifecycle preserves stock and authenticated writes", async ({ page }, testInfo) => {
     const itemName = `QA Admin Lifecycle ${runId}`;

@@ -117,7 +117,7 @@ describe("staging Playwright harness contract", () => {
     expect(scenario).toContain("expect(stock.stock).toBe(0)");
     expect(scenario).toContain("normalizedStockExpected: 1");
     expect(scenario).toContain("expect(stock.text).toMatch(/in sessions/)");
-    expect(scenario).toContain('test("concurrent admin metadata save cannot restore checkout-consumed stock"');
+    expect(scenario).toContain('"concurrent admin metadata save cannot restore checkout-consumed stock"');
     expect(scenario).toContain("expect(changedItem?.expectedStockQty).toBe(2)");
     expect(scenario).toContain("expect([200, 400]).toContain(adminResponse.status())");
     expect(scenario).toContain('expect(adminRejectionCode).toBe("inventory_conflict")');
@@ -127,6 +127,15 @@ describe("staging Playwright harness contract", () => {
     expect(scenario).toContain("expect(originErrors.pageErrors.length).toBeLessThanOrEqual(1)");
     expect(scenario).toContain("expect(adminErrors.pageErrors.length).toBeLessThanOrEqual(1)");
     expect(scenario).toContain('message === "TypeError: Failed to fetch"');
+    expect(scenario).toContain('"checkout-first stale-admin metadata save is rejected without restoring stock"');
+    expect(scenario).toContain(': [await submitCheckout(), await submitAdmin()]');
+    expect(scenario).toContain('if (ordering === "checkout-first")');
+    expect(scenario).toContain("expect(adminResponse.status()).toBe(400)");
+    expect(scenario).toContain('"metadata->>mutation_id": `eq.${adminMutationId}`');
+    expect(scenario).toContain('capturedCheckout.url.replace("commit_checkout_bill_v2", "get_financial_mutation_result")');
+    expect(scenario).toContain("expect(actorIds.size).toBe(1)");
+    expect(scenario).toContain('expect(JSON.stringify(appStateRows[0].data)).not.toContain("expectedStockQty")');
+    expect(scenario).toContain("raceEvidence.databaseEvidence = {");
     expect(scenario).toContain('test("admin inventory lifecycle preserves stock and authenticated writes"');
     expect(scenario).toContain('getByRole("button", { name: "Restock", exact: true })');
     expect(scenario).toContain('getByRole("button", { name: "Deduct / Adjust", exact: true })');
