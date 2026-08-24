@@ -24,6 +24,7 @@
     "test:db:staging:reject-proof:preflight": "node scripts/preflight-reject-rpc-staging-proof.mjs",
     "test:db:staging:reject-proof:build": "node scripts/build-reject-rpc-transactional-proof.mjs",
     "test:db:staging:reject-proof:reconcile": "node scripts/reconcile-reject-rpc-staging-proof.mjs",
+    "test:db:staging:reject-install:build": "node scripts/build-reject-rpc-staging-install.mjs",
     "lint": "eslint src --ext ts,tsx"
   },
   "dependencies": {

@@ -31,6 +31,9 @@ describe("staging Playwright harness contract", () => {
     expect(packageJson.scripts["test:db:staging:reject-proof:reconcile"]).toBe(
       "node scripts/reconcile-reject-rpc-staging-proof.mjs"
     );
+    expect(packageJson.scripts["test:db:staging:reject-install:build"]).toBe(
+      "node scripts/build-reject-rpc-staging-install.mjs"
+    );
     expect(viteConfig).toContain('"tests/e2e/**"');
   });
 
@@ -152,6 +155,68 @@ describe("staging Playwright harness contract", () => {
     expect(proof).toContain("did not restore the selected membership to active");
     expect(proof).toContain("set active = false");
     expect(proof).not.toMatch(/\b(begin|rollback|commit)\s*;/i);
+  });
+
+  it("builds a fail-closed persistent staging installer from the exact proven definitions", () => {
+    const installer = read("scripts/build-reject-rpc-staging-install.mjs");
+
+    expect(installer).toContain('"supabase/phase4-start-session-rpc.sql"');
+    expect(installer).toContain('"supabase/phase4-reject-rpcs.sql"');
+    expect(installer).toContain('"supabase/phase4-link-customer-tab-continuation-rpc.sql"');
+    expect(installer).toContain("public.raise_operational_rpc_error(text,text,jsonb)");
+    expect(installer).toContain("public.patch_app_state_array_by_id(jsonb,jsonb)");
+    expect(installer).toContain("candidate.expected_authenticated");
+    expect(installer).toContain("candidate.expected_anon");
+    expect(installer).toContain("candidate.expected_security_definer");
+    expect(installer).toContain("Installed reject-release RPC definitions or grants do not match");
+    expect(installer).toContain("const hasRequiredOrder = requiredOrder.every(");
+    expect(installer).toContain("one correctly ordered BEGIN/COMMIT");
+  });
+
+  it("guards the exact quarantined continuation repair and records its maintenance audit", () => {
+    const repair = read("supabase/staging-qa-multihop-quarantine-repair.sql");
+
+    expect(repair).toContain("Do not run in production");
+    expect(repair).toContain("PREPARATION ONLY");
+    expect(repair).toContain("v_second_attempt_authorization constant text := 'NOT_AUTHORIZED'");
+    expect(repair).toContain("Second staging repair attempt is not explicitly authorized.");
+    expect(repair).toMatch(/^begin;\s+set local time zone 'UTC';/im);
+    expect(repair).toContain("session-9ef998d5-e5a9-44f9-b68a-f815df023b7a");
+    expect(repair).toContain("session-4f9e640d-877d-4817-a005-bc08e6d3a76c");
+    expect(repair).toContain("v_expected_app_state_version constant integer := 624");
+    expect(repair).toContain("22368f8e74c3026017685fbc096f4281deb5c71277778c4b42691758ad743e51");
+    expect(repair).toContain("00a8c647f5ea99964b50a2c0499bda024e3644d6fcb32dbe215f7b644de8b31b");
+    expect(repair).toContain("v_now timestamptz := now()");
+    expect(repair).not.toContain("v_now timestamptz := clock_timestamp()");
+    expect(repair).toContain("Expected staging updated_at trigger definitions changed; repair refused.");
+    expect(repair).toContain("and trigger_row.tgenabled = 'O'");
+    expect(repair).toContain("v_consumer.continued_from_session_ids is distinct from jsonb_build_array");
+    expect(repair).toContain("linked_session_id in (v_source_session_id, v_rejected_consumer_id)");
+    expect(repair).toContain("v_reference_count <> 1");
+    expect(repair).toMatch(/order by id\s+for update;/);
+    expect(repair).toContain("v_repaired_compatibility_consumer := jsonb_set");
+    expect(repair).toContain("jsonb_build_array(v_repaired_compatibility_consumer)");
+    expect(repair).toContain("where audit_entry->>'id' = v_audit_id");
+    expect(repair).toContain("designated_staging_maintenance_actor");
+    expect(repair).toContain("It identifies the approved QA owner; it does not claim to be the SQL Editor operator");
+    expect(repair).toContain("for share");
+    expect(repair).not.toContain("for key share");
+    expect(repair).toContain("to_char(v_now at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"')");
+    expect(repair).toContain("created_by, created_at, metadata");
+    expect(repair).toContain("and created_at = v_now");
+    expect(repair).toContain("and updated_at = v_now");
+    expect(repair).toContain("Guarded repair compatibility state verification failed.");
+    expect(repair).toContain("Guarded repair normalized or compatibility audit verification failed.");
+    expect(repair).toContain("and raw_data = v_audit");
+    expect(repair).toContain("and metadata->'changed_rows' = jsonb_build_object");
+    expect(repair).toContain("qa_continuation_repair");
+    expect(repair).toContain("public.patch_app_state_array_by_id");
+    expect(repair).toContain("normalized and compatibility continuation links");
+    expect(repair).toContain("'passed' as repair_result");
+    expect(repair.match(/^begin;$/gim)).toHaveLength(1);
+    expect(repair.match(/^commit;$/gim)).toHaveLength(1);
+    expect(repair).not.toMatch(/^rollback;$/gim);
+    expect(repair).not.toContain("rrdwbxvuwrbxefarxnse");
   });
 
   it("requires a reusable read-only empty-floor staging preflight", () => {

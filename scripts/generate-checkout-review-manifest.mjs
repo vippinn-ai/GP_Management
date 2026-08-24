@@ -14,6 +14,10 @@ const textExtensions = new Set([
   ".css", ".html", ".js", ".json", ".md", ".mjs", ".sql", ".toml", ".ts", ".tsx", ".txt", ".yaml", ".yml"
 ]);
 const excludedPrefixes = ["dist/", "node_modules/", "coverage/", "test-artifacts/", ".git/"];
+const releaseBMaintenanceArtifacts = new Set([
+  "scripts/build-reject-rpc-staging-install.mjs",
+  "supabase/staging-qa-multihop-quarantine-repair.sql"
+]);
 
 function normalizePath(value) {
   return value.replaceAll("\\", "/");
@@ -48,9 +52,11 @@ function classifyAppState(path, content) {
   }
   if (
     path === "scripts/build-reject-rpc-transactional-proof.mjs" ||
+    path === "scripts/build-reject-rpc-staging-install.mjs" ||
     path === "scripts/preflight-reject-rpc-staging-proof.mjs" ||
     path === "scripts/reconcile-reject-rpc-staging-proof.mjs" ||
-    path === "supabase/phase4-reject-rpcs-transactional-proof.sql"
+    path === "supabase/phase4-reject-rpcs-transactional-proof.sql" ||
+    path === "supabase/staging-qa-multihop-quarantine-repair.sql"
   ) {
     return "migration-diagnostic-or-reconstruction";
   }
@@ -101,6 +107,12 @@ const collectionPatterns = [
 
 function inferCollections(path, content) {
   const names = new Set(collectionPatterns.filter(([, pattern]) => pattern.test(content)).map(([name]) => name));
+  if (path === "scripts/build-reject-rpc-staging-install.mjs") {
+    ["app_state", "sessions", "customer_tabs", "audit_logs", "operational_events"].forEach((name) => names.add(name));
+  }
+  if (path === "supabase/staging-qa-multihop-quarantine-repair.sql") {
+    ["app_state", "sessions", "customer_tabs", "bill_lines", "audit_logs", "operational_events"].forEach((name) => names.add(name));
+  }
   if (path === "tests/e2e/staging/release-a-inventory-matrix.e2e.ts") {
     [
       "customer_tabs",
@@ -128,6 +140,16 @@ function inferRpcs(path, content) {
   for (const match of content.matchAll(/\brpc\s*===\s*["']([a-z0-9_]+)["']/gi)) names.add(match[1]);
   for (const match of content.matchAll(/function\s+public\.([a-z0-9_]+)\s*\(/gi)) names.add(match[1]);
   for (const match of content.matchAll(/\b(?:perform|select)\s+public\.([a-z0-9_]+)\s*\(/gi)) names.add(match[1]);
+  if (path === "scripts/build-reject-rpc-staging-install.mjs") {
+    [
+      "start_session",
+      "reject_session",
+      "reject_customer_tab",
+      "link_customer_tab_continuation",
+      "raise_operational_rpc_error",
+      "patch_app_state_array_by_id"
+    ].forEach((name) => names.add(name));
+  }
   if (path === "tests/e2e/staging/release-b-checkout-reject-race-v2.e2e.ts") {
     [
       "start_session",
@@ -185,6 +207,9 @@ function inferDirectTests(path) {
   if (path === "scripts/inspect-staging-sessions.mjs") {
     tests.push("src/qa/playwrightStagingHarnessContract.test.ts");
   }
+  if (releaseBMaintenanceArtifacts.has(path)) {
+    tests.push("src/qa/playwrightStagingHarnessContract.test.ts");
+  }
   return [...new Set(tests)].join("; ");
 }
 
@@ -208,7 +233,7 @@ const rows = files.map((path) => {
   }
   const operationalStagingContract = path.startsWith("tests/e2e/staging/") && path.endsWith(".e2e.ts");
   const releaseBProof = path.startsWith("openspec/changes/financial-checkout-app-state-decoupling/release-b-") && path.endsWith(".sql");
-  const billingRelevant = operationalStagingContract || releaseBProof || /checkout|bill|payment|settle|receipt|discount|refund|void|deferred|financial/i.test(content);
+  const billingRelevant = operationalStagingContract || releaseBProof || releaseBMaintenanceArtifacts.has(path) || /checkout|bill|payment|settle|receipt|discount|refund|void|deferred|financial/i.test(content);
   const appStateDisposition = classifyAppState(path, content);
   const semanticHotspot = billingRelevant || appStateDisposition !== "none" || path === "src/App.tsx" || path.startsWith("src/dataGateway/");
   return {
