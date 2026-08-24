@@ -29,6 +29,10 @@ const station = process.env.E2E_V2_MULTIHOP_STATION?.trim() || "Playstation";
 const guardedCleanupSessionId = process.env.E2E_GUARDED_HOPPED_SESSION_ID?.trim();
 const guardedCleanupCustomer = process.env.E2E_GUARDED_HOPPED_CUSTOMER?.trim();
 const guardedCleanupStation = process.env.E2E_GUARDED_HOPPED_STATION?.trim();
+const guardedCleanupSourceSessionIds = (
+  process.env.E2E_GUARDED_HOPPED_SOURCE_IDS?.trim() || guardedCleanupSessionId || ""
+).split(",").map((value) => value.trim()).filter(Boolean);
+const guardedCleanupExpectedSourceCount = Number(process.env.E2E_GUARDED_HOPPED_SOURCE_COUNT);
 
 type CheckoutEnvelope = {
   payload: {
@@ -533,6 +537,10 @@ test.describe.serial("Release B admin multi-hop checkout concurrency", () => {
       !guardedCleanupSessionId || !guardedCleanupCustomer || !guardedCleanupStation,
       "Exact guarded cleanup identity was not supplied."
     );
+    test.skip(
+      !Number.isInteger(guardedCleanupExpectedSourceCount) || guardedCleanupExpectedSourceCount < 1,
+      "Exact guarded cleanup source count was not supplied."
+    );
     const rpcEvidence: RpcEvidence[] = [];
     const pageErrors = capturePageErrors(page);
     captureRpcEvidence(page, "origin", rpcEvidence);
@@ -559,10 +567,16 @@ test.describe.serial("Release B admin multi-hop checkout concurrency", () => {
       const captured = await command.captured;
       expect(command.captureCount()).toBe(1);
       const envelope = prepareCheckoutCommand(captured, "C");
+      const expectedSourceIds = [...guardedCleanupSourceSessionIds].sort();
+      expect(guardedCleanupSourceSessionIds).toHaveLength(guardedCleanupExpectedSourceCount);
+      expect(new Set(guardedCleanupSourceSessionIds).size).toBe(guardedCleanupExpectedSourceCount);
+      expect(guardedCleanupSourceSessionIds).toContain(guardedCleanupSessionId);
       expect(envelope.payload.entity_id).toBe(guardedCleanupSessionId);
-      expect(envelope.payload.payload.source_session_ids).toEqual([guardedCleanupSessionId]);
-      expect(envelope.payload.payload.session_updates.map((session) => session.id))
-        .toEqual([guardedCleanupSessionId]);
+      expect([...envelope.payload.payload.source_session_ids].sort()).toEqual(expectedSourceIds);
+      expect(envelope.payload.payload.source_session_ids).toHaveLength(guardedCleanupExpectedSourceCount);
+      const submittedSessionUpdateIds = envelope.payload.payload.session_updates.map((session) => session.id);
+      expect([...submittedSessionUpdateIds].sort()).toEqual(expectedSourceIds);
+      expect(submittedSessionUpdateIds).toHaveLength(guardedCleanupExpectedSourceCount);
       const actorId = authenticatedJwtSubject(captured.headers);
       const headers = {
         apikey: captured.headers.apikey,
@@ -579,19 +593,27 @@ test.describe.serial("Release B admin multi-hop checkout concurrency", () => {
         status: string;
         close_disposition: string | null;
         closed_bill_id: string | null;
+        continued_from_session_ids: string[] | null;
       }>(page, restBase, restHeaders, "sessions", {
         organization_id: "eq.org-primary",
-        id: `eq.${guardedCleanupSessionId}`,
-        select: "id,station_name_snapshot,customer_name,status,close_disposition,closed_bill_id"
+        id: `in.(${guardedCleanupSourceSessionIds.join(",")})`,
+        select: "id,station_name_snapshot,customer_name,status,close_disposition,closed_bill_id,continued_from_session_ids"
       });
-      expect(preCleanupSessionRows).toEqual([{
-        id: guardedCleanupSessionId,
-        station_name_snapshot: guardedCleanupStation,
-        customer_name: guardedCleanupCustomer,
-        status: "closed",
-        close_disposition: "hopped",
-        closed_bill_id: null
-      }]);
+      cleanupEvidence = { preCleanupSessions: preCleanupSessionRows };
+      expect(preCleanupSessionRows).toHaveLength(guardedCleanupSourceSessionIds.length);
+      const preCleanupSessionsById = new Map(preCleanupSessionRows.map((session) => [session.id, session]));
+      guardedCleanupSourceSessionIds.forEach((sessionId) => {
+        expect(preCleanupSessionsById.get(sessionId)).toMatchObject({
+          id: sessionId,
+          station_name_snapshot: guardedCleanupStation,
+          customer_name: guardedCleanupCustomer,
+          status: "closed",
+          close_disposition: "hopped",
+          closed_bill_id: null
+        });
+      });
+      expect(preCleanupSessionsById.get(guardedCleanupSessionId!)?.continued_from_session_ids ?? [])
+        .toEqual(guardedCleanupSourceSessionIds.filter((sessionId) => sessionId !== guardedCleanupSessionId));
       const roleResponse = await page.request.post(`${restBase}/rpc/current_user_org_role`, {
         headers,
         data: { target_organization_id: envelope.payload.organization_id }
@@ -609,13 +631,14 @@ test.describe.serial("Release B admin multi-hop checkout concurrency", () => {
       const appStateHashBefore = appStateDataHash(beforeAppState[0].data);
       cleanupEvidence = {
         guardedCleanupSessionId,
+        guardedCleanupSourceSessionIds,
         guardedCleanupCustomer,
         guardedCleanupStation,
         mutationId: envelope.payload.mutation_id,
         billId: envelope.payload.payload.primary_bill.id,
         billNumber: envelope.payload.payload.primary_bill.billNumber,
         actorId,
-        preCleanupSession: preCleanupSessionRows[0],
+        preCleanupSessions: preCleanupSessionRows,
         appStateVersionBefore: beforeAppState[0].version,
         appStateHashBefore
       };
@@ -625,8 +648,9 @@ test.describe.serial("Release B admin multi-hop checkout concurrency", () => {
       const body = await readApiResponseBody(response);
       expect(response.status()).toBe(200);
       expect(body.bill_id).toBe(envelope.payload.payload.primary_bill.id);
-      expect(changedRowIds({ changedRows: body.changed_rows } as RpcEvidence, "sessions"))
-        .toEqual([guardedCleanupSessionId]);
+      const changedSessionIds = changedRowIds({ changedRows: body.changed_rows } as RpcEvidence, "sessions");
+      expect([...changedSessionIds].sort()).toEqual(expectedSourceIds);
+      expect(changedSessionIds).toHaveLength(guardedCleanupExpectedSourceCount);
       const statusResponse = await page.request.post(
         captured.url.replace("commit_checkout_bill_v2", "get_financial_mutation_result"),
         {
@@ -653,7 +677,7 @@ test.describe.serial("Release B admin multi-hop checkout concurrency", () => {
           "sessions",
           {
             organization_id: "eq.org-primary",
-            id: `eq.${guardedCleanupSessionId}`,
+            id: `in.(${guardedCleanupSourceSessionIds.join(",")})`,
             select: "id,status,close_disposition,closed_bill_id"
           }
         ),
@@ -688,12 +712,13 @@ test.describe.serial("Release B admin multi-hop checkout concurrency", () => {
           select: "version,data"
         })
       ]);
-      expect(sessionRows).toEqual([{
-        id: guardedCleanupSessionId,
+      expect(sessionRows).toHaveLength(guardedCleanupSourceSessionIds.length);
+      sessionRows.forEach((session) => expect(session).toMatchObject({
         status: "closed",
         close_disposition: "billed",
         closed_bill_id: billId
-      }]);
+      }));
+      expect(new Set(sessionRows.map((session) => session.id))).toEqual(new Set(guardedCleanupSourceSessionIds));
       expect(billRows).toHaveLength(1);
       expect(billRows[0].status).toBe("issued");
       expect(Number(billRows[0].total)).toBeGreaterThan(0);
@@ -721,7 +746,7 @@ test.describe.serial("Release B admin multi-hop checkout concurrency", () => {
         responseStatus: response.status(),
         responseBody: body,
         mutationStatus,
-        session: sessionRows[0],
+        sessions: sessionRows,
         bill: billRows[0],
         payment: paymentRows[0],
         eventCount: eventRows.length,
@@ -748,6 +773,8 @@ test.describe.serial("Release B admin multi-hop checkout concurrency", () => {
       await attachJson(testInfo, "release-b-guarded-hopped-cleanup-evidence", {
         runId,
         guardedCleanupSessionId,
+        guardedCleanupSourceSessionIds,
+        guardedCleanupExpectedSourceCount,
         guardedCleanupCustomer,
         guardedCleanupStation,
         checkoutSent,
