@@ -96,14 +96,16 @@ describe("staging Playwright harness contract", () => {
     );
   });
 
-  it("guards a newer hop continuation from an earlier reconciliation timer", () => {
+  it("clears hop continuation only from positive normalized terminal evidence", () => {
     const app = read("src/App.tsx");
 
     expect(app).toContain("lastHoppedSessionIdRef.current = sessionId");
     expect(app).toContain("const reconciledSessionId = lastHoppedSessionId");
-    expect(app).toContain(
-      "shouldClearHoppedSessionContinuation(lastHoppedSessionIdRef.current, reconciledSessionId)"
-    );
+    expect(app).toContain("hasHoppedSessionContinuationTerminalEvidence(");
+    expect(app).toContain("const latestAppData = appDataRef.current");
+    expect(app).toContain("lastHoppedSessionIdRef.current,");
+    expect(app).toContain("latestAppData.sessions,");
+    expect(app).not.toContain("observedNormalizedHoppedSessionIdsRef");
   });
 
   it("serializes a two-reservation limited-stock race and cleans its dedicated fixture", () => {
@@ -185,6 +187,14 @@ describe("staging Playwright harness contract", () => {
     expect(scenario).toContain("expect(sourceSessionIds).toHaveLength(3)");
     expect(scenario).toContain("expect([...sourceSessionIds].sort()).toEqual(expectedChainSessionIds)");
     expect(scenario).toContain("expect(submittedSessionUpdateIds).toHaveLength(3)");
+    expect(scenario).toContain('select: "id,started_at,raw_data"');
+    expect(scenario).toContain('`${sessionId} compatibility multiplicity`');
+    expect(scenario).toContain('`${sessionId} typed start presence`');
+    expect(scenario).toContain('`${sessionId} typed start validity`');
+    expect(scenario).toContain('`${sessionId} normalized/raw start`');
+    expect(scenario).toContain('`${sessionId} normalized/compatibility start`');
+    expect(scenario).toContain('`${envelope.payload.mutation_id} ${sessionId} submitted start validity`');
+    expect(scenario).toContain('`${envelope.payload.mutation_id} ${sessionId} submitted/typed start`');
     expect(scenario).toContain("responseStatuses: responses.map((response) => response.status())");
     expect(scenario).toContain("responseBodies: bodies");
     expect(scenario).toContain('expect(rpcRejectionCode(bodies[loserIndex])).toBe("session_not_billable")');
@@ -264,7 +274,14 @@ describe("staging Playwright harness contract", () => {
     expect(scenario).toContain("expect(new Set(guardedCleanupSourceSessionIds).size).toBe(guardedCleanupExpectedSourceCount)");
     expect(scenario).toContain("expect([...envelope.payload.payload.source_session_ids].sort()).toEqual(expectedSourceIds)");
     expect(scenario).toContain("expect(submittedSessionUpdateIds).toHaveLength(guardedCleanupExpectedSourceCount)");
+    expect(scenario).toContain("expect(envelope.payload.payload.primary_bill.lines).toHaveLength(1)");
+    expect(scenario).toContain("linkedSessionId: guardedCleanupSessionId");
+    expect(scenario).toContain("expect(submittedStart).toBe(typedStart)");
+    expect(scenario).toContain("expect(submittedEnd).toBe(typedEnd)");
     expect(scenario).toContain("expect(changedSessionIds).toHaveLength(guardedCleanupExpectedSourceCount)");
+    expect(scenario).toContain('"bill_lines"');
+    expect(scenario).toContain("expect(billLineRows).toHaveLength(1)");
+    expect(scenario).toContain("linked_session_id: guardedCleanupSessionId");
     expect(scenario).toContain('close_disposition: "hopped"');
     expect(scenario).toContain("station_name_snapshot: guardedCleanupStation");
     expect(scenario).toContain("customer_name: guardedCleanupCustomer");
@@ -317,6 +334,7 @@ describe("staging Playwright harness contract", () => {
     const manifestGenerator = read("scripts/generate-checkout-review-manifest.mjs");
 
     expect(support).toContain("export async function interceptSingleRpcCommand");
+    expect(support).toContain('await manageButton.press("Enter")');
     expect(support).toContain("const isPrimaryCapture = captureCount === 1");
     expect(support).toContain("if (isPrimaryCapture)");
     expect(support).toContain("settled,");

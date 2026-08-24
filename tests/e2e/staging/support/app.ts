@@ -86,7 +86,11 @@ export async function startSession(page: Page, stationName: string, customerName
 
 export async function openManagedSession(page: Page, stationName: string) {
   const card = stationCard(page, stationName);
-  await card.getByRole("button", { name: "Manage", exact: true }).click();
+  const manageButton = card.getByRole("button", { name: "Manage", exact: true });
+  await expect(manageButton).toBeVisible();
+  await expect(manageButton).toBeEnabled();
+  await manageButton.focus();
+  await manageButton.press("Enter");
   const modal = page.getByRole("dialog", { name: stationName, exact: true });
   await expect(modal).toBeVisible();
   return modal;

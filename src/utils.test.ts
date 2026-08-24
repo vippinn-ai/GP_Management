@@ -13,6 +13,7 @@ import {
   findExactCustomerProfileMatch,
   getCustomerTabContinuationCandidates,
   getMostRecentHoppedSession,
+  hasHoppedSessionContinuationTerminalEvidence,
   isHoppedSessionContinuationRecoverable,
   shouldClearHoppedSessionContinuation,
   getUnbilledHoppedSessionsForCustomer,
@@ -1395,6 +1396,36 @@ describe("shouldClearHoppedSessionContinuation", () => {
     expect(shouldClearHoppedSessionContinuation("hop-2", "hop-2")).toBe(true);
     expect(shouldClearHoppedSessionContinuation(null, "hop-1")).toBe(false);
     expect(shouldClearHoppedSessionContinuation("hop-2", null)).toBe(false);
+  });
+
+  it("treats source absence as unknown until positive terminal evidence exists", () => {
+    expect(shouldClearHoppedSessionContinuation("hop-1", "hop-1", false)).toBe(false);
+    expect(shouldClearHoppedSessionContinuation("hop-1", "hop-1", true)).toBe(true);
+  });
+});
+
+describe("hasHoppedSessionContinuationTerminalEvidence", () => {
+  const source = makeHoppedSession("hop-1", "Alice", "9876543210");
+
+  it("keeps an absent source unknown until normalized data positively resolves it", () => {
+    expect(hasHoppedSessionContinuationTerminalEvidence([], [], source.id)).toBe(false);
+  });
+
+  it("keeps a fresh-login recoverable hop available", () => {
+    expect(hasHoppedSessionContinuationTerminalEvidence([source], [], source.id)).toBe(false);
+  });
+
+  it("clears only on a present terminal source or a positively consumed continuation", () => {
+    expect(hasHoppedSessionContinuationTerminalEvidence(
+      [{ ...source, closeDisposition: "billed", closedBillId: "bill-1" }],
+      [],
+      source.id
+    )).toBe(true);
+    expect(hasHoppedSessionContinuationTerminalEvidence(
+      [],
+      [{ id: "tab-1", continuedFromSessionIds: [source.id] } as CustomerTab],
+      source.id
+    )).toBe(true);
   });
 });
 

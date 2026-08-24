@@ -184,6 +184,7 @@ import {
   getPendingReceivableGroups,
   buildInventoryReportModel,
   getUnbilledHoppedSessionsForCustomer,
+  hasHoppedSessionContinuationTerminalEvidence,
   isHoppedSessionContinuationRecoverable,
   shouldClearHoppedSessionContinuation,
   normalizeCustomerName,
@@ -940,15 +941,36 @@ export default function App() {
   }, [appData.customerTabs, appData.sessions, checkoutState, isHopMode, setLastHoppedSessionId]);
 
   useEffect(() => {
-    if (
-      !lastHoppedSessionId ||
-      isHoppedSessionContinuationRecoverable(appData.sessions, appData.customerTabs, lastHoppedSessionId)
-    ) {
+    if (!lastHoppedSessionId) {
+      return;
+    }
+    const continuationRecoverable = isHoppedSessionContinuationRecoverable(
+      appData.sessions,
+      appData.customerTabs,
+      lastHoppedSessionId
+    );
+    if (continuationRecoverable) {
       return;
     }
     const reconciledSessionId = lastHoppedSessionId;
+    if (!hasHoppedSessionContinuationTerminalEvidence(
+      appData.sessions,
+      appData.customerTabs,
+      reconciledSessionId
+    )) {
+      return;
+    }
     const reconciliationTimer = window.setTimeout(() => {
-      if (!shouldClearHoppedSessionContinuation(lastHoppedSessionIdRef.current, reconciledSessionId)) {
+      const latestAppData = appDataRef.current;
+      if (!shouldClearHoppedSessionContinuation(
+        lastHoppedSessionIdRef.current,
+        reconciledSessionId,
+        hasHoppedSessionContinuationTerminalEvidence(
+          latestAppData.sessions,
+          latestAppData.customerTabs,
+          reconciledSessionId
+        )
+      )) {
         return;
       }
       setShowStartSessionModal(false);

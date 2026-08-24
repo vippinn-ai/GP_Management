@@ -862,11 +862,31 @@ export function isHoppedSessionContinuationRecoverable(
     !customerTabs.some((tab) => tab.continuedFromSessionIds?.includes(sessionId));
 }
 
+export function hasHoppedSessionContinuationTerminalEvidence(
+  sessions: Session[],
+  customerTabs: CustomerTab[],
+  sessionId: string
+): boolean {
+  if (isHoppedSessionContinuationRecoverable(sessions, customerTabs, sessionId)) {
+    return false;
+  }
+  const sourcePresent = sessions.some((session) => session.id === sessionId);
+  const continuationConsumed =
+    sessions.some((session) => session.continuedFromSessionIds?.includes(sessionId)) ||
+    customerTabs.some((tab) => tab.continuedFromSessionIds?.includes(sessionId));
+  return sourcePresent || continuationConsumed;
+}
+
 export function shouldClearHoppedSessionContinuation(
   currentSessionId: string | null,
-  reconciledSessionId: string | null
+  reconciledSessionId: string | null,
+  hasPositiveTerminalEvidence = true
 ): boolean {
-  return Boolean(reconciledSessionId && currentSessionId === reconciledSessionId);
+  return Boolean(
+    reconciledSessionId &&
+    currentSessionId === reconciledSessionId &&
+    hasPositiveTerminalEvidence
+  );
 }
 
 export function getUnbilledHoppedSessionsForCustomer(

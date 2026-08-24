@@ -42,9 +42,13 @@ type CheckoutEnvelope = {
     entity_id: string;
     payload: {
       source_session_ids: string[];
-      primary_bill: { id: string; billNumber: string };
+      primary_bill: {
+        id: string;
+        billNumber: string;
+        lines: Array<{ type: string; linkedSessionId?: string }>;
+      };
       bill_updates: Array<{ id: string; billNumber: string }>;
-      session_updates: Array<{ id: string }>;
+      session_updates: Array<{ id: string; startedAt?: string; endedAt?: string }>;
       audit_logs: Array<{ id: string }>;
     };
   };
@@ -231,6 +235,47 @@ test.describe.serial("Release B admin multi-hop checkout concurrency", () => {
         { id: "eq.primary", select: "version,data" }
       );
       expect(beforeAppState).toHaveLength(1);
+      const timingRows = await readRestRows<{
+        id: string;
+        started_at: string | null;
+        raw_data: { startedAt?: string } | null;
+      }>(page, restBase, restHeaders, "sessions", {
+        organization_id: `eq.${envelopes[0].payload.organization_id}`,
+        id: `in.(${chainSessionIds.join(",")})`,
+        select: "id,started_at,raw_data"
+      });
+      expect(timingRows).toHaveLength(3);
+      const compatibilitySessions = ((beforeAppState[0].data as { sessions?: Array<{ id: string; startedAt?: string }> }).sessions ?? []);
+      const timingById = new Map(timingRows.map((session) => [session.id, session]));
+      for (const sessionId of chainSessionIds) {
+        const normalized = timingById.get(sessionId);
+        const compatibilityMatches = compatibilitySessions.filter((session) => session.id === sessionId);
+        expect(compatibilityMatches, `${sessionId} compatibility multiplicity`).toHaveLength(1);
+        const compatibility = compatibilityMatches[0];
+        expect(normalized?.raw_data?.startedAt, `${sessionId} raw start`).toBeTruthy();
+        expect(compatibility?.startedAt, `${sessionId} compatibility start`).toBeTruthy();
+        expect(normalized?.started_at, `${sessionId} typed start presence`).toBeTruthy();
+        const normalizedStart = new Date(normalized!.started_at!).getTime();
+        const rawStart = new Date(normalized!.raw_data!.startedAt!).getTime();
+        const compatibilityStart = new Date(compatibility!.startedAt!).getTime();
+        expect(Number.isFinite(normalizedStart), `${sessionId} typed start validity`).toBe(true);
+        expect(Number.isFinite(rawStart), `${sessionId} raw start validity`).toBe(true);
+        expect(Number.isFinite(compatibilityStart), `${sessionId} compatibility start validity`).toBe(true);
+        expect(rawStart, `${sessionId} normalized/raw start`).toBe(normalizedStart);
+        expect(compatibilityStart, `${sessionId} normalized/compatibility start`).toBe(normalizedStart);
+      }
+      for (const envelope of envelopes) {
+        const submittedUpdates = envelope.payload.payload.session_updates;
+        expect(submittedUpdates).toHaveLength(3);
+        const submittedById = new Map(submittedUpdates.map((session) => [session.id, session]));
+        expect(submittedById.size).toBe(3);
+        for (const sessionId of chainSessionIds) {
+          const normalizedStart = new Date(timingById.get(sessionId)!.started_at!).getTime();
+          const submittedStart = new Date(submittedById.get(sessionId)!.startedAt!).getTime();
+          expect(Number.isFinite(submittedStart), `${envelope.payload.mutation_id} ${sessionId} submitted start validity`).toBe(true);
+          expect(submittedStart, `${envelope.payload.mutation_id} ${sessionId} submitted/typed start`).toBe(normalizedStart);
+        }
+      }
       const appStateHashBefore = appStateDataHash(beforeAppState[0].data);
       raceEvidence = {
         customerName,
@@ -242,6 +287,7 @@ test.describe.serial("Release B admin multi-hop checkout concurrency", () => {
         billNumbers: envelopes.map((envelope) => envelope.payload.payload.primary_bill.billNumber),
         actorIds,
         authoritativeRoles: roleValues,
+        timingRows,
         appStateVersionBefore: beforeAppState[0].version,
         appStateHashBefore,
         captureCountsBeforeSend: [originCommand.captureCount(), observerCommand.captureCount()]
@@ -587,6 +633,11 @@ test.describe.serial("Release B admin multi-hop checkout concurrency", () => {
       expect(envelope.payload.entity_id).toBe(guardedCleanupSessionId);
       expect([...envelope.payload.payload.source_session_ids].sort()).toEqual(expectedSourceIds);
       expect(envelope.payload.payload.source_session_ids).toHaveLength(guardedCleanupExpectedSourceCount);
+      expect(envelope.payload.payload.primary_bill.lines).toHaveLength(1);
+      expect(envelope.payload.payload.primary_bill.lines[0]).toMatchObject({
+        type: "session_charge",
+        linkedSessionId: guardedCleanupSessionId
+      });
       const submittedSessionUpdateIds = envelope.payload.payload.session_updates.map((session) => session.id);
       expect([...submittedSessionUpdateIds].sort()).toEqual(expectedSourceIds);
       expect(submittedSessionUpdateIds).toHaveLength(guardedCleanupExpectedSourceCount);
@@ -607,10 +658,13 @@ test.describe.serial("Release B admin multi-hop checkout concurrency", () => {
         close_disposition: string | null;
         closed_bill_id: string | null;
         continued_from_session_ids: string[] | null;
+        started_at: string | null;
+        ended_at: string | null;
+        raw_data: { startedAt?: string; endedAt?: string } | null;
       }>(page, restBase, restHeaders, "sessions", {
         organization_id: "eq.org-primary",
         id: `in.(${guardedCleanupSourceSessionIds.join(",")})`,
-        select: "id,station_name_snapshot,customer_name,status,close_disposition,closed_bill_id,continued_from_session_ids"
+        select: "id,station_name_snapshot,customer_name,status,close_disposition,closed_bill_id,continued_from_session_ids,started_at,ended_at,raw_data"
       });
       cleanupEvidence = { preCleanupSessions: preCleanupSessionRows };
       expect(preCleanupSessionRows).toHaveLength(guardedCleanupSourceSessionIds.length);
@@ -627,6 +681,23 @@ test.describe.serial("Release B admin multi-hop checkout concurrency", () => {
       });
       expect(preCleanupSessionsById.get(guardedCleanupSessionId!)?.continued_from_session_ids ?? [])
         .toEqual(guardedCleanupSourceSessionIds.filter((sessionId) => sessionId !== guardedCleanupSessionId));
+      const guardedSession = preCleanupSessionsById.get(guardedCleanupSessionId!)!;
+      const submittedSession = envelope.payload.payload.session_updates.find(
+        (session) => session.id === guardedCleanupSessionId
+      );
+      expect(submittedSession).toBeDefined();
+      expect(guardedSession.started_at).toBeTruthy();
+      expect(guardedSession.ended_at).toBeTruthy();
+      expect(guardedSession.raw_data?.startedAt).toBeTruthy();
+      const typedStart = new Date(guardedSession.started_at!).getTime();
+      const typedEnd = new Date(guardedSession.ended_at!).getTime();
+      const rawStart = new Date(guardedSession.raw_data!.startedAt!).getTime();
+      const submittedStart = new Date(submittedSession!.startedAt!).getTime();
+      const submittedEnd = new Date(submittedSession!.endedAt!).getTime();
+      expect([typedStart, typedEnd, rawStart, submittedStart, submittedEnd].every(Number.isFinite)).toBe(true);
+      expect(rawStart).toBe(typedStart);
+      expect(submittedStart).toBe(typedStart);
+      expect(submittedEnd).toBe(typedEnd);
       const roleResponse = await page.request.post(`${restBase}/rpc/current_user_org_role`, {
         headers,
         data: { target_organization_id: envelope.payload.organization_id }
@@ -682,7 +753,7 @@ test.describe.serial("Release B admin multi-hop checkout concurrency", () => {
       expect(mutationStatus?.bill_id).toBe(envelope.payload.payload.primary_bill.id);
       const billId = envelope.payload.payload.primary_bill.id;
       const auditIds = envelope.payload.payload.audit_logs.map((audit) => audit.id);
-      const [sessionRows, billRows, paymentRows, eventRows, auditRows, afterAppState] = await Promise.all([
+      const [sessionRows, billRows, billLineRows, paymentRows, eventRows, auditRows, afterAppState] = await Promise.all([
         readRestRows<{ id: string; status: string; close_disposition: string; closed_bill_id: string | null }>(
           page,
           restBase,
@@ -703,6 +774,17 @@ test.describe.serial("Release B admin multi-hop checkout concurrency", () => {
             organization_id: "eq.org-primary",
             id: `eq.${billId}`,
             select: "id,status,total,amount_paid,amount_due,issued_by_user_id"
+          }
+        ),
+        readRestRows<{ id: string; type: string; linked_session_id: string | null; total: number }>(
+          page,
+          restBase,
+          restHeaders,
+          "bill_lines",
+          {
+            organization_id: "eq.org-primary",
+            bill_id: `eq.${billId}`,
+            select: "id,type,linked_session_id,total"
           }
         ),
         readRestRows<{ id: string; amount: number; received_by_user_id: string }>(page, restBase, restHeaders, "payments", {
@@ -737,6 +819,12 @@ test.describe.serial("Release B admin multi-hop checkout concurrency", () => {
       expect(Number(billRows[0].total)).toBeGreaterThan(0);
       expect(Number(billRows[0].amount_due)).toBe(0);
       expect(Number(billRows[0].amount_paid)).toBe(Number(billRows[0].total));
+      expect(billLineRows).toHaveLength(1);
+      expect(billLineRows[0]).toMatchObject({
+        type: "session_charge",
+        linked_session_id: guardedCleanupSessionId
+      });
+      expect(Number(billLineRows[0].total)).toBe(Number(billRows[0].total));
       expect(paymentRows).toHaveLength(1);
       expect(Number(paymentRows[0].amount)).toBe(Number(billRows[0].amount_paid));
       expect(eventRows).toHaveLength(1);
@@ -761,6 +849,7 @@ test.describe.serial("Release B admin multi-hop checkout concurrency", () => {
         mutationStatus,
         sessions: sessionRows,
         bill: billRows[0],
+        billLines: billLineRows,
         payment: paymentRows[0],
         eventCount: eventRows.length,
         auditCount: auditRows.length,
