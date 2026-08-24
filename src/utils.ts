@@ -862,6 +862,13 @@ export function isHoppedSessionContinuationRecoverable(
     !customerTabs.some((tab) => tab.continuedFromSessionIds?.includes(sessionId));
 }
 
+export function shouldClearHoppedSessionContinuation(
+  currentSessionId: string | null,
+  reconciledSessionId: string | null
+): boolean {
+  return Boolean(reconciledSessionId && currentSessionId === reconciledSessionId);
+}
+
 export function getUnbilledHoppedSessionsForCustomer(
   sessions: Session[],
   name: string,

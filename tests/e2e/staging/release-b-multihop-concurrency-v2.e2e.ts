@@ -189,10 +189,14 @@ test.describe.serial("Release B admin multi-hop checkout concurrency", () => {
         prepareCheckoutCommand(capturedOrigin, "A"),
         prepareCheckoutCommand(capturedObserver, "B")
       ];
+      const expectedChainSessionIds = [...chainSessionIds].sort();
       for (const envelope of envelopes) {
-        expect(new Set(envelope.payload.payload.source_session_ids)).toEqual(new Set(chainSessionIds));
-        expect(new Set(envelope.payload.payload.session_updates.map((session) => session.id)))
-          .toEqual(new Set(chainSessionIds));
+        const sourceSessionIds = envelope.payload.payload.source_session_ids;
+        expect(sourceSessionIds).toHaveLength(3);
+        expect([...sourceSessionIds].sort()).toEqual(expectedChainSessionIds);
+        const submittedSessionUpdateIds = envelope.payload.payload.session_updates.map((session) => session.id);
+        expect(submittedSessionUpdateIds).toHaveLength(3);
+        expect([...submittedSessionUpdateIds].sort()).toEqual(expectedChainSessionIds);
       }
       expect(envelopes[0].payload.mutation_id).not.toBe(envelopes[1].payload.mutation_id);
       expect(envelopes[0].payload.payload.primary_bill.id).not.toBe(envelopes[1].payload.payload.primary_bill.id);
@@ -260,8 +264,12 @@ test.describe.serial("Release B admin multi-hop checkout concurrency", () => {
       const loserEnvelope = envelopes[loserIndex];
       const winnerBillId = winnerEnvelope.payload.payload.primary_bill.id;
       const winnerActorId = actorIds[winnerIndex];
-      expect(new Set(changedRowIds({ changedRows: bodies[winnerIndex].changed_rows } as RpcEvidence, "sessions")))
-        .toEqual(new Set(chainSessionIds));
+      const winnerChangedSessionIds = changedRowIds(
+        { changedRows: bodies[winnerIndex].changed_rows } as RpcEvidence,
+        "sessions"
+      );
+      expect(winnerChangedSessionIds).toHaveLength(3);
+      expect([...winnerChangedSessionIds].sort()).toEqual(expectedChainSessionIds);
 
       const mutationStatuses = await Promise.all(envelopes.map((envelope, index) =>
         (index === 0 ? page : observer.page).request.post(

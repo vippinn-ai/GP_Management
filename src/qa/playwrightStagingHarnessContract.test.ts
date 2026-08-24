@@ -93,6 +93,16 @@ describe("staging Playwright harness contract", () => {
     );
   });
 
+  it("guards a newer hop continuation from an earlier reconciliation timer", () => {
+    const app = read("src/App.tsx");
+
+    expect(app).toContain("lastHoppedSessionIdRef.current = sessionId");
+    expect(app).toContain("const reconciledSessionId = lastHoppedSessionId");
+    expect(app).toContain(
+      "shouldClearHoppedSessionContinuation(lastHoppedSessionIdRef.current, reconciledSessionId)"
+    );
+  });
+
   it("serializes a two-reservation limited-stock race and cleans its dedicated fixture", () => {
     const scenario = read("tests/e2e/staging/release-b-limited-stock-v2.e2e.ts");
 
@@ -169,9 +179,13 @@ describe("staging Playwright harness contract", () => {
     expect(scenario).toContain('interceptSingleRpcCommand(observer.page, "**/rest/v1/rpc/commit_checkout_bill_v2")');
     expect(scenario).toContain("originCommand.submit(envelopes[0])");
     expect(scenario).toContain("observerCommand.submit(envelopes[1])");
+    expect(scenario).toContain("expect(sourceSessionIds).toHaveLength(3)");
+    expect(scenario).toContain("expect([...sourceSessionIds].sort()).toEqual(expectedChainSessionIds)");
+    expect(scenario).toContain("expect(submittedSessionUpdateIds).toHaveLength(3)");
     expect(scenario).toContain('expect(rpcRejectionCode(bodies[loserIndex])).toBe("session_not_billable")');
     expect(scenario).toContain("expect(mutationStatusBodies[loserIndex]).toBeNull()");
-    expect(scenario).toContain('changedRowIds({ changedRows: bodies[winnerIndex].changed_rows } as RpcEvidence, "sessions")');
+    expect(scenario).toContain("expect(winnerChangedSessionIds).toHaveLength(3)");
+    expect(scenario).toContain("expect([...winnerChangedSessionIds].sort()).toEqual(expectedChainSessionIds)");
     expect(scenario).toContain("expect(sessionChargeRows).toHaveLength(3)");
     expect(scenario).toContain("expect(appStateHashAfter).toBe(appStateHashBefore)");
     expect(scenario).toContain("expect(originCommand.captureCount()).toBe(1)");

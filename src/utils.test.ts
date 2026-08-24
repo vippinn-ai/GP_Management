@@ -14,6 +14,7 @@ import {
   getCustomerTabContinuationCandidates,
   getMostRecentHoppedSession,
   isHoppedSessionContinuationRecoverable,
+  shouldClearHoppedSessionContinuation,
   getUnbilledHoppedSessionsForCustomer,
   formatBillNumber,
   getReportRange,
@@ -1385,6 +1386,15 @@ describe("isHoppedSessionContinuationRecoverable", () => {
       source.id
     )).toBe(false);
     expect(isHoppedSessionContinuationRecoverable([], [], source.id)).toBe(false);
+  });
+});
+
+describe("shouldClearHoppedSessionContinuation", () => {
+  it("does not let stale reconciliation for an earlier hop clear a newer continuation", () => {
+    expect(shouldClearHoppedSessionContinuation("hop-2", "hop-1")).toBe(false);
+    expect(shouldClearHoppedSessionContinuation("hop-2", "hop-2")).toBe(true);
+    expect(shouldClearHoppedSessionContinuation(null, "hop-1")).toBe(false);
+    expect(shouldClearHoppedSessionContinuation("hop-2", null)).toBe(false);
   });
 });
 

@@ -185,6 +185,7 @@ import {
   buildInventoryReportModel,
   getUnbilledHoppedSessionsForCustomer,
   isHoppedSessionContinuationRecoverable,
+  shouldClearHoppedSessionContinuation,
   normalizeCustomerName,
   normalizeCustomerPhone,
   parseDateTimeInputValue,
@@ -483,7 +484,12 @@ export default function App() {
   const [manageSessionId, setManageSessionId] = useState<string | null>(null);
   const [checkoutState, setCheckoutState] = useState<CheckoutState | null>(null);
   const [isHopMode, setIsHopMode] = useState(false);
-  const [lastHoppedSessionId, setLastHoppedSessionId] = useState<string | null>(null);
+  const [lastHoppedSessionId, setLastHoppedSessionIdState] = useState<string | null>(null);
+  const lastHoppedSessionIdRef = useRef<string | null>(null);
+  const setLastHoppedSessionId = useCallback((sessionId: string | null) => {
+    lastHoppedSessionIdRef.current = sessionId;
+    setLastHoppedSessionIdState(sessionId);
+  }, []);
   const [postHopContinuationMode, setPostHopContinuationMode] = useState<PostHopContinuationMode>("gaming");
   const [postHopCustomerLocked, setPostHopCustomerLocked] = useState(true);
   const [postHopTabLinkDraft, setPostHopTabLinkDraft] = useState<PostHopTabLinkDraft | null>(null);
@@ -931,7 +937,7 @@ export default function App() {
       customerPhone: hoppedSession.customerPhone ?? ""
     }));
     setShowStartSessionModal(true);
-  }, [appData.customerTabs, appData.sessions, checkoutState, isHopMode]);
+  }, [appData.customerTabs, appData.sessions, checkoutState, isHopMode, setLastHoppedSessionId]);
 
   useEffect(() => {
     if (
@@ -940,7 +946,11 @@ export default function App() {
     ) {
       return;
     }
+    const reconciledSessionId = lastHoppedSessionId;
     const reconciliationTimer = window.setTimeout(() => {
+      if (!shouldClearHoppedSessionContinuation(lastHoppedSessionIdRef.current, reconciledSessionId)) {
+        return;
+      }
       setShowStartSessionModal(false);
       setLastHoppedSessionId(null);
       setPostHopContinuationMode("gaming");
@@ -949,7 +959,7 @@ export default function App() {
       setStartSessionDraft(createBlankStartSessionDraft());
     }, 0);
     return () => window.clearTimeout(reconciliationTimer);
-  }, [appData.customerTabs, appData.sessions, lastHoppedSessionId]);
+  }, [appData.customerTabs, appData.sessions, lastHoppedSessionId, setLastHoppedSessionId]);
 
   useEffect(() => {
     const attentionMutations = pendingOperationalMutations.filter(
