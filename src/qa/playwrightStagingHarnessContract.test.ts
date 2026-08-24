@@ -22,6 +22,15 @@ describe("staging Playwright harness contract", () => {
     expect(packageJson.scripts["test:db:staging:v2-reconcile"]).toBe(
       "node scripts/reconcile-financial-v2-staging.mjs"
     );
+    expect(packageJson.scripts["test:db:staging:reject-proof:build"]).toBe(
+      "node scripts/build-reject-rpc-transactional-proof.mjs"
+    );
+    expect(packageJson.scripts["test:db:staging:reject-proof:preflight"]).toBe(
+      "node scripts/preflight-reject-rpc-staging-proof.mjs"
+    );
+    expect(packageJson.scripts["test:db:staging:reject-proof:reconcile"]).toBe(
+      "node scripts/reconcile-reject-rpc-staging-proof.mjs"
+    );
     expect(viteConfig).toContain('"tests/e2e/**"');
   });
 
@@ -94,6 +103,93 @@ describe("staging Playwright harness contract", () => {
     expect(app).toMatch(
       /const issuedAt = new Date\(\)\.toISOString\(\);[\s\S]*const nowDate = new Date\(issuedAt\);[\s\S]*endedAt\.getTime\(\) > nowDate\.getTime\(\)/
     );
+  });
+
+  it("builds an exact-definition rollback-only reject RPC proof", () => {
+    const generator = read("scripts/build-reject-rpc-transactional-proof.mjs");
+    const proof = read("supabase/phase4-reject-rpcs-transactional-proof.sql");
+
+    expect(generator).toContain('"supabase/phase4-start-session-rpc.sql"');
+    expect(generator).toContain('"supabase/phase4-reject-rpcs.sql"');
+    expect(generator).toContain('"supabase/phase4-link-customer-tab-continuation-rpc.sql"');
+    expect(generator).toContain("qa_reject_rpc_definition_before on commit preserve rows");
+    expect(generator).toContain('hashQuery("during")');
+    expect(generator).toContain('hashQuery("after")');
+    expect(generator).toContain("before_snapshot.definition_sha256 is distinct from after_snapshot.definition_sha256");
+    expect(generator).toContain("before_snapshot.authenticated_can_execute is distinct from after_snapshot.authenticated_can_execute");
+    expect(generator).toContain("before_snapshot.anon_can_execute is distinct from after_snapshot.anon_can_execute");
+    expect(generator).toContain("SAVEPOINT rollback did not restore all four function definitions and grants exactly");
+    expect(generator).toContain("qa_reject_rpc_app_state_before on commit preserve rows");
+    expect(generator).toContain("before_snapshot.version is distinct from after_snapshot.version");
+    expect(generator).toContain("before_snapshot.data_sha256 is distinct from after_snapshot.data_sha256");
+    expect(generator).toContain("SAVEPOINT rollback did not restore the original app_state version and data hash exactly");
+    expect(generator).toContain('"savepoint qa_reject_rpc_proof;"');
+    expect(generator).toContain('"rollback to savepoint qa_reject_rpc_proof;"');
+    expect(generator).toContain('"release savepoint qa_reject_rpc_proof;"');
+    expect(generator).toContain("qa_reject_rpc_fixture_ids_before");
+    expect(generator).toContain("SAVEPOINT rollback left one or more proof fixtures behind");
+    expect(generator).toContain("verified_in_savepoint_app_state_version_delta");
+    expect(generator).toContain("one SAVEPOINT, rollback, and release with no BEGIN, full ROLLBACK, or COMMIT");
+    expect(generator).toContain("contains COMMIT");
+    expect(proof).toContain("QA_REJECT_RPC_PROOF_BODY");
+    expect(proof).toContain("set local role authenticated");
+    expect(proof).toContain("Nested PL/pgSQL exception blocks provide rollback savepoints");
+    expect(proof).toContain("app_state_conflict");
+    expect(proof).toContain("organization_access_denied");
+    expect(proof).toContain("audit_id_conflict");
+    expect(proof).toContain("mutation_identity_mismatch");
+    expect(proof).toContain("released_continued_from_session_ids");
+    expect(proof).toContain("Malformed legacy continuation JSON");
+    expect(proof).toContain("start_result := public.start_session");
+    expect(proof).toContain("link_result := public.link_customer_tab_continuation");
+    expect(proof).toContain("did not leave exactly one valid consumer for the hopped source");
+    expect(proof).toContain("Normalized start/link RPCs unexpectedly changed the compatibility app_state snapshot");
+    expect(proof).toContain("Tab audit actor or server-built release message is incorrect");
+    expect(proof).toContain("did not restore the selected membership to active");
+    expect(proof).toContain("set active = false");
+    expect(proof).not.toMatch(/\b(begin|rollback|commit)\s*;/i);
+  });
+
+  it("requires a reusable read-only empty-floor staging preflight", () => {
+    const preflight = read("scripts/preflight-reject-rpc-staging-proof.mjs");
+
+    expect(preflight).toContain("assertStagingSupabaseEnvironment(stagingEnv, true)");
+    expect(preflight).toContain('const organizationId = "org-primary"');
+    expect(preflight).toContain("Reject RPC proof preflight is hard-locked to org-primary");
+    expect(preflight).toContain("/^[A-Za-z0-9_-]{1,80}$/");
+    expect(preflight).toContain('role.data !== "admin"');
+    expect(preflight).toContain('.from("sessions")');
+    expect(preflight).toContain('.neq("status", "closed")');
+    expect(preflight).toContain('.from("customer_tabs")');
+    expect(preflight).toContain('.eq("status", "open")');
+    expect(preflight).toContain("safeToRunRollbackProof: openSessions.data.length === 0 && openTabs.data.length === 0");
+    expect(preflight).toContain("process.exitCode = 2");
+    expect(preflight).not.toMatch(/\.(insert|upsert|delete)\(/);
+    expect(preflight).not.toContain(".update({");
+    expect(preflight).not.toContain('supabase.rpc("reject_');
+    expect(preflight).not.toContain('supabase.rpc("start_session"');
+    expect(preflight).not.toContain('supabase.rpc("link_customer_tab_continuation"');
+  });
+
+  it("reconciles every rollback-proof fixture through a reusable read-only script", () => {
+    const reconciliation = read("scripts/reconcile-reject-rpc-staging-proof.mjs");
+
+    expect(reconciliation).toContain("assertStagingSupabaseEnvironment(stagingEnv, true)");
+    expect(reconciliation).toContain('const organizationId = "org-primary"');
+    expect(reconciliation).toContain("E2E_POSTFLIGHT_EXPECTED_APP_STATE_VERSION");
+    expect(reconciliation).toContain("E2E_POSTFLIGHT_EXPECTED_APP_STATE_HASH");
+    expect(reconciliation).toContain('"qa-reject-proof-start-new-consumer"');
+    expect(reconciliation).toContain('"qa-reject-proof-link-target"');
+    expect(reconciliation).toContain('"qa-reject-proof-inactive-audit"');
+    expect(reconciliation).toContain('"qa-reject-proof-audit-collision-mutation"');
+    expect(reconciliation).toContain('in("metadata->>mutation_id", mutationIds)');
+    expect(reconciliation).toContain("fixtureIdsInAppState");
+    expect(reconciliation).toContain("residualCount === 0");
+    expect(reconciliation).not.toMatch(/\.(insert|upsert|delete)\(/);
+    expect(reconciliation).not.toContain(".update({");
+    expect(reconciliation).not.toContain('supabase.rpc("reject_');
+    expect(reconciliation).not.toContain('supabase.rpc("start_session"');
+    expect(reconciliation).not.toContain('supabase.rpc("link_customer_tab_continuation"');
   });
 
   it("clears hop continuation only from positive normalized terminal evidence", () => {

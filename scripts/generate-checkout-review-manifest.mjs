@@ -46,6 +46,14 @@ function classifyAppState(path, content) {
   if (path === "scripts/inspect-staging-sessions.mjs" || path === "scripts/reconcile-financial-v2-staging.mjs") {
     return "migration-diagnostic-or-reconstruction";
   }
+  if (
+    path === "scripts/build-reject-rpc-transactional-proof.mjs" ||
+    path === "scripts/preflight-reject-rpc-staging-proof.mjs" ||
+    path === "scripts/reconcile-reject-rpc-staging-proof.mjs" ||
+    path === "supabase/phase4-reject-rpcs-transactional-proof.sql"
+  ) {
+    return "migration-diagnostic-or-reconstruction";
+  }
   if (path === "supabase/phase3-read-performance-indexes.sql" || path === "supabase/phase7-analytics-summary-rpc.sql") {
     return "normalized-source-no-app-state-access";
   }

@@ -21,6 +21,9 @@
     "test:db:staging:v2-smoke": "node scripts/run-financial-v2-staging-db-smoke.mjs",
     "test:db:staging:v2-reconcile": "node scripts/reconcile-financial-v2-staging.mjs",
     "test:db:staging:sessions": "node scripts/inspect-staging-sessions.mjs",
+    "test:db:staging:reject-proof:preflight": "node scripts/preflight-reject-rpc-staging-proof.mjs",
+    "test:db:staging:reject-proof:build": "node scripts/build-reject-rpc-transactional-proof.mjs",
+    "test:db:staging:reject-proof:reconcile": "node scripts/reconcile-reject-rpc-staging-proof.mjs",
     "lint": "eslint src --ext ts,tsx"
   },
   "dependencies": {

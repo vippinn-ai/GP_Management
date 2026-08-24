@@ -141,13 +141,13 @@ This performance claim is deliberately scoped to repeated Arcade session/invento
 
 After the final source and SQL changes:
 
-- Vitest: 39 files / 429 tests passed;
+- Vitest: 39 files / 446 tests passed;
 - production build: passed (existing large-chunk warning remains);
 - lint: zero errors and five documented warnings;
 - `git diff --check`: passed, with expected line-ending notices only;
 - focused hop-reconciliation and staging-harness checks: 141/141 passed; the harness contract alone is 10/10;
 - financial-v2 Playwright discovery: 24 tests across 14 files with zero configured retries; the Release A discovery runner correctly fails closed while staging has financial v2 enabled;
-- final review manifest: 285 first-party files / 79,464 physical lines / 222 semantic hotspots / 206 billing-relevant files / 88 classified `app_state` references.
+- final review manifest: 289 first-party files / 81,110 physical lines / 226 semantic hotspots / 207 billing-relevant files / 92 classified `app_state` references.
 
 ## Remaining mandatory Release B gates
 
@@ -155,3 +155,13 @@ After the final source and SQL changes:
 2. Live timed/unit/tab coverage completes UPI, split, partial/deferred collection during checkout, discount/LTP/rounding/zero-total boundaries, pauses, direct/multi-hop carryover, and changed replacement quantities.
 3. A mixed representative performance/contention run passes and final deployed query plans/logs prove no `app_state.data` read, expansion, lock, patch, or rewrite and no SQLSTATE `57014`/deadlock.
 4. Independent tester completes the final evidence review and issues a production recommendation. Production deployment still requires separate explicit approval and a no-active-session window.
+
+## Reject-release transactional proof incident and reconciliation — 2026-08-24
+
+The first exact-definition reject-release proof was independently approved for one staging SQL Editor execution only after a reusable read-only preflight reported zero non-closed sessions, zero open customer tabs, authenticated admin role, and baseline compatibility version `624` / SHA-256 `985d47c04e857ee18266685558233d391545d73bd33242bf499e746c78a7970f`. The executed generated artifact had SHA-256 `d399c3ba7fc9b0f6673e19f46a445d7e3b6af4a85ecfd017be0e7dcaa706e1e9` and embedded exact local definitions for `start_session`, both reject RPCs, and `link_customer_tab_continuation`.
+
+The run is retained as **failed** and was not retried. Supabase SQL Editor wrapped the multi-statement request in an outer transaction. The proof's explicit `ROLLBACK` therefore restored not only the exact definitions and fixtures created after its textual `BEGIN`, but also the two snapshot temp tables created earlier in the same request. The first post-rollback assertion failed with SQLSTATE `42P01`, `relation "qa_reject_rpc_definition_before" does not exist`. This is a proof-harness transaction-boundary defect, not a product-RPC assertion result; no `proof_result=passed` claim is made.
+
+Two independent read-only reconciliations immediately followed. The empty-floor preflight still reported zero open sessions/tabs and exact version/hash `624` / `985d47c04e857ee18266685558233d391545d73bd33242bf499e746c78a7970f`. Purpose-built artifact `test-artifacts/reconciliation/reject-rpc-proof-failed-run-20260824-1941.json` then checked every fixed session, customer-tab, station, audit, entity, operational-event mutation, and compatibility fixture ID. It found zero residual rows/IDs and the same exact compatibility version/hash. This confirms the attempted proof left no domain or compatibility fixture behind. Function definitions were not separately queried after the failure because the one-run/no-retry condition was honored; their restoration follows from the same successful outer rollback that removed the pre-transaction temp tables. Production was not accessed.
+
+The replacement generator now uses the SQL Editor's outer transaction deliberately: create temp snapshots, establish `SAVEPOINT qa_reject_rpc_proof`, install exact definitions and execute all proof cases, `ROLLBACK TO SAVEPOINT`, release it, assert definitions/grants, exact `app_state`, and zero residual fixtures, drop the temp snapshots, and return one final `proof_result=passed` row with verified in-savepoint version delta `3`. Candidate artifact SHA-256 `42d9545e4ab1f11a05d7b4249409731a1df5a024cb9fb0e219e1951ba21e63b4` contains exactly one savepoint, one rollback-to, one release, and zero top-level `BEGIN`, full `ROLLBACK`, or `COMMIT`; focused local contracts pass `20/20`. This candidate has not been executed. A second staging run requires fresh user authorization and a fresh independent static GO.
