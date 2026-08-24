@@ -29,13 +29,13 @@
 
 ## Verification
 
-- [x] Local unit and characterization tests pass (38 files / 418 tests on 2026-08-24).
+- [x] Local unit and characterization tests pass (38 files / 421 tests on 2026-08-24).
 - [x] Add a reproducible staging-only Playwright harness with exact-host/project guards, ignored credentials, two independent contexts, zero retries, trace-disabled credential safety, compact RPC evidence, and failure-only screenshots/video.
 - [x] Execute the Playwright pause-edit and hop/detach scenarios with staging credentials; retain their reported harness failures and reconcile the exact canonical RPC, observer, hard-refresh, cleanup, continuation, and Bill Register evidence without retrying checkout.
 - [x] Restore normalized-ready report CSV/XLSX/PDF exports, prove keyset pagination beyond one backend page locally, and inspect all three generated formats on staging.
 - [x] Execute the two-browser combo, variant, cigarette-pack, and reservation before/after-refresh Playwright matrix with exact RPC and cleanup evidence.
 - [x] Run the final consolidated Release A staging Playwright matrix with five passes in one zero-retry run; preserve and reconcile the two earlier harness-only failures before correcting their synchronization assertions.
-- [ ] SQL transaction/security/idempotency/concurrency tests pass. Anonymous, wrong-organization, actor-spoof, malformed, inactive-user, rollback, authenticated financial/admin role boundaries, same/different-mutation, over-settlement, bill-number collision, exact- and over-capacity limited-stock contention, both admin inventory metadata orderings, both checkout/reject orderings, and a single hopped-session double-bill race pass; multi-hop chains and concurrency against remaining operational/financial-adjustment writers remain.
+- [ ] SQL transaction/security/idempotency/concurrency tests pass. Anonymous, wrong-organization, actor-spoof, malformed, inactive-user, rollback, authenticated financial/admin role boundaries, same/different-mutation, over-settlement, bill-number collision, exact- and over-capacity limited-stock contention, both admin inventory metadata orderings, both checkout/reject orderings, all three authoritative-admin checkout/hop orderings, and a single hopped-session double-bill race pass; receptionist/manager checkout-hop timing outcomes, multi-hop chains, and concurrency against remaining operational/financial-adjustment writers remain.
 - [ ] Two-browser staging test passes. Basic session/tab checkout, settlement, refund, replacement, realtime, and refresh cases pass; the remaining complex/payment/carryover matrix is open.
 - [ ] Performance thresholds pass on production-sized staging data. The corrected 50-case Arcade session/inventory run passes; mixed complex and contention workloads remain.
 - [ ] Independent test-agent report has no failed or unexplained not-run cases.

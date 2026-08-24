@@ -226,6 +226,7 @@ describe("staging Playwright harness contract", () => {
     expect(scenario).toContain("reconcile their mutation IDs before any cleanup or retry");
     expect(manifestGenerator).toContain('path === "tests/e2e/staging/release-b-checkout-hop-race-v2.e2e.ts"');
     expect(manifestGenerator).toContain('"hop_session"');
+    expect(manifestGenerator).toContain('"current_user_org_role"');
   });
 
   it("retains a rollback-only staging role-authorization proof", () => {

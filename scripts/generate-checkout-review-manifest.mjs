@@ -130,7 +130,8 @@ function inferRpcs(path, content) {
       "save_live_session_details",
       "commit_checkout_bill_v2",
       "hop_session",
-      "get_financial_mutation_result"
+      "get_financial_mutation_result",
+      "current_user_org_role"
     ].forEach((name) => names.add(name));
   }
   return [...names].sort().join("; ");
