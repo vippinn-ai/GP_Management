@@ -1411,13 +1411,50 @@ describe("hasHoppedSessionContinuationTerminalEvidence", () => {
     expect(hasHoppedSessionContinuationTerminalEvidence([], [], source.id)).toBe(false);
   });
 
+  it("keeps transient active and paused rows unknown before the hopped row is hydrated", () => {
+    expect(hasHoppedSessionContinuationTerminalEvidence(
+      [{ ...source, status: "active", closeDisposition: "billed", closedBillId: "stale-bill" }],
+      [],
+      source.id
+    )).toBe(false);
+    expect(hasHoppedSessionContinuationTerminalEvidence(
+      [{ ...source, status: "paused", closeDisposition: "rejected", closedBillId: "stale-bill" }],
+      [],
+      source.id
+    )).toBe(false);
+    expect(hasHoppedSessionContinuationTerminalEvidence([source], [], source.id)).toBe(false);
+  });
+
   it("keeps a fresh-login recoverable hop available", () => {
     expect(hasHoppedSessionContinuationTerminalEvidence([source], [], source.id)).toBe(false);
   });
 
-  it("clears only on a present terminal source or a positively consumed continuation", () => {
+  it("recognizes billed, rejected, and closed-bill source states as terminal", () => {
     expect(hasHoppedSessionContinuationTerminalEvidence(
-      [{ ...source, closeDisposition: "billed", closedBillId: "bill-1" }],
+      [{ ...source, closeDisposition: "billed", closedBillId: undefined }],
+      [],
+      source.id
+    )).toBe(true);
+    expect(hasHoppedSessionContinuationTerminalEvidence(
+      [{ ...source, closeDisposition: "rejected", closedBillId: undefined }],
+      [],
+      source.id
+    )).toBe(true);
+    expect(hasHoppedSessionContinuationTerminalEvidence(
+      [{ ...source, closeDisposition: "hopped", closedBillId: "bill-1" }],
+      [],
+      source.id
+    )).toBe(true);
+    expect(hasHoppedSessionContinuationTerminalEvidence(
+      [{ ...source, closeDisposition: undefined, closedBillId: undefined }],
+      [],
+      source.id
+    )).toBe(false);
+  });
+
+  it("recognizes session and tab continuation links as positively consumed", () => {
+    expect(hasHoppedSessionContinuationTerminalEvidence(
+      [source, { ...makeHoppedSession("next", "Alice", "9876543210"), continuedFromSessionIds: [source.id] }],
       [],
       source.id
     )).toBe(true);

@@ -870,11 +870,15 @@ export function hasHoppedSessionContinuationTerminalEvidence(
   if (isHoppedSessionContinuationRecoverable(sessions, customerTabs, sessionId)) {
     return false;
   }
-  const sourcePresent = sessions.some((session) => session.id === sessionId);
+  const source = sessions.find((session) => session.id === sessionId);
+  const sourceTerminal = Boolean(
+    source?.status === "closed" &&
+    (source.closedBillId || source.closeDisposition === "billed" || source.closeDisposition === "rejected")
+  );
   const continuationConsumed =
     sessions.some((session) => session.continuedFromSessionIds?.includes(sessionId)) ||
     customerTabs.some((tab) => tab.continuedFromSessionIds?.includes(sessionId));
-  return sourcePresent || continuationConsumed;
+  return sourceTerminal || continuationConsumed;
 }
 
 export function shouldClearHoppedSessionContinuation(
