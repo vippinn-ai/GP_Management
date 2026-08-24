@@ -564,4 +564,82 @@ describe("normalized live read mapping", () => {
       }
     ]);
   });
+
+  it("uses normalized session timing while retaining the legacy null-start fallback", () => {
+    const baseSession = {
+      station_id: "station-playstation",
+      station_name_snapshot: "Playstation",
+      mode: "timed",
+      status: "closed",
+      customer_id: "customer-1",
+      customer_name: "QA Multi Hop Race",
+      customer_phone: null,
+      play_mode: "group",
+      ltp_eligible: false,
+      ltp_outcome: null,
+      ltp_discount_applied: false,
+      pricing_snapshot: [],
+      pause_log_ids: [],
+      continued_from_session_ids: [],
+      closed_bill_id: null,
+      close_disposition: "hopped",
+      close_reason: null,
+      created_at: "2026-08-24T11:53:15.991Z"
+    };
+    const result = buildNormalizedLiveData({
+      sessions: [
+        {
+          ...baseSession,
+          id: "session-carried",
+          started_at: "2026-08-24T11:41:00.000Z",
+          ended_at: "2026-08-24T11:44:00.000Z",
+          raw_data: {
+            startedAt: "2026-08-24T11:53:15.991Z",
+            endedAt: "2026-08-24T11:59:00.000Z"
+          }
+        },
+        {
+          ...baseSession,
+          id: "session-open",
+          started_at: "2026-08-24T12:00:00.000Z",
+          ended_at: null,
+          status: "active",
+          close_disposition: null,
+          raw_data: { endedAt: "2026-08-24T12:05:00.000Z", status: "active" }
+        },
+        {
+          ...baseSession,
+          id: "session-legacy-null-start",
+          started_at: null,
+          ended_at: "2026-08-24T11:40:00.000Z",
+          raw_data: { startedAt: "2026-08-24T11:39:00.000Z" }
+        }
+      ],
+      sessionPauseLogs: [],
+      sessionItems: [],
+      sessionComboApplications: [],
+      customerTabs: [],
+      customerTabItems: [],
+      customerTabComboApplications: []
+    });
+
+    expect(result.sessions[0]).toMatchObject({
+      id: "session-carried",
+      startedAt: "2026-08-24T11:41:00.000Z",
+      endedAt: "2026-08-24T11:44:00.000Z",
+      status: "closed",
+      customerName: "QA Multi Hop Race",
+      closeDisposition: "hopped"
+    });
+    expect(result.sessions[1]).toMatchObject({
+      id: "session-open",
+      startedAt: "2026-08-24T12:00:00.000Z",
+      endedAt: undefined
+    });
+    expect(result.sessions[2]).toMatchObject({
+      id: "session-legacy-null-start",
+      startedAt: "2026-08-24T11:39:00.000Z",
+      endedAt: "2026-08-24T11:40:00.000Z"
+    });
+  });
 });

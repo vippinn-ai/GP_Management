@@ -253,6 +253,11 @@ test.describe.serial("Release B admin multi-hop checkout concurrency", () => {
         observerCommand.submit(envelopes[1])
       ]);
       const bodies = await Promise.all(responses.map(readApiResponseBody));
+      raceEvidence = {
+        ...raceEvidence,
+        responseStatuses: responses.map((response) => response.status()),
+        responseBodies: bodies
+      };
       const winnerIndexes = responses.flatMap((response, index) => response.status() === 200 ? [index] : []);
       const loserIndexes = responses.flatMap((response, index) => response.status() >= 400 ? [index] : []);
       expect(winnerIndexes).toHaveLength(1);

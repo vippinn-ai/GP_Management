@@ -90,6 +90,14 @@ The over-capacity run created an isolated stock-2 item, reserved one unit in eac
 
 The first hopped-race run `20260820151441` stopped before any financial request because its recovery flow detached the continuation and then targeted a stale modal. Its exact QA hopped session was billed once through the staging UI as unambiguous cleanup; it was not retried as a test result. The corrected zero-retry run `20260820151921` billed directly from the post-hop continuation and raced two distinct mutation IDs. Responses were HTTP `[400, 200]`: the loser returned `session_not_billable`, its mutation-status lookup was `null`, and replaying the winner returned the original `bill-03d08bdf-0ee1-4863-abc9-35e85507df79` and `event-2348b701-7b8c-4a86-831d-76a5bf8b8267`. Read-only database reconciliation proved exactly one bill and one payment for the source session, one committed mutation (the winner only), one operational event, actor equality, session status `closed`, close disposition `billed`, and the same closed bill ID. This closes the one-hop/two-bill race; multi-hop chains, receptionist/manager checkout-hop timing outcomes, and concurrency against other writers remain open.
 
+## Multi-hop timing diagnostic and guarded correction — 2026-08-24
+
+Zero-retry multi-hop run `20260824172400` successfully created a real three-session chain but both distinct checkout commands returned HTTP 400. Read-only reconciliation proved both mutation lookups were null, both candidate bills/payments/events were absent, the exact three-session chain remained unbilled, and `app_state` stayed at version `620` with SHA-256 `21af0a2d1f08c80ed0d98cd7442d4cba95ff04b62871c8f6bbe38efae4049bc0`. A guarded single-command attempt `20260824174100` then returned deterministic `invalid_session_timing`; its exact mutation lookup was null and it produced no financial rows or compatibility change. Neither failed mutation was retried.
+
+Capture-only run `20260824174500` sent no checkout. Its retained request/database comparison isolated the defect: the oldest carried session submitted stale compatibility `startedAt = 2026-08-24T11:53:15.991Z`, while locked normalized `sessions.started_at = 2026-08-24T11:41:00+00:00` and `ended_at = 2026-08-24T11:44:00+00:00`. The second carried session matched exactly. The server therefore correctly rejected an impossible start-after-end interval. The run's reported Playwright failure was harness-only: capture cancellation and immediate route removal both attempted to handle the same intercepted request. No checkout was sent.
+
+The correction is deliberately narrow. The normalized mapper now prefers only typed session start/end timing over compatibility JSON; other mapping precedence is unchanged. Typed null end suppresses stale raw data, while the legacy null-start fallback remains characterized. The hop RPC locks normalized `started_at`, rejects a missing value, and copies the locked timestamp into compatibility JSON before persisting the hop. The reusable interceptor exposes a first-request completion promise, and capture-only cleanup awaits it before removing the route. Independent review issued GO for this minimal fix, staging deployment, and one exact capture-only rerun. Before deployment, 39 Vitest files / 429 tests passed, the production build passed, lint remained at zero errors/five existing warnings, and v2 Playwright discovery listed 24 zero-retry cases. Production remained untouched and remains NO-GO.
+
 ## Corrected performance evidence
 
 The first 50-case run `20260820140339` functionally passed but its SQL duration stopped before canonical hydration and the mutation completion update. That run is retained as functional load evidence only. Phase 10 now records `core_duration_ms` separately and computes `server_duration_ms` after all domain writes, event insertion, canonical hydration, and mutation commit; only persistence of the timing metric itself follows.
@@ -118,13 +126,13 @@ This performance claim is deliberately scoped to repeated Arcade session/invento
 
 After the final source and SQL changes:
 
-- Vitest: 38 files / 421 tests passed;
+- Vitest: 39 files / 429 tests passed;
 - production build: passed (existing large-chunk warning remains);
 - lint: zero errors and five documented warnings;
 - `git diff --check`: passed, with expected line-ending notices only;
 - focused hop-reconciliation and staging-harness checks: 141/141 passed; the harness contract alone is 10/10;
-- financial-v2 Playwright discovery: 21 tests across 12 files with zero configured retries; the Release A discovery runner correctly fails closed while staging has financial v2 enabled;
-- final review manifest: 280 first-party files / 76,946 physical lines / 217 semantic hotspots / 201 billing-relevant files / 83 classified `app_state` references.
+- financial-v2 Playwright discovery: 24 tests across 14 files with zero configured retries; the Release A discovery runner correctly fails closed while staging has financial v2 enabled;
+- final review manifest: 284 first-party files / 78,502 physical lines / 221 semantic hotspots / 204 billing-relevant files / 87 classified `app_state` references.
 
 ## Remaining mandatory Release B gates
 

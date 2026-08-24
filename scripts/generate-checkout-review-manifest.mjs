@@ -161,10 +161,13 @@ function inferDirectTests(path) {
   if (path === "supabase/phase10-financial-v2-rpcs.sql" || path === "supabase/phase11-operational-maintenance-rpcs.sql") {
     tests.push("src/dataGateway/financialV2SqlContract.test.ts");
   }
+  if (path === "supabase/phase4-hop-session-rpc.sql") {
+    tests.push("src/dataGateway/operationalSqlContract.test.ts");
+  }
   return [...new Set(tests)].join("; ");
 }
 
-const rawFiles = execFileSync("git", ["ls-files", "--cached", "--others", "--exclude-standard", "-z"], {
+const rawFiles = execFileSync("git", ["-c", `safe.directory=${normalizePath(root)}`, "ls-files", "--cached", "--others", "--exclude-standard", "-z"], {
   cwd: root,
   encoding: "utf8"
 });

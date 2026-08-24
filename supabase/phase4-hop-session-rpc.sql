@@ -30,6 +30,7 @@ declare
   v_next_app_state_version integer;
   v_updated_by uuid;
   v_current_status text;
+  v_current_started_at timestamptz;
   v_server_duration_ms numeric;
   v_changed_rows jsonb;
 begin
@@ -104,8 +105,8 @@ begin
     );
   end if;
 
-  select sessions.status
-  into v_current_status
+  select sessions.status, sessions.started_at
+  into v_current_status, v_current_started_at
   from public.sessions
   where sessions.organization_id = v_organization_id
     and sessions.id = v_session_id
@@ -118,6 +119,19 @@ begin
       jsonb_build_object('session_id', v_session_id)
     );
   end if;
+
+  if v_current_started_at is null then
+    perform public.raise_operational_rpc_error(
+      'invalid_session_timing',
+      'The session start time is missing.',
+      jsonb_build_object('session_id', v_session_id)
+    );
+  end if;
+
+  -- A live timing edit can commit before an older browser snapshot is used to
+  -- submit the hop. Preserve the locked normalized start time in compatibility
+  -- JSON so stale client state cannot overwrite the authoritative value.
+  v_session := jsonb_set(v_session, '{startedAt}', to_jsonb(v_current_started_at), true);
 
   update public.sessions
   set

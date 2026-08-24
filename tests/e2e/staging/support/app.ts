@@ -187,6 +187,7 @@ export async function interceptSingleRpcCommand(page: Page, pattern: string) {
   let resolveDecision!: (value: { action: "submit"; body: unknown } | { action: "cancel" }) => void;
   let resolveResponse!: (value: APIResponse) => void;
   let rejectResponse!: (reason: unknown) => void;
+  let resolveSettled!: () => void;
   const captured = new Promise<CapturedRpcRequest>((resolve) => { resolveCaptured = resolve; });
   const decision = new Promise<{ action: "submit"; body: unknown } | { action: "cancel" }>((resolve) => {
     resolveDecision = resolve;
@@ -195,32 +196,41 @@ export async function interceptSingleRpcCommand(page: Page, pattern: string) {
     resolveResponse = resolve;
     rejectResponse = reject;
   });
+  const settled = new Promise<void>((resolve) => { resolveSettled = resolve; });
 
   await page.route(pattern, async (route) => {
     captureCount += 1;
-    if (captureCount > 1) {
-      await route.abort("blockedbyclient");
-      return;
-    }
-    const request = route.request();
-    resolveCaptured({ url: request.url(), headers: request.headers(), body: request.postDataJSON() });
-    const next = await decision;
-    if (next.action === "cancel") {
-      await route.abort("aborted");
-      return;
-    }
+    const isPrimaryCapture = captureCount === 1;
     try {
-      const serverResponse = await route.fetch({ postData: JSON.stringify(next.body), timeout: 30_000 });
-      await route.fulfill({ response: serverResponse });
-      resolveResponse(serverResponse);
-    } catch (error) {
-      await route.abort("aborted").catch(() => undefined);
-      rejectResponse(error);
+      if (!isPrimaryCapture) {
+        await route.abort("blockedbyclient");
+        return;
+      }
+      const request = route.request();
+      resolveCaptured({ url: request.url(), headers: request.headers(), body: request.postDataJSON() });
+      const next = await decision;
+      if (next.action === "cancel") {
+        await route.abort("aborted");
+        return;
+      }
+      try {
+        const serverResponse = await route.fetch({ postData: JSON.stringify(next.body), timeout: 30_000 });
+        await route.fulfill({ response: serverResponse });
+        resolveResponse(serverResponse);
+      } catch (error) {
+        await route.abort("aborted").catch(() => undefined);
+        rejectResponse(error);
+      }
+    } finally {
+      if (isPrimaryCapture) {
+        resolveSettled();
+      }
     }
   });
 
   return {
     captured,
+    settled,
     submit(body: unknown) {
       if (submitted || decided) throw new Error(`The intercepted ${pattern} command can only be submitted once.`);
       submitted = true;

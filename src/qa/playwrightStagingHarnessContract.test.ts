@@ -19,6 +19,9 @@ describe("staging Playwright harness contract", () => {
     expect(packageJson.scripts["test:e2e:staging:v2"]).toBe(
       "node scripts/run-financial-v2-staging-e2e.mjs"
     );
+    expect(packageJson.scripts["test:db:staging:v2-reconcile"]).toBe(
+      "node scripts/reconcile-financial-v2-staging.mjs"
+    );
     expect(viteConfig).toContain('"tests/e2e/**"');
   });
 
@@ -182,6 +185,8 @@ describe("staging Playwright harness contract", () => {
     expect(scenario).toContain("expect(sourceSessionIds).toHaveLength(3)");
     expect(scenario).toContain("expect([...sourceSessionIds].sort()).toEqual(expectedChainSessionIds)");
     expect(scenario).toContain("expect(submittedSessionUpdateIds).toHaveLength(3)");
+    expect(scenario).toContain("responseStatuses: responses.map((response) => response.status())");
+    expect(scenario).toContain("responseBodies: bodies");
     expect(scenario).toContain('expect(rpcRejectionCode(bodies[loserIndex])).toBe("session_not_billable")');
     expect(scenario).toContain("expect(mutationStatusBodies[loserIndex]).toBeNull()");
     expect(scenario).toContain("expect(winnerChangedSessionIds).toHaveLength(3)");
@@ -196,6 +201,53 @@ describe("staging Playwright harness contract", () => {
     expect(scenario).not.toContain("replay");
     expect(manifestGenerator).toContain('path === "tests/e2e/staging/release-b-multihop-concurrency-v2.e2e.ts"');
     expect(manifestGenerator).toContain('"bill_lines"');
+  });
+
+  it("reconciles an exact rejected staging race without issuing another mutation", () => {
+    const script = read("scripts/reconcile-financial-v2-staging.mjs");
+
+    expect(script).toContain("assertStagingSupabaseEnvironment(stagingEnv, true)");
+    expect(script).toContain("E2E_RECONCILE_MUTATION_IDS");
+    expect(script).toContain("E2E_RECONCILE_BILL_IDS");
+    expect(script).toContain("E2E_RECONCILE_SESSION_IDS");
+    expect(script).toContain("mutationIds.length !== expectedMutationCount");
+    expect(script).toContain("billIds.length !== expectedBillCount");
+    expect(script).toContain("sessionIds.length !== expectedSessionCount");
+    expect(script).toContain("expectedSessionCount !== 3");
+    expect(script).toContain('supabase.rpc("get_financial_mutation_result"');
+    expect(script).not.toContain('supabase.rpc("commit_checkout_bill_v2"');
+    expect(script).toContain("mutationStatuses.some((entry) => entry.result !== null)");
+    expect(script).toContain("bills.data.length || payments.data.length || events.data.length");
+    expect(script).toContain('firstSession.status !== "closed" || firstSession.close_disposition !== "hopped"');
+    expect(script).toContain('thirdSession.status !== "active"');
+    expect(script).toContain("JSON.stringify([firstSessionId, secondSessionId])");
+    expect(script).toContain("appState.data.version !== expectedAppStateVersion");
+  });
+
+  it("retains a single-send active three-session cleanup after a rejected race", () => {
+    const scenario = read("tests/e2e/staging/release-b-active-multihop-cleanup-v2.e2e.ts");
+
+    expect(scenario).toContain('test("bills one exact active three-session chain once"');
+    expect(scenario).toContain("sourceSessionIds.length !== 3 || new Set(sourceSessionIds).size !== 3");
+    expect(scenario).toContain('expect(managed.getByLabel("Customer Name", { exact: true })).toHaveValue(customerName!)');
+    expect(scenario).toContain("expect(envelope.payload.payload.source_session_ids).toHaveLength(3)");
+    expect(scenario).toContain("expect(submittedSessionIds).toHaveLength(3)");
+    expect(scenario).toContain("expect(envelope.payload.payload.primary_bill.lines).toHaveLength(3)");
+    expect(scenario).toContain("expect(linkedLineSessionIds).toHaveLength(3)");
+    expect(scenario).toContain('status: "active", close_disposition: null, continued_from_session_ids: [firstId, secondId]');
+    expect(scenario).toContain("expect(appStateBefore[0].version).toBe(expectedAppStateVersion)");
+    expect(scenario).toContain('E2E_GUARDED_ACTIVE_CAPTURE_ONLY === "true"');
+    expect(scenario).toContain("await command.settled");
+    expect(scenario).toContain("submittedSessionUpdates: envelope.payload.payload.session_updates");
+    expect(scenario).toContain("timingComparisons");
+    expect(scenario).toContain("comparison.startedAtMatches");
+    expect(scenario).toContain("comparison.endedAtMatches");
+    expect(scenario).toContain("const response = await command.submit(envelope)");
+    expect(scenario).toContain("responseStatus: response.status(), responseBody: body");
+    expect(scenario).toContain("expect(changedSessionIds).toHaveLength(3)");
+    expect(scenario).toContain("expect(lines).toHaveLength(3)");
+    expect(scenario).toContain("expect(persistedLinkedIds).toHaveLength(3)");
+    expect(scenario).toContain("reconcile its exact mutation ID before any cleanup or retry");
   });
 
   it("retains an exact-identity single-send recovery for an abandoned staging hopped session", () => {
@@ -255,6 +307,8 @@ describe("staging Playwright harness contract", () => {
     expect(manifestGenerator).toContain('"commit_checkout_bill_v2"');
     expect(manifestGenerator).toContain('"reject_session"');
     expect(manifestGenerator).toContain('"get_financial_mutation_result"');
+    expect(manifestGenerator).toContain('path === "supabase/phase4-hop-session-rpc.sql"');
+    expect(manifestGenerator).toContain('"src/dataGateway/operationalSqlContract.test.ts"');
   });
 
   it("reuses a single-send controller for checkout versus hop in both orders and concurrently", () => {
@@ -263,6 +317,9 @@ describe("staging Playwright harness contract", () => {
     const manifestGenerator = read("scripts/generate-checkout-review-manifest.mjs");
 
     expect(support).toContain("export async function interceptSingleRpcCommand");
+    expect(support).toContain("const isPrimaryCapture = captureCount === 1");
+    expect(support).toContain("if (isPrimaryCapture)");
+    expect(support).toContain("settled,");
     expect(scenario).toContain('test.describe.serial("Release B admin checkout versus game-hop concurrency"');
     expect(support).toContain('await route.abort("blockedbyclient")');
     expect(support).toContain("await route.fetch({ postData: JSON.stringify(next.body), timeout: 30_000 })");

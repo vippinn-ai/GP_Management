@@ -741,8 +741,11 @@ function mapNormalizedSession(
     stationId: toStringValue(raw.stationId, row.station_id ?? ""),
     stationNameSnapshot: toStringValue(raw.stationNameSnapshot, row.station_name_snapshot ?? ""),
     mode: toStationMode(raw.mode, toStationMode(row.mode)),
-    startedAt: toStringValue(raw.startedAt, row.started_at ?? row.created_at),
-    endedAt: toOptionalString(raw.endedAt) ?? toOptionalString(row.ended_at),
+    // Financial validation compares these values with the typed normalized
+    // columns. Prefer those columns so stale compatibility JSON cannot corrupt
+    // a carried-session checkout. A legacy NULL start may still use raw data.
+    startedAt: toStringValue(row.started_at, toStringValue(raw.startedAt, row.created_at)),
+    endedAt: row.ended_at === undefined ? toOptionalString(raw.endedAt) : toOptionalString(row.ended_at),
     status: toSessionStatus(raw.status, toSessionStatus(row.status)),
     customerId: toOptionalString(raw.customerId) ?? toOptionalString(row.customer_id),
     customerName: toOptionalString(raw.customerName) ?? toOptionalString(row.customer_name),

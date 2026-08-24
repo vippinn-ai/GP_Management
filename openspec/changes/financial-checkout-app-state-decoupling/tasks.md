@@ -29,7 +29,7 @@
 
 ## Verification
 
-- [x] Local unit and characterization tests pass (38 files / 421 tests on 2026-08-24).
+- [x] Local unit and characterization tests pass (39 files / 429 tests on 2026-08-24).
 - [x] Add a reproducible staging-only Playwright harness with exact-host/project guards, ignored credentials, two independent contexts, zero retries, trace-disabled credential safety, compact RPC evidence, and failure-only screenshots/video.
 - [x] Execute the Playwright pause-edit and hop/detach scenarios with staging credentials; retain their reported harness failures and reconcile the exact canonical RPC, observer, hard-refresh, cleanup, continuation, and Bill Register evidence without retrying checkout.
 - [x] Restore normalized-ready report CSV/XLSX/PDF exports, prove keyset pagination beyond one backend page locally, and inspect all three generated formats on staging.

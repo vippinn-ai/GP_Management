@@ -19,6 +19,7 @@
     "test:e2e:staging:list": "node scripts/run-staging-e2e.mjs --list",
     "test:e2e:staging:v2": "node scripts/run-financial-v2-staging-e2e.mjs",
     "test:db:staging:v2-smoke": "node scripts/run-financial-v2-staging-db-smoke.mjs",
+    "test:db:staging:v2-reconcile": "node scripts/reconcile-financial-v2-staging.mjs",
     "lint": "eslint src --ext ts,tsx"
   },
   "dependencies": {
