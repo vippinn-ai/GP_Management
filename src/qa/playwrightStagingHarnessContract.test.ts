@@ -155,6 +155,41 @@ describe("staging Playwright harness contract", () => {
     expect(scenario).toContain("expect(replayBody.event_id).toBe(bodies[winnerIndex].event_id)");
   });
 
+  it("serializes both checkout versus rejection orderings with exact reconciliation", () => {
+    const scenario = read("tests/e2e/staging/release-b-checkout-reject-race-v2.e2e.ts");
+    const manifestGenerator = read("scripts/generate-checkout-review-manifest.mjs");
+
+    expect(scenario).toContain('for (const ordering of ["checkout-first", "reject-first"] as const)');
+    expect(scenario).toContain("checkoutResponse = await checkoutCommand.submit(checkoutEnvelope)");
+    expect(scenario).toContain("rejectResponse = await rejectCommand.submit(capturedReject.body)");
+    expect(scenario).toContain('expect(rejectionCode(rejectBody)).toBe("session_not_open")');
+    expect(scenario).toContain('expect(rejectionCode(checkoutBody)).toBe("session_not_billable")');
+    expect(scenario).toContain('capturedCheckout.url.replace("commit_checkout_bill_v2", "get_financial_mutation_result")');
+    expect(scenario).toContain("expect(mutationStatus).toBeNull()");
+    expect(scenario).toContain("expect(afterAppState[0].version).toBe(beforeAppState[0].version)");
+    expect(scenario).toContain("expect(afterAppState[0].version).toBe(beforeAppState[0].version + 1)");
+    expect(scenario).toContain("const expectedWinnerActorId = ordering === \"checkout-first\" ? checkoutActorId : rejectActorId");
+    expect(scenario).toContain("expect([...actorIds]).toEqual([expectedWinnerActorId])");
+    expect(scenario).toContain("checkoutAuditRows.forEach((audit) => actorIds.add(audit.user_id))");
+    expect(scenario).toContain("expect(Number(billRows[0].amount_paid)).toBe(Number(billRows[0].total))");
+    expect(scenario).toContain("expect(checkoutCommand.captureCount()).toBe(1)");
+    expect(scenario).toContain("expect(rejectCommand.captureCount()).toBe(1)");
+    expect(scenario).toContain('getByText("1 conflict", { exact: true })');
+    expect(scenario).toContain('getByRole("button", { name: "Clear", exact: true }).click()');
+    expect(scenario).toContain('entry.rpc === "start_session" && entry.status < 300');
+    expect(scenario).toContain('page.off("dialog", dismissOriginDialog)');
+    expect(scenario).toContain("expect(originErrors.pageErrors).toHaveLength(1)");
+    expect(scenario).toContain("/The primary session is no longer billable\\.?/i");
+    expect(scenario).toContain("raceStarted && !raceResolved");
+    expect(scenario).toContain("reconcile their mutation IDs before any cleanup or retry");
+    expect(manifestGenerator).toContain('path === "tests/e2e/staging/release-b-checkout-reject-race-v2.e2e.ts"');
+    expect(manifestGenerator).toContain('names.add("customers")');
+    expect(manifestGenerator).toContain('"save_live_session_details"');
+    expect(manifestGenerator).toContain('"commit_checkout_bill_v2"');
+    expect(manifestGenerator).toContain('"reject_session"');
+    expect(manifestGenerator).toContain('"get_financial_mutation_result"');
+  });
+
   it("retains a rollback-only staging role-authorization proof", () => {
     const proof = read(
       "openspec/changes/financial-checkout-app-state-decoupling/release-b-role-authorization-proof.sql"

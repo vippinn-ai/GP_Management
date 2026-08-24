@@ -100,15 +100,27 @@ function inferCollections(path, content) {
       "operational_events"
     ].forEach((name) => names.add(name));
   }
+  if (path === "tests/e2e/staging/release-b-checkout-reject-race-v2.e2e.ts") {
+    names.add("customers");
+  }
   return [...names].join("; ");
 }
 
-function inferRpcs(content) {
+function inferRpcs(path, content) {
   const names = new Set();
   for (const match of content.matchAll(/\.rpc\(\s*["']([a-z0-9_]+)["']/gi)) names.add(match[1]);
   for (const match of content.matchAll(/\brpc\s*===\s*["']([a-z0-9_]+)["']/gi)) names.add(match[1]);
   for (const match of content.matchAll(/function\s+public\.([a-z0-9_]+)\s*\(/gi)) names.add(match[1]);
   for (const match of content.matchAll(/\b(?:perform|select)\s+public\.([a-z0-9_]+)\s*\(/gi)) names.add(match[1]);
+  if (path === "tests/e2e/staging/release-b-checkout-reject-race-v2.e2e.ts") {
+    [
+      "start_session",
+      "save_live_session_details",
+      "commit_checkout_bill_v2",
+      "reject_session",
+      "get_financial_mutation_result"
+    ].forEach((name) => names.add(name));
+  }
   return [...names].sort().join("; ");
 }
 
@@ -160,7 +172,7 @@ const rows = files.map((path) => {
       : semanticHotspot ? "semantic-hotspot-plus-mechanical-screen" : "mechanical-full-text-risk-screen",
     billingRelevant: billingRelevant ? "yes" : "no",
     collections: inferCollections(path, content),
-    rpcs: inferRpcs(content),
+    rpcs: inferRpcs(path, content),
     appStateDisposition,
     tests: inferDirectTests(path)
   };
