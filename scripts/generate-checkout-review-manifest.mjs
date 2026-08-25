@@ -127,6 +127,7 @@ function inferCollections(path, content) {
   if ([
     "tests/e2e/staging/release-b-checkout-reject-race-v2.e2e.ts",
     "tests/e2e/staging/release-b-checkout-hop-race-v2.e2e.ts",
+    "tests/e2e/staging/release-b-role-checkout-hop-timing-v2.e2e.ts",
     "tests/e2e/staging/release-b-multihop-concurrency-v2.e2e.ts"
   ].includes(path)) {
     names.add("customers");
@@ -166,7 +167,18 @@ function inferRpcs(path, content) {
       "commit_checkout_bill_v2",
       "hop_session",
       "get_financial_mutation_result",
-      "current_user_org_role"
+      "current_user_org_role",
+      "reject_session"
+    ].forEach((name) => names.add(name));
+  }
+  if (path === "tests/e2e/staging/release-b-role-checkout-hop-timing-v2.e2e.ts") {
+    [
+      "start_session",
+      "commit_checkout_bill_v2",
+      "hop_session",
+      "get_financial_mutation_result",
+      "current_user_org_role",
+      "reject_session"
     ].forEach((name) => names.add(name));
   }
   if (path === "tests/e2e/staging/release-b-multihop-concurrency-v2.e2e.ts") {

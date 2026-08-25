@@ -38,3 +38,23 @@ No release-blocking static/local code defect remains in the reviewed tree, inclu
 - Complete staging drift capture, the full-business-day v1 soak, and the rollback drill.
 
 No database row, environment configuration, staging deployment, or production state was changed by this audit.
+
+## 2026-08-25 receptionist-manager timing checkpoint
+
+Verdict: **GO for the local/static harness checkpoint only. Live staging execution remains approval-gated and not run.**
+
+The independent test agent first returned NO-GO twice. The implementation was corrected before this GO: ordinary-staff timing inputs are now asserted absent and natural frozen timestamps are used; all normalized/app-state reads finish before interception; cleanup requires positive rejection acknowledgement; the dedicated runner rejects arbitrary paths/options; the checkout envelope imports the canonical frontend `FinancialCheckoutV2RpcPayloadEnvelope` and uses `session_updates`; and hopped cleanup requires exactly one `session_charge` linked to the exact source.
+
+| Gate | Status | Evidence |
+| --- | --- | --- |
+| Focused role/SQL contracts | Passed | 37 / 37 |
+| Full local automated suite | Passed | 39 files / 450 tests |
+| Role-harness TypeScript | Passed | No-emit check with Node and Vite client types |
+| Playwright discovery | Passed | Seven tests in exactly one role-matrix file; retries zero; production disabled |
+| Production build | Passed | 350 modules; existing large-chunk warning only |
+| Lint | Passed with warnings | Zero errors; five existing warnings |
+| Credential safety | Passed statically | Ignored role credential file; no password/token evidence; traces disabled |
+| Independent role-harness review | Passed locally | Role preflight, natural timing, immediate single sends, exact loser codes, actor/financial/audit reconciliation, exact cleanup line, and fail-closed ambiguity handling |
+| Live staging role matrix | Not run | Requires separate approval, distinct active receptionist/manager credentials, a fresh run ID, and a no-active-session staging window |
+
+No staging access, database mutation, deployment, role change, or production action was performed for this checkpoint.

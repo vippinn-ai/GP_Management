@@ -169,6 +169,17 @@ describe("financial v2 SQL contract", () => {
     expect(migration).toMatch(/pre-checkout values[\s\S]*apply_financial_v2_rows[\s\S]*update public\.sessions/i);
   });
 
+  it("allows first-close timing for ordinary staff but rejects their start or persisted-end edits", () => {
+    const checkout = functionBody("commit_checkout_bill_v2");
+    expect(checkout).toMatch(
+      /current_session\.id = case when v_mode = 'session'[\s\S]*current_user_org_role\(v_organization_id\) <> 'admin'::public\.app_role/i
+    );
+    expect(checkout).toMatch(
+      /startedAt'\)::timestamptz is distinct from current_session\.started_at[\s\S]*current_session\.ended_at is not null[\s\S]*endedAt'\)::timestamptz is distinct from current_session\.ended_at/i
+    );
+    expect(checkout).toMatch(/raise_operational_rpc_error\('invalid_session_timing'/i);
+  });
+
   it("keeps normalized pause maintenance independent of app_state", () => {
     expect(maintenanceMigration).not.toMatch(/public\.app_state/i);
     expect(maintenanceMigration).not.toMatch(/patch_app_state/i);

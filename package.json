@@ -18,6 +18,8 @@
     "test:e2e:staging": "node scripts/run-staging-e2e.mjs",
     "test:e2e:staging:list": "node scripts/run-staging-e2e.mjs --list",
     "test:e2e:staging:v2": "node scripts/run-financial-v2-staging-e2e.mjs",
+    "test:e2e:staging:v2:roles": "node scripts/run-financial-v2-role-matrix-staging-e2e.mjs",
+    "test:e2e:staging:v2:roles:list": "node scripts/run-financial-v2-role-matrix-staging-e2e.mjs --list",
     "test:db:staging:v2-smoke": "node scripts/run-financial-v2-staging-db-smoke.mjs",
     "test:db:staging:v2-reconcile": "node scripts/reconcile-financial-v2-staging.mjs",
     "test:db:staging:sessions": "node scripts/inspect-staging-sessions.mjs",

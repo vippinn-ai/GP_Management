@@ -31,6 +31,15 @@ export interface CapturedRpcRequest {
   body: unknown;
 }
 
+export type OperationalRole = "admin" | "manager" | "receptionist";
+
+export interface AuthoritativeOrganizationIdentity {
+  actorId: string;
+  role: OperationalRole;
+  restBase: string;
+  headers: Record<string, string>;
+}
+
 export function credentials(slot: "A" | "B"): StagingCredentials {
   const username = process.env[`E2E_USER_${slot}`]?.trim();
   const password = process.env[`E2E_PASSWORD_${slot}`]?.trim();
@@ -177,6 +186,50 @@ export function captureAuthenticatedRestRequests(page: Page, target: CapturedRpc
       body
     });
   });
+}
+
+export async function assertAuthoritativeOrganizationIdentity(
+  page: Page,
+  requests: CapturedRpcRequest[],
+  expectedRole: OperationalRole,
+  organizationId = "org-primary"
+): Promise<AuthoritativeOrganizationIdentity> {
+  const captured = [...requests].reverse().find((entry) => {
+    const url = new URL(entry.url);
+    return url.pathname.includes("/rest/v1/") && Boolean(entry.headers.apikey && entry.headers.authorization);
+  });
+  if (!captured) throw new Error(`No authenticated REST request was captured for the expected ${expectedRole} account.`);
+
+  const actorId = authenticatedJwtSubject(captured.headers);
+  const restUrl = new URL(captured.url);
+  const restMarker = "/rest/v1";
+  const markerAt = restUrl.pathname.indexOf(restMarker);
+  if (markerAt < 0) throw new Error("The authenticated request did not resolve to a Supabase REST endpoint.");
+  const restBase = `${restUrl.origin}${restUrl.pathname.slice(0, markerAt)}${restMarker}`;
+  const headers = {
+    apikey: captured.headers.apikey,
+    authorization: captured.headers.authorization,
+    "content-type": "application/json"
+  };
+  const roleResponse = await page.request.post(`${restBase}/rpc/current_user_org_role`, {
+    headers,
+    data: { target_organization_id: organizationId }
+  });
+  expect(roleResponse.status(), `current_user_org_role status for ${expectedRole}`).toBe(200);
+  const role = await roleResponse.json() as OperationalRole | null;
+  expect(role, `The authenticated account must have authoritative ${expectedRole} membership in ${organizationId}.`)
+    .toBe(expectedRole);
+
+  const profiles = await readRestRows<{ id: string; role: OperationalRole; active: boolean }>(
+    page,
+    restBase,
+    headers,
+    "profiles",
+    { id: `eq.${actorId}`, select: "id,role,active" }
+  );
+  expect(profiles).toHaveLength(1);
+  expect(profiles[0]).toMatchObject({ id: actorId, role: expectedRole, active: true });
+  return { actorId, role, restBase, headers };
 }
 
 export async function readApiResponseBody(response: APIResponse) {

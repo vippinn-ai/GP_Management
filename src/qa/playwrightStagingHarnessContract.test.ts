@@ -587,6 +587,56 @@ describe("staging Playwright harness contract", () => {
     expect(manifestGenerator).toContain('"current_user_org_role"');
   });
 
+  it("gates the receptionist-manager timing matrix behind distinct authoritative staging identities", () => {
+    const support = read("tests/e2e/staging/support/app.ts");
+    const runner = read("scripts/run-financial-v2-role-matrix-staging-e2e.mjs");
+    const scenario = read("tests/e2e/staging/release-b-role-checkout-hop-timing-v2.e2e.ts");
+    const financialRpcClient = read("src/dataGateway/financialRpcClient.ts");
+    const example = read(".env.e2e.roles.example");
+
+    expect(example).toContain("E2E_RECEPTIONIST_USER=staging_receptionist_username");
+    expect(example).toContain("E2E_MANAGER_USER=staging_manager_username");
+    expect(runner).toContain('parseEnvFile(path.join(root, ".env.e2e.roles.local"))');
+    expect(runner).toContain("The role matrix requires distinct receptionist and manager accounts.");
+    expect(runner).not.toContain("admin-update-user");
+    expect(runner).toContain("The role-matrix runner accepts only --list or --help");
+    expect(runner).toContain('env.E2E_ROLE_MATRIX = "release-b-receptionist-manager"');
+    expect(runner).toContain("release-b-role-checkout-hop-timing-v2.e2e.ts");
+    expect(support).toContain("export async function assertAuthoritativeOrganizationIdentity");
+    expect(support).toContain('rpc/current_user_org_role');
+    expect(support).toContain("expect(profiles[0]).toMatchObject({ id: actorId, role: expectedRole, active: true })");
+    expect(scenario).toContain('process.env.E2E_ROLE_MATRIX !== ROLE_MATRIX_CONFIRMATION');
+    expect(scenario).toContain('writesAttempted: false');
+    expect(scenario).toContain('expect(receptionist.actorId).not.toBe(manager.actorId)');
+    expect(scenario).toContain('for (const scenario of scenarios)');
+    expect(scenario).toContain('ordering: "checkout-first"');
+    expect(scenario).toContain('ordering: "hop-first"');
+    expect(scenario).toContain('ordering: "concurrent"');
+    expect(scenario).toContain('getByLabel("Session Start Time", { exact: true })');
+    expect(scenario).toContain('getByLabel("Session End Time", { exact: true })).toHaveCount(0)');
+    expect(scenario).not.toContain('.fill(checkoutEndAt)');
+    expect(scenario).not.toContain('.fill(hopEndAt)');
+    expect(scenario.indexOf("const [beforeSession, beforeAppState]")).toBeLessThan(
+      scenario.indexOf("checkoutCommand = await interceptSingleRpcCommand")
+    );
+    expect(scenario).toContain('entry.rpc === "start_session" && entry.status < 300');
+    expect(financialRpcClient).toContain("session_updates: FinancialCheckoutPatch[\"sessions\"]");
+    expect(scenario).toContain("FinancialCheckoutV2RpcPayloadEnvelope");
+    expect(scenario).toContain("payload.session_updates.find");
+    expect(scenario).not.toContain("payload.sessions.find");
+    expect(scenario).toContain('expect(rpcRejectionCode(checkoutBody)).toBe("invalid_session_timing")');
+    expect(scenario).toContain('expect(rpcRejectionCode(hopBody)).toBe("session_not_open")');
+    expect(scenario).toContain('getByRole("button", { name: "Bill & Done", exact: true }).click()');
+    expect(scenario).toContain('expect(cleanupAppState).toEqual(afterRaceAppState)');
+    expect(scenario).toContain("expect(cleanupCommand.captureCount()).toBe(1)");
+    expect(scenario).toContain("expect(cleanupMutationStatus?.bill_id).toBe(cleanupBillId)");
+    expect(scenario).toContain('expect(cleanupLines).toHaveLength(1)');
+    expect(scenario).toContain('type: "session_charge", linked_session_id: sessionId');
+    expect(scenario).toContain("if (!cleanupConfirmed)");
+    expect(scenario).toContain("Pre-race cleanup did not positively confirm rejection of the exact QA session.");
+    expect(scenario).toContain("reconcile their mutation IDs and any hopped session before cleanup or retry");
+  });
+
   it("retains a rollback-only staging role-authorization proof", () => {
     const proof = read(
       "openspec/changes/financial-checkout-app-state-decoupling/release-b-role-authorization-proof.sql"
