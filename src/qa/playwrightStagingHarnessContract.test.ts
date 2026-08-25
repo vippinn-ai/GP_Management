@@ -354,6 +354,8 @@ describe("staging Playwright harness contract", () => {
   it("locks a complete three-session hop chain against two single-send checkout commands", () => {
     const scenario = read("tests/e2e/staging/release-b-multihop-concurrency-v2.e2e.ts");
     const support = read("tests/e2e/staging/support/app.ts");
+    const startSessionSql = read("supabase/phase4-start-session-rpc.sql");
+    const hopSessionSql = read("supabase/phase4-hop-session-rpc.sql");
     const manifestGenerator = read("scripts/generate-checkout-review-manifest.mjs");
 
     expect(scenario).toContain('test.describe.serial("Release B admin multi-hop checkout concurrency"');
@@ -384,7 +386,12 @@ describe("staging Playwright harness contract", () => {
     expect(scenario).toContain("expect([...sourceSessionIds].sort()).toEqual(expectedChainSessionIds)");
     expect(scenario).toContain("expect(submittedSessionUpdateIds).toHaveLength(3)");
     expect(scenario).toContain('select: "id,started_at,raw_data"');
-    expect(scenario).toContain('`${sessionId} compatibility multiplicity`');
+    expect(scenario).toContain("const carriedSessionIds = chainSessionIds.slice(0, -1)");
+    expect(scenario).toContain('`${sessionId} carried compatibility multiplicity`');
+    expect(scenario).toContain('`${primarySessionId} normalized-only primary compatibility absence`');
+    expect(startSessionSql).not.toContain("update public.app_state");
+    expect(hopSessionSql).toContain("update public.app_state");
+    expect(hopSessionSql).toContain("public.patch_app_state_array_by_id");
     expect(scenario).toContain('`${sessionId} typed start presence`');
     expect(scenario).toContain('`${sessionId} typed start validity`');
     expect(scenario).toContain('`${sessionId} normalized/raw start`');

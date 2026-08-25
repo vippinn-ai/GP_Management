@@ -267,21 +267,28 @@ test.describe.serial("Release B admin multi-hop checkout concurrency", () => {
       const timingById = new Map(timingRows.map((session) => [session.id, session]));
       for (const sessionId of chainSessionIds) {
         const normalized = timingById.get(sessionId);
-        const compatibilityMatches = compatibilitySessions.filter((session) => session.id === sessionId);
-        expect(compatibilityMatches, `${sessionId} compatibility multiplicity`).toHaveLength(1);
-        const compatibility = compatibilityMatches[0];
         expect(normalized?.raw_data?.startedAt, `${sessionId} raw start`).toBeTruthy();
-        expect(compatibility?.startedAt, `${sessionId} compatibility start`).toBeTruthy();
         expect(normalized?.started_at, `${sessionId} typed start presence`).toBeTruthy();
         const normalizedStart = new Date(normalized!.started_at!).getTime();
         const rawStart = new Date(normalized!.raw_data!.startedAt!).getTime();
-        const compatibilityStart = new Date(compatibility!.startedAt!).getTime();
         expect(Number.isFinite(normalizedStart), `${sessionId} typed start validity`).toBe(true);
         expect(Number.isFinite(rawStart), `${sessionId} raw start validity`).toBe(true);
-        expect(Number.isFinite(compatibilityStart), `${sessionId} compatibility start validity`).toBe(true);
         expect(rawStart, `${sessionId} normalized/raw start`).toBe(normalizedStart);
+      }
+      const carriedSessionIds = chainSessionIds.slice(0, -1);
+      for (const sessionId of carriedSessionIds) {
+        const compatibilityMatches = compatibilitySessions.filter((session) => session.id === sessionId);
+        expect(compatibilityMatches, `${sessionId} carried compatibility multiplicity`).toHaveLength(1);
+        const compatibilityStart = new Date(compatibilityMatches[0].startedAt!).getTime();
+        const normalizedStart = new Date(timingById.get(sessionId)!.started_at!).getTime();
+        expect(Number.isFinite(compatibilityStart), `${sessionId} compatibility start validity`).toBe(true);
         expect(compatibilityStart, `${sessionId} normalized/compatibility start`).toBe(normalizedStart);
       }
+      const primarySessionId = chainSessionIds.at(-1)!;
+      expect(
+        compatibilitySessions.filter((session) => session.id === primarySessionId),
+        `${primarySessionId} normalized-only primary compatibility absence`
+      ).toHaveLength(0);
       const appStateHashBefore = appStateDataHash(beforeAppState[0].data);
 
       originCommand = await interceptSingleRpcCommand(page, "**/rest/v1/rpc/commit_checkout_bill_v2");
