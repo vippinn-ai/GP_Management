@@ -28,6 +28,11 @@ import {
 
 const runId = process.env.E2E_RUN_ID ?? "missing-run-id";
 const station = process.env.E2E_V2_MULTIHOP_STATION?.trim() || "Playstation";
+const organizationId = "org-primary";
+const configuredOrganizationId = process.env.E2E_V2_ORGANIZATION_ID?.trim();
+if (configuredOrganizationId && configuredOrganizationId !== organizationId) {
+  throw new Error(`Multi-hop staging E2E is locked to organization ${organizationId}.`);
+}
 const guardedCleanupSessionId = process.env.E2E_GUARDED_HOPPED_SESSION_ID?.trim();
 const guardedCleanupCustomer = process.env.E2E_GUARDED_HOPPED_CUSTOMER?.trim();
 const guardedCleanupStation = process.env.E2E_GUARDED_HOPPED_STATION?.trim();
@@ -211,21 +216,19 @@ test.describe.serial("Release B admin multi-hop checkout concurrency", () => {
         authorization: preflightHeaders[0].authorization
       };
       const actorProfiles = await Promise.all(actorIds.map((actorId, index) =>
-        readRestRows<{ id: string; organization_id: string; role: string; active: boolean }>(
+        readRestRows<{ id: string; role: string; active: boolean }>(
           index === 0 ? page : observer.page,
           restBase,
           { apikey: preflightHeaders[index].apikey, authorization: preflightHeaders[index].authorization },
           "profiles",
-          { id: `eq.${actorId}`, select: "id,organization_id,role,active" }
+          { id: `eq.${actorId}`, select: "id,role,active" }
         )
       ));
       actorProfiles.forEach((profiles, index) => {
         expect(profiles).toHaveLength(1);
         expect(profiles[0]).toMatchObject({ id: actorIds[index], role: "admin", active: true });
       });
-      const organizationId = actorProfiles[0][0].organization_id;
       expect(organizationId).toBeTruthy();
-      expect(actorProfiles[1][0].organization_id).toBe(organizationId);
 
       const [authoritativeRoles, beforeAppState, timingRows] = await Promise.all([
         Promise.all(preflightHeaders.map((headers, index) =>

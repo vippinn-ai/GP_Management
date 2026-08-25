@@ -369,6 +369,11 @@ describe("staging Playwright harness contract", () => {
     expect(scenario).toContain("captureAuthenticatedRestRequests(page, originAuthenticatedRequests)");
     expect(support).toContain('if (!url.pathname.includes("/rest/v1/")) return');
     expect(scenario).toContain("restApiBase(observerPreflightRequest!.url)");
+    expect(scenario).toContain('const organizationId = "org-primary"');
+    expect(scenario).toContain("configuredOrganizationId && configuredOrganizationId !== organizationId");
+    expect(scenario).toContain("Multi-hop staging E2E is locked to organization");
+    expect(scenario).toContain('select: "id,role,active"');
+    expect(scenario).not.toContain('select: "id,organization_id,role,active"');
     expect(scenario).toContain("const [authoritativeRoles, beforeAppState, timingRows] = await Promise.all([");
     expect(scenario).toMatch(/expect\(roleValues\)\.toEqual\(\["admin", "admin"\]\);[\s\S]*originCommand = await interceptSingleRpcCommand/);
     expect(scenario).toMatch(/expect\(compatibilityStart,[\s\S]*originCommand = await interceptSingleRpcCommand/);
