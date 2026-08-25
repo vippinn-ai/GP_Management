@@ -559,11 +559,10 @@ test.describe.serial("Release B receptionist and manager checkout-hop timing", (
           expect(checkoutErrors[0]).toMatch(/Session timing changes are invalid or not authorized\.?/i);
           expect(nonCheckoutErrors).toEqual([]);
         }
-        if (checkoutCommitted) {
-          expect(hopDialogs).toContain("The game hop was not completed. Latest data has been refreshed; review the session and try again.");
-        } else {
-          expect(hopDialogs).not.toContain("The game hop was not completed. Latest data has been refreshed; review the session and try again.");
-        }
+        const syncGuardDialog = "Live changes for this session are still syncing with the server. Please wait until Live actions shows Synced before issuing the bill, hopping, rejecting, or closing it.";
+        const refreshedConflictDialog = "The game hop was not completed. Latest data has been refreshed; review the session and try again.";
+        expect(hopDialogs.every((message) => [syncGuardDialog, refreshedConflictDialog].includes(message))).toBe(true);
+        if (!checkoutCommitted) expect(hopDialogs).not.toContain(refreshedConflictDialog);
       } catch (error) {
         primaryError = error;
         throw error;

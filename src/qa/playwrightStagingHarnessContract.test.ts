@@ -632,6 +632,9 @@ describe("staging Playwright harness contract", () => {
     expect(scenario).toContain("paymentRows.reduce((sum, payment) => sum + Number(payment.amount), 0)");
     expect(scenario).toContain("...paymentRows.map((payment) => payment.received_by_user_id)");
     expect(scenario).not.toContain("paymentRows[0].received_by_user_id");
+    expect(scenario).toContain("hopDialogs.every((message) => [syncGuardDialog, refreshedConflictDialog].includes(message))");
+    expect(scenario).toContain("if (!checkoutCommitted) expect(hopDialogs).not.toContain(refreshedConflictDialog)");
+    expect(scenario).not.toContain('expect(hopDialogs).toContain("The game hop was not completed.');
     expect(scenario).toContain('getByRole("button", { name: "Bill & Done", exact: true }).click()');
     expect(scenario).toContain('expect(cleanupAppState).toEqual(afterRaceAppState)');
     expect(scenario).toContain("expect(cleanupCommand.captureCount()).toBe(1)");
