@@ -9,7 +9,14 @@ const selfReferentialEvidence = new Set([
   outputRelative,
   "openspec/changes/financial-checkout-app-state-decoupling/review-manifest.md"
 ]);
-const exactTextFiles = new Set([".env.example", ".gitignore", ".prettierrc", "public/_headers"]);
+const exactTextFiles = new Set([
+  ".env.example",
+  ".env.e2e.example",
+  ".env.e2e.roles.example",
+  ".gitignore",
+  ".prettierrc",
+  "public/_headers"
+]);
 const textExtensions = new Set([
   ".css", ".html", ".js", ".json", ".md", ".mjs", ".sql", ".toml", ".ts", ".tsx", ".txt", ".yaml", ".yml"
 ]);

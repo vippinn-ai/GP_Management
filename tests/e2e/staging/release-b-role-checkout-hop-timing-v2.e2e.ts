@@ -367,20 +367,22 @@ test.describe.serial("Release B receptionist and manager checkout-hop timing", (
         if (checkoutCommitted) {
           expect(sessionRows[0]).toMatchObject({ status: "closed", close_disposition: "billed", closed_bill_id: billId });
           expect(billRows).toHaveLength(1);
-          expect(paymentRows).toHaveLength(1);
+          const billTotal = Number(billRows[0].total);
+          const billAmountPaid = Number(billRows[0].amount_paid);
+          expect(paymentRows).toHaveLength(billTotal === 0 ? 0 : 1);
           expect(checkoutEventRows).toHaveLength(1);
           expect(checkoutAuditRows).toHaveLength(checkoutAuditIds.length);
           expect(hopEventRows).toHaveLength(0);
           expect(hopAuditRows).toHaveLength(0);
           expect(mutationStatus?.bill_id).toBe(billId);
           expect(afterRaceAppState[0].version).toBe(beforeAppState[0].version);
-          expect(Number(billRows[0].amount_paid)).toBe(Number(billRows[0].total));
+          expect(billAmountPaid).toBe(billTotal);
           expect(Number(billRows[0].amount_due)).toBe(0);
           expect(paymentRows.reduce((sum, payment) => sum + Number(payment.amount), 0))
-            .toBe(Number(billRows[0].amount_paid));
+            .toBe(billAmountPaid);
           expect(new Set([
             billRows[0].issued_by_user_id,
-            paymentRows[0].received_by_user_id,
+            ...paymentRows.map((payment) => payment.received_by_user_id),
             checkoutEventRows[0].created_by,
             ...checkoutAuditRows.map((audit) => audit.user_id)
           ])).toEqual(new Set([checkoutIdentity.actorId]));

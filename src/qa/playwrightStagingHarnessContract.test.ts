@@ -597,6 +597,8 @@ describe("staging Playwright harness contract", () => {
     expect(example).toContain("E2E_RECEPTIONIST_USER=staging_receptionist_username");
     expect(example).toContain("E2E_MANAGER_USER=staging_manager_username");
     expect(runner).toContain('parseEnvFile(path.join(root, ".env.e2e.roles.local"))');
+    expect(runner).toContain('roleEnv.E2E_ROLE_ACCOUNT_STATE?.trim() !== "active"');
+    expect(runner).toContain("env.E2E_USER_A = roleEnv.E2E_RECEPTIONIST_USER");
     expect(runner).toContain("The role matrix requires distinct receptionist and manager accounts.");
     expect(runner).not.toContain("admin-update-user");
     expect(runner).toContain("The role-matrix runner accepts only --list or --help");
@@ -626,6 +628,10 @@ describe("staging Playwright harness contract", () => {
     expect(scenario).not.toContain("payload.sessions.find");
     expect(scenario).toContain('expect(rpcRejectionCode(checkoutBody)).toBe("invalid_session_timing")');
     expect(scenario).toContain('expect(rpcRejectionCode(hopBody)).toBe("session_not_open")');
+    expect(scenario).toContain("expect(paymentRows).toHaveLength(billTotal === 0 ? 0 : 1)");
+    expect(scenario).toContain("paymentRows.reduce((sum, payment) => sum + Number(payment.amount), 0)");
+    expect(scenario).toContain("...paymentRows.map((payment) => payment.received_by_user_id)");
+    expect(scenario).not.toContain("paymentRows[0].received_by_user_id");
     expect(scenario).toContain('getByRole("button", { name: "Bill & Done", exact: true }).click()');
     expect(scenario).toContain('expect(cleanupAppState).toEqual(afterRaceAppState)');
     expect(scenario).toContain("expect(cleanupCommand.captureCount()).toBe(1)");
@@ -635,6 +641,55 @@ describe("staging Playwright harness contract", () => {
     expect(scenario).toContain("if (!cleanupConfirmed)");
     expect(scenario).toContain("Pre-race cleanup did not positively confirm rejection of the exact QA session.");
     expect(scenario).toContain("reconcile their mutation IDs and any hopped session before cleanup or retry");
+  });
+
+  it("provisions and deactivates dedicated role accounts without exposing their passwords", () => {
+    const manager = read("scripts/manage-financial-v2-role-accounts-staging.mjs");
+
+    expect(manager).toContain("assertStagingSupabaseEnvironment(stagingEnv, true)");
+    expect(manager).toContain("assertStagingBaseUrl");
+    expect(manager).toContain('await authoritativeRole(adminPage, adminRequest, "admin")');
+    expect(manager).toContain('await authoritativeRole(page, request, account.role)');
+    expect(manager).toContain('url.hostname !== `${STAGING_PROJECT_REF}.supabase.co`');
+    expect(manager).toContain("captured.url.includes(PRODUCTION_PROJECT_REF)");
+    expect(manager).toContain("expect(identities[0].actorId).not.toBe(identities[1].actorId)");
+    expect(manager).toContain('writeRoleFile(accounts, "provisioning")');
+    expect(manager).toContain('writeRoleFile(accounts, "active")');
+    expect(manager).toContain('writeRoleFile(accounts, "recovery_required")');
+    expect(manager).toContain('writeRoleFile(accounts, "deactivation_incomplete")');
+    expect(manager).toContain('for (const account of [...accounts].reverse())');
+    expect(manager).toContain('Both deterministic candidates were reconciled:');
+    expect(manager).toContain('Provisioning cleanup is unresolved:');
+    expect(manager).toContain('passwordsPrinted: false');
+    expect(manager).not.toContain("console.log(account.password)");
+    expect(manager).toContain("await disableUser(adminPage, adminRequest, account, true)");
+    expect(manager).toContain('async function authoritativeProfile(page, captured, account)');
+    expect(manager).toContain('await page.request.get(`${restBase}/profiles`');
+    expect(manager).toContain('await expect.poll(async () => (await authoritativeProfile(page, captured, account))?.active).toBe(false)');
+    expect(manager).toContain("exactAccountsFromRoleFile()");
+    expect(manager).toContain("The ignored role credential file does not match the exact generated QA username/run-ID pattern.");
+    expect(manager).toContain("const UI_TIMEOUT_MS = 20_000");
+    expect(manager).toContain('page.locator(".login-form-panel .error-text")');
+    expect(manager).toContain("Staging account sign-in failed:");
+    expect(manager).toContain('form.locator("select").selectOption(account.role)');
+    expect(manager).toContain("await expect(row).toContainText(account.name)");
+    expect(manager).toContain("await expect(row).toContainText(account.role)");
+    expect(manager).toContain("unlinkSync(rolePath)");
+    expect(manager).toContain('new Set(["create", "deactivate"])');
+  });
+
+  it("keeps exact staging session inspection read-only, role-bound, and password-free", () => {
+    const inspector = read("scripts/inspect-staging-sessions.mjs");
+
+    expect(inspector).toContain("assertStagingSupabaseEnvironment(stagingEnv, true)");
+    expect(inspector).toContain('new URL(supabaseUrl).hostname !== `${STAGING_PROJECT_REF}.supabase.co`');
+    expect(inspector).toContain('new Set(["admin", "manager", "receptionist"])');
+    expect(inspector).toContain('select("id,bill_number,status,total,amount_paid,amount_due,payment_mode,issued_by_user_id,created_at")');
+    expect(inspector).toContain('select("id,bill_id,amount,mode,received_by_user_id,paid_at")');
+    expect(inspector).toContain('supabase.rpc("get_financial_mutation_result"');
+    expect(inspector).toContain('mutation_kind: "commitCheckoutBill"');
+    expect(inspector).toContain("passwordsPrinted: false");
+    expect(inspector).not.toContain("login.data.session");
   });
 
   it("retains a rollback-only staging role-authorization proof", () => {

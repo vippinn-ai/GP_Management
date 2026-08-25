@@ -58,3 +58,13 @@ The independent test agent first returned NO-GO twice. The implementation was co
 | Live staging role matrix | Not run | Requires separate approval, distinct active receptionist/manager credentials, a fresh run ID, and a no-active-session staging window |
 
 No staging access, database mutation, deployment, role change, or production action was performed for this checkpoint.
+
+## 2026-08-25 receptionist-manager live staging attempt
+
+Verdict: **GO on safe reconciliation and harness-defect classification; NO-GO on closing the role matrix.**
+
+The reviewed account lifecycle created distinct active staging-only receptionist and manager profiles after two authoritatively empty pre-write failures. Fresh preflight proved zero open sessions/tabs and unchanged compatibility state. The zero-retry matrix passed its role preflight and submitted only `rec-checkout-first`; checkout committed once, the stale hop returned `session_not_open`, and the test then stopped because it incorrectly required a payment row for a rounded zero-total bill. Five cases did not run.
+
+Independent read-only reconciliation proved the exact bill total/paid/due were all zero, canonical payments were empty, the session closed billed once, the retained bill actor and captured session-audit actors matched the receptionist, the losing hop left no event/audit, and `app_state` version/hash did not change. The retained event identity does not include its actor field, and the inspector did not select the separate bill-entity audit actor, so this checkpoint makes no broader actor claim. Final preflight proved zero open sessions/tabs. Independent review approved deactivation; both profiles are inactive, their ignored credential file is removed, and historical actor rows remain intact.
+
+The local conditional-payment assertion correction is appropriate, but it has not been exercised against staging. Final local verification passed 25 focused contracts and 39 files / 452 tests; build, focused type-check, lint, and diff checks remain clean within the documented existing warnings. Any new role-matrix execution requires a new explicit staging-write approval and fresh identities. Production remains NO-GO.

@@ -11,7 +11,7 @@ if (unsupportedArgs.length) {
 const discoveryOnly = args.includes("--list") || args.includes("--help");
 const baseEnv = parseEnvFile(path.join(root, ".env.e2e.local"));
 const roleEnv = parseEnvFile(path.join(root, ".env.e2e.roles.local"));
-const env = { ...baseEnv, ...roleEnv, ...process.env };
+const env = { ...baseEnv, ...process.env };
 
 if (!discoveryOnly) {
   const required = [
@@ -20,19 +20,23 @@ if (!discoveryOnly) {
     "E2E_MANAGER_USER",
     "E2E_MANAGER_PASSWORD"
   ];
-  const missing = required.filter((key) => !env[key]?.trim());
+  const missing = required.filter((key) => !roleEnv[key]?.trim());
   if (missing.length) {
     throw new Error(
       `Missing role-matrix credentials: ${missing.join(", ")}. Copy .env.e2e.roles.example to .env.e2e.roles.local and fill staging-only values.`
     );
   }
-  if (env.E2E_RECEPTIONIST_USER.trim().toLowerCase() === env.E2E_MANAGER_USER.trim().toLowerCase()) {
+  if (roleEnv.E2E_ROLE_ACCOUNT_STATE?.trim() !== "active") {
+    throw new Error("The role matrix requires an active, fully verified generated role-account file.");
+  }
+  if (roleEnv.E2E_RECEPTIONIST_USER.trim().toLowerCase() === roleEnv.E2E_MANAGER_USER.trim().toLowerCase()) {
     throw new Error("The role matrix requires distinct receptionist and manager accounts.");
   }
-  env.E2E_USER_A = env.E2E_RECEPTIONIST_USER;
-  env.E2E_PASSWORD_A = env.E2E_RECEPTIONIST_PASSWORD;
-  env.E2E_USER_B = env.E2E_MANAGER_USER;
-  env.E2E_PASSWORD_B = env.E2E_MANAGER_PASSWORD;
+  env.E2E_USER_A = roleEnv.E2E_RECEPTIONIST_USER;
+  env.E2E_PASSWORD_A = roleEnv.E2E_RECEPTIONIST_PASSWORD;
+  env.E2E_USER_B = roleEnv.E2E_MANAGER_USER;
+  env.E2E_PASSWORD_B = roleEnv.E2E_MANAGER_PASSWORD;
+  env.E2E_RUN_ID = roleEnv.E2E_RUN_ID;
   env.E2E_ROLE_MATRIX = "release-b-receptionist-manager";
 }
 
