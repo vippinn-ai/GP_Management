@@ -9,7 +9,7 @@ The generated CSV is the per-file evidence. Its columns record path, physical li
 Current generated snapshot:
 
 - First-party text/configuration files: 296.
-- Physical lines mechanically screened: 83,392.
+- Physical lines mechanically screened: 83,422.
 - Semantic billing/data-gateway/compatibility hotspots: 231.
 - Files with billing/financial vocabulary: 212.
 - Files containing an `app_state`, `appState`, or base-version reference: 95; none remain in the unclassified bucket.

@@ -28,8 +28,8 @@ const ROLE_MATRIX_CONFIRMATION = "release-b-receptionist-manager";
 const runId = process.env.E2E_RUN_ID ?? "missing-run-id";
 const station = process.env.E2E_V2_ROLE_HOP_STATION?.trim() || "Playstation";
 const matrixPhase = process.env.E2E_ROLE_MATRIX_PHASE ?? "all";
-if (!new Set(["all", "remaining"]).has(matrixPhase)) {
-  throw new Error("E2E_ROLE_MATRIX_PHASE must be all or remaining.");
+if (!new Set(["all", "remaining", "remaining-three"]).has(matrixPhase)) {
+  throw new Error("E2E_ROLE_MATRIX_PHASE must be all, remaining, or remaining-three.");
 }
 
 type Slot = "A" | "B";
@@ -73,8 +73,15 @@ const scenarios: RoleScenario[] = [
   { id: "rec-checkout-concurrent", ordering: "concurrent", checkoutSlot: "A", checkoutRole: "receptionist", hopSlot: "B", hopRole: "manager" },
   { id: "mgr-checkout-concurrent", ordering: "concurrent", checkoutSlot: "B", checkoutRole: "manager", hopSlot: "A", hopRole: "receptionist" }
 ];
+const remainingThreeScenarioIds = new Set([
+  "mgr-checkout-hop-first",
+  "rec-checkout-concurrent",
+  "mgr-checkout-concurrent"
+]);
 const selectedScenarios = matrixPhase === "remaining"
   ? scenarios.filter((scenario) => scenario.ordering !== "checkout-first")
+  : matrixPhase === "remaining-three"
+    ? scenarios.filter((scenario) => remainingThreeScenarioIds.has(scenario.id))
   : scenarios;
 
 function makeUniqueBillNumber(captured: CapturedRpcRequest, scenarioId: string, suffix = "RACE") {

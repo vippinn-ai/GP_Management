@@ -602,14 +602,16 @@ describe("staging Playwright harness contract", () => {
     expect(runner).toContain("env.E2E_USER_A = roleEnv.E2E_RECEPTIONIST_USER");
     expect(runner).toContain("The role matrix requires distinct receptionist and manager accounts.");
     expect(runner).not.toContain("admin-update-user");
-    expect(runner).toContain("The role-matrix runner accepts no argument or exactly one mode: --all, --list, --help, --remaining, or --remaining-list.");
-    expect(runner).toContain('env.E2E_ROLE_MATRIX_PHASE = remainingOnly ? "remaining" : "all"');
-    expect(runner).toContain('mode === "--remaining-list" ? ["--list"] : []');
+    expect(runner).toContain("The role-matrix runner accepts no argument or exactly one documented mode.");
+    expect(runner).toContain('env.E2E_ROLE_MATRIX_PHASE = remainingThreeOnly ? "remaining-three" : remainingOnly ? "remaining" : "all"');
+    expect(runner).toContain('mode.endsWith("-list") ? ["--list"] : []');
     expect(runner).not.toContain("[runner, scenario, ...args]");
     expect(runner).toContain('env.E2E_ROLE_MATRIX = "release-b-receptionist-manager"');
     expect(runner).toContain("release-b-role-checkout-hop-timing-v2.e2e.ts");
     expect(packageJson).toContain('"test:e2e:staging:v2:roles:remaining": "node scripts/run-financial-v2-role-matrix-staging-e2e.mjs --remaining"');
     expect(packageJson).toContain('"test:e2e:staging:v2:roles:remaining:list": "node scripts/run-financial-v2-role-matrix-staging-e2e.mjs --remaining-list"');
+    expect(packageJson).toContain('"test:e2e:staging:v2:roles:remaining-three": "node scripts/run-financial-v2-role-matrix-staging-e2e.mjs --remaining-three"');
+    expect(packageJson).toContain('"test:e2e:staging:v2:roles:remaining-three:list": "node scripts/run-financial-v2-role-matrix-staging-e2e.mjs --remaining-three-list"');
     expect(support).toContain("export async function assertAuthoritativeOrganizationIdentity");
     expect(support).toContain('rpc/current_user_org_role');
     expect(support).toContain("expect(profiles[0]).toMatchObject({ id: actorId, role: expectedRole, active: true })");
@@ -621,6 +623,8 @@ describe("staging Playwright harness contract", () => {
     expect(scenario).toContain('expect(receptionist.actorId).not.toBe(manager.actorId)');
     expect(scenario).toContain('matrixPhase === "remaining"');
     expect(scenario).toContain('scenarios.filter((scenario) => scenario.ordering !== "checkout-first")');
+    expect(scenario).toContain('matrixPhase === "remaining-three"');
+    expect(scenario).toContain('scenarios.filter((scenario) => remainingThreeScenarioIds.has(scenario.id))');
     expect(scenario).toContain('for (const scenario of selectedScenarios)');
     expect(scenario).toContain('ordering: "checkout-first"');
     expect(scenario).toContain('ordering: "hop-first"');
