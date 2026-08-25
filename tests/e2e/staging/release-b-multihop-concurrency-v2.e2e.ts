@@ -5,7 +5,7 @@ import {
   attachJson,
   authenticatedJwtSubject,
   browserDateTimeLocal,
-  captureAuthenticatedRpcRequests,
+  captureAuthenticatedRestRequests,
   capturePageErrors,
   captureRpcEvidence,
   changedRowIds,
@@ -60,6 +60,17 @@ function appStateDataHash(data: unknown) {
   return createHash("sha256").update(JSON.stringify(data)).digest("hex");
 }
 
+function restApiBase(requestUrl: string) {
+  const url = new URL(requestUrl);
+  const marker = "/rest/v1";
+  const markerAt = url.pathname.indexOf(marker);
+  if (markerAt < 0) throw new Error("Authenticated staging request is outside the Supabase REST API.");
+  url.pathname = url.pathname.slice(0, markerAt + marker.length);
+  url.search = "";
+  url.hash = "";
+  return url.href.replace(/\/$/, "");
+}
+
 function prepareCheckoutCommand(captured: CapturedRpcRequest, suffix: "A" | "B" | "C") {
   const envelope = structuredClone(captured.body) as CheckoutEnvelope;
   const billNumber = `BILL-QA-MULTIHOP-${runId}-${suffix}`;
@@ -81,8 +92,8 @@ test.describe.serial("Release B admin multi-hop checkout concurrency", () => {
     const observerErrors = capturePageErrors(observer.page);
     const originAuthenticatedRequests: CapturedRpcRequest[] = [];
     const observerAuthenticatedRequests: CapturedRpcRequest[] = [];
-    captureAuthenticatedRpcRequests(page, originAuthenticatedRequests);
-    captureAuthenticatedRpcRequests(observer.page, observerAuthenticatedRequests);
+    captureAuthenticatedRestRequests(page, originAuthenticatedRequests);
+    captureAuthenticatedRestRequests(observer.page, observerAuthenticatedRequests);
     captureRpcEvidence(page, "origin", rpcEvidence);
     captureRpcEvidence(observer.page, "observer", rpcEvidence);
     const customerName = `QA Multi Hop Race ${runId}`;
@@ -193,8 +204,8 @@ test.describe.serial("Release B admin multi-hop checkout concurrency", () => {
         prefer: request.headers.prefer || "return=representation"
       }));
       const actorIds = preflightRequests.map((request) => authenticatedJwtSubject(request.headers));
-      const restBase = originPreflightRequest!.url.replace(/\/rpc\/[^/]+$/, "");
-      expect(observerPreflightRequest!.url.replace(/\/rpc\/[^/]+$/, "")).toBe(restBase);
+      const restBase = restApiBase(originPreflightRequest!.url);
+      expect(restApiBase(observerPreflightRequest!.url)).toBe(restBase);
       const restHeaders = {
         apikey: preflightHeaders[0].apikey,
         authorization: preflightHeaders[0].authorization
@@ -305,7 +316,7 @@ test.describe.serial("Release B admin multi-hop checkout concurrency", () => {
 
       const capturedRequests = [capturedOrigin, capturedObserver];
       expect(capturedRequests.map((request) => authenticatedJwtSubject(request.headers))).toEqual(actorIds);
-      expect(capturedRequests.map((request) => request.url.replace(/\/rpc\/[^/]+$/, "")))
+      expect(capturedRequests.map((request) => restApiBase(request.url)))
         .toEqual([restBase, restBase]);
       expect(envelopes.map((envelope) => envelope.payload.organization_id))
         .toEqual([organizationId, organizationId]);

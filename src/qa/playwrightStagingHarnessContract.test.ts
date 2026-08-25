@@ -353,6 +353,7 @@ describe("staging Playwright harness contract", () => {
 
   it("locks a complete three-session hop chain against two single-send checkout commands", () => {
     const scenario = read("tests/e2e/staging/release-b-multihop-concurrency-v2.e2e.ts");
+    const support = read("tests/e2e/staging/support/app.ts");
     const manifestGenerator = read("scripts/generate-checkout-review-manifest.mjs");
 
     expect(scenario).toContain('test.describe.serial("Release B admin multi-hop checkout concurrency"');
@@ -365,7 +366,9 @@ describe("staging Playwright harness contract", () => {
     expect(scenario).toContain('interceptSingleRpcCommand(observer.page, "**/rest/v1/rpc/commit_checkout_bill_v2")');
     expect(scenario).toContain("originCommand.submit(envelopes[0])");
     expect(scenario).toContain("observerCommand.submit(envelopes[1])");
-    expect(scenario).toContain("captureAuthenticatedRpcRequests(page, originAuthenticatedRequests)");
+    expect(scenario).toContain("captureAuthenticatedRestRequests(page, originAuthenticatedRequests)");
+    expect(support).toContain('if (!url.pathname.includes("/rest/v1/")) return');
+    expect(scenario).toContain("restApiBase(observerPreflightRequest!.url)");
     expect(scenario).toContain("const [authoritativeRoles, beforeAppState, timingRows] = await Promise.all([");
     expect(scenario).toMatch(/expect\(roleValues\)\.toEqual\(\["admin", "admin"\]\);[\s\S]*originCommand = await interceptSingleRpcCommand/);
     expect(scenario).toMatch(/expect\(compatibilityStart,[\s\S]*originCommand = await interceptSingleRpcCommand/);

@@ -156,16 +156,25 @@ export function captureRpcEvidence(page: Page, pageName: RpcEvidence["page"], ta
   });
 }
 
-export function captureAuthenticatedRpcRequests(page: Page, target: CapturedRpcRequest[]) {
+export function captureAuthenticatedRestRequests(page: Page, target: CapturedRpcRequest[]) {
   page.on("request", (request) => {
     const url = new URL(request.url());
-    if (!url.pathname.includes("/rest/v1/rpc/") || request.method() !== "POST") return;
+    if (!url.pathname.includes("/rest/v1/")) return;
     const headers = request.headers();
     if (!headers.apikey || !headers.authorization) return;
+    let body: unknown = null;
+    const postData = request.postData();
+    if (postData) {
+      try {
+        body = request.postDataJSON();
+      } catch {
+        body = postData;
+      }
+    }
     target.push({
       url: request.url(),
       headers,
-      body: request.postDataJSON()
+      body
     });
   });
 }
