@@ -27,6 +27,10 @@ import {
 const ROLE_MATRIX_CONFIRMATION = "release-b-receptionist-manager";
 const runId = process.env.E2E_RUN_ID ?? "missing-run-id";
 const station = process.env.E2E_V2_ROLE_HOP_STATION?.trim() || "Playstation";
+const matrixPhase = process.env.E2E_ROLE_MATRIX_PHASE ?? "all";
+if (!new Set(["all", "remaining"]).has(matrixPhase)) {
+  throw new Error("E2E_ROLE_MATRIX_PHASE must be all or remaining.");
+}
 
 type Slot = "A" | "B";
 type Ordering = "checkout-first" | "hop-first" | "concurrent";
@@ -69,6 +73,9 @@ const scenarios: RoleScenario[] = [
   { id: "rec-checkout-concurrent", ordering: "concurrent", checkoutSlot: "A", checkoutRole: "receptionist", hopSlot: "B", hopRole: "manager" },
   { id: "mgr-checkout-concurrent", ordering: "concurrent", checkoutSlot: "B", checkoutRole: "manager", hopSlot: "A", hopRole: "receptionist" }
 ];
+const selectedScenarios = matrixPhase === "remaining"
+  ? scenarios.filter((scenario) => scenario.ordering !== "checkout-first")
+  : scenarios;
 
 function makeUniqueBillNumber(captured: CapturedRpcRequest, scenarioId: string, suffix = "RACE") {
   const envelope = structuredClone(captured.body) as CheckoutEnvelope;
@@ -119,7 +126,7 @@ test.describe.serial("Release B receptionist and manager checkout-hop timing", (
     }
   });
 
-  for (const scenario of scenarios) {
+  for (const scenario of selectedScenarios) {
     test(`${scenario.id} resolves with authorized timing and one terminal bill`, async ({ browser, page }, testInfo) => {
       const observer = await createObserver(browser);
       const pageA = page;
@@ -499,17 +506,18 @@ test.describe.serial("Release B receptionist and manager checkout-hop timing", (
           expect(cleanupBills).toHaveLength(1);
           expect(cleanupLines).toHaveLength(1);
           expect(cleanupLines[0]).toMatchObject({ type: "session_charge", linked_session_id: sessionId });
-          expect(cleanupPayments).toHaveLength(1);
+          const cleanupAmountPaid = Number(cleanupBills[0].amount_paid);
+          expect(cleanupPayments).toHaveLength(cleanupAmountPaid > 0 ? 1 : 0);
           expect(cleanupEvents).toHaveLength(1);
           expect(cleanupAudits).toHaveLength(cleanupAuditIds.length);
           expect(cleanupMutationStatus?.bill_id).toBe(cleanupBillId);
-          expect(Number(cleanupBills[0].amount_paid)).toBe(Number(cleanupBills[0].total));
+          expect(cleanupAmountPaid).toBe(Number(cleanupBills[0].total));
           expect(Number(cleanupBills[0].amount_due)).toBe(0);
           expect(cleanupPayments.reduce((sum, payment) => sum + Number(payment.amount), 0))
-            .toBe(Number(cleanupBills[0].amount_paid));
+            .toBe(cleanupAmountPaid);
           expect(new Set([
             cleanupBills[0].issued_by_user_id,
-            cleanupPayments[0].received_by_user_id,
+            ...cleanupPayments.map((payment) => payment.received_by_user_id),
             cleanupEvents[0].created_by,
             ...cleanupAudits.map((audit) => audit.user_id)
           ])).toEqual(new Set([hopIdentity.actorId]));

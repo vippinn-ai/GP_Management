@@ -593,6 +593,7 @@ describe("staging Playwright harness contract", () => {
     const scenario = read("tests/e2e/staging/release-b-role-checkout-hop-timing-v2.e2e.ts");
     const financialRpcClient = read("src/dataGateway/financialRpcClient.ts");
     const example = read(".env.e2e.roles.example");
+    const packageJson = read("package.json");
 
     expect(example).toContain("E2E_RECEPTIONIST_USER=staging_receptionist_username");
     expect(example).toContain("E2E_MANAGER_USER=staging_manager_username");
@@ -601,16 +602,26 @@ describe("staging Playwright harness contract", () => {
     expect(runner).toContain("env.E2E_USER_A = roleEnv.E2E_RECEPTIONIST_USER");
     expect(runner).toContain("The role matrix requires distinct receptionist and manager accounts.");
     expect(runner).not.toContain("admin-update-user");
-    expect(runner).toContain("The role-matrix runner accepts only --list or --help");
+    expect(runner).toContain("The role-matrix runner accepts no argument or exactly one mode: --all, --list, --help, --remaining, or --remaining-list.");
+    expect(runner).toContain('env.E2E_ROLE_MATRIX_PHASE = remainingOnly ? "remaining" : "all"');
+    expect(runner).toContain('mode === "--remaining-list" ? ["--list"] : []');
+    expect(runner).not.toContain("[runner, scenario, ...args]");
     expect(runner).toContain('env.E2E_ROLE_MATRIX = "release-b-receptionist-manager"');
     expect(runner).toContain("release-b-role-checkout-hop-timing-v2.e2e.ts");
+    expect(packageJson).toContain('"test:e2e:staging:v2:roles:remaining": "node scripts/run-financial-v2-role-matrix-staging-e2e.mjs --remaining"');
+    expect(packageJson).toContain('"test:e2e:staging:v2:roles:remaining:list": "node scripts/run-financial-v2-role-matrix-staging-e2e.mjs --remaining-list"');
     expect(support).toContain("export async function assertAuthoritativeOrganizationIdentity");
     expect(support).toContain('rpc/current_user_org_role');
     expect(support).toContain("expect(profiles[0]).toMatchObject({ id: actorId, role: expectedRole, active: true })");
     expect(scenario).toContain('process.env.E2E_ROLE_MATRIX !== ROLE_MATRIX_CONFIRMATION');
     expect(scenario).toContain('writesAttempted: false');
+    expect(scenario).toContain("expect(cleanupPayments).toHaveLength(cleanupAmountPaid > 0 ? 1 : 0)");
+    expect(scenario).toContain("...cleanupPayments.map((payment) => payment.received_by_user_id)");
+    expect(scenario).not.toContain("cleanupPayments[0].received_by_user_id");
     expect(scenario).toContain('expect(receptionist.actorId).not.toBe(manager.actorId)');
-    expect(scenario).toContain('for (const scenario of scenarios)');
+    expect(scenario).toContain('matrixPhase === "remaining"');
+    expect(scenario).toContain('scenarios.filter((scenario) => scenario.ordering !== "checkout-first")');
+    expect(scenario).toContain('for (const scenario of selectedScenarios)');
     expect(scenario).toContain('ordering: "checkout-first"');
     expect(scenario).toContain('ordering: "hop-first"');
     expect(scenario).toContain('ordering: "concurrent"');
@@ -689,6 +700,9 @@ describe("staging Playwright harness contract", () => {
     expect(inspector).toContain('new Set(["admin", "manager", "receptionist"])');
     expect(inspector).toContain('select("id,bill_number,status,total,amount_paid,amount_due,payment_mode,issued_by_user_id,created_at")');
     expect(inspector).toContain('select("id,bill_id,amount,mode,received_by_user_id,paid_at")');
+    expect(inspector).toContain('const auditIds = (env.E2E_INSPECT_AUDIT_IDS ?? "")');
+    expect(inspector).toContain('select("id,event_type,entity_id,metadata,created_at,created_by")');
+    expect(inspector).toContain("if (auditIds.length && exactAudits.data.length !== auditIds.length)");
     expect(inspector).toContain('supabase.rpc("get_financial_mutation_result"');
     expect(inspector).toContain('mutation_kind: "commitCheckoutBill"');
     expect(inspector).toContain("passwordsPrinted: false");

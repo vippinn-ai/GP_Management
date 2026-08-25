@@ -35,11 +35,19 @@ const mutationIds = (env.E2E_INSPECT_MUTATION_IDS ?? "")
   .split(",")
   .map((value) => value.trim())
   .filter(Boolean);
+const auditIds = (env.E2E_INSPECT_AUDIT_IDS ?? "")
+  .split(",")
+  .map((value) => value.trim())
+  .filter(Boolean);
 if (!runId || sessionIds.length === 0 || new Set(sessionIds).size !== sessionIds.length) {
   throw new Error("E2E_INSPECT_RUN_ID and unique E2E_INSPECT_SESSION_IDS are required.");
 }
-if (new Set(billIds).size !== billIds.length || new Set(mutationIds).size !== mutationIds.length) {
-  throw new Error("Optional E2E_INSPECT_BILL_IDS and E2E_INSPECT_MUTATION_IDS must be unique.");
+if (
+  new Set(billIds).size !== billIds.length
+  || new Set(mutationIds).size !== mutationIds.length
+  || new Set(auditIds).size !== auditIds.length
+) {
+  throw new Error("Optional E2E_INSPECT_BILL_IDS, E2E_INSPECT_MUTATION_IDS, and E2E_INSPECT_AUDIT_IDS must be unique.");
 }
 
 const supabaseUrl = stagingEnv.VITE_SUPABASE_URL?.trim();
@@ -63,13 +71,13 @@ if (role.error || role.data !== expectedActorRole) {
   throw new Error(`Session inspection requires the authoritative expected staging role: ${expectedActorRole}.`);
 }
 
-const [sessions, events, audits, billLines, bills, payments, appState] = await Promise.all([
+const [sessions, events, audits, exactAudits, billLines, bills, payments, appState] = await Promise.all([
   supabase.from("sessions")
     .select("id,status,close_disposition,closed_bill_id,continued_from_session_ids,customer_name,station_name_snapshot,started_at,ended_at,updated_at,raw_data")
     .eq("organization_id", organizationId)
     .in("id", sessionIds),
   supabase.from("operational_events")
-    .select("id,event_type,entity_id,metadata,created_at")
+    .select("id,event_type,entity_id,metadata,created_at,created_by")
     .eq("organization_id", organizationId)
     .in("entity_id", sessionIds)
     .order("created_at", { ascending: true }),
@@ -78,6 +86,13 @@ const [sessions, events, audits, billLines, bills, payments, appState] = await P
     .eq("organization_id", organizationId)
     .in("entity_id", sessionIds)
     .order("audit_at", { ascending: true }),
+  auditIds.length
+    ? supabase.from("audit_logs")
+      .select("id,action,entity_id,message,audit_at,user_id")
+      .eq("organization_id", organizationId)
+      .in("id", auditIds)
+      .order("audit_at", { ascending: true })
+    : Promise.resolve({ data: [], error: null }),
   supabase.from("bill_lines")
     .select("id,bill_id,type,linked_session_id,total")
     .eq("organization_id", organizationId)
@@ -96,11 +111,12 @@ const [sessions, events, audits, billLines, bills, payments, appState] = await P
     : Promise.resolve({ data: [], error: null }),
   supabase.from("app_state").select("version,data").eq("id", "primary").single()
 ]);
-for (const [label, result] of Object.entries({ sessions, events, audits, billLines, bills, payments, appState })) {
+for (const [label, result] of Object.entries({ sessions, events, audits, exactAudits, billLines, bills, payments, appState })) {
   if (result.error) throw new Error(`${label} inspection failed: ${result.error.message}`);
 }
 if (sessions.data.length !== sessionIds.length) throw new Error("Not every exact session ID was found.");
 if (billIds.length && bills.data.length !== billIds.length) throw new Error("Not every exact bill ID was found.");
+if (auditIds.length && exactAudits.data.length !== auditIds.length) throw new Error("Not every exact audit ID was found.");
 
 const mutationStatuses = [];
 for (const mutationId of mutationIds) {
@@ -121,9 +137,11 @@ const evidence = {
   requestedSessionIds: sessionIds,
   requestedBillIds: billIds,
   requestedMutationIds: mutationIds,
+  requestedAuditIds: auditIds,
   sessions: sessions.data,
   events: events.data,
   audits: audits.data,
+  exactAudits: exactAudits.data,
   billLines: billLines.data,
   bills: bills.data,
   payments: payments.data,

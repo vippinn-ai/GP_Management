@@ -4,14 +4,17 @@ import { parseEnvFile } from "./playwright-staging-env.mjs";
 
 const root = process.cwd();
 const args = process.argv.slice(2);
-const unsupportedArgs = args.filter((argument) => argument !== "--list" && argument !== "--help");
-if (unsupportedArgs.length) {
-  throw new Error(`The role-matrix runner accepts only --list or --help; unsupported arguments: ${unsupportedArgs.join(", ")}`);
+const mode = args[0] ?? "--all";
+const allowedModes = new Set(["--all", "--list", "--help", "--remaining", "--remaining-list"]);
+if (args.length > 1 || !allowedModes.has(mode)) {
+  throw new Error("The role-matrix runner accepts no argument or exactly one mode: --all, --list, --help, --remaining, or --remaining-list.");
 }
-const discoveryOnly = args.includes("--list") || args.includes("--help");
+const discoveryOnly = mode === "--list" || mode === "--help" || mode === "--remaining-list";
+const remainingOnly = mode === "--remaining" || mode === "--remaining-list";
 const baseEnv = parseEnvFile(path.join(root, ".env.e2e.local"));
 const roleEnv = parseEnvFile(path.join(root, ".env.e2e.roles.local"));
 const env = { ...baseEnv, ...process.env };
+env.E2E_ROLE_MATRIX_PHASE = remainingOnly ? "remaining" : "all";
 
 if (!discoveryOnly) {
   const required = [
@@ -42,7 +45,10 @@ if (!discoveryOnly) {
 
 const runner = path.join(root, "scripts", "run-financial-v2-staging-e2e.mjs");
 const scenario = "tests/e2e/staging/release-b-role-checkout-hop-timing-v2.e2e.ts";
-const result = spawnSync(process.execPath, [runner, scenario, ...args], {
+const forwardedArgs = mode === "--list" || mode === "--help"
+  ? [mode]
+  : mode === "--remaining-list" ? ["--list"] : [];
+const result = spawnSync(process.execPath, [runner, scenario, ...forwardedArgs], {
   cwd: root,
   env,
   stdio: "inherit",

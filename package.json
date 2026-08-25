@@ -20,6 +20,8 @@
     "test:e2e:staging:v2": "node scripts/run-financial-v2-staging-e2e.mjs",
     "test:e2e:staging:v2:roles": "node scripts/run-financial-v2-role-matrix-staging-e2e.mjs",
     "test:e2e:staging:v2:roles:list": "node scripts/run-financial-v2-role-matrix-staging-e2e.mjs --list",
+    "test:e2e:staging:v2:roles:remaining": "node scripts/run-financial-v2-role-matrix-staging-e2e.mjs --remaining",
+    "test:e2e:staging:v2:roles:remaining:list": "node scripts/run-financial-v2-role-matrix-staging-e2e.mjs --remaining-list",
     "test:e2e:staging:v2:roles:create": "node scripts/manage-financial-v2-role-accounts-staging.mjs create",
     "test:e2e:staging:v2:roles:deactivate": "node scripts/manage-financial-v2-role-accounts-staging.mjs deactivate",
     "test:db:staging:v2-smoke": "node scripts/run-financial-v2-staging-db-smoke.mjs",
