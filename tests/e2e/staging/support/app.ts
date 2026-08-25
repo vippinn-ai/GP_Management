@@ -1,4 +1,4 @@
-import { expect, type APIResponse, type Browser, type BrowserContext, type Page, type TestInfo } from "@playwright/test";
+import { expect, type APIResponse, type Browser, type BrowserContext, type Page, type Route, type TestInfo } from "@playwright/test";
 import { writeFile } from "node:fs/promises";
 
 export interface StagingCredentials {
@@ -156,6 +156,20 @@ export function captureRpcEvidence(page: Page, pageName: RpcEvidence["page"], ta
   });
 }
 
+export function captureAuthenticatedRpcRequests(page: Page, target: CapturedRpcRequest[]) {
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (!url.pathname.includes("/rest/v1/rpc/") || request.method() !== "POST") return;
+    const headers = request.headers();
+    if (!headers.apikey || !headers.authorization) return;
+    target.push({
+      url: request.url(),
+      headers,
+      body: request.postDataJSON()
+    });
+  });
+}
+
 export async function readApiResponseBody(response: APIResponse) {
   const body = await response.text();
   try {
@@ -199,6 +213,8 @@ export async function interceptSingleRpcCommand(page: Page, pattern: string) {
   let captureCount = 0;
   let submitted = false;
   let decided = false;
+  let primaryCaptured = false;
+  let settledResolved = false;
   let resolveCaptured!: (value: CapturedRpcRequest) => void;
   let resolveDecision!: (value: { action: "submit"; body: unknown } | { action: "cancel" }) => void;
   let resolveResponse!: (value: APIResponse) => void;
@@ -214,19 +230,35 @@ export async function interceptSingleRpcCommand(page: Page, pattern: string) {
   });
   const settled = new Promise<void>((resolve) => { resolveSettled = resolve; });
 
-  await page.route(pattern, async (route) => {
+  const settleOnce = () => {
+    if (settledResolved) return;
+    settledResolved = true;
+    resolveSettled();
+  };
+
+  const abortIgnoringHandledRoute = async (route: Route, errorCode: string) => {
+    try {
+      await route.abort(errorCode);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!/Route is already handled!?/i.test(message)) throw error;
+    }
+  };
+
+  const handler = async (route: Route) => {
     captureCount += 1;
     const isPrimaryCapture = captureCount === 1;
     try {
       if (!isPrimaryCapture) {
-        await route.abort("blockedbyclient");
+        await abortIgnoringHandledRoute(route, "blockedbyclient");
         return;
       }
+      primaryCaptured = true;
       const request = route.request();
       resolveCaptured({ url: request.url(), headers: request.headers(), body: request.postDataJSON() });
       const next = await decision;
       if (next.action === "cancel") {
-        await route.abort("aborted");
+        await abortIgnoringHandledRoute(route, "aborted");
         return;
       }
       try {
@@ -234,15 +266,17 @@ export async function interceptSingleRpcCommand(page: Page, pattern: string) {
         await route.fulfill({ response: serverResponse });
         resolveResponse(serverResponse);
       } catch (error) {
-        await route.abort("aborted").catch(() => undefined);
+        await abortIgnoringHandledRoute(route, "aborted");
         rejectResponse(error);
       }
     } finally {
       if (isPrimaryCapture) {
-        resolveSettled();
+        settleOnce();
       }
     }
-  });
+  };
+
+  await page.route(pattern, handler);
 
   return {
     captured,
@@ -258,6 +292,15 @@ export async function interceptSingleRpcCommand(page: Page, pattern: string) {
       if (decided) return;
       decided = true;
       resolveDecision({ action: "cancel" });
+    },
+    async dispose() {
+      if (!decided) {
+        decided = true;
+        resolveDecision({ action: "cancel" });
+      }
+      await page.unroute(pattern, handler);
+      if (!primaryCaptured) settleOnce();
+      await settled;
     },
     captureCount: () => captureCount,
     wasSubmitted: () => submitted

@@ -29,7 +29,7 @@
 
 ## Verification
 
-- [x] Local unit and characterization tests pass (39 files / 446 tests on 2026-08-24).
+- [x] Local unit and characterization tests pass (39 files / 448 tests on 2026-08-25).
 - [x] Add a reproducible staging-only Playwright harness with exact-host/project guards, ignored credentials, two independent contexts, zero retries, trace-disabled credential safety, compact RPC evidence, and failure-only screenshots/video.
 - [x] Execute the Playwright pause-edit and hop/detach scenarios with staging credentials; retain their reported harness failures and reconcile the exact canonical RPC, observer, hard-refresh, cleanup, continuation, and Bill Register evidence without retrying checkout.
 - [x] Restore normalized-ready report CSV/XLSX/PDF exports, prove keyset pagination beyond one backend page locally, and inspect all three generated formats on staging.
@@ -38,6 +38,7 @@
 - [x] Pass the exact-definition reject-release transactional staging proof with authenticated/anonymous grant checks, in-transaction mutation coverage, rollback-to-savepoint restoration, zero residual fixtures, exact compatibility reconciliation, and independent evidence GO.
 - [x] Persist the proven reject-release RPC definitions in staging, verify all six hashes/grants/security modes, deploy the corrected staging frontend, and prove the definition install changed no operational or compatibility data.
 - [x] Repair the quarantined S1/S2 QA continuation link. The first guarded attempt failed closed and fully rolled back; the separately approved trigger-aware second attempt passed once, advanced compatibility v624 to v625, removed all three link representations, and passed exact independent postflight reconciliation.
+- [x] Reconcile the separately authorized three-session multi-hop Playwright attempt without retry. Exactly one Rs 45 bill/payment/mutation/event was committed, all three sessions closed to that bill, and the floor returned empty; the intended two-command race was not submitted because of an interception lifecycle failure, so the product concurrency case remains open. Harden the reusable zero-retry harness locally and retain a fresh-authorization gate for any rerun.
 - [ ] SQL transaction/security/idempotency/concurrency tests pass. Anonymous, wrong-organization, actor-spoof, malformed, inactive-user, rollback, authenticated financial/admin role boundaries, same/different-mutation, over-settlement, bill-number collision, exact- and over-capacity limited-stock contention, both admin inventory metadata orderings, both checkout/reject orderings, all three authoritative-admin checkout/hop orderings, and a single hopped-session double-bill race pass; receptionist/manager checkout-hop timing outcomes, multi-hop chains, and concurrency against remaining operational/financial-adjustment writers remain.
 - [ ] Two-browser staging test passes. Basic session/tab checkout, settlement, refund, replacement, realtime, and refresh cases pass; the remaining complex/payment/carryover matrix is open.
 - [ ] Performance thresholds pass on production-sized staging data. The corrected 50-case Arcade session/inventory run passes; mixed complex and contention workloads remain.

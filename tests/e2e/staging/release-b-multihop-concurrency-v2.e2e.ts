@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
-import { expect, test, type APIResponse } from "@playwright/test";
+import { expect, test } from "@playwright/test";
 import {
   attachFailureScreenshot,
   attachJson,
   authenticatedJwtSubject,
   browserDateTimeLocal,
+  captureAuthenticatedRpcRequests,
   capturePageErrors,
   captureRpcEvidence,
   changedRowIds,
@@ -78,6 +79,10 @@ test.describe.serial("Release B admin multi-hop checkout concurrency", () => {
     const rpcEvidence: RpcEvidence[] = [];
     const originErrors = capturePageErrors(page);
     const observerErrors = capturePageErrors(observer.page);
+    const originAuthenticatedRequests: CapturedRpcRequest[] = [];
+    const observerAuthenticatedRequests: CapturedRpcRequest[] = [];
+    captureAuthenticatedRpcRequests(page, originAuthenticatedRequests);
+    captureAuthenticatedRpcRequests(observer.page, observerAuthenticatedRequests);
     captureRpcEvidence(page, "origin", rpcEvidence);
     captureRpcEvidence(observer.page, "observer", rpcEvidence);
     const customerName = `QA Multi Hop Race ${runId}`;
@@ -176,6 +181,95 @@ test.describe.serial("Release B admin multi-hop checkout concurrency", () => {
       await observerCheckout.getByLabel("Session End Time", { exact: true }).fill(checkoutEndAt);
       await expect(observerCheckout.getByRole("button", { name: "Issue Bill", exact: true })).toBeEnabled();
 
+      const originPreflightRequest = originAuthenticatedRequests.at(-1);
+      const observerPreflightRequest = observerAuthenticatedRequests.at(-1);
+      expect(originPreflightRequest, "origin authenticated staging request").toBeTruthy();
+      expect(observerPreflightRequest, "observer authenticated staging request").toBeTruthy();
+      const preflightRequests = [originPreflightRequest!, observerPreflightRequest!];
+      const preflightHeaders = preflightRequests.map((request) => ({
+        apikey: request.headers.apikey,
+        authorization: request.headers.authorization,
+        "content-type": "application/json",
+        prefer: request.headers.prefer || "return=representation"
+      }));
+      const actorIds = preflightRequests.map((request) => authenticatedJwtSubject(request.headers));
+      const restBase = originPreflightRequest!.url.replace(/\/rpc\/[^/]+$/, "");
+      expect(observerPreflightRequest!.url.replace(/\/rpc\/[^/]+$/, "")).toBe(restBase);
+      const restHeaders = {
+        apikey: preflightHeaders[0].apikey,
+        authorization: preflightHeaders[0].authorization
+      };
+      const actorProfiles = await Promise.all(actorIds.map((actorId, index) =>
+        readRestRows<{ id: string; organization_id: string; role: string; active: boolean }>(
+          index === 0 ? page : observer.page,
+          restBase,
+          { apikey: preflightHeaders[index].apikey, authorization: preflightHeaders[index].authorization },
+          "profiles",
+          { id: `eq.${actorId}`, select: "id,organization_id,role,active" }
+        )
+      ));
+      actorProfiles.forEach((profiles, index) => {
+        expect(profiles).toHaveLength(1);
+        expect(profiles[0]).toMatchObject({ id: actorIds[index], role: "admin", active: true });
+      });
+      const organizationId = actorProfiles[0][0].organization_id;
+      expect(organizationId).toBeTruthy();
+      expect(actorProfiles[1][0].organization_id).toBe(organizationId);
+
+      const [authoritativeRoles, beforeAppState, timingRows] = await Promise.all([
+        Promise.all(preflightHeaders.map((headers, index) =>
+          (index === 0 ? page : observer.page).request.post(`${restBase}/rpc/current_user_org_role`, {
+            headers,
+            data: { target_organization_id: organizationId }
+          })
+        )),
+        readRestRows<{ version: number; data: unknown }>(
+          page,
+          restBase,
+          restHeaders,
+          "app_state",
+          { id: "eq.primary", select: "version,data" }
+        ),
+        readRestRows<{
+          id: string;
+          started_at: string | null;
+          raw_data: { startedAt?: string } | null;
+        }>(page, restBase, restHeaders, "sessions", {
+          organization_id: `eq.${organizationId}`,
+          id: `in.(${chainSessionIds.join(",")})`,
+          select: "id,started_at,raw_data"
+        })
+      ]);
+      authoritativeRoles.forEach((response) => expect(response.status()).toBe(200));
+      const roleValues = await Promise.all(
+        authoritativeRoles.map((response) => response.json() as Promise<string | null>)
+      );
+      expect(roleValues).toEqual(["admin", "admin"]);
+      expect(beforeAppState).toHaveLength(1);
+      expect(timingRows).toHaveLength(3);
+      const compatibilitySessions = ((beforeAppState[0].data as {
+        sessions?: Array<{ id: string; startedAt?: string }>;
+      }).sessions ?? []);
+      const timingById = new Map(timingRows.map((session) => [session.id, session]));
+      for (const sessionId of chainSessionIds) {
+        const normalized = timingById.get(sessionId);
+        const compatibilityMatches = compatibilitySessions.filter((session) => session.id === sessionId);
+        expect(compatibilityMatches, `${sessionId} compatibility multiplicity`).toHaveLength(1);
+        const compatibility = compatibilityMatches[0];
+        expect(normalized?.raw_data?.startedAt, `${sessionId} raw start`).toBeTruthy();
+        expect(compatibility?.startedAt, `${sessionId} compatibility start`).toBeTruthy();
+        expect(normalized?.started_at, `${sessionId} typed start presence`).toBeTruthy();
+        const normalizedStart = new Date(normalized!.started_at!).getTime();
+        const rawStart = new Date(normalized!.raw_data!.startedAt!).getTime();
+        const compatibilityStart = new Date(compatibility!.startedAt!).getTime();
+        expect(Number.isFinite(normalizedStart), `${sessionId} typed start validity`).toBe(true);
+        expect(Number.isFinite(rawStart), `${sessionId} raw start validity`).toBe(true);
+        expect(Number.isFinite(compatibilityStart), `${sessionId} compatibility start validity`).toBe(true);
+        expect(rawStart, `${sessionId} normalized/raw start`).toBe(normalizedStart);
+        expect(compatibilityStart, `${sessionId} normalized/compatibility start`).toBe(normalizedStart);
+      }
+      const appStateHashBefore = appStateDataHash(beforeAppState[0].data);
+
       originCommand = await interceptSingleRpcCommand(page, "**/rest/v1/rpc/commit_checkout_bill_v2");
       observerCommand = await interceptSingleRpcCommand(observer.page, "**/rest/v1/rpc/commit_checkout_bill_v2");
       page.on("dialog", dismissDialog);
@@ -210,62 +304,17 @@ test.describe.serial("Release B admin multi-hop checkout concurrency", () => {
         .not.toBe(envelopes[1].payload.payload.primary_bill.billNumber);
 
       const capturedRequests = [capturedOrigin, capturedObserver];
+      expect(capturedRequests.map((request) => authenticatedJwtSubject(request.headers))).toEqual(actorIds);
+      expect(capturedRequests.map((request) => request.url.replace(/\/rpc\/[^/]+$/, "")))
+        .toEqual([restBase, restBase]);
+      expect(envelopes.map((envelope) => envelope.payload.organization_id))
+        .toEqual([organizationId, organizationId]);
       const requestHeaders = capturedRequests.map((captured) => ({
         apikey: captured.headers.apikey,
         authorization: captured.headers.authorization,
         "content-type": "application/json",
         prefer: captured.headers.prefer || "return=representation"
       }));
-      const actorIds = capturedRequests.map((captured) => authenticatedJwtSubject(captured.headers));
-      const restBase = capturedOrigin.url.replace(/\/rpc\/[^/]+$/, "");
-      const restHeaders = { apikey: requestHeaders[0].apikey, authorization: requestHeaders[0].authorization };
-      const authoritativeRoles = await Promise.all(envelopes.map((envelope, index) =>
-        (index === 0 ? page : observer.page).request.post(`${restBase}/rpc/current_user_org_role`, {
-          headers: requestHeaders[index],
-          data: { target_organization_id: envelope.payload.organization_id }
-        })
-      ));
-      authoritativeRoles.forEach((response) => expect(response.status()).toBe(200));
-      const roleValues = await Promise.all(authoritativeRoles.map((response) => response.json() as Promise<string | null>));
-      expect(roleValues).toEqual(["admin", "admin"]);
-
-      const beforeAppState = await readRestRows<{ version: number; data: unknown }>(
-        page,
-        restBase,
-        restHeaders,
-        "app_state",
-        { id: "eq.primary", select: "version,data" }
-      );
-      expect(beforeAppState).toHaveLength(1);
-      const timingRows = await readRestRows<{
-        id: string;
-        started_at: string | null;
-        raw_data: { startedAt?: string } | null;
-      }>(page, restBase, restHeaders, "sessions", {
-        organization_id: `eq.${envelopes[0].payload.organization_id}`,
-        id: `in.(${chainSessionIds.join(",")})`,
-        select: "id,started_at,raw_data"
-      });
-      expect(timingRows).toHaveLength(3);
-      const compatibilitySessions = ((beforeAppState[0].data as { sessions?: Array<{ id: string; startedAt?: string }> }).sessions ?? []);
-      const timingById = new Map(timingRows.map((session) => [session.id, session]));
-      for (const sessionId of chainSessionIds) {
-        const normalized = timingById.get(sessionId);
-        const compatibilityMatches = compatibilitySessions.filter((session) => session.id === sessionId);
-        expect(compatibilityMatches, `${sessionId} compatibility multiplicity`).toHaveLength(1);
-        const compatibility = compatibilityMatches[0];
-        expect(normalized?.raw_data?.startedAt, `${sessionId} raw start`).toBeTruthy();
-        expect(compatibility?.startedAt, `${sessionId} compatibility start`).toBeTruthy();
-        expect(normalized?.started_at, `${sessionId} typed start presence`).toBeTruthy();
-        const normalizedStart = new Date(normalized!.started_at!).getTime();
-        const rawStart = new Date(normalized!.raw_data!.startedAt!).getTime();
-        const compatibilityStart = new Date(compatibility!.startedAt!).getTime();
-        expect(Number.isFinite(normalizedStart), `${sessionId} typed start validity`).toBe(true);
-        expect(Number.isFinite(rawStart), `${sessionId} raw start validity`).toBe(true);
-        expect(Number.isFinite(compatibilityStart), `${sessionId} compatibility start validity`).toBe(true);
-        expect(rawStart, `${sessionId} normalized/raw start`).toBe(normalizedStart);
-        expect(compatibilityStart, `${sessionId} normalized/compatibility start`).toBe(normalizedStart);
-      }
       for (const envelope of envelopes) {
         const submittedUpdates = envelope.payload.payload.session_updates;
         expect(submittedUpdates).toHaveLength(3);
@@ -278,7 +327,6 @@ test.describe.serial("Release B admin multi-hop checkout concurrency", () => {
           expect(submittedStart, `${envelope.payload.mutation_id} ${sessionId} submitted/typed start`).toBe(normalizedStart);
         }
       }
-      const appStateHashBefore = appStateDataHash(beforeAppState[0].data);
       raceEvidence = {
         customerName,
         station,
@@ -296,7 +344,7 @@ test.describe.serial("Release B admin multi-hop checkout concurrency", () => {
       };
 
       raceStarted = true;
-      const responses: APIResponse[] = await Promise.all([
+      const responses = await Promise.all([
         originCommand.submit(envelopes[0]),
         observerCommand.submit(envelopes[1])
       ]);
@@ -508,8 +556,7 @@ test.describe.serial("Release B admin multi-hop checkout concurrency", () => {
       await Promise.all([page.waitForTimeout(750), observer.page.waitForTimeout(750)]);
       page.off("dialog", dismissDialog);
       observer.page.off("dialog", dismissDialog);
-      await page.unroute("**/rest/v1/rpc/commit_checkout_bill_v2");
-      await observer.page.unroute("**/rest/v1/rpc/commit_checkout_bill_v2");
+      await Promise.all([originCommand.dispose(), observerCommand.dispose()]);
       await Promise.all([
         page.reload({ waitUntil: "domcontentloaded" }),
         observer.page.reload({ waitUntil: "domcontentloaded" })
@@ -529,10 +576,10 @@ test.describe.serial("Release B admin multi-hop checkout concurrency", () => {
     } finally {
       page.off("dialog", dismissDialog);
       observer.page.off("dialog", dismissDialog);
-      originCommand?.cancel();
-      observerCommand?.cancel();
-      await page.unroute("**/rest/v1/rpc/commit_checkout_bill_v2").catch(() => undefined);
-      await observer.page.unroute("**/rest/v1/rpc/commit_checkout_bill_v2").catch(() => undefined);
+      await Promise.all([
+        originCommand ? originCommand.dispose() : Promise.resolve(),
+        observerCommand ? observerCommand.dispose() : Promise.resolve()
+      ]);
       sessionStarted = sessionStarted || rpcEvidence.some(
         (entry) => entry.rpc === "start_session" && entry.status < 300
       );

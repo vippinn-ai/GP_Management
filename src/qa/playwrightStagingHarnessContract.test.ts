@@ -365,6 +365,13 @@ describe("staging Playwright harness contract", () => {
     expect(scenario).toContain('interceptSingleRpcCommand(observer.page, "**/rest/v1/rpc/commit_checkout_bill_v2")');
     expect(scenario).toContain("originCommand.submit(envelopes[0])");
     expect(scenario).toContain("observerCommand.submit(envelopes[1])");
+    expect(scenario).toContain("captureAuthenticatedRpcRequests(page, originAuthenticatedRequests)");
+    expect(scenario).toContain("const [authoritativeRoles, beforeAppState, timingRows] = await Promise.all([");
+    expect(scenario).toMatch(/expect\(roleValues\)\.toEqual\(\["admin", "admin"\]\);[\s\S]*originCommand = await interceptSingleRpcCommand/);
+    expect(scenario).toMatch(/expect\(compatibilityStart,[\s\S]*originCommand = await interceptSingleRpcCommand/);
+    expect(scenario).toMatch(/raceStarted = true;[\s\S]*originCommand\.submit\(envelopes\[0\]\)/);
+    expect(scenario).toContain("originCommand ? originCommand.dispose() : Promise.resolve()");
+    expect(scenario).toContain("observerCommand ? observerCommand.dispose() : Promise.resolve()");
     expect(scenario).toContain("expect(sourceSessionIds).toHaveLength(3)");
     expect(scenario).toContain("expect([...sourceSessionIds].sort()).toEqual(expectedChainSessionIds)");
     expect(scenario).toContain("expect(submittedSessionUpdateIds).toHaveLength(3)");
@@ -529,7 +536,11 @@ describe("staging Playwright harness contract", () => {
     expect(support).toContain("if (isPrimaryCapture)");
     expect(support).toContain("settled,");
     expect(scenario).toContain('test.describe.serial("Release B admin checkout versus game-hop concurrency"');
-    expect(support).toContain('await route.abort("blockedbyclient")');
+    expect(support).toContain('await abortIgnoringHandledRoute(route, "blockedbyclient")');
+    expect(support).toContain('await abortIgnoringHandledRoute(route, "aborted")');
+    expect(support).toContain('if (!/Route is already handled!?/i.test(message)) throw error');
+    expect(support).toContain("async dispose()");
+    expect(support).toContain("if (!primaryCaptured) settleOnce()");
     expect(support).toContain("await route.fetch({ postData: JSON.stringify(next.body), timeout: 30_000 })");
     expect(support).toContain("await route.fulfill({ response: serverResponse })");
     expect(support).toContain("command can only be submitted once");
