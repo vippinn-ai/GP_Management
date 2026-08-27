@@ -100,4 +100,58 @@ describe("checkout-settlement race harness contract", () => {
     expect(preflight).not.toContain('supabase.rpc("commit_');
     expect(preflight).not.toContain('supabase.rpc("reject_');
   });
+
+  it("reconciles and cleans an adjustment-winner race without another financial command", () => {
+    const packageJson = JSON.parse(read("package.json")) as { scripts: Record<string, string> };
+    const reconciliation = read("scripts/reconcile-checkout-settlement-race-staging.mjs");
+    const runner = read("scripts/run-checkout-settlement-cleanup-staging-e2e.mjs");
+    const cleanup = read("tests/e2e/staging/release-b-checkout-settlement-cleanup-v2.e2e.ts");
+
+    expect(packageJson.scripts["test:db:staging:v2:checkout-settlement-race:reconcile"]).toBe(
+      "node scripts/reconcile-checkout-settlement-race-staging.mjs"
+    );
+    expect(packageJson.scripts["test:e2e:staging:v2:checkout-settlement-race:cleanup"]).toBe(
+      "node scripts/run-checkout-settlement-cleanup-staging-e2e.mjs"
+    );
+    expect(reconciliation).toContain('new Set(["before-cleanup", "after-cleanup"])');
+    expect(reconciliation).toContain('["adjustment", adjustmentMutationId, "settlePendingBills"]');
+    expect(reconciliation).toContain("mutationStatuses.checkout === null");
+    expect(reconciliation).toContain('events.data[0].event_type === "financial_adjustment_committed_v2"');
+    expect(reconciliation).toContain("adjustmentResult?.mutation_id === adjustmentMutationId");
+    expect(reconciliation).toContain("adjustmentResult.entity_id === settlementBillId");
+    expect(reconciliation).toContain("adjustmentResult.changed_rows?.payments");
+    expect(reconciliation).toContain("adjustmentResult.changed_rows?.audit_logs");
+    expect(reconciliation).toContain('message === `Settled Rs 30.00 on ${settlementBill.bill_number}. Remaining due: Rs 0.00.`');
+    expect(reconciliation).toContain('message === `Rejected ${station}. Reason: ${cleanupReason}`');
+    expect(reconciliation).toContain("candidateBills.data.length === 0");
+    expect(reconciliation).toContain("activeLines.length === 0");
+    expect(reconciliation).toContain("retainedPayments.length === 0");
+    expect(reconciliation).toContain("openSessions.data.length === 1 && openSessions.data[0].id === activeSessionId");
+    expect(reconciliation).toContain("openSessions.data.length === 0");
+    expect(reconciliation).toContain("appState.data.version === expectedAppStateVersion");
+    expect(reconciliation).toContain("metadata?.app_state_version) === expectedAppStateVersion");
+    expect(reconciliation).toContain("Refusing to overwrite an existing checkout-settlement reconciliation artifact");
+    expect(reconciliation).not.toMatch(/\.(insert|upsert|delete)\(/);
+    expect(reconciliation).not.toContain(".update({");
+    expect(reconciliation).not.toContain('supabase.rpc("commit_');
+    expect(reconciliation).not.toContain('supabase.rpc("reject_');
+    expect(runner).toContain("release-b-checkout-settlement-cleanup-v2.e2e.ts");
+    expect(runner).toContain("process.argv.slice(2).length > 0");
+    expect(runner).toContain("Cleanup execution ID must differ from the source race ID");
+    expect(runner).toContain("Cleanup artifact identity already exists");
+    expect(cleanup).toContain("rejectSessionIfOpen(page, station, customerName, reason)");
+    expect(cleanup).toContain("E2E_RACE_SOURCE_RUN_ID");
+    expect(cleanup).toContain('entry.rpc === "reject_session"');
+    expect(cleanup).toContain('entry.rpc.startsWith("commit_financial") || entry.rpc === "commit_checkout_bill_v2"');
+    expect(cleanup).toContain("expect(afterAppState[0].version).toBe(expectedVersion + 1)");
+    expect(cleanup).not.toContain("Issue Bill");
+    expect(cleanup).not.toContain("Confirm Settlement");
+    const race = read("tests/e2e/staging/release-b-checkout-settlement-race-v2.e2e.ts");
+    expect(race).toContain('status: "active"');
+    expect(race).toContain("financialOutcomeResolved = true");
+    expect(race.indexOf("financialOutcomeResolved = true")).toBeLessThan(
+      race.indexOf('expect(checkoutCommand.wasSubmitted()).toBe(true)')
+    );
+    expect(race).toContain('financialOutcomeResolved && raceWinner === "adjustment"');
+  });
 });

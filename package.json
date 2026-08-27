@@ -21,6 +21,8 @@
     "test:e2e:staging:v2:checkout-settlement-race": "node scripts/run-checkout-settlement-race-staging-e2e.mjs",
     "test:e2e:staging:v2:checkout-settlement-race:list": "node scripts/run-checkout-settlement-race-staging-e2e.mjs --list",
     "test:db:staging:v2:checkout-settlement-race:preflight": "node scripts/preflight-checkout-settlement-race-staging.mjs",
+    "test:db:staging:v2:checkout-settlement-race:reconcile": "node scripts/reconcile-checkout-settlement-race-staging.mjs",
+    "test:e2e:staging:v2:checkout-settlement-race:cleanup": "node scripts/run-checkout-settlement-cleanup-staging-e2e.mjs",
     "test:e2e:staging:v2:roles": "node scripts/run-financial-v2-role-matrix-staging-e2e.mjs",
     "test:e2e:staging:v2:roles:list": "node scripts/run-financial-v2-role-matrix-staging-e2e.mjs --list",
     "test:e2e:staging:v2:roles:remaining": "node scripts/run-financial-v2-role-matrix-staging-e2e.mjs --remaining",

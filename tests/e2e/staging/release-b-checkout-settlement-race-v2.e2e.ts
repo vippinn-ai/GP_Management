@@ -205,6 +205,8 @@ test.describe.serial("Release B checkout versus standalone settlement concurrenc
     let secondSessionStarted = false;
     let raceStarted = false;
     let raceResolved = false;
+    let financialOutcomeResolved = false;
+    let raceWinner: "checkout" | "adjustment" | undefined;
     let pendingBillNumber: string | undefined;
     let firstSessionId: string | undefined;
     let secondSessionId: string | undefined;
@@ -583,7 +585,7 @@ test.describe.serial("Release B checkout versus standalone settlement concurrenc
         expect(currentBills).toHaveLength(0);
         expect(sessions[0]).toEqual(
           expect.objectContaining({
-            status: "open",
+            status: "active",
             close_disposition: null,
             closed_bill_id: null
           })
@@ -594,6 +596,8 @@ test.describe.serial("Release B checkout versus standalone settlement concurrenc
         expect(adjustmentEvents[0].id).toBe(winnerMutationStatus.event_id);
         expect(adjustmentEvents[0].created_by).toBe(adjustmentActorId);
       }
+      raceWinner = winner.kind;
+      financialOutcomeResolved = true;
       raceResolved = true;
       evidence = {
         ...evidence,
@@ -685,7 +689,7 @@ test.describe.serial("Release B checkout versus standalone settlement concurrenc
       if (
         !page.isClosed() &&
         secondSessionStarted &&
-        (!raceStarted || (raceResolved && evidence.winner === "adjustment"))
+        (!raceStarted || (financialOutcomeResolved && raceWinner === "adjustment"))
       ) {
         try {
           for (const target of [page, observer.page]) {
@@ -765,6 +769,8 @@ test.describe.serial("Release B checkout versus standalone settlement concurrenc
         secondSessionStarted,
         raceStarted,
         raceResolved,
+        financialOutcomeResolved,
+        raceWinner,
         cleanupError,
         quiescenceError,
         primaryError: sanitizedErrorMessage(primaryError),
