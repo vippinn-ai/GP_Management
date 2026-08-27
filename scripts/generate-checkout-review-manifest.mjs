@@ -25,6 +25,10 @@ const releaseBMaintenanceArtifacts = new Set([
   "scripts/build-reject-rpc-staging-install.mjs",
   "supabase/staging-qa-multihop-quarantine-repair.sql"
 ]);
+const checkoutSettlementDiagnosticArtifacts = new Set([
+  "scripts/preflight-checkout-settlement-race-staging.mjs",
+  "scripts/reconcile-checkout-settlement-race-staging.mjs"
+]);
 
 function normalizePath(value) {
   return value.replaceAll("\\", "/");
@@ -57,6 +61,7 @@ function classifyAppState(path, content) {
   if (path === "scripts/inspect-staging-sessions.mjs" || path === "scripts/reconcile-financial-v2-staging.mjs") {
     return "migration-diagnostic-or-reconstruction";
   }
+  if (checkoutSettlementDiagnosticArtifacts.has(path)) return "migration-diagnostic-or-reconstruction";
   if (
     path === "scripts/build-reject-rpc-transactional-proof.mjs" ||
     path === "scripts/build-reject-rpc-staging-install.mjs" ||
@@ -119,6 +124,19 @@ function inferCollections(path, content) {
   }
   if (path === "supabase/staging-qa-multihop-quarantine-repair.sql") {
     ["app_state", "sessions", "customer_tabs", "bill_lines", "audit_logs", "operational_events"].forEach((name) => names.add(name));
+  }
+  if (checkoutSettlementDiagnosticArtifacts.has(path)) {
+    [
+      "app_state",
+      "sessions",
+      "customer_tabs",
+      "bills",
+      "bill_lines",
+      "payments",
+      "audit_logs",
+      "operational_events",
+      "financial_mutations"
+    ].forEach((name) => names.add(name));
   }
   if (path === "tests/e2e/staging/release-a-inventory-matrix.e2e.ts") {
     [
@@ -228,6 +246,9 @@ function inferDirectTests(path) {
   }
   if (releaseBMaintenanceArtifacts.has(path)) {
     tests.push("src/qa/playwrightStagingHarnessContract.test.ts");
+  }
+  if (checkoutSettlementDiagnosticArtifacts.has(path)) {
+    tests.push("src/qa/checkoutSettlementRaceHarnessContract.test.ts");
   }
   return [...new Set(tests)].join("; ");
 }
