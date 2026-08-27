@@ -84,7 +84,7 @@ describe("checkout-settlement race harness contract", () => {
     expect(preflight).toContain("runSessions.data.length === 0");
     expect(preflight).toContain("runBills.data.length === 0");
     expect(preflight).toContain("artifactCollisions.length === 0");
-    expect(preflight).toContain('Promise.all([authenticateSlot("A"), authenticateSlot("B")])');
+    expect(preflight).toMatch(/const origin = await authenticateSlot\("A"\);[\s\S]*const observer = await authenticateSlot\("B"\);/);
     expect(preflight).toContain('client.rpc("current_user_org_role"');
     expect(preflight).toContain('client.from("profiles").select("id,role,active")');
     expect(preflight).toContain('role.data !== "admin"');

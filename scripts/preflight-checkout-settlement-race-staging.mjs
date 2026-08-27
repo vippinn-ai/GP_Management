@@ -68,7 +68,11 @@ async function authenticateSlot(slot) {
   };
 }
 
-const [origin, observer] = await Promise.all([authenticateSlot("A"), authenticateSlot("B")]);
+// Resolve identical credential slots sequentially. The login resolver may
+// reject simultaneous duplicate lookups even though both independent browser
+// contexts can authenticate successfully.
+const origin = await authenticateSlot("A");
+const observer = await authenticateSlot("B");
 const supabase = origin.client;
 
 const [openSessions, openTabs, appState, retainedBills, retainedPayments, runSessions, runBills] = await Promise.all([
