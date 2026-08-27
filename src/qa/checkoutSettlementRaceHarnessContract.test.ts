@@ -18,6 +18,9 @@ describe("checkout-settlement race harness contract", () => {
     expect(packageJson.scripts["test:e2e:staging:v2:checkout-settlement-race:list"]).toBe(
       "node scripts/run-checkout-settlement-race-staging-e2e.mjs --list"
     );
+    expect(packageJson.scripts["test:db:staging:v2:checkout-settlement-race:preflight"]).toBe(
+      "node scripts/preflight-checkout-settlement-race-staging.mjs"
+    );
     expect(runner).toContain('const allowed = new Set(["--list"])');
     expect(runner).toContain("args.length > 1");
     expect(runner).toContain("run-financial-v2-staging-e2e.mjs");
@@ -65,5 +68,36 @@ describe("checkout-settlement race harness contract", () => {
 
     expect(settledAt).toBeGreaterThan(-1);
     expect(unrouteAt).toBeGreaterThan(settledAt);
+  });
+
+  it("requires an exact read-only race preflight", () => {
+    const preflight = read("scripts/preflight-checkout-settlement-race-staging.mjs");
+
+    expect(preflight).toContain("assertStagingSupabaseEnvironment(stagingEnv, true)");
+    expect(preflight).toContain("const runId = sanitizeRunId(env.E2E_RUN_ID)");
+    expect(preflight).toContain('const organizationId = "org-primary"');
+    expect(preflight).toContain('const retainedBillId = "bill-ea56ff7e-6233-46b0-8514-82cb7851e6f6"');
+    expect(preflight).toContain('const retainedBillNumber = "BILL-20260827-001"');
+    expect(preflight).toContain('retainedBill.status === "pending"');
+    expect(preflight).toContain("Number(retainedBill.total) === 45");
+    expect(preflight).toContain("retainedPayments.data.length === 0");
+    expect(preflight).toContain("runSessions.data.length === 0");
+    expect(preflight).toContain("runBills.data.length === 0");
+    expect(preflight).toContain("artifactCollisions.length === 0");
+    expect(preflight).toContain('Promise.all([authenticateSlot("A"), authenticateSlot("B")])');
+    expect(preflight).toContain('client.rpc("current_user_org_role"');
+    expect(preflight).toContain('client.from("profiles").select("id,role,active")');
+    expect(preflight).toContain('role.data !== "admin"');
+    expect(preflight).toContain('profile.data.role !== "admin"');
+    expect(preflight).toContain("!profile.data.active");
+    expect(preflight).toContain("actors: [origin.identity, observer.identity]");
+    expect(preflight).toContain("actorId: login.data.user.id");
+    expect(preflight).not.toContain("actors: [origin, observer]");
+    expect(preflight).toContain("safeToRun");
+    expect(preflight).toContain("process.exitCode = 2");
+    expect(preflight).not.toMatch(/\.(insert|upsert|delete)\(/);
+    expect(preflight).not.toContain(".update({");
+    expect(preflight).not.toContain('supabase.rpc("commit_');
+    expect(preflight).not.toContain('supabase.rpc("reject_');
   });
 });
