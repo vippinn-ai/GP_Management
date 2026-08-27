@@ -108,6 +108,16 @@ function appStateHash(data: unknown) {
   return createHash("sha256").update(JSON.stringify(data)).digest("hex");
 }
 
+function sanitizedErrorMessage(error: unknown) {
+  if (error === undefined) return undefined;
+  const message = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+  return message
+    .replace(/Bearer\s+[^\s"',}]+/gi, "Bearer [redacted]")
+    .replace(/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, "[redacted-jwt]")
+    .replace(/((?:api[-_]?key|authorization)["']?\s*[:=]\s*["']?)[^\s"',}]+/gi, "$1[redacted]")
+    .slice(0, 2_000);
+}
+
 function rpcHeaders(captured: CapturedRpcRequest) {
   return {
     apikey: captured.headers.apikey,
@@ -202,6 +212,7 @@ test.describe.serial("Release B checkout versus standalone settlement concurrenc
     let checkoutCommand: Awaited<ReturnType<typeof interceptSingleRpcCommand>> | undefined;
     let settlementCommand: Awaited<ReturnType<typeof interceptSingleRpcCommand>> | undefined;
     let cleanupError: string | undefined;
+    let quiescenceError: string | undefined;
     let primaryError: unknown;
     let evidence: Record<string, unknown> = {};
     const dismissDialog = (dialog: { dismiss(): Promise<void> }) => void dialog.dismiss();
@@ -355,7 +366,28 @@ test.describe.serial("Release B checkout versus standalone settlement concurrenc
       const checkoutHeaders = rpcHeaders(capturedCheckout);
       const restBase = capturedCheckout.url.replace(/\/rpc\/[^/]+$/, "");
       const restHeaders = { apikey: checkoutHeaders.apikey, authorization: checkoutHeaders.authorization };
-      expect(originRest).toEqual({ restBase, headers: restHeaders });
+      const checkoutActorId = authenticatedJwtSubject(capturedCheckout.headers);
+      const adjustmentActorId = authenticatedJwtSubject(capturedSettlement.headers);
+      evidence = {
+        runId,
+        customerName,
+        station,
+        pendingBillId,
+        pendingBillNumber,
+        secondSessionId,
+        currentBillId: checkoutPatch.primary_bill.id,
+        currentBillNumber: checkoutPatch.primary_bill.billNumber,
+        checkoutMutationId: checkoutEnvelope.payload.mutation_id,
+        adjustmentMutationId: adjustmentEnvelope.payload.mutation_id,
+        checkoutActorId,
+        adjustmentActorId,
+        captureCountsBeforeSend: {
+          checkout: checkoutCommand.captureCount(),
+          settlement: settlementCommand.captureCount()
+        }
+      };
+      expect(originRest?.restBase).toBe(restBase);
+      expect(authenticatedJwtSubject(originRest?.headers ?? {})).toBe(checkoutActorId);
       const [livePendingBills, pendingPaymentsBefore, beforeAppState] = await Promise.all([
         readRestRows<BillSnapshot>(page, restBase, restHeaders, "bills", {
           organization_id: `eq.${organizationId}`,
@@ -397,29 +429,12 @@ test.describe.serial("Release B checkout versus standalone settlement concurrenc
       expect(beforeAppState).toHaveLength(1);
       const appStateVersionBefore = beforeAppState[0].version;
       const appStateHashBefore = appStateHash(beforeAppState[0].data);
-      const checkoutActorId = authenticatedJwtSubject(capturedCheckout.headers);
-      const adjustmentActorId = authenticatedJwtSubject(capturedSettlement.headers);
       evidence = {
-        runId,
-        customerName,
-        station,
-        pendingBillId,
-        pendingBillNumber,
-        secondSessionId,
-        currentBillId: checkoutPatch.primary_bill.id,
-        currentBillNumber: checkoutPatch.primary_bill.billNumber,
-        checkoutMutationId: checkoutEnvelope.payload.mutation_id,
-        adjustmentMutationId: adjustmentEnvelope.payload.mutation_id,
-        checkoutActorId,
-        adjustmentActorId,
+        ...evidence,
         pendingDue: checkoutExpectation!.expectedAmountDue,
         authoritativePendingBillBefore: livePendingBill,
         appStateVersionBefore,
         appStateHashBefore,
-        captureCountsBeforeSend: {
-          checkout: checkoutCommand.captureCount(),
-          settlement: settlementCommand.captureCount()
-        }
       };
 
       raceStarted = true;
@@ -622,12 +637,44 @@ test.describe.serial("Release B checkout versus standalone settlement concurrenc
       primaryError = error;
       throw error;
     } finally {
-      page.off("dialog", dismissDialog);
-      observer.page.off("dialog", dismissDialog);
       checkoutCommand?.cancel();
       settlementCommand?.cancel();
+      const capturedCommands = [checkoutCommand, settlementCommand].filter(
+        (command): command is NonNullable<typeof command> => Boolean(command && command.captureCount() > 0)
+      );
+      await Promise.all(capturedCommands.map((command) => command.settled.catch(() => undefined)));
+      if (!raceStarted && capturedCommands.length > 0) {
+        // Keep both RPC routes installed while the canceled UI commands and
+        // bounded status lookups are terminated by navigation. This prevents
+        // an ambiguous-response recovery from escaping failure cleanup.
+        const quiescenceTargets = [page, observer.page];
+        const quiescenceResults = await Promise.allSettled(
+          quiescenceTargets.map((target) => target.reload({ waitUntil: "domcontentloaded" }))
+        );
+        const failedQuiescence = quiescenceResults
+          .map((result, index) => ({ result, index }))
+          .filter(
+            (entry): entry is { result: PromiseRejectedResult; index: number } => entry.result.status === "rejected"
+          );
+        if (failedQuiescence.length > 0) {
+          quiescenceError = failedQuiescence
+            .map(({ result, index }) =>
+              `browser ${index === 0 ? "origin" : "observer"}: ${sanitizedErrorMessage(result.reason)}`
+            )
+            .join("; ");
+          cleanupError = `Pre-race browser quiescence failed; external reconciliation is required. ${quiescenceError}`;
+          await Promise.all(
+            failedQuiescence.map(async ({ index }) => {
+              const target = quiescenceTargets[index];
+              if (!target.isClosed()) await target.close({ runBeforeUnload: false });
+            })
+          );
+        }
+      }
       await checkoutCommand?.dispose().catch(() => undefined);
       await settlementCommand?.dispose().catch(() => undefined);
+      page.off("dialog", dismissDialog);
+      observer.page.off("dialog", dismissDialog);
       const acknowledgedStarts = rpcEvidence.filter(
         (entry) => entry.page === "origin" && entry.rpc === "start_session" && entry.status < 300
       );
@@ -635,7 +682,11 @@ test.describe.serial("Release B checkout versus standalone settlement concurrenc
       secondSessionId = secondSessionId ?? acknowledgedStarts[1]?.entityId;
       firstSessionStarted = firstSessionStarted || Boolean(firstSessionId);
       secondSessionStarted = secondSessionStarted || Boolean(secondSessionId);
-      if (secondSessionStarted && (!raceStarted || (raceResolved && evidence.winner === "adjustment"))) {
+      if (
+        !page.isClosed() &&
+        secondSessionStarted &&
+        (!raceStarted || (raceResolved && evidence.winner === "adjustment"))
+      ) {
         try {
           for (const target of [page, observer.page]) {
             await target.reload({ waitUntil: "domcontentloaded" });
@@ -669,9 +720,9 @@ test.describe.serial("Release B checkout versus standalone settlement concurrenc
             { id: secondSessionId, status: "closed", close_disposition: "rejected", closed_bill_id: null }
           ]);
         } catch (error) {
-          cleanupError = error instanceof Error ? error.message : "Unknown checkout-settlement cleanup failure";
+          cleanupError = sanitizedErrorMessage(error) ?? "Unknown checkout-settlement cleanup failure";
         }
-      } else if (firstSessionStarted && !pendingBillCommitted) {
+      } else if (!page.isClosed() && firstSessionStarted && !pendingBillCommitted) {
         try {
           await page.reload({ waitUntil: "domcontentloaded" });
           const conflict = page.getByText(/\d+ conflict/, { exact: false });
@@ -703,7 +754,7 @@ test.describe.serial("Release B checkout versus standalone settlement concurrenc
             { id: firstSessionId, status: "closed", close_disposition: "rejected", closed_bill_id: null }
           ]);
         } catch (error) {
-          cleanupError = error instanceof Error ? error.message : "Unknown deferred setup cleanup failure";
+          cleanupError = sanitizedErrorMessage(error) ?? "Unknown deferred setup cleanup failure";
         }
       }
       await attachJson(testInfo, "release-b-checkout-settlement-race-v2-evidence", {
@@ -715,7 +766,8 @@ test.describe.serial("Release B checkout versus standalone settlement concurrenc
         raceStarted,
         raceResolved,
         cleanupError,
-        primaryError: primaryError instanceof Error ? primaryError.message : primaryError,
+        quiescenceError,
+        primaryError: sanitizedErrorMessage(primaryError),
         rpcEvidence,
         finalCaptureCounts: {
           checkout: checkoutCommand?.captureCount() ?? 0,

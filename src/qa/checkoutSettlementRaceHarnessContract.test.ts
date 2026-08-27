@@ -31,10 +31,39 @@ describe("checkout-settlement race harness contract", () => {
     expect(scenario).toContain('"financial_adjustment_conflict"');
     expect(scenario).toContain('"settlement_conflict"');
     expect(scenario).toContain("authoritativePendingBillBefore: livePendingBill");
+    expect(scenario).not.toContain("expect(originRest).toEqual");
+    expect(scenario).toContain("expect(originRest?.restBase).toBe(restBase)");
+    expect(scenario).toContain("expect(authenticatedJwtSubject(originRest?.headers ?? {})).toBe(checkoutActorId)");
+    expect(scenario).toContain("checkoutMutationId: checkoutEnvelope.payload.mutation_id");
+    expect(scenario).toContain("adjustmentMutationId: adjustmentEnvelope.payload.mutation_id");
     expect(scenario).toContain("expect(winnerMutationStatus).toEqual(winner.body)");
     expect(scenario).toContain("expect(pendingPayments).toHaveLength(1)");
     expect(scenario).toContain("expect(settlementAudits).toHaveLength(1)");
     expect(scenario).toContain("Cleanup did not reject the exact open second session.");
     expect(scenario).toContain("expect(appStateHash(afterAppState[0].data)).toBe(appStateHashBefore)");
+    expect(scenario).toContain("command.settled.catch(() => undefined)");
+    expect(scenario.indexOf("command.settled.catch(() => undefined)")).toBeLessThan(
+      scenario.indexOf("checkoutCommand?.dispose()")
+    );
+    expect(scenario).toContain("const quiescenceResults = await Promise.allSettled");
+    expect(scenario).not.toContain('page.reload({ waitUntil: "domcontentloaded" }).catch(() => undefined)');
+    expect(scenario).not.toContain('observer.page.reload({ waitUntil: "domcontentloaded" }).catch(() => undefined)');
+    expect(scenario).toContain("if (!target.isClosed()) await target.close({ runBeforeUnload: false })");
+    expect(scenario.indexOf("await target.close({ runBeforeUnload: false })")).toBeLessThan(
+      scenario.indexOf("checkoutCommand?.dispose()")
+    );
+    expect(scenario).toContain("external reconciliation is required");
+    expect(scenario).toContain("quiescenceError,");
+    expect(scenario).toContain("primaryError: sanitizedErrorMessage(primaryError)");
+    expect(scenario).not.toContain("primaryError instanceof Error ? primaryError.message : primaryError");
+  });
+
+  it("keeps the shared interceptor installed until its request settles", () => {
+    const support = read("tests/e2e/staging/support/app.ts");
+    const settledAt = support.indexOf("await settled;");
+    const unrouteAt = support.indexOf("await page.unroute(pattern, handler);");
+
+    expect(settledAt).toBeGreaterThan(-1);
+    expect(unrouteAt).toBeGreaterThan(settledAt);
   });
 });

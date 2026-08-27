@@ -360,9 +360,12 @@ export async function interceptSingleRpcCommand(page: Page, pattern: string) {
         decided = true;
         resolveDecision({ action: "cancel" });
       }
-      await page.unroute(pattern, handler);
       if (!primaryCaptured) settleOnce();
       await settled;
+      // Keep the route installed until the captured request has actually been
+      // fulfilled or aborted. Removing it first can let an in-flight browser
+      // retry escape the zero-retry harness during failure cleanup.
+      await page.unroute(pattern, handler);
     },
     captureCount: () => captureCount,
     wasSubmitted: () => submitted
