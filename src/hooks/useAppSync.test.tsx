@@ -134,6 +134,12 @@ function Harness(props: {
       <button type="button" onClick={() => setRestoreRetrySignal((previous) => previous + 1)}>
         manual retry
       </button>
+      <button type="button" onClick={() => setRemoteError("Financial command failed.")}>
+        set operation error
+      </button>
+      <button type="button" onClick={() => { setRemoteRestoreState("stale-cache"); setRemoteError("Restore failed."); }}>
+        set restore error
+      </button>
       <button
         type="button"
         onClick={() =>
@@ -321,6 +327,46 @@ describe("useAppSync session restore", () => {
     await flushPromises();
 
     expect(backendMocks.saveRemoteAppData).not.toHaveBeenCalled();
+  });
+
+  it("does not clear an operation error when realtime delivers a newer snapshot", async () => {
+    let deliverSnapshot: ((value: RemoteAppDataSnapshot) => void) | undefined;
+    backendMocks.resolveRemoteSessionProfile.mockResolvedValue(activeSessionResult());
+    backendMocks.loadRemoteAppDataSnapshot.mockResolvedValue(snapshot("Normalized", 4));
+    backendMocks.subscribeToRemoteAppData.mockImplementation((listener: (value: RemoteAppDataSnapshot) => void) => {
+      deliverSnapshot = listener;
+      return () => undefined;
+    });
+
+    render(<Harness allowFullAppDataPersist={false} />);
+    await waitFor(() => expect(screen.getByTestId("restore-state")).toHaveTextContent("ready"));
+    fireEvent.click(screen.getByText("set operation error"));
+    expect(screen.getByTestId("remote-error")).toHaveTextContent("Financial command failed.");
+
+    act(() => deliverSnapshot?.(snapshot("Realtime", 5)));
+
+    expect(screen.getByTestId("business-name")).toHaveTextContent("Realtime");
+    expect(screen.getByTestId("remote-error")).toHaveTextContent("Financial command failed.");
+  });
+
+  it("clears a restore error when realtime successfully restores ready state", async () => {
+    let deliverSnapshot: ((value: RemoteAppDataSnapshot) => void) | undefined;
+    backendMocks.resolveRemoteSessionProfile.mockResolvedValue(activeSessionResult());
+    backendMocks.loadRemoteAppDataSnapshot.mockResolvedValue(snapshot("Normalized", 4));
+    backendMocks.subscribeToRemoteAppData.mockImplementation((listener: (value: RemoteAppDataSnapshot) => void) => {
+      deliverSnapshot = listener;
+      return () => undefined;
+    });
+
+    render(<Harness allowFullAppDataPersist={false} />);
+    await waitFor(() => expect(screen.getByTestId("restore-state")).toHaveTextContent("ready"));
+    fireEvent.click(screen.getByText("set restore error"));
+    await waitFor(() => expect(screen.getByTestId("restore-state")).toHaveTextContent("stale-cache"));
+
+    act(() => deliverSnapshot?.(snapshot("Realtime recovered", 5)));
+
+    expect(screen.getByTestId("restore-state")).toHaveTextContent("ready");
+    expect(screen.getByTestId("remote-error")).toBeEmptyDOMElement();
   });
 
   it("auto retries every 10 seconds while online and stops after success", async () => {

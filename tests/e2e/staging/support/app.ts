@@ -61,9 +61,22 @@ export async function createObserver(browser: Browser): Promise<{ context: Brows
 export async function signIn(page: Page, account: StagingCredentials) {
   await page.goto("/", { waitUntil: "domcontentloaded" });
   await page.getByLabel("Username", { exact: true }).fill(account.username);
-  await page.getByLabel("Password", { exact: true }).fill(account.password);
-  await page.getByRole("button", { name: "Sign In", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Live Dashboard", exact: true })).toBeVisible();
+  const password = page.getByLabel("Password", { exact: true });
+  const dashboard = page.getByRole("heading", { name: "Live Dashboard", exact: true });
+  const rejected = page.getByText("Invalid username or password.", { exact: true });
+  try {
+    await password.fill(account.password);
+    await page.getByRole("button", { name: "Sign In", exact: true }).click();
+    await expect(dashboard.or(rejected)).toBeVisible();
+    if (await rejected.isVisible()) {
+      await password.fill("");
+      throw new Error("Staging sign-in was rejected.");
+    }
+    await expect(dashboard).toBeVisible();
+  } catch (error) {
+    await password.fill("").catch(() => undefined);
+    throw error;
+  }
   await waitForSynced(page);
 }
 
@@ -219,6 +232,7 @@ export async function assertAuthoritativeOrganizationIdentity(
   const role = await roleResponse.json() as OperationalRole | null;
   expect(role, `The authenticated account must have authoritative ${expectedRole} membership in ${organizationId}.`)
     .toBe(expectedRole);
+  if (!role) throw new Error(`The authenticated account has no active organization role in ${organizationId}.`);
 
   const profiles = await readRestRows<{ id: string; role: OperationalRole; active: boolean }>(
     page,

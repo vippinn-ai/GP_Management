@@ -83,6 +83,9 @@ describe("staging Playwright harness contract", () => {
     expect(support).toContain("browser.newContext");
     expect(support).toContain('const marker = "/rest/v1/rpc/"');
     expect(support).toContain('getByText(/^Synced(?:\\s|$)/)');
+    expect(support).toContain("await expect(dashboard.or(rejected)).toBeVisible()");
+    expect(support).toContain('await password.fill("")');
+    expect(support).toContain('throw new Error("Staging sign-in was rejected.")');
     expect(scenario).toContain('entry.rpc === "edit_pause_log"');
     expect(scenario).toContain('entry.rpc === "hop_session"');
     expect(scenario).toContain('entry.rpc === "record_session_audit"');

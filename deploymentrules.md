@@ -57,6 +57,16 @@ Each project has its own:
 
 Production is deployed only by running `npm run deploy:production` manually on a machine that has `.env.production`. There is no automated pipeline connected to the production worker.
 
+## Standing Staging Authorization
+
+For the approved checkout-decoupling plan and its regression, reconciliation, cleanup, deployment, and staging-validation work:
+
+- All plan-scoped actions in the staging Cloudflare Worker and staging Supabase project are pre-approved. Do not pause to request repeated staging approvals.
+- Continue to use fail-closed preflights, unique execution identities, zero retries for race/mutation tests, immutable evidence, mandatory postflights, and independent review where the plan requires them.
+- A failed or ambiguous staging result does not authorize an unsafe retry; diagnose it, create a fresh identity when required, and preserve the original evidence.
+- Never infer production approval from staging authorization. Obtain explicit user approval immediately before any production deployment, SQL/schema change, data mutation, configuration change, secret change, or other production write.
+- Read-only production investigation remains permitted when requested, but must not be converted into a production write without that explicit approval.
+
 ---
 
 ## Development Workflow

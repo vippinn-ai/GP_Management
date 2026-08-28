@@ -222,10 +222,12 @@ export function useAppSync(params: {
         setAppData(normalizeAppDataCustomers(snapshot.appData));
         setRemoteVersion(snapshot.version);
       }
-      setRemoteError("");
+      if (remoteRestoreState !== "ready") {
+        setRemoteError("");
+      }
       setRemoteRestoreState("ready");
     });
-  }, [activeUserId, backendConfigured, dataGateway]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [activeUserId, backendConfigured, dataGateway, remoteRestoreState]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!backendConfigured) {

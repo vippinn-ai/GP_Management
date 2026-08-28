@@ -63,6 +63,12 @@ function classifyAppState(path, content) {
   }
   if (checkoutSettlementDiagnosticArtifacts.has(path)) return "migration-diagnostic-or-reconstruction";
   if (
+    path.startsWith("scripts/") &&
+    /(?:inspect|preflight|reconcile|run)-checkout-(?:refund|replacement|repeat-combo|session-item)/.test(path)
+  ) {
+    return "staging-test-evidence-reference";
+  }
+  if (
     path === "scripts/build-reject-rpc-transactional-proof.mjs" ||
     path === "scripts/build-reject-rpc-staging-install.mjs" ||
     path === "scripts/preflight-reject-rpc-staging-proof.mjs" ||
@@ -216,6 +222,17 @@ function inferRpcs(path, content) {
       "current_user_org_role"
     ].forEach((name) => names.add(name));
   }
+  if (path === "tests/e2e/staging/release-b-checkout-session-item-race-v2.e2e.ts") {
+    [
+      "commit_admin_data_change",
+      "start_session",
+      "save_live_session_details",
+      "commit_checkout_bill_v2",
+      "add_session_item",
+      "get_financial_mutation_result",
+      "reject_session"
+    ].forEach((name) => names.add(name));
+  }
   return [...names].sort().join("; ");
 }
 
@@ -249,6 +266,13 @@ function inferDirectTests(path) {
   }
   if (checkoutSettlementDiagnosticArtifacts.has(path)) {
     tests.push("src/qa/checkoutSettlementRaceHarnessContract.test.ts");
+  }
+  if (
+    path === "scripts/manage-session-item-race-admin-staging.mjs" ||
+    path === "scripts/session-item-race-admin-env.mjs" ||
+    path.includes("checkout-session-item-race")
+  ) {
+    tests.push("src/qa/checkoutSessionItemRaceHarnessContract.test.ts");
   }
   return [...new Set(tests)].join("; ");
 }
