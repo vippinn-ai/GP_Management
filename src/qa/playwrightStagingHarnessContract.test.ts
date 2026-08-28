@@ -398,6 +398,9 @@ describe("staging Playwright harness contract", () => {
     expect(reconciler).toContain("released_continued_from_session_ids: []");
     expect(reconciler).toContain("const expectedOperationalMetadata = entry.mode === \"add_item\"");
     expect(reconciler).toContain("operationalAudit[0].message === operationalEnvelope.payload?.auditLog?.message");
+    expect(reconciler).toContain('expected.action === "bill_issued"');
+    expect(reconciler).toContain("actual.reason === movement.reason");
+    expect(reconciler).toContain("A fresh E2E_RECONCILIATION_ID is required");
     expect(reconciler).not.toMatch(/\.(insert|upsert|delete)\(/);
     expect(reconciler).not.toContain(".update({");
     expect(runner).toContain('E2E_TAB_MUTATION_RACE_MODES = "add_item,update_item,remove_item,apply_combo"');

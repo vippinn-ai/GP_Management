@@ -401,8 +401,11 @@ for (const entry of cases) {
     check(checkoutAudits.length === expectedCheckoutAudits.length, `${key}: checkout audit cardinality differs.`);
     for (const expected of expectedCheckoutAudits) {
       const actual = checkoutAudits.find((row) => row.id === expected.id);
+      const expectedMessage = expected.action === "bill_issued"
+        ? `Issued ${bill.bill_number}.`
+        : expected.message;
       check(Boolean(actual && actual.action === expected.action && actual.entity_type === expected.entityType &&
-        actual.entity_id === expected.entityId && actual.message === expected.message &&
+        actual.entity_id === expected.entityId && actual.message === expectedMessage &&
         actual.user_id === actors.checkout), `${key}: checkout audit ${expected.id} fields or actor differ.`);
     }
     check(operationalAudit.length === 0, `${key}: losing operational audit exists.`);
@@ -413,7 +416,8 @@ for (const entry of cases) {
       const actual = movements.find((row) => row.id === movement.id);
       check(Boolean(actual && actual.item_id === movement.itemId && actual.type === movement.type &&
         Number(actual.quantity) === Number(movement.quantity) && actual.user_id === actors.checkout &&
-        actual.related_bill_id === movement.relatedBillId), `${key}: sale movement ${movement.id} differs.`);
+        actual.related_bill_id === movement.relatedBillId && actual.reason === movement.reason),
+      `${key}: sale movement ${movement.id} differs.`);
     });
   } else if (operationalEffect) {
     registerResult(operationalResponse?.body);
@@ -593,7 +597,21 @@ const report = {
 };
 const outputDirectory = path.join(root, "test-artifacts", "reconciliation");
 fs.mkdirSync(outputDirectory, { recursive: true });
-const outputPath = path.join(outputDirectory, `checkout-tab-mutation-race-${postflight ? "postflight" : "recovery"}-${runId}.json`);
+const baseOutputPath = path.join(outputDirectory,
+  `checkout-tab-mutation-race-${postflight ? "postflight" : "recovery"}-${runId}.json`);
+let reconciliationId = null;
+let outputPath = baseOutputPath;
+if (fs.existsSync(baseOutputPath)) {
+  if (!env.E2E_RECONCILIATION_ID?.trim()) {
+    throw new Error("A fresh E2E_RECONCILIATION_ID is required to preserve the prior immutable reconciliation artifact.");
+  }
+  reconciliationId = sanitizeRunId(env.E2E_RECONCILIATION_ID);
+  if (reconciliationId === runId) throw new Error("Reconciliation identity must differ from the source run identity.");
+  outputPath = path.join(outputDirectory,
+    `checkout-tab-mutation-race-${postflight ? "postflight" : "recovery"}-${runId}-${reconciliationId}.json`);
+  if (fs.existsSync(outputPath)) throw new Error("Reconciliation identity collides with an existing immutable artifact.");
+}
+report.reconciliationId = reconciliationId;
 fs.writeFileSync(outputPath, `${JSON.stringify(report, null, 2)}\n`, { encoding: "utf8", flag: "wx" });
 console.log(JSON.stringify({ artifact: path.relative(root, outputPath), report }, null, 2));
 if (failures.length) process.exitCode = 2;
