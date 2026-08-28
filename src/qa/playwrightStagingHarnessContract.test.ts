@@ -375,6 +375,9 @@ describe("staging Playwright harness contract", () => {
     expect(scenario).toContain("expect(physicalStockAfter).toBe(physicalStockBefore)");
     expect(scenario).toContain("expect(logicalReservation).toBe(1 + contract.expectedReservationDelta)");
     expect(scenario).toContain("expect(checkoutStatus).toBeNull()");
+    expect(scenario).toContain('getByText("1 conflict", { exact: true })');
+    expect(scenario).toContain('getByRole("button", { name: "Clear", exact: true }).click()');
+    expect(scenario).toContain("caseEvidence.loserConflictVisible = true");
     expect(scenario).toContain("run the exact read-only reconciler before cleanup or retry");
     expect(preflight).toContain("assertStagingSupabaseEnvironment(stagingEnv, true)");
     expect(preflight).toContain("actorsDistinct");

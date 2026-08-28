@@ -662,7 +662,16 @@ test.describe.serial("Release B checkout versus customer-tab source mutations", 
           }
 
           await Promise.all([page.reload({ waitUntil: "domcontentloaded" }), observer.page.reload({ waitUntil: "domcontentloaded" })]);
-          await Promise.all([waitForSynced(page), waitForSynced(observer.page)]);
+          if (winner === "checkout") {
+            await waitForSynced(page);
+            await expect(observer.page.getByText("1 conflict", { exact: true })).toBeVisible();
+            await expect(observer.page.getByText("Pending sync.", { exact: false })).toHaveCount(0);
+            caseEvidence.loserConflictVisible = true;
+            await observer.page.getByRole("button", { name: "Clear", exact: true }).click();
+            await waitForSynced(observer.page);
+          } else {
+            await Promise.all([waitForSynced(page), waitForSynced(observer.page)]);
+          }
           const [openTabs, reservations] = await Promise.all([
             readRestRows<Record<string, unknown>>(page, origin.restBase, origin.headers, "customer_tabs", {
               organization_id: `eq.${organizationId}`, status: "eq.open", select: "id,customer_name,status"
