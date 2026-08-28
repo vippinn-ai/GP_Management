@@ -89,8 +89,8 @@ Use database/API scripts for load, reconciliation, plans, and logs. Use Playwrig
 
 ## Execution order
 
-1. Retain the independently reviewed expected-conflict correction and completed recovery/postflight paths for the customer-tab source-mutation harness.
-2. Use a new run identity for the 11 unexecuted customer-tab orderings only; do not rerun the reconciled `add_item / checkout_first` case.
+1. Retain the independently reviewed expected-conflict correction, completed recovery/postflight paths, and fail-closed `remaining-eleven` selector for the customer-tab source-mutation harness.
+2. Use a new run identity with the reviewed `remaining-eleven` preflight and runner; do not rerun the reconciled `add_item / checkout_first` case. The selector is locally verified but has not executed live.
 3. Implement, review, execute, and reconcile the exact write-off and void modes one at a time.
 4. Run the consolidated complex UI matrix.
 5. Run mixed performance/contention and capture deployed plans/errors.

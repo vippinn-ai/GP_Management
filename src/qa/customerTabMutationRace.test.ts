@@ -6,8 +6,10 @@ import {
   classifyCustomerTabRaceResponses,
   expectedCustomerTabRaceLoserCode,
   expectedCustomerTabRaceWinner,
+  parseCustomerTabMutationRacePhase,
   parseExactCustomerTabMutationModes,
-  parseExactCustomerTabMutationScenarios
+  parseExactCustomerTabMutationScenarios,
+  selectedCustomerTabMutationRaceCases
 } from "./customerTabMutationRace";
 
 describe("customer-tab mutation race contract", () => {
@@ -35,6 +37,20 @@ describe("customer-tab mutation race contract", () => {
     expect(() => parseExactCustomerTabMutationModes("add_item,remove_item")).toThrow(/exact ordered selection/);
     expect(() => parseExactCustomerTabMutationModes("update_item,add_item,remove_item,apply_combo")).toThrow(/exact ordered selection/);
     expect(() => parseExactCustomerTabMutationScenarios("simultaneous")).toThrow(/exact ordered selection/);
+  });
+
+  it("selects only the eleven unexecuted cases for the reviewed remaining phase", () => {
+    expect(parseCustomerTabMutationRacePhase("all")).toBe("all");
+    expect(parseCustomerTabMutationRacePhase("remaining-eleven")).toBe("remaining-eleven");
+    expect(() => parseCustomerTabMutationRacePhase(undefined)).toThrow(/exactly all or remaining-eleven/);
+    expect(() => parseCustomerTabMutationRacePhase("remaining")).toThrow(/exactly all or remaining-eleven/);
+
+    const all = selectedCustomerTabMutationRaceCases("all");
+    const remaining = selectedCustomerTabMutationRaceCases("remaining-eleven");
+    expect(all).toHaveLength(12);
+    expect(remaining).toHaveLength(11);
+    expect(remaining).not.toContainEqual({ mode: "add_item", scenario: "checkout_first" });
+    expect(remaining).toEqual(all.slice(1));
   });
 
   it("requires exactly one canonical response winner", () => {

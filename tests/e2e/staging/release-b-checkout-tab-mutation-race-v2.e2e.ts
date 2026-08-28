@@ -8,8 +8,10 @@ import {
   classifyCustomerTabRaceResponses,
   expectedCustomerTabRaceLoserCode,
   expectedCustomerTabRaceWinner,
+  parseCustomerTabMutationRacePhase,
   parseExactCustomerTabMutationModes,
   parseExactCustomerTabMutationScenarios,
+  selectedCustomerTabMutationRaceCases,
   type CustomerTabMutationMode,
   type CustomerTabMutationScenario
 } from "../../../src/qa/customerTabMutationRace";
@@ -37,6 +39,8 @@ import {
 const runId = process.env.E2E_RUN_ID ?? "missing-run-id";
 const modes = parseExactCustomerTabMutationModes(process.env.E2E_TAB_MUTATION_RACE_MODES);
 const scenarios = parseExactCustomerTabMutationScenarios(process.env.E2E_TAB_MUTATION_RACE_SCENARIOS);
+const phase = parseCustomerTabMutationRacePhase(process.env.E2E_TAB_MUTATION_RACE_PHASE);
+const selectedCases = selectedCustomerTabMutationRaceCases(phase);
 const itemName = `QA Tab Mutation Race Item ${runId}`;
 const comboName = `QA Tab Mutation Race Combo ${runId}`;
 const organizationId = "org-primary";
@@ -227,7 +231,9 @@ async function readItemMovements(page: Page, restBase: string, headers: Record<s
 }
 
 test.describe.serial("Release B checkout versus customer-tab source mutations", () => {
-  test("all four RPC modes and all three zero-retry orderings preserve one canonical winner", async ({ browser, page }, testInfo) => {
+  test(phase === "remaining-eleven"
+    ? "remaining eleven zero-retry orderings preserve one canonical winner"
+    : "all four RPC modes and all three zero-retry orderings preserve one canonical winner", async ({ browser, page }, testInfo) => {
     const observer = await createObserver(browser);
     const originRequests: CapturedRpcRequest[] = [];
     const observerRequests: CapturedRpcRequest[] = [];
@@ -244,6 +250,8 @@ test.describe.serial("Release B checkout versus customer-tab source mutations", 
       comboName,
       modes,
       scenarios,
+      phase,
+      selectedCases,
       productionAllowed: false,
       safeForAutomaticRetry: false,
       cases: []
@@ -328,9 +336,8 @@ test.describe.serial("Release B checkout versus customer-tab source mutations", 
       evidence.latestCompatibility = expectedCompatibility;
       evidence.fixtureVerifiedPath = persistCheckpoint("fixture-verified", evidence);
 
-      for (const mode of modes) {
+      for (const { mode, scenario } of selectedCases) {
         const contract = CUSTOMER_TAB_MUTATION_CONTRACTS[mode];
-        for (const scenario of scenarios) {
           activeCase = `${mode}-${scenario}`;
           activeTabId = undefined;
           raceDispatched = false;
@@ -683,7 +690,6 @@ test.describe.serial("Release B checkout versus customer-tab source mutations", 
           expect(openTabs).toEqual([]);
           caseEvidence.postCase = { openTabs, retainedRows: reservations, logicalReservation: 0 };
           caseEvidence.postCasePath = persistCheckpoint(`${activeCase}-postcase`, evidence);
-        }
       }
 
       await openInventory(page, "Combos");

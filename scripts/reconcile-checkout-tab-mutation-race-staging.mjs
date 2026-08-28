@@ -28,7 +28,7 @@ const itemName = `QA Tab Mutation Race Item ${runId}`;
 const comboName = `QA Tab Mutation Race Combo ${runId}`;
 const modes = ["add_item", "update_item", "remove_item", "apply_combo"];
 const scenarios = ["checkout_first", "mutation_first", "simultaneous"];
-const expectedCaseKeys = modes.flatMap((mode) => scenarios.map((scenario) => `${mode}-${scenario}`));
+const allCases = modes.flatMap((mode) => scenarios.map((scenario) => ({ mode, scenario })));
 const modeContracts = {
   add_item: { eventType: "add_customer_tab_item", mutationKind: "addCustomerTabItem", auditAction: "customer_tab_item_added", auditCount: 1, raceReservation: 2 },
   update_item: { eventType: "update_customer_tab_item_quantity", mutationKind: "updateCustomerTabItemQuantity", auditAction: null, auditCount: 0, raceReservation: 2 },
@@ -89,11 +89,20 @@ async function query(label, promise) {
 const preflightPath = path.join(root, "test-artifacts", "preflight", `checkout-tab-mutation-race-preflight-${runId}.json`);
 if (!fs.existsSync(preflightPath)) throw new Error("The exact checkout-tab-mutation preflight artifact is missing.");
 const preflight = JSON.parse(fs.readFileSync(preflightPath, "utf8"));
+const selectedPhase = preflight.selectedPhase;
+const selectedCases = preflight.selectedCases;
+const reviewedSelectedCases = selectedPhase === "all"
+  ? allCases
+  : selectedPhase === "remaining-eleven"
+    ? allCases.slice(1)
+    : null;
 if (!preflight.safeToRun || preflight.runId !== runId || preflight.projectRef !== STAGING_PROJECT_REF ||
+    !reviewedSelectedCases || JSON.stringify(selectedCases) !== JSON.stringify(reviewedSelectedCases) ||
     JSON.stringify(preflight.selectedModes) !== JSON.stringify(modes) ||
     JSON.stringify(preflight.selectedScenarios) !== JSON.stringify(scenarios)) {
   throw new Error("The exact checkout-tab-mutation preflight is invalid.");
 }
+const expectedCaseKeys = selectedCases.map(({ mode, scenario }) => `${mode}-${scenario}`);
 
 const evidenceDirectory = path.join(root, "test-artifacts", "evidence");
 const candidates = fs.existsSync(evidenceDirectory) ? fs.readdirSync(evidenceDirectory)
@@ -190,6 +199,8 @@ const check = (condition, message) => { if (!condition) failures.push(message); 
 check(corrupt.length === 0, "One or more source-run checkpoints are corrupt or identity-mismatched.");
 check(JSON.stringify(checkpoint.modes) === JSON.stringify(modes) && JSON.stringify(checkpoint.scenarios) === JSON.stringify(scenarios),
   "Checkpoint matrix selection or order is not exact.");
+check(checkpoint.phase === selectedPhase && JSON.stringify(checkpoint.selectedCases) === JSON.stringify(selectedCases),
+  "Checkpoint phase or selected cases differ from the immutable preflight.");
 check(actors?.checkout === preflight.actors?.[0]?.actorId && actors?.mutation === preflight.actors?.[1]?.actorId &&
   actors.checkout !== actors.mutation, "Checkpoint actors do not match the exact distinct preflight actors.");
 check(login.data.user.id === actors?.checkout, "Reconciliation actor differs from the source checkout actor.");
@@ -546,7 +557,7 @@ if (checkpoint.latestCompatibility?.version === latestAcknowledgedAppStateVersio
 }
 if (postflight) {
   check(acknowledgedKeys.length === expectedCaseKeys.length && classifications.every((entry) => entry.winner),
-    "Postflight does not contain twelve classified race cases.");
+    `Postflight does not contain all ${expectedCaseKeys.length} selected classified race cases.`);
   check(openSessions.length === 0 && openTabs.length === 0, "Postflight floor is not empty.");
   check(itemsByName.length === 1 && itemsByName[0].active === false, "Postflight item is not exactly archived.");
   check(combosByName.length === 1 && combosByName[0].active === false, "Postflight combo is not exactly archived.");
@@ -586,6 +597,8 @@ const report = {
   actors,
   modes,
   scenarios,
+  selectedPhase,
+  selectedCases,
   checkpointCases: cases,
   fixture: { itemId: fixtureItemId ?? null, itemName, comboId: fixtureComboId ?? null, comboName },
   appState: currentAppState,

@@ -5,14 +5,20 @@ import { parseEnvFile, sanitizeRunId } from "./playwright-staging-env.mjs";
 import { loadSessionItemRaceAdmin } from "./session-item-race-admin-env.mjs";
 
 const args = process.argv.slice(2);
-if (args.length > 1 || args.some((argument) => argument !== "--list")) {
-  throw new Error("Checkout-tab-mutation race runner accepts only --list or one exact execution.");
+const allowedArguments = new Set(["--list", "--remaining-eleven", "--remaining-eleven-list"]);
+if (args.length > 1 || args.some((argument) => !allowedArguments.has(argument))) {
+  throw new Error("Checkout-tab-mutation race runner accepts only --list, --remaining-eleven, --remaining-eleven-list, or one exact execution.");
 }
-const discoveryOnly = args[0] === "--list";
+const remainingElevenOnly = args[0] === "--remaining-eleven" || args[0] === "--remaining-eleven-list";
+const discoveryOnly = args[0] === "--list" || args[0] === "--remaining-eleven-list";
 const root = process.cwd();
 const childEnv = { ...process.env };
 childEnv.E2E_TAB_MUTATION_RACE_MODES = "add_item,update_item,remove_item,apply_combo";
 childEnv.E2E_TAB_MUTATION_RACE_SCENARIOS = "checkout_first,mutation_first,simultaneous";
+childEnv.E2E_TAB_MUTATION_RACE_PHASE = remainingElevenOnly ? "remaining-eleven" : "all";
+const selectedCases = childEnv.E2E_TAB_MUTATION_RACE_MODES.split(",").flatMap((mode) =>
+  childEnv.E2E_TAB_MUTATION_RACE_SCENARIOS.split(",").map((scenario) => ({ mode, scenario }))
+).filter(({ mode, scenario }) => !remainingElevenOnly || mode !== "add_item" || scenario !== "checkout_first");
 
 if (!discoveryOnly) {
   const localEnv = parseEnvFile(path.join(root, ".env.e2e.local"));
@@ -23,6 +29,8 @@ if (!discoveryOnly) {
   if (!fs.existsSync(artifactPath)) throw new Error("The reviewed exact checkout-tab-mutation preflight is missing.");
   const evidence = JSON.parse(fs.readFileSync(artifactPath, "utf8"));
   if (!evidence.safeToRun || evidence.runId !== runId ||
+      evidence.selectedPhase !== childEnv.E2E_TAB_MUTATION_RACE_PHASE ||
+      JSON.stringify(evidence.selectedCases) !== JSON.stringify(selectedCases) ||
       JSON.stringify(evidence.selectedModes) !== JSON.stringify(childEnv.E2E_TAB_MUTATION_RACE_MODES.split(",")) ||
       JSON.stringify(evidence.selectedScenarios) !== JSON.stringify(childEnv.E2E_TAB_MUTATION_RACE_SCENARIOS.split(","))) {
     throw new Error("The exact checkout-tab-mutation preflight is not safe.");
@@ -30,7 +38,8 @@ if (!discoveryOnly) {
   childEnv.E2E_TAB_MUTATION_RACE_PREFLIGHT_VERSION = String(evidence.appState.version);
   childEnv.E2E_TAB_MUTATION_RACE_PREFLIGHT_HASH = evidence.appState.hash;
   const verify = spawnSync(process.execPath, [
-    path.join(root, "scripts", "preflight-checkout-tab-mutation-race-staging.mjs"), "--verify"
+    path.join(root, "scripts", "preflight-checkout-tab-mutation-race-staging.mjs"),
+    remainingElevenOnly ? "--remaining-eleven-verify" : "--verify"
   ], { cwd: root, env: childEnv, stdio: "inherit", shell: false });
   if ((verify.status ?? 1) !== 0) process.exit(verify.status ?? 1);
 }

@@ -364,8 +364,7 @@ describe("staging Playwright harness contract", () => {
     expect(contract).toContain("expectedAuditCount: 0");
     expect(contract).toContain("expectedReservationDelta: -1");
     expect(contract).toContain('return winner === "checkout" ? "customer_tab_not_open" : "source_item_mismatch"');
-    expect(scenario).toContain("for (const mode of modes)");
-    expect(scenario).toContain("for (const scenario of scenarios)");
+    expect(scenario).toContain("for (const { mode, scenario } of selectedCases)");
     expect(scenario).toContain('scenario === "checkout_first"');
     expect(scenario).toContain('scenario === "mutation_first"');
     expect(scenario).toContain("await Promise.all([");
@@ -386,6 +385,10 @@ describe("staging Playwright harness contract", () => {
     expect(preflight).not.toContain("PRODUCTION_PROJECT_REF).supabase.co");
     expect(reconciler).toContain('client.rpc("get_financial_mutation_result"');
     expect(reconciler).toContain("const safeForIdentityBoundCleanup = !postflight && failures.length === 0");
+    expect(reconciler).toContain('selectedPhase === "remaining-eleven"');
+    expect(reconciler).toContain("JSON.stringify(checkpoint.selectedCases) === JSON.stringify(selectedCases)");
+    expect(reconciler).toContain("const expectedCaseKeys = selectedCases.map");
+    expect(reconciler).toContain("acknowledgedKeys.length === expectedCaseKeys.length");
     expect(reconciler).toContain("safeForAutomaticRetry: false");
     expect(reconciler).toContain("productionAllowed: false");
     expect(reconciler).toContain("Current app_state version differs from the latest acknowledged compatibility-writing response.");
@@ -408,6 +411,11 @@ describe("staging Playwright harness contract", () => {
     expect(reconciler).not.toContain(".update({");
     expect(runner).toContain('E2E_TAB_MUTATION_RACE_MODES = "add_item,update_item,remove_item,apply_combo"');
     expect(runner).toContain('E2E_TAB_MUTATION_RACE_SCENARIOS = "checkout_first,mutation_first,simultaneous"');
+    expect(runner).toContain('E2E_TAB_MUTATION_RACE_PHASE = remainingElevenOnly ? "remaining-eleven" : "all"');
+    expect(runner).toContain('args[0] === "--remaining-eleven-list"');
+    expect(runner).toContain("JSON.stringify(evidence.selectedCases) !== JSON.stringify(selectedCases)");
+    expect(preflight).toContain('const selectedPhase = remainingElevenOnly ? "remaining-eleven" : "all"');
+    expect(preflight).toContain("JSON.stringify(reviewed.selectedCases) === JSON.stringify(evidence.selectedCases)");
     expect(runner).toContain('"--verify"');
     expect(cleanupRunner).toContain("recovery.safeForIdentityBoundCleanup !== true");
     expect(cleanupRunner).toContain("cleanupRunId === sourceRunId");
@@ -430,6 +438,9 @@ describe("staging Playwright harness contract", () => {
     expect(cleanupPostflight).not.toMatch(/\.(insert|upsert|delete)\(/);
     expect(cleanupPostflight).not.toContain(".update({");
     expect(packageJson.scripts["test:e2e:staging:v2:checkout-tab-mutation-race:list"]).toContain("--list");
+    expect(packageJson.scripts["test:e2e:staging:v2:checkout-tab-mutation-race:remaining-eleven"]).toContain("--remaining-eleven");
+    expect(packageJson.scripts["test:e2e:staging:v2:checkout-tab-mutation-race:remaining-eleven:list"]).toContain("--remaining-eleven-list");
+    expect(packageJson.scripts["test:db:staging:v2:checkout-tab-mutation-race:preflight:remaining-eleven"]).toContain("--remaining-eleven");
     expect(packageJson.scripts["test:db:staging:v2:checkout-tab-mutation-race:preflight"]).toBe(
       "node scripts/preflight-checkout-tab-mutation-race-staging.mjs"
     );

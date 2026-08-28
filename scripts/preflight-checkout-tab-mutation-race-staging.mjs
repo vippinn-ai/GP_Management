@@ -16,12 +16,17 @@ import { loadSessionItemRaceAdmin } from "./session-item-race-admin-env.mjs";
 
 const root = process.cwd();
 const args = process.argv.slice(2);
-if (args.length > 1 || args.some((argument) => argument !== "--verify")) {
-  throw new Error("Checkout-tab-mutation race preflight accepts only --verify or one exact preflight.");
+const allowedArguments = new Set(["--verify", "--remaining-eleven", "--remaining-eleven-verify"]);
+if (args.length > 1 || args.some((argument) => !allowedArguments.has(argument))) {
+  throw new Error("Checkout-tab-mutation race preflight accepts only --verify, --remaining-eleven, --remaining-eleven-verify, or one exact preflight.");
 }
-const verificationOnly = args[0] === "--verify";
+const remainingElevenOnly = args[0] === "--remaining-eleven" || args[0] === "--remaining-eleven-verify";
+const verificationOnly = args[0] === "--verify" || args[0] === "--remaining-eleven-verify";
 const modes = ["add_item", "update_item", "remove_item", "apply_combo"];
 const scenarios = ["checkout_first", "mutation_first", "simultaneous"];
+const selectedPhase = remainingElevenOnly ? "remaining-eleven" : "all";
+const selectedCases = modes.flatMap((mode) => scenarios.map((scenario) => ({ mode, scenario })))
+  .filter(({ mode, scenario }) => !remainingElevenOnly || mode !== "add_item" || scenario !== "checkout_first");
 const stagingEnv = parseEnvFile(path.join(root, ".env.staging"));
 const localEnv = parseEnvFile(path.join(root, ".env.e2e.local"));
 const temporaryAdmin = loadSessionItemRaceAdmin(root);
@@ -35,12 +40,12 @@ if (!env.E2E_RUN_ID?.trim()) throw new Error("An explicit E2E_RUN_ID is required
 const runId = sanitizeRunId(env.E2E_RUN_ID);
 const itemName = `QA Tab Mutation Race Item ${runId}`;
 const comboName = `QA Tab Mutation Race Combo ${runId}`;
-const customerNames = modes.flatMap((mutationMode) => scenarios.map((scenario) =>
-  `QA Tab Mutation Race ${runId} ${mutationMode} ${scenario}`
-));
-const billNumbers = modes.flatMap((mutationMode) => scenarios.map((scenario) =>
-  `BILL-QA-TAB-MUT-${runId}-${mutationMode}-${scenario}`
-));
+const customerNames = selectedCases.map(({ mode, scenario }) =>
+  `QA Tab Mutation Race ${runId} ${mode} ${scenario}`
+);
+const billNumbers = selectedCases.map(({ mode, scenario }) =>
+  `BILL-QA-TAB-MUT-${runId}-${mode}-${scenario}`
+);
 
 async function deployedArtifact() {
   const shell = await fetch(baseUrl, { redirect: "error" });
@@ -133,6 +138,8 @@ const evidence = {
   organizationId,
   productionAllowed: false,
   safeForAutomaticRetry: false,
+  selectedPhase,
+  selectedCases,
   selectedModes: modes,
   selectedScenarios: scenarios,
   actors: [origin.identity, observer.identity],
@@ -172,6 +179,8 @@ if (verificationOnly) {
   if (!fs.existsSync(artifactPath)) throw new Error("The reviewed checkout-tab-mutation preflight artifact is missing.");
   const reviewed = JSON.parse(fs.readFileSync(artifactPath, "utf8"));
   const matches = reviewed.safeToRun && evidence.safeToRun && reviewed.runId === runId &&
+    reviewed.selectedPhase === evidence.selectedPhase &&
+    JSON.stringify(reviewed.selectedCases) === JSON.stringify(evidence.selectedCases) &&
     JSON.stringify(reviewed.selectedModes) === JSON.stringify(evidence.selectedModes) &&
     JSON.stringify(reviewed.selectedScenarios) === JSON.stringify(evidence.selectedScenarios) &&
     reviewed.projectRef === evidence.projectRef && JSON.stringify(reviewed.actors) === JSON.stringify(evidence.actors) &&

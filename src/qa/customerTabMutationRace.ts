@@ -13,6 +13,11 @@ export const CUSTOMER_TAB_MUTATION_SCENARIOS = [
 
 export type CustomerTabMutationMode = typeof CUSTOMER_TAB_MUTATION_MODES[number];
 export type CustomerTabMutationScenario = typeof CUSTOMER_TAB_MUTATION_SCENARIOS[number];
+export type CustomerTabMutationRacePhase = "all" | "remaining-eleven";
+export type CustomerTabMutationRaceCase = {
+  mode: CustomerTabMutationMode;
+  scenario: CustomerTabMutationScenario;
+};
 export type CustomerTabRaceWinner = "checkout" | "mutation";
 
 export type CustomerTabMutationContract = {
@@ -90,6 +95,21 @@ export function parseExactCustomerTabMutationScenarios(value: string | undefined
     throw new Error("Customer-tab race scenarios must match the reviewed exact ordered selection.");
   }
   return parsed as CustomerTabMutationScenario[];
+}
+
+export function parseCustomerTabMutationRacePhase(value: string | undefined): CustomerTabMutationRacePhase {
+  if (value === "all" || value === "remaining-eleven") return value;
+  throw new Error("Customer-tab race phase must be exactly all or remaining-eleven.");
+}
+
+export function selectedCustomerTabMutationRaceCases(
+  phase: CustomerTabMutationRacePhase
+): CustomerTabMutationRaceCase[] {
+  return CUSTOMER_TAB_MUTATION_MODES.flatMap((mode) =>
+    CUSTOMER_TAB_MUTATION_SCENARIOS.map((scenario) => ({ mode, scenario }))
+  ).filter(({ mode, scenario }) =>
+    phase !== "remaining-eleven" || mode !== "add_item" || scenario !== "checkout_first"
+  );
 }
 
 export function expectedCustomerTabRaceWinner(scenario: CustomerTabMutationScenario): CustomerTabRaceWinner | null {
