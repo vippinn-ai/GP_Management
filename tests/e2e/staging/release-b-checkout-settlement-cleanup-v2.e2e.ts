@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import path from "node:path";
 import { expect, test } from "@playwright/test";
 import {
   assertAuthoritativeOrganizationIdentity,
@@ -25,6 +26,13 @@ const station = process.env.E2E_RACE_CLEANUP_STATION?.trim() || "8 Ball Pool";
 const reason = process.env.E2E_RACE_CLEANUP_REASON?.trim() || `Playwright checkout-settlement adjustment-winner cleanup source ${sourceRunId} execution ${cleanupRunId}`;
 const comboRecoveryPath = process.env.E2E_REPEAT_COMBO_RECOVERY_ARTIFACT?.trim();
 const comboRecovery = comboRecoveryPath ? JSON.parse(readFileSync(comboRecoveryPath, "utf8")) : null;
+const writeoffRecoveryPath = process.env.E2E_CHECKOUT_WRITEOFF_RECOVERY_ARTIFACT?.trim();
+const writeoffRecoverySha256 = process.env.E2E_CHECKOUT_WRITEOFF_RECOVERY_SHA256?.trim();
+if (Boolean(writeoffRecoveryPath) !== Boolean(writeoffRecoverySha256)) {
+  throw new Error("Checkout-writeoff cleanup requires both the recovery artifact path and SHA-256.");
+}
+const writeoffRecoveryBytes = writeoffRecoveryPath ? readFileSync(writeoffRecoveryPath) : null;
+const writeoffRecovery = writeoffRecoveryBytes ? JSON.parse(writeoffRecoveryBytes.toString("utf8")) : null;
 
 if (!cleanupRunId || !sourceRunId || cleanupRunId === sourceRunId || !sessionId || !Number.isInteger(expectedVersion) || !expectedHash) {
   throw new Error("Exact checkout-settlement cleanup identity and app_state baseline are required.");
@@ -32,6 +40,19 @@ if (!cleanupRunId || !sourceRunId || cleanupRunId === sourceRunId || !sessionId 
 
 function appStateHash(data: unknown) {
   return createHash("sha256").update(JSON.stringify(data)).digest("hex");
+}
+
+function stable(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stable);
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return Object.fromEntries(Object.keys(record).sort().map((key) => [key, stable(record[key])]));
+  }
+  return value;
+}
+
+function sortedRows(rows: Array<Record<string, unknown>>) {
+  return [...rows].sort((left, right) => String(left.id).localeCompare(String(right.id))).map(stable);
 }
 
 test("rejects only the exact unbilled adjustment-winner session", async ({ page }, testInfo) => {
@@ -73,6 +94,41 @@ test("rejects only the exact unbilled adjustment-winner session", async ({ page 
     expect(beforeAppState).toHaveLength(1);
     expect(beforeAppState[0].version).toBe(expectedVersion);
     expect(appStateHash(beforeAppState[0].data)).toBe(expectedHash);
+
+    if (writeoffRecovery) {
+      expect(path.resolve(writeoffRecoveryPath!)).toBe(writeoffRecoveryPath);
+      expect(createHash("sha256").update(writeoffRecoveryBytes!).digest("hex")).toBe(writeoffRecoverySha256);
+      expect(writeoffRecovery).toEqual(expect.objectContaining({
+        runId: sourceRunId,
+        projectRef: "tkbdyzxwwbhkpztgjjxh",
+        productionAllowed: false,
+        safeForAutomaticRetry: false,
+        status: "partial",
+        safeForIdentityBoundCleanup: true,
+        failures: [],
+        cleanupCandidates: [expect.objectContaining({ sessionId, customerName, station, reason })],
+        openFloor: { sessions: [expect.objectContaining({ id: sessionId, status: "active", customer_name: customerName })], tabs: [] },
+        appState: { version: expectedVersion, hash: expectedHash }
+      }));
+      const snapshot = writeoffRecovery.exactRunData as Record<string, Array<Record<string, unknown>>>;
+      const selectByIds = async (table: string, select: string, expected: Array<Record<string, unknown>>) => {
+        const actual = await readRestRows<Record<string, unknown>>(page, identity.restBase, identity.headers, table, {
+          organization_id: "eq.org-primary",
+          id: `in.(${(expected.length ? expected.map((entry) => entry.id) : ["missing-writeoff-cleanup-row"]).join(",")})`,
+          select
+        });
+        expect(sortedRows(actual), `${table} drifted from the authorized recovery snapshot.`).toEqual(sortedRows(expected));
+      };
+      await Promise.all([
+        selectByIds("sessions", "id,status,close_disposition,closed_bill_id,customer_name,station_name_snapshot", snapshot.sessions),
+        selectByIds("bills", "id,bill_number,customer_name,customer_phone,payment_mode,session_id,status,subtotal,total_discount_amount,bill_discount_amount,round_off_enabled,round_off_amount,total,amount_paid,amount_due,settled_at,voided_at,voided_by_user_id,void_reason,issued_by_user_id", snapshot.bills),
+        selectByIds("bill_lines", "id,bill_id,type,description,quantity,unit_price,total,linked_session_id", snapshot.lines),
+        selectByIds("payments", "id,bill_id,amount,mode,received_by_user_id,related_checkout_bill_id", snapshot.payments),
+        selectByIds("stock_movements", "id,item_id,type,quantity,related_bill_id,user_id", snapshot.stockMovements),
+        selectByIds("operational_events", "id,event_type,entity_type,entity_id,created_by,metadata", snapshot.entityEvents),
+        selectByIds("audit_logs", "id,action,entity_type,entity_id,user_id,message", snapshot.entityAudits)
+      ]);
+    }
 
     if (comboRecovery) {
       expect(comboRecovery.safeForIdentityBoundCleanup).toBe(true);
@@ -164,6 +220,8 @@ test("rejects only the exact unbilled adjustment-winner session", async ({ page 
       reason,
       actorId: identity.actorId,
       rejection: rejection[0],
+      recoveryArtifact: writeoffRecoveryPath ? path.resolve(writeoffRecoveryPath) : undefined,
+      recoverySha256: writeoffRecoverySha256,
       appStateBefore: { version: beforeAppState[0].version, hash: expectedHash },
       appStateAfter: {
         version: afterAppState[0].version,
