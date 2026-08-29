@@ -95,7 +95,9 @@ const reviewedSelectedCases = selectedPhase === "all"
   ? allCases
   : selectedPhase === "remaining-eleven"
     ? allCases.slice(1)
-    : null;
+    : selectedPhase === "remaining-four"
+      ? allCases.slice(8)
+      : null;
 if (!preflight.safeToRun || preflight.runId !== runId || preflight.projectRef !== STAGING_PROJECT_REF ||
     !reviewedSelectedCases || JSON.stringify(selectedCases) !== JSON.stringify(reviewedSelectedCases) ||
     JSON.stringify(preflight.selectedModes) !== JSON.stringify(modes) ||
@@ -234,7 +236,16 @@ function validateAudit(label, auditId, expected, actor) {
     matching[0].message === expected.message && matching[0].user_id === actor,
   `${label}: audit identity, action, message, or actor differs.`);
 }
-function validateOperationalLifecycle(label, result, command, eventType, actor, expectedChangedRows, expectedMetadata) {
+function validateOperationalLifecycle(
+  label,
+  result,
+  command,
+  eventType,
+  actor,
+  expectedChangedRows,
+  expectedMetadata,
+  expectedAudit = (_result, payload) => payload?.auditLog
+) {
   if (!result) return;
   const envelope = command?.payload;
   const payload = envelope?.payload;
@@ -258,7 +269,8 @@ function validateOperationalLifecycle(label, result, command, eventType, actor, 
     check(stable(event.metadata.changed_rows) === stable(withoutSelf),
       `${label}: event changed_rows differs from the acknowledgement without its self-reference.`);
   }
-  if (payload?.auditLog) validateAudit(label, payload.auditLog.id, payload.auditLog, actor);
+  const audit = expectedAudit(result, payload);
+  if (audit) validateAudit(label, audit.id, audit, actor);
 }
 function validateAdminLifecycle(label, result, expected) {
   if (!result) return;
@@ -354,6 +366,9 @@ for (const entry of cases) {
       }), (result) => ({
         app_state_version: result.app_state_version,
         released_continued_from_session_ids: []
+      }), (_result, payload) => ({
+        ...payload.auditLog,
+        message: `Rejected customer tab for ${entry.customerName}. Reason: ${payload.tab.closeReason}`
       }));
   }
   let mutationResult = null;
@@ -442,7 +457,7 @@ for (const entry of cases) {
       operationalEvent.metadata?.mutation_kind === contract.mutationKind,
     `${key}: operational event identity/type/actor differs.`);
     const expectedOperationalMetadata = entry.mode === "add_item"
-      ? { line_id: operationalEnvelope.payload?.line?.id, audit_log_id: operationalEnvelope.payload?.auditLog?.id }
+      ? { line_id: entry.baselineLineId, audit_log_id: operationalEnvelope.payload?.auditLog?.id }
       : entry.mode === "update_item"
         ? { line_id: operationalEnvelope.payload?.lineId, quantity: operationalEnvelope.payload?.quantity }
         : entry.mode === "remove_item"
@@ -479,16 +494,13 @@ for (const entry of cases) {
     check(Number(recordedRaceReservation) === expectedRaceReservation,
       `${key}: immutable race checkpoint lacks exact logical reservation arithmetic.`);
     if (entry.mode === "add_item" || entry.mode === "update_item") {
-      const expectedLine = operationalEnvelope.payload?.line;
-      check(changedIds(operationalResponse.body, "customer_tab_items").join() === expectedLine?.id &&
+      const expectedLineId = entry.mode === "add_item" ? entry.baselineLineId : operationalEnvelope.payload?.lineId;
+      const checkpointItems = entry.database?.tabItems ?? [];
+      check(changedIds(operationalResponse.body, "customer_tab_items").join() === expectedLineId &&
         changedIds(operationalResponse.body, "customer_tab_combo_applications").length === 0,
       `${key}: item add/update changed_rows is not exact.`);
-      check(caseCombos.length === 0 && caseItems.length === 1 && caseItems[0].id === expectedLine?.id &&
-        caseItems[0].customer_tab_id === entry.tabId && caseItems[0].inventory_item_id === expectedLine?.inventoryItemId &&
-        caseItems[0].name === expectedLine?.name && Number(caseItems[0].quantity) === Number(expectedLine?.quantity) &&
-        Number(caseItems[0].unit_price) === Number(expectedLine?.unitPrice) &&
-        caseItems[0].combo_application_id === (expectedLine?.comboApplicationId ?? null) &&
-        caseItems[0].combo_id === (expectedLine?.comboId ?? null),
+      check(caseCombos.length === 0 && checkpointItems.length === 1 &&
+        checkpointItems[0].id === expectedLineId && stable(caseItems) === stable(checkpointItems),
         `${key}: item add/update canonical row is incorrect.`);
     } else if (entry.mode === "remove_item") {
       check(changedIds(operationalResponse.body, "customer_tab_items").join() === entry.baselineLineId &&

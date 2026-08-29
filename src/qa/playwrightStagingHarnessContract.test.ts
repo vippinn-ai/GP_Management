@@ -350,6 +350,8 @@ describe("staging Playwright harness contract", () => {
     const reconciler = read("scripts/reconcile-checkout-tab-mutation-race-staging.mjs");
     const runner = read("scripts/run-checkout-tab-mutation-race-staging-e2e.mjs");
     const cleanupRunner = read("scripts/run-checkout-tab-mutation-race-cleanup-staging-e2e.mjs");
+    const partialCleanupRecovery = read("scripts/reconcile-checkout-tab-mutation-race-partial-cleanup-staging.mjs");
+    const itemOnlyCleanupRunner = read("scripts/run-checkout-tab-mutation-race-item-cleanup-staging-e2e.mjs");
     const cleanupPostflight = read("scripts/reconcile-checkout-tab-mutation-race-cleanup-staging.mjs");
     const packageJson = JSON.parse(read("package.json")) as { scripts: Record<string, string> };
 
@@ -386,6 +388,8 @@ describe("staging Playwright harness contract", () => {
     expect(reconciler).toContain('client.rpc("get_financial_mutation_result"');
     expect(reconciler).toContain("const safeForIdentityBoundCleanup = !postflight && failures.length === 0");
     expect(reconciler).toContain('selectedPhase === "remaining-eleven"');
+    expect(reconciler).toContain('selectedPhase === "remaining-four"');
+    expect(reconciler).toContain("allCases.slice(8)");
     expect(reconciler).toContain("JSON.stringify(checkpoint.selectedCases) === JSON.stringify(selectedCases)");
     expect(reconciler).toContain("const expectedCaseKeys = selectedCases.map");
     expect(reconciler).toContain("acknowledgedKeys.length === expectedCaseKeys.length");
@@ -406,15 +410,21 @@ describe("staging Playwright harness contract", () => {
     expect(reconciler).toContain("operationalAudit[0].message === operationalEnvelope.payload?.auditLog?.message");
     expect(reconciler).toContain('expected.action === "bill_issued"');
     expect(reconciler).toContain("actual.reason === movement.reason");
+    expect(reconciler).toContain("Rejected customer tab for ${entry.customerName}. Reason: ${payload.tab.closeReason}");
+    expect(reconciler).toContain('? { line_id: entry.baselineLineId, audit_log_id: operationalEnvelope.payload?.auditLog?.id }');
+    expect(reconciler).toContain('const expectedLineId = entry.mode === "add_item" ? entry.baselineLineId : operationalEnvelope.payload?.lineId');
+    expect(reconciler).toContain("stable(caseItems) === stable(checkpointItems)");
     expect(reconciler).toContain("A fresh E2E_RECONCILIATION_ID is required");
     expect(reconciler).not.toMatch(/\.(insert|upsert|delete)\(/);
     expect(reconciler).not.toContain(".update({");
     expect(runner).toContain('E2E_TAB_MUTATION_RACE_MODES = "add_item,update_item,remove_item,apply_combo"');
     expect(runner).toContain('E2E_TAB_MUTATION_RACE_SCENARIOS = "checkout_first,mutation_first,simultaneous"');
-    expect(runner).toContain('E2E_TAB_MUTATION_RACE_PHASE = remainingElevenOnly ? "remaining-eleven" : "all"');
+    expect(runner).toContain('E2E_TAB_MUTATION_RACE_PHASE = remainingFourOnly ? "remaining-four" : remainingElevenOnly ? "remaining-eleven" : "all"');
     expect(runner).toContain('args[0] === "--remaining-eleven-list"');
+    expect(runner).toContain('args[0] === "--remaining-four-list"');
     expect(runner).toContain("JSON.stringify(evidence.selectedCases) !== JSON.stringify(selectedCases)");
-    expect(preflight).toContain('const selectedPhase = remainingElevenOnly ? "remaining-eleven" : "all"');
+    expect(preflight).toContain('const selectedPhase = remainingFourOnly ? "remaining-four" : remainingElevenOnly ? "remaining-eleven" : "all"');
+    expect(preflight).toContain('(mode === "remove_item" && scenario === "simultaneous") || mode === "apply_combo"');
     expect(preflight).toContain("JSON.stringify(reviewed.selectedCases) === JSON.stringify(evidence.selectedCases)");
     expect(runner).toContain('"--verify"');
     expect(cleanupRunner).toContain("recovery.safeForIdentityBoundCleanup !== true");
@@ -426,7 +436,25 @@ describe("staging Playwright harness contract", () => {
     expect(cleanup).toContain('checkpoint(`reject-${tab.id}-acknowledged`');
     expect(cleanup).toContain('checkpoint("combo-archive-acknowledged"');
     expect(cleanup).toContain('checkpoint("item-archive-acknowledged"');
+    expect(cleanup).toContain('checkpoint("item-archive-prepared"');
+    expect(cleanup).toContain('checkpoint("item-archive-rejected"');
+    expect(cleanup).toContain('E2E_TAB_MUTATION_ITEM_ONLY === "true"');
     expect(cleanup).toContain('checkpoint("final", evidence)');
+    expect(partialCleanupRecovery).toContain("safeForItemOnlyCleanup");
+    expect(partialCleanupRecovery).toContain('allowedCleanupActions: ["archive_item"]');
+    expect(partialCleanupRecovery).toContain("The failed item archive produced an unacknowledged item event or audit.");
+    expect(partialCleanupRecovery).toContain("row.metadata.changed_rows.inventory_items.includes(itemId)");
+    expect(partialCleanupRecovery).toContain("Persisted reject event type/entity/actor/mutation/changed_rows is not exact.");
+    expect(partialCleanupRecovery).toContain("Persisted combo event type/entity/actor/mutation/changed_rows is not exact.");
+    expect(partialCleanupRecovery).toContain("Rejected customer tab for ${rejectAction.tab.customer_name}. Reason: ${rejectAction.reason}");
+    expect(partialCleanupRecovery).toContain("stable(movements) === stable(expected.movements)");
+    expect(partialCleanupRecovery).not.toMatch(/\.(insert|upsert|delete)\(/);
+    expect(partialCleanupRecovery).not.toContain(".update({");
+    expect(itemOnlyCleanupRunner).toContain("recovery.safeForItemOnlyCleanup !== true");
+    expect(itemOnlyCleanupRunner).toContain('JSON.stringify(["archive_item"])');
+    expect(itemOnlyCleanupRunner).toContain('E2E_TAB_MUTATION_ITEM_ONLY = "true"');
+    expect(itemOnlyCleanupRunner).toContain("recovery.snapshot.item[0]?.active !== true");
+    expect(itemOnlyCleanupRunner).toContain("recovery.snapshot.combo[0]?.active !== false");
     expect(cleanupPostflight).toContain("Cleanup did not checkpoint the exact authorized recovery snapshot before its first write.");
     expect(cleanupPostflight).toContain("Compatibility version did not advance exactly once per acknowledged cleanup action.");
     expect(cleanupPostflight).toContain('if (!env.E2E_POSTFLIGHT_ID?.trim())');
@@ -435,12 +463,17 @@ describe("staging Playwright harness contract", () => {
     expect(cleanupPostflight).toContain('changedIds(result, "operational_events").join() === event.id');
     expect(cleanupPostflight).toContain("safeForAutomaticRetry: false");
     expect(cleanupPostflight).toContain("productionAllowed: false");
+    expect(cleanupPostflight).toContain('args[0] === "--item-only"');
+    expect(cleanupPostflight).toContain("recovery.safeForItemOnlyCleanup === true");
     expect(cleanupPostflight).not.toMatch(/\.(insert|upsert|delete)\(/);
     expect(cleanupPostflight).not.toContain(".update({");
     expect(packageJson.scripts["test:e2e:staging:v2:checkout-tab-mutation-race:list"]).toContain("--list");
     expect(packageJson.scripts["test:e2e:staging:v2:checkout-tab-mutation-race:remaining-eleven"]).toContain("--remaining-eleven");
     expect(packageJson.scripts["test:e2e:staging:v2:checkout-tab-mutation-race:remaining-eleven:list"]).toContain("--remaining-eleven-list");
+    expect(packageJson.scripts["test:e2e:staging:v2:checkout-tab-mutation-race:remaining-four"]).toContain("--remaining-four");
+    expect(packageJson.scripts["test:e2e:staging:v2:checkout-tab-mutation-race:remaining-four:list"]).toContain("--remaining-four-list");
     expect(packageJson.scripts["test:db:staging:v2:checkout-tab-mutation-race:preflight:remaining-eleven"]).toContain("--remaining-eleven");
+    expect(packageJson.scripts["test:db:staging:v2:checkout-tab-mutation-race:preflight:remaining-four"]).toContain("--remaining-four");
     expect(packageJson.scripts["test:db:staging:v2:checkout-tab-mutation-race:preflight"]).toBe(
       "node scripts/preflight-checkout-tab-mutation-race-staging.mjs"
     );
@@ -452,6 +485,13 @@ describe("staging Playwright harness contract", () => {
     expect(packageJson.scripts["test:db:staging:v2:checkout-tab-mutation-race:cleanup:postflight"]).toBe(
       "node scripts/reconcile-checkout-tab-mutation-race-cleanup-staging.mjs"
     );
+    expect(packageJson.scripts["test:db:staging:v2:checkout-tab-mutation-race:cleanup:partial-recovery"]).toContain(
+      "reconcile-checkout-tab-mutation-race-partial-cleanup-staging.mjs"
+    );
+    expect(packageJson.scripts["test:e2e:staging:v2:checkout-tab-mutation-race:cleanup:item-only"]).toContain(
+      "run-checkout-tab-mutation-race-item-cleanup-staging-e2e.mjs"
+    );
+    expect(packageJson.scripts["test:db:staging:v2:checkout-tab-mutation-race:cleanup:item-only:postflight"]).toContain("--item-only");
   });
 
   it("locks one hopped session against two distinct checkout mutations", () => {

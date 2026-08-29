@@ -16,17 +16,22 @@ import { loadSessionItemRaceAdmin } from "./session-item-race-admin-env.mjs";
 
 const root = process.cwd();
 const args = process.argv.slice(2);
-const allowedArguments = new Set(["--verify", "--remaining-eleven", "--remaining-eleven-verify"]);
+const allowedArguments = new Set(["--verify", "--remaining-eleven", "--remaining-eleven-verify", "--remaining-four", "--remaining-four-verify"]);
 if (args.length > 1 || args.some((argument) => !allowedArguments.has(argument))) {
-  throw new Error("Checkout-tab-mutation race preflight accepts only --verify, --remaining-eleven, --remaining-eleven-verify, or one exact preflight.");
+  throw new Error("Checkout-tab-mutation race preflight accepts only reviewed all, remaining-eleven, or remaining-four preflight/verify modes.");
 }
 const remainingElevenOnly = args[0] === "--remaining-eleven" || args[0] === "--remaining-eleven-verify";
-const verificationOnly = args[0] === "--verify" || args[0] === "--remaining-eleven-verify";
+const remainingFourOnly = args[0] === "--remaining-four" || args[0] === "--remaining-four-verify";
+const verificationOnly = args[0] === "--verify" || args[0] === "--remaining-eleven-verify" || args[0] === "--remaining-four-verify";
 const modes = ["add_item", "update_item", "remove_item", "apply_combo"];
 const scenarios = ["checkout_first", "mutation_first", "simultaneous"];
-const selectedPhase = remainingElevenOnly ? "remaining-eleven" : "all";
+const selectedPhase = remainingFourOnly ? "remaining-four" : remainingElevenOnly ? "remaining-eleven" : "all";
 const selectedCases = modes.flatMap((mode) => scenarios.map((scenario) => ({ mode, scenario })))
-  .filter(({ mode, scenario }) => !remainingElevenOnly || mode !== "add_item" || scenario !== "checkout_first");
+  .filter(({ mode, scenario }) => {
+    if (remainingElevenOnly) return mode !== "add_item" || scenario !== "checkout_first";
+    if (remainingFourOnly) return (mode === "remove_item" && scenario === "simultaneous") || mode === "apply_combo";
+    return true;
+  });
 const stagingEnv = parseEnvFile(path.join(root, ".env.staging"));
 const localEnv = parseEnvFile(path.join(root, ".env.e2e.local"));
 const temporaryAdmin = loadSessionItemRaceAdmin(root);

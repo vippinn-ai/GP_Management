@@ -19,6 +19,7 @@ const cleanupRunId = process.env.E2E_RUN_ID ?? "missing-cleanup-run-id";
 const sourceRunId = process.env.E2E_TAB_MUTATION_SOURCE_RUN_ID ?? "missing-source-run-id";
 const recoveryArtifact = process.env.E2E_TAB_MUTATION_RACE_RECOVERY_ARTIFACT ?? "missing-recovery-artifact";
 const expectedRecoveryHash = process.env.E2E_TAB_MUTATION_RECOVERY_SHA256 ?? "missing-recovery-hash";
+const itemOnly = process.env.E2E_TAB_MUTATION_ITEM_ONLY === "true";
 const organizationId = "org-primary";
 
 function hash(value: unknown) {
@@ -70,7 +71,16 @@ test("fresh identity-bound cleanup preserves every reconciled source effect", as
   expect(createHash("sha256").update(recoveryBytes).digest("hex")).toBe(expectedRecoveryHash);
   const recovery = JSON.parse(recoveryBytes.toString("utf8"));
   expect(cleanupRunId).not.toBe(sourceRunId);
-  expect(recovery).toMatchObject({
+  expect(recovery).toMatchObject(itemOnly ? {
+    runId: sourceRunId,
+    projectRef: "tkbdyzxwwbhkpztgjjxh",
+    productionAllowed: false,
+    safeForAutomaticRetry: false,
+    safeForIdentityBoundCleanup: false,
+    safeForItemOnlyCleanup: true,
+    allowedCleanupActions: ["archive_item"],
+    failures: []
+  } : {
     runId: sourceRunId,
     projectRef: "tkbdyzxwwbhkpztgjjxh",
     productionAllowed: false,
@@ -173,6 +183,13 @@ test("fresh identity-bound cleanup preserves every reconciled source effect", as
     expect(liveBefore.appState).toEqual(recovery.snapshot.appState);
     expect(openSessionsBefore).toEqual([]);
     expect(stable(openTabsBefore)).toBe(stable(recovery.openFloor.tabs));
+    if (itemOnly) {
+      expect(openTabsBefore).toEqual([]);
+      expect(itemsBefore).toHaveLength(1);
+      expect(itemsBefore[0]).toEqual(expect.objectContaining({ active: true, archived_by_user_id: null, archive_reason: null }));
+      expect(combosBefore).toHaveLength(1);
+      expect(combosBefore[0]).toEqual(expect.objectContaining({ active: false }));
+    }
     evidence.before = liveBefore;
     evidence.preparedPath = checkpoint("prepared", evidence);
     let expectedVersion = stateBefore[0].version;
@@ -238,11 +255,21 @@ test("fresh identity-bound cleanup preserves every reconciled source effect", as
       const dialog = page.getByRole("dialog", { name: `Archive Inventory Item - ${itemsBefore[0].name}`, exact: true });
       const reason = `Authorized tab-mutation recovery ${sourceRunId} ${cleanupRunId}`;
       await dialog.getByPlaceholder("Not restocking, duplicate item, incorrect setup...").fill(reason);
+      checkpoint("item-archive-prepared", {
+        cleanupRunId, sourceRunId, recoveryArtifact, recoverySha256: expectedRecoveryHash,
+        productionAllowed: false, safeForAutomaticRetry: false, itemOnly, itemId, reason,
+        expectedAppStateVersion: expectedVersion + 1
+      });
       const responsePromise = page.waitForResponse((response) =>
         response.url().includes("/rest/v1/rpc/commit_admin_data_change") && response.request().method() === "POST");
       await dialog.getByRole("button", { name: "Archive Item", exact: true }).click();
       const response = await responsePromise;
       const result = await readApiResponseBody(response) as Record<string, unknown>;
+      if (response.status() !== 200) checkpoint("item-archive-rejected", {
+        cleanupRunId, sourceRunId, recoveryArtifact, recoverySha256: expectedRecoveryHash,
+        productionAllowed: false, safeForAutomaticRetry: false, itemOnly, itemId, reason,
+        status: response.status(), result
+      });
       expect(response.status()).toBe(200);
       const acknowledgementPath = checkpoint("item-archive-acknowledged", {
         cleanupRunId, sourceRunId, recoveryArtifact, recoverySha256: expectedRecoveryHash,
@@ -350,6 +377,10 @@ test("fresh identity-bound cleanup preserves every reconciled source effect", as
     expect(actionAudits).toHaveLength(actionAuditIds.length);
     expect(actionAudits.every((row) => row.user_id === identity.actorId)).toBe(true);
     expect(stateAfter[0].version).toBe(expectedVersion);
+    if (itemOnly) {
+      expect((evidence.actions as Array<Record<string, unknown>>).map((entry) => entry.type)).toEqual(["archive_item"]);
+      expect(expectedVersion).toBe(stateBefore[0].version + 1);
+    }
     const finalSnapshot = {
       item: itemsAfter, combo: combosAfter, tabs: tabsAfter, tabItems: tabItemsAfter,
       comboApplications: comboAppsAfter, bills: billsAfter, lines: linesAfter, payments: paymentsAfter,

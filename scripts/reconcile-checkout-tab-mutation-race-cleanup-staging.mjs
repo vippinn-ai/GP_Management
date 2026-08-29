@@ -11,6 +11,11 @@ import {
 } from "./playwright-staging-env.mjs";
 
 const root = process.cwd();
+const args = process.argv.slice(2);
+if (args.length > 1 || args.some((argument) => argument !== "--item-only")) {
+  throw new Error("Cleanup postflight accepts only the optional --item-only mode.");
+}
+const itemOnly = args[0] === "--item-only";
 const stagingEnv = parseEnvFile(path.join(root, ".env.staging"));
 const localEnv = parseEnvFile(path.join(root, ".env.e2e.local"));
 const env = { ...localEnv, ...process.env };
@@ -26,15 +31,22 @@ const requestedRecovery = env.E2E_TAB_MUTATION_RACE_RECOVERY_ARTIFACT?.trim();
 if (!requestedRecovery) throw new Error("E2E_TAB_MUTATION_RACE_RECOVERY_ARTIFACT is required.");
 const recoveryPath = path.resolve(root, requestedRecovery);
 const recoveryDirectory = path.resolve(root, "test-artifacts", "reconciliation");
-if (path.dirname(recoveryPath) !== recoveryDirectory ||
-    !/^checkout-tab-mutation-race-recovery-[A-Za-z0-9_-]+\.json$/.test(path.basename(recoveryPath))) {
+const recoveryPattern = itemOnly
+  ? /^checkout-tab-mutation-race-item-cleanup-recovery-[A-Za-z0-9_-]+\.json$/
+  : /^checkout-tab-mutation-race-recovery-[A-Za-z0-9_-]+\.json$/;
+if (path.dirname(recoveryPath) !== recoveryDirectory || !recoveryPattern.test(path.basename(recoveryPath))) {
   throw new Error("Cleanup postflight accepts only the exact immutable tab-mutation recovery artifact.");
 }
 const recoveryBytes = fs.readFileSync(recoveryPath);
 const recoverySha256 = createHash("sha256").update(recoveryBytes).digest("hex");
 const recovery = JSON.parse(recoveryBytes.toString("utf8"));
+const recoveryAuthorized = itemOnly
+  ? recovery.safeForItemOnlyCleanup === true && recovery.safeForIdentityBoundCleanup === false &&
+    recovery.status === "item-cleanup-authorized" &&
+    JSON.stringify(recovery.allowedCleanupActions) === JSON.stringify(["archive_item"])
+  : recovery.safeForIdentityBoundCleanup === true;
 if (recovery.projectRef !== STAGING_PROJECT_REF || recovery.productionAllowed !== false ||
-    recovery.safeForAutomaticRetry !== false || recovery.safeForIdentityBoundCleanup !== true ||
+    recovery.safeForAutomaticRetry !== false || !recoveryAuthorized ||
     !Array.isArray(recovery.failures) || recovery.failures.length !== 0) {
   throw new Error("The recovery artifact is not authorized for identity-bound staging cleanup postflight.");
 }
@@ -288,7 +300,7 @@ for (const action of actions) {
     check(auditsForAction.length === 1 && auditsForAction[0].action === "customer_tab_rejected" &&
       auditsForAction[0].entity_type === "customer_tab" && auditsForAction[0].entity_id === action.tab.id &&
       auditsForAction[0].user_id === recovery.actors.checkout &&
-      auditsForAction[0].message === `Rejected ${action.tab.customer_name}'s tab. Reason: ${action.reason}`,
+      auditsForAction[0].message === `Rejected customer tab for ${action.tab.customer_name}. Reason: ${action.reason}`,
     "Rejected-tab audit identity, actor, or message is incorrect.");
   } else if (action.type === "archive_combo") {
     check(event?.event_type === "admin_data_committed" && changedIds(result, "combos").join() === comboId,
@@ -342,6 +354,7 @@ check(stable(finalEvidence.final?.tabItems) === stable(tabItems) &&
 
 const report = {
   status: failures.length ? "failed" : "passed",
+  mode: itemOnly ? "item-only" : "full-cleanup",
   cleanupRunId,
   sourceRunId,
   postflightId,

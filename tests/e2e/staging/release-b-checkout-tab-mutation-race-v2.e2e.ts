@@ -231,9 +231,11 @@ async function readItemMovements(page: Page, restBase: string, headers: Record<s
 }
 
 test.describe.serial("Release B checkout versus customer-tab source mutations", () => {
-  test(phase === "remaining-eleven"
-    ? "remaining eleven zero-retry orderings preserve one canonical winner"
-    : "all four RPC modes and all three zero-retry orderings preserve one canonical winner", async ({ browser, page }, testInfo) => {
+  test(phase === "remaining-four"
+    ? "remaining four zero-retry orderings preserve one canonical winner"
+    : phase === "remaining-eleven"
+      ? "remaining eleven zero-retry orderings preserve one canonical winner"
+      : "all four RPC modes and all three zero-retry orderings preserve one canonical winner", async ({ browser, page }, testInfo) => {
     const observer = await createObserver(browser);
     const originRequests: CapturedRpcRequest[] = [];
     const observerRequests: CapturedRpcRequest[] = [];
