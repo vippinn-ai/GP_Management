@@ -9,26 +9,43 @@ import {
   sanitizeRunId,
   STAGING_PROJECT_REF
 } from "./playwright-staging-env.mjs";
+import { loadSessionItemRaceAdmin } from "./session-item-race-admin-env.mjs";
 
 const root = process.cwd();
 const stagingEnv = parseEnvFile(path.join(root, ".env.staging"));
 const localEnv = parseEnvFile(path.join(root, ".env.e2e.local"));
-const env = { ...localEnv, ...process.env };
+const requestedCleanupKind = process.env.E2E_CLEANUP_RACE_KIND ?? "replacement";
+if (requestedCleanupKind !== "replacement" && requestedCleanupKind !== "refund" && requestedCleanupKind !== "void") {
+  throw new Error("E2E_CLEANUP_RACE_KIND must be exactly replacement, refund, or void.");
+}
+const temporaryAdmin = requestedCleanupKind === "void" ? loadSessionItemRaceAdmin(root, { required: true }) : null;
+const env = { ...localEnv, ...process.env, ...(temporaryAdmin?.overlay ?? {}) };
 assertStagingSupabaseEnvironment(stagingEnv, true);
 assertLiveCredentials(env);
-const cleanupKind = env.E2E_CLEANUP_RACE_KIND === "refund" ? "refund" : "replacement";
+const cleanupKind = requestedCleanupKind;
 const isRefundCleanup = cleanupKind === "refund";
+const isVoidCleanup = cleanupKind === "void";
+const isDispositionCleanup = isRefundCleanup || isVoidCleanup;
 const cleanupRunId = sanitizeRunId(
-  (isRefundCleanup ? env.E2E_REFUND_RACE_CLEANUP_RUN_ID : env.E2E_REPLACEMENT_RACE_CLEANUP_RUN_ID) || env.E2E_RUN_ID
+  (isDispositionCleanup ? env.E2E_DISPOSITION_RACE_CLEANUP_RUN_ID || env.E2E_REFUND_RACE_CLEANUP_RUN_ID : env.E2E_REPLACEMENT_RACE_CLEANUP_RUN_ID) || env.E2E_RUN_ID
 );
-const artifactPrefix = isRefundCleanup ? "checkout-refund-race-cleanup" : "checkout-replacement-race-cleanup";
+const artifactPrefix = isDispositionCleanup ? `checkout-${cleanupKind}-race-cleanup` : "checkout-replacement-race-cleanup";
 const evidencePath = path.join(root, "test-artifacts", "evidence", `${artifactPrefix}-final-${cleanupRunId}.json`);
 if (!fs.existsSync(evidencePath)) throw new Error(`Immutable ${cleanupKind}-race cleanup evidence is missing.`);
 const evidence = JSON.parse(fs.readFileSync(evidencePath, "utf8"));
-if (evidence.cleanupRunId !== cleanupRunId) throw new Error("Cleanup evidence identity mismatch.");
+if (evidence.cleanupRunId !== cleanupRunId ||
+    (isVoidCleanup ? evidence.cleanupKind !== "void" : evidence.cleanupKind && evidence.cleanupKind !== cleanupKind)) {
+  throw new Error("Cleanup evidence identity or disposition mismatch.");
+}
 const recoveryPath = path.resolve(root, evidence.recoveryArtifact);
-const recovery = JSON.parse(fs.readFileSync(recoveryPath, "utf8"));
-if (recovery.runId !== evidence.fixtureRunId || recovery.safeForIdentityBoundCleanup !== true) {
+const recoveryBytes = fs.readFileSync(recoveryPath);
+const recoverySha256 = createHash("sha256").update(recoveryBytes).digest("hex");
+const recovery = JSON.parse(recoveryBytes.toString("utf8"));
+if (recovery.runId !== evidence.fixtureRunId || recovery.safeForIdentityBoundCleanup !== true ||
+    recovery.productionAllowed !== false || recovery.safeForAutomaticRetry !== false ||
+    (isVoidCleanup && recovery.disposition !== "void") ||
+    (isDispositionCleanup && recovery.disposition && recovery.disposition !== cleanupKind) ||
+    (isDispositionCleanup && evidence.recoverySha256 && recoverySha256 !== evidence.recoverySha256)) {
   throw new Error("Cleanup recovery authority changed.");
 }
 const organizationId = "org-primary";
@@ -57,11 +74,12 @@ const eventIds = evidence.cleanupResults.map((entry) => entry.result.event_id);
 const auditIds = evidence.cleanupResults.flatMap((entry) => entry.result.changed_rows?.audit_logs ?? []);
 const priorEventIds = evidence.before.events.map((entry) => entry.id);
 const priorAuditIds = evidence.before.audits.map((entry) => entry.id);
-const billNumbers = isRefundCleanup
-  ? ["ORIGINAL", "CHECKOUT"].map((suffix) => `BILL-QA-REFUND-RACE-${evidence.fixtureRunId}-${suffix}`)
+const dispositionLabel = isVoidCleanup ? "Void" : "Refund";
+const billNumbers = isDispositionCleanup
+  ? ["ORIGINAL", "CHECKOUT"].map((suffix) => `BILL-QA-${dispositionLabel.toUpperCase()}-RACE-${evidence.fixtureRunId}-${suffix}`)
   : ["ORIGINAL", "CHECKOUT", "REPLACEMENT"].map((suffix) => `BILL-QA-REPLACE-RACE-${evidence.fixtureRunId}-${suffix}`);
-const customerNames = isRefundCleanup
-  ? [`QA Refund Source ${evidence.fixtureRunId}`, `QA Refund Checkout ${evidence.fixtureRunId}`]
+const customerNames = isDispositionCleanup
+  ? [`QA ${dispositionLabel} Source ${evidence.fixtureRunId}`, `QA ${dispositionLabel} Checkout ${evidence.fixtureRunId}`]
   : [`QA Replacement Source ${evidence.fixtureRunId}`, `QA Replacement Checkout ${evidence.fixtureRunId}`];
 const [items, bills, tabs, tabItems, movements, lines, payments, events, audits, priorEvents, priorAudits, mutationStatuses, openSessions, openTabs, appState] = await Promise.all([
   supabase.from("inventory_items").select("id,name,stock_qty,active,archived_by_user_id,archive_reason").eq("organization_id", organizationId).eq("id", evidence.itemId),
@@ -76,7 +94,9 @@ const [items, bills, tabs, tabItems, movements, lines, payments, events, audits,
   supabase.from("operational_events").select("id,event_type,entity_type,entity_id,created_by,metadata").eq("organization_id", organizationId).in("id", priorEventIds.length ? priorEventIds : ["missing-prior-event"]),
   supabase.from("audit_logs").select("id,action,entity_type,entity_id,message,user_id").eq("organization_id", organizationId).in("id", priorAuditIds.length ? priorAuditIds : ["missing-prior-audit"]),
   Promise.all((recovery.mutationIds ?? []).map(async (mutationId, index) => {
-    const result = await supabase.rpc("get_financial_mutation_result", {
+    const mutationActor = recovery.mutationActors?.[index] ?? recovery.actors.origin;
+    const mutationClient = mutationActor === recovery.actors.observer ? observer.client : origin.client;
+    const result = await mutationClient.rpc("get_financial_mutation_result", {
       payload: {
         organization_id: organizationId,
         mutation_id: mutationId,
@@ -186,10 +206,13 @@ const compatibilityTabs = (appState.data.data.customerTabs ?? [])
 exact(sortRows(compatibilityTabs), sortRows(tabs.data), "Cleanup compatibility customer tabs do not match normalized terminal states.");
 exact(sortRows(compatibilityTabs), sortRows(evidence.after.appState.compatibilityTabs), "Cleanup compatibility customer tabs changed after acknowledgement.");
 const output = {
+  cleanupKind,
   cleanupRunId,
   fixtureRunId: evidence.fixtureRunId,
   reconciledAt: new Date().toISOString(),
   projectRef: STAGING_PROJECT_REF,
+  productionAllowed: false,
+  safeForAutomaticRetry: false,
   actors: evidence.actors,
   cleanupResults: evidence.cleanupResults,
   items: items.data,

@@ -24,10 +24,19 @@ import {
 
 const runId = process.env.E2E_RUN_ID ?? "missing-run-id";
 const organizationId = "org-primary";
-const itemName = `QA Refund Race ${runId}`;
-const sourceCustomer = `QA Refund Source ${runId}`;
-const checkoutCustomer = `QA Refund Checkout ${runId}`;
-const refundReason = `Playwright shared-inventory refund race ${runId}`;
+const disposition = process.env.E2E_CHECKOUT_REFUND_RACE_DISPOSITION ?? "refund";
+if (disposition !== "refund" && disposition !== "void") {
+  throw new Error("E2E_CHECKOUT_REFUND_RACE_DISPOSITION must be exactly refund or void.");
+}
+const fixtureLabel = disposition === "void" ? "Void" : "Refund";
+const artifactPrefix = disposition === "void" ? "checkout-void-race" : "checkout-refund-race";
+const adjustmentMutationKind = disposition === "void" ? "voidBill" : "refundBill";
+const adjustedBillStatus = disposition === "void" ? "voided" : "refunded";
+const adjustedBillUiStatus = disposition === "void" ? "Voided" : "Refunded";
+const itemName = `QA ${fixtureLabel} Race ${runId}`;
+const sourceCustomer = `QA ${fixtureLabel} Source ${runId}`;
+const checkoutCustomer = `QA ${fixtureLabel} Checkout ${runId}`;
+const adjustmentReason = `Playwright shared-inventory ${disposition} race ${runId}`;
 
 type CheckoutEnvelope = {
   payload: {
@@ -92,7 +101,7 @@ function rpcHeaders(captured: CapturedRpcRequest) {
 
 function withBillNumber(captured: CapturedRpcRequest, suffix: "ORIGINAL" | "CHECKOUT") {
   const envelope = structuredClone(captured.body) as CheckoutEnvelope;
-  const billNumber = `BILL-QA-REFUND-RACE-${runId}-${suffix}`;
+  const billNumber = `BILL-QA-${fixtureLabel.toUpperCase()}-RACE-${runId}-${suffix}`;
   envelope.payload.payload.primary_bill.billNumber = billNumber;
   const primary = envelope.payload.payload.bill_updates.find(
     (bill) => bill.id === envelope.payload.payload.primary_bill.id
@@ -120,7 +129,7 @@ function persistCheckpoint(
 ) {
   const directory = path.join(process.cwd(), "test-artifacts", "evidence");
   fs.mkdirSync(directory, { recursive: true });
-  const target = path.join(directory, `checkout-refund-race-${phase}-${runId}.json`);
+  const target = path.join(directory, `${artifactPrefix}-${phase}-${runId}.json`);
   fs.writeFileSync(target, `${JSON.stringify(value, null, 2)}\n`, { encoding: "utf8", flag: "wx" });
   return path.relative(process.cwd(), target);
 }
@@ -229,8 +238,8 @@ async function mutationStatus(
   return await body(response);
 }
 
-test.describe.serial("Release B checkout versus refund concurrency", () => {
-  test("shared-inventory checkout and refund both commit without lost stock", async ({ browser, page }, testInfo) => {
+test.describe.serial(`Release B checkout versus ${disposition} concurrency`, () => {
+  test(`shared-inventory checkout and ${disposition} both commit without lost stock`, async ({ browser, page }, testInfo) => {
     const observer = await createObserver(browser);
     const rpcEvidence: RpcEvidence[] = [];
     const authenticatedRequests: CapturedRpcRequest[] = [];
@@ -243,7 +252,7 @@ test.describe.serial("Release B checkout versus refund concurrency", () => {
     captureRpcEvidence(observer.page, "observer", rpcEvidence);
     let originalCommand: Awaited<ReturnType<typeof interceptSingleRpcCommand>> | undefined;
     let checkoutCommand: Awaited<ReturnType<typeof interceptSingleRpcCommand>> | undefined;
-    let refundCommand: Awaited<ReturnType<typeof interceptSingleRpcCommand>> | undefined;
+    let adjustmentCommand: Awaited<ReturnType<typeof interceptSingleRpcCommand>> | undefined;
     let itemId: string | undefined;
     let itemCreated = false;
     let itemArchived = false;
@@ -264,6 +273,10 @@ test.describe.serial("Release B checkout versus refund concurrency", () => {
         "admin",
         organizationId
       );
+      if (disposition === "void") {
+        expect(identity.actorId).not.toBe(observerIdentity.actorId);
+        expect(observerIdentity.actorId).toBe(process.env.E2E_SESSION_ITEM_ADMIN_EXPECTED_ACTOR_ID);
+      }
       await Promise.all([page.waitForTimeout(1_200), observer.page.waitForTimeout(1_200)]);
 
       const preflightState = await readRestRows<{ version: number; data: unknown }>(
@@ -278,11 +291,12 @@ test.describe.serial("Release B checkout versus refund concurrency", () => {
       expect(appStateHash(preflightState[0].data)).toBe(process.env.E2E_REFUND_RACE_PREFLIGHT_HASH);
       const setupEvidence = {
         runId,
+        disposition,
         actors: { origin: identity.actorId, observer: observerIdentity.actorId },
         itemName,
         sourceCustomer,
         checkoutCustomer,
-        refundReason,
+        adjustmentReason,
         preflightAppState: { version: preflightState[0].version, hash: appStateHash(preflightState[0].data) }
       };
       const setupPreparedPath = persistCheckpoint("setup-prepared", setupEvidence);
@@ -349,7 +363,7 @@ test.describe.serial("Release B checkout versus refund concurrency", () => {
       expect(originalResponse.status()).toBe(200);
       const originalBillId = String(originalBody.bill_id);
       const originalBillNumber = String(originalBody.bill_number);
-      expect(originalBillNumber).toBe(`BILL-QA-REFUND-RACE-${runId}-ORIGINAL`);
+      expect(originalBillNumber).toBe(`BILL-QA-${fixtureLabel.toUpperCase()}-RACE-${runId}-ORIGINAL`);
       const originalCommittedPath = persistCheckpoint("original-committed", {
         ...setupLedger,
         originalResponse: originalBody,
@@ -405,39 +419,42 @@ test.describe.serial("Release B checkout versus refund concurrency", () => {
       await waitForSynced(observer.page);
       const originalRow = await billRow(observer.page, originalBillNumber);
       await originalRow.getByRole("button", { name: "Void", exact: true }).click();
-      const refundDialog = observer.page.getByRole("dialog", {
+      const adjustmentDialog = observer.page.getByRole("dialog", {
         name: `Void or Refund - ${originalBillNumber}`,
         exact: true
       });
-      await refundDialog.getByLabel("Void or refund action", { exact: true }).selectOption("refund");
-      await refundDialog.getByPlaceholder("Reason for refunding this bill").fill(refundReason);
-      await expect(refundDialog.getByRole("button", { name: "Confirm Refund", exact: true })).toBeEnabled();
+      await adjustmentDialog.getByLabel("Void or refund action", { exact: true }).selectOption(disposition);
+      await adjustmentDialog.getByPlaceholder(`Reason for ${disposition === "void" ? "voiding" : "refunding"} this bill`)
+        .fill(adjustmentReason);
+      const confirmAdjustment = adjustmentDialog.getByRole("button", { name: `Confirm ${fixtureLabel}`, exact: true });
+      await expect(confirmAdjustment).toBeEnabled();
 
       checkoutCommand = await interceptSingleRpcCommand(page, "**/rest/v1/rpc/commit_checkout_bill_v2");
-      refundCommand = await interceptSingleRpcCommand(observer.page, "**/rest/v1/rpc/commit_financial_adjustment_v2");
+      adjustmentCommand = await interceptSingleRpcCommand(observer.page, "**/rest/v1/rpc/commit_financial_adjustment_v2");
       await Promise.all([
         checkoutDialog.getByRole("button", { name: "Issue Bill", exact: true }).click(),
-        refundDialog.getByRole("button", { name: "Confirm Refund", exact: true }).click()
+        confirmAdjustment.click()
       ]);
-      const [checkoutCaptured, refundCaptured] = await Promise.all([
+      const [checkoutCaptured, adjustmentCaptured] = await Promise.all([
         checkoutCommand.captured,
-        refundCommand.captured
+        adjustmentCommand.captured
       ]);
       expect(checkoutCommand.captureCount()).toBe(1);
-      expect(refundCommand.captureCount()).toBe(1);
+      expect(adjustmentCommand.captureCount()).toBe(1);
       const checkoutEnvelope = withBillNumber(checkoutCaptured, "CHECKOUT");
-      const refundEnvelope = structuredClone(refundCaptured.body) as AdjustmentEnvelope;
+      const adjustmentEnvelope = structuredClone(adjustmentCaptured.body) as AdjustmentEnvelope;
       expect(checkoutEnvelope.payload.payload.mode).toBe("customer_tab");
-      expect(refundEnvelope.payload.mutation_kind).toBe("refundBill");
-      expect(refundEnvelope.payload.entity_id).toBe(originalBillId);
-      expect(refundEnvelope.payload.payload.bill_expectations).toEqual([
+      expect(adjustmentEnvelope.payload.mutation_kind).toBe(adjustmentMutationKind);
+      expect(adjustmentEnvelope.payload.entity_id).toBe(originalBillId);
+      expect(adjustmentEnvelope.payload.payload.bill_expectations).toEqual([
         expect.objectContaining({ billId: originalBillId, expectedStatus: "issued" })
       ]);
-      expect(checkoutEnvelope.payload.mutation_id).not.toBe(refundEnvelope.payload.mutation_id);
+      expect(adjustmentEnvelope.payload.payload.payments).toEqual([]);
+      expect(checkoutEnvelope.payload.mutation_id).not.toBe(adjustmentEnvelope.payload.mutation_id);
       expect(checkoutEnvelope.payload.payload.stock_movements).toEqual([
         expect.objectContaining({ itemId, quantity: -1 })
       ]);
-      expect(refundEnvelope.payload.payload.stock_movements).toEqual([
+      expect(adjustmentEnvelope.payload.payload.stock_movements).toEqual([
         expect.objectContaining({ itemId, quantity: 1, relatedBillId: originalBillId })
       ]);
 
@@ -463,7 +480,8 @@ test.describe.serial("Release B checkout versus refund concurrency", () => {
         originalMovementIds: originalEnvelope.payload.payload.stock_movements.map((entry) => entry.id),
         originalAuditIds: originalEnvelope.payload.payload.audit_logs.map((entry) => entry.id),
         checkoutMutationId: checkoutEnvelope.payload.mutation_id,
-        refundMutationId: refundEnvelope.payload.mutation_id,
+        adjustmentMutationId: adjustmentEnvelope.payload.mutation_id,
+        adjustmentMutationKind,
         checkoutBillId: checkoutEnvelope.payload.payload.primary_bill.id,
         checkoutBillNumber: checkoutEnvelope.payload.payload.primary_bill.billNumber,
         checkoutTabId: checkoutEnvelope.payload.entity_id,
@@ -471,12 +489,12 @@ test.describe.serial("Release B checkout versus refund concurrency", () => {
         checkoutLineIds: checkoutEnvelope.payload.payload.primary_bill.lines.map((entry) => entry.id),
         checkoutMovementIds: checkoutEnvelope.payload.payload.stock_movements.map((entry) => entry.id),
         checkoutAuditIds: checkoutEnvelope.payload.payload.audit_logs.map((entry) => entry.id),
-        refundMovementIds: refundEnvelope.payload.payload.stock_movements.map((entry) => entry.id),
-        refundAuditIds: refundEnvelope.payload.payload.audit_logs.map((entry) => entry.id),
+        adjustmentMovementIds: adjustmentEnvelope.payload.payload.stock_movements.map((entry) => entry.id),
+        adjustmentAuditIds: adjustmentEnvelope.payload.payload.audit_logs.map((entry) => entry.id),
         originalCommand: originalEnvelope.payload,
         originalResponse: originalBody,
         checkoutCommand: checkoutEnvelope.payload,
-        refundCommand: refundEnvelope.payload,
+        adjustmentCommand: adjustmentEnvelope.payload,
         reservationTabs,
         reservationItems,
         itemBeforeRace,
@@ -488,35 +506,35 @@ test.describe.serial("Release B checkout versus refund concurrency", () => {
       const preparedPath = persistCheckpoint("race-prepared", preparedEvidence);
 
       raceSubmitted = true;
-      const [checkoutResponse, refundResponse] = await Promise.all([
+      const [checkoutResponse, adjustmentResponse] = await Promise.all([
         checkoutCommand.submit(checkoutEnvelope),
-        refundCommand.submit(refundEnvelope)
+        adjustmentCommand.submit(adjustmentEnvelope)
       ]);
-      const [checkoutBody, refundBody] = await Promise.all([body(checkoutResponse), body(refundResponse)]);
+      const [checkoutBody, adjustmentBody] = await Promise.all([body(checkoutResponse), body(adjustmentResponse)]);
       const responsesPath = persistCheckpoint("race-responses", {
         ...preparedEvidence,
         responses: [
           { operation: "checkout", status: checkoutResponse.status(), body: checkoutBody },
-          { operation: "refund", status: refundResponse.status(), body: refundBody }
+          { operation: disposition, status: adjustmentResponse.status(), body: adjustmentBody }
         ]
       });
-      expect([checkoutResponse.status(), refundResponse.status()]).toEqual([200, 200]);
+      expect([checkoutResponse.status(), adjustmentResponse.status()]).toEqual([200, 200]);
       expect(checkoutBody.bill_id).toBe(preparedEvidence.checkoutBillId);
-      expect(refundBody.changed_rows).toEqual(expect.objectContaining({
+      expect(adjustmentBody.changed_rows).toEqual(expect.objectContaining({
         bills: [originalBillId],
         payments: [],
-        stock_movements: preparedEvidence.refundMovementIds,
-        audit_logs: preparedEvidence.refundAuditIds,
+        stock_movements: preparedEvidence.adjustmentMovementIds,
+        audit_logs: preparedEvidence.adjustmentAuditIds,
         inventory_items: [itemId]
       }));
       raceResolved = true;
-      await Promise.all([checkoutCommand.dispose(), refundCommand.dispose()]);
+      await Promise.all([checkoutCommand.dispose(), adjustmentCommand.dispose()]);
       checkoutCommand = undefined;
-      refundCommand = undefined;
-      await Promise.all([expect(checkoutDialog).toBeHidden(), expect(refundDialog).toBeHidden()]);
+      adjustmentCommand = undefined;
+      await Promise.all([expect(checkoutDialog).toBeHidden(), expect(adjustmentDialog).toBeHidden()]);
       await Promise.all([waitForSynced(page), waitForSynced(observer.page)]);
 
-      const [inventory, bills, lines, payments, movements, tabs, checkoutStatus, refundStatus, stateAfterRace] =
+      const [inventory, bills, lines, payments, movements, tabs, checkoutStatus, adjustmentStatus, stateAfterRace] =
         await Promise.all([
           readRestRows<Record<string, unknown>>(page, identity.restBase, identity.headers, "inventory_items", {
             organization_id: `eq.${organizationId}`,
@@ -549,7 +567,7 @@ test.describe.serial("Release B checkout versus refund concurrency", () => {
             select: "id,customer_name,status,close_disposition,closed_bill_id"
           }),
           mutationStatus(page, checkoutCaptured, checkoutEnvelope),
-          mutationStatus(observer.page, refundCaptured, refundEnvelope),
+          mutationStatus(observer.page, adjustmentCaptured, adjustmentEnvelope),
           readRestRows<{ version: number; data: unknown }>(page, identity.restBase, identity.headers, "app_state", {
             id: "eq.primary",
             select: "version,data"
@@ -561,10 +579,10 @@ test.describe.serial("Release B checkout versus refund concurrency", () => {
       const original = bills.find((entry) => entry.id === originalBillId)!;
       const checkout = bills.find((entry) => entry.id === preparedEvidence.checkoutBillId)!;
       expect(original).toEqual(expect.objectContaining({
-        status: "refunded",
+        status: adjustedBillStatus,
         issued_by_user_id: identity.actorId,
         voided_by_user_id: observerIdentity.actorId,
-        void_reason: refundReason
+        void_reason: adjustmentReason
       }));
       expect(checkout).toEqual(expect.objectContaining({ status: "issued", issued_by_user_id: identity.actorId }));
       expect(lines).toHaveLength(2);
@@ -575,20 +593,20 @@ test.describe.serial("Release B checkout versus refund concurrency", () => {
       expect(tabs).toHaveLength(2);
       expect(tabs.every((entry) => entry.status === "closed" && entry.close_disposition === "billed")).toBe(true);
       expect(checkoutStatus?.mutation_id).toBe(checkoutEnvelope.payload.mutation_id);
-      expect(refundStatus?.mutation_id).toBe(refundEnvelope.payload.mutation_id);
+      expect(adjustmentStatus?.mutation_id).toBe(adjustmentEnvelope.payload.mutation_id);
       expect(stateAfterRace[0].version).toBe(stateBeforeRace[0].version);
       expect(appStateHash(stateAfterRace[0].data)).toBe(appStateHash(stateBeforeRace[0].data));
 
       await page.reload({ waitUntil: "domcontentloaded" });
       await waitForSynced(page);
-      await expect(await billRow(page, originalBillNumber)).toContainText("Refunded");
+      await expect(await billRow(page, originalBillNumber)).toContainText(adjustedBillUiStatus);
       await expect(await billRow(page, String(checkout.bill_number))).toContainText("Issued");
 
       await openInventory(page);
       const row = inventoryRow(page);
       await expect(row.locator("td").nth(4)).toContainText("1");
       await row.getByRole("button", { name: "Archive", exact: true }).click();
-      const archiveReason = `Release B refund-race fixture cleanup ${runId}`;
+      const archiveReason = `Release B ${disposition}-race fixture cleanup ${runId}`;
       const archive = page.getByRole("dialog", { name: `Archive Inventory Item - ${itemName}`, exact: true });
       await archive.getByPlaceholder("Not restocking, duplicate item, incorrect setup...").fill(archiveReason);
       const archived = page.waitForResponse((response) =>
@@ -602,7 +620,7 @@ test.describe.serial("Release B checkout versus refund concurrency", () => {
         ...preparedEvidence,
         preparedPath,
         responsesPath,
-        responses: { checkout: checkoutBody, refund: refundBody },
+        responses: { checkout: checkoutBody, adjustment: adjustmentBody },
         archiveReason,
         archiveResult
       });
@@ -623,14 +641,14 @@ test.describe.serial("Release B checkout versus refund concurrency", () => {
         preparedPath,
         responsesPath,
         cleanupAcknowledgedPath,
-        responses: { original: originalBody, checkout: checkoutBody, refund: refundBody },
+        responses: { original: originalBody, checkout: checkoutBody, adjustment: adjustmentBody },
         inventory,
         bills,
         lines,
         payments,
         movements,
         tabs,
-        mutationStatuses: { checkout: checkoutStatus, refund: refundStatus },
+        mutationStatuses: { checkout: checkoutStatus, adjustment: adjustmentStatus },
         archiveReason,
         archiveResult,
         appStateAfterRace: { version: stateAfterRace[0].version, hash: appStateHash(stateAfterRace[0].data) },
@@ -643,12 +661,12 @@ test.describe.serial("Release B checkout versus refund concurrency", () => {
       };
       assertNoPageErrors(originErrors, observerErrors);
       const finalPath = persistCheckpoint("final", finalEvidence);
-      await attachJson(testInfo, "release-b-checkout-refund-race-v2-evidence", { ...finalEvidence, finalPath, rpcEvidence });
+      await attachJson(testInfo, `release-b-${artifactPrefix}-v2-evidence`, { ...finalEvidence, finalPath, rpcEvidence });
     } catch (error) {
       primaryError = error;
       throw error;
     } finally {
-      const commands = [originalCommand, checkoutCommand, refundCommand].filter(
+      const commands = [originalCommand, checkoutCommand, adjustmentCommand].filter(
         (command): command is NonNullable<typeof command> => Boolean(command)
       );
       for (const command of commands) {
@@ -678,7 +696,7 @@ test.describe.serial("Release B checkout versus refund concurrency", () => {
           disposalErrors.push(sanitizedErrorMessage(error) ?? "Unknown interceptor disposal failure");
         }
       }
-      await attachJson(testInfo, "release-b-checkout-refund-race-v2-lifecycle", {
+      await attachJson(testInfo, `release-b-${artifactPrefix}-v2-lifecycle`, {
         runId,
         itemId,
         itemCreated,
@@ -691,8 +709,8 @@ test.describe.serial("Release B checkout versus refund concurrency", () => {
         primaryError: sanitizedErrorMessage(primaryError),
         finalEvidence
       });
-      await attachFailureScreenshot(testInfo, page, "checkout-refund-race-origin-failure");
-      await attachFailureScreenshot(testInfo, observer.page, "checkout-refund-race-observer-failure");
+      await attachFailureScreenshot(testInfo, page, `${artifactPrefix}-origin-failure`);
+      await attachFailureScreenshot(testInfo, observer.page, `${artifactPrefix}-observer-failure`);
       await observer.context.close();
       if (!primaryError && (quiescenceError || disposalErrors.length > 0)) {
         throw new Error([quiescenceError, ...disposalErrors].filter(Boolean).join(" | "));

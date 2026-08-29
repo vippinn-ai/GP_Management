@@ -16,25 +16,31 @@ import {
 } from "./support/app";
 
 const cleanupRunId = process.env.E2E_RUN_ID ?? "missing-cleanup-run-id";
-const cleanupKind = process.env.E2E_CLEANUP_RACE_KIND === "refund" ? "refund" : "replacement";
+const cleanupKind = process.env.E2E_CLEANUP_RACE_KIND ?? "replacement";
+if (cleanupKind !== "replacement" && cleanupKind !== "refund" && cleanupKind !== "void") {
+  throw new Error("E2E_CLEANUP_RACE_KIND must be exactly replacement, refund, or void.");
+}
 const isRefundCleanup = cleanupKind === "refund";
-const fixtureRunId = isRefundCleanup
-  ? process.env.E2E_REFUND_RACE_FIXTURE_RUN_ID ?? "missing-fixture-run-id"
+const isVoidCleanup = cleanupKind === "void";
+const isDispositionCleanup = isRefundCleanup || isVoidCleanup;
+const fixtureRunId = isDispositionCleanup
+  ? process.env.E2E_DISPOSITION_RACE_FIXTURE_RUN_ID ?? process.env.E2E_REFUND_RACE_FIXTURE_RUN_ID ?? "missing-fixture-run-id"
   : process.env.E2E_REPLACEMENT_RACE_FIXTURE_RUN_ID ?? "missing-fixture-run-id";
-const recoveryRelative = isRefundCleanup
-  ? process.env.E2E_REFUND_RACE_RECOVERY_ARTIFACT ?? ""
+const recoveryRelative = isDispositionCleanup
+  ? process.env.E2E_CHECKOUT_DISPOSITION_RACE_RECOVERY_ARTIFACT ?? process.env.E2E_REFUND_RACE_RECOVERY_ARTIFACT ?? ""
   : process.env.E2E_REPLACEMENT_RACE_RECOVERY_ARTIFACT ?? "";
 const organizationId = "org-primary";
-const itemName = isRefundCleanup ? `QA Refund Race ${fixtureRunId}` : `QA Replacement Race ${fixtureRunId}`;
-const customerNames = isRefundCleanup
-  ? [`QA Refund Source ${fixtureRunId}`, `QA Refund Checkout ${fixtureRunId}`]
+const dispositionLabel = isVoidCleanup ? "Void" : "Refund";
+const itemName = isDispositionCleanup ? `QA ${dispositionLabel} Race ${fixtureRunId}` : `QA Replacement Race ${fixtureRunId}`;
+const customerNames = isDispositionCleanup
+  ? [`QA ${dispositionLabel} Source ${fixtureRunId}`, `QA ${dispositionLabel} Checkout ${fixtureRunId}`]
   : [`QA Replacement Source ${fixtureRunId}`, `QA Replacement Checkout ${fixtureRunId}`];
-const billNumbers = isRefundCleanup
-  ? ["ORIGINAL", "CHECKOUT"].map((suffix) => `BILL-QA-REFUND-RACE-${fixtureRunId}-${suffix}`)
+const billNumbers = isDispositionCleanup
+  ? ["ORIGINAL", "CHECKOUT"].map((suffix) => `BILL-QA-${dispositionLabel.toUpperCase()}-RACE-${fixtureRunId}-${suffix}`)
   : ["ORIGINAL", "CHECKOUT", "REPLACEMENT"].map((suffix) => `BILL-QA-REPLACE-RACE-${fixtureRunId}-${suffix}`);
-const openingStock = isRefundCleanup ? 2 : 3;
-const cleanupLabel = isRefundCleanup ? "refund-race" : "replacement-race";
-const artifactPrefix = isRefundCleanup ? "checkout-refund-race-cleanup" : "checkout-replacement-race-cleanup";
+const openingStock = isDispositionCleanup ? 2 : 3;
+const cleanupLabel = isDispositionCleanup ? `${cleanupKind}-race` : "replacement-race";
+const artifactPrefix = isDispositionCleanup ? `checkout-${cleanupKind}-race-cleanup` : "checkout-replacement-race-cleanup";
 
 function stable(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(stable);
@@ -96,11 +102,17 @@ test("identity-bound cleanup closes only exact QA tabs and archives only the exa
   captureAuthenticatedRestRequests(page, requests);
   captureAuthenticatedRestRequests(observer.page, observerRequests);
   const recoveryPath = path.resolve(process.cwd(), recoveryRelative);
-  const recovery = JSON.parse(fs.readFileSync(recoveryPath, "utf8"));
+  const recoveryBytes = fs.readFileSync(recoveryPath);
+  const recoverySha256 = createHash("sha256").update(recoveryBytes).digest("hex");
+  const recovery = JSON.parse(recoveryBytes.toString("utf8"));
   const cleanupResults: Array<Record<string, unknown>> = [];
   let finalEvidence: Record<string, unknown> = {};
   try {
     expect(recovery.runId).toBe(fixtureRunId);
+    if (isDispositionCleanup) {
+      if (isVoidCleanup || recovery.disposition !== undefined) expect(recovery.disposition).toBe(cleanupKind);
+      expect(recoverySha256).toBe(process.env.E2E_CHECKOUT_DISPOSITION_RACE_RECOVERY_SHA256);
+    }
     expect(recovery.safeForIdentityBoundCleanup).toBe(true);
     expect(recovery.safeForAutomaticRetry).toBe(false);
     expect(recovery.productionAllowed).toBe(false);
@@ -156,8 +168,12 @@ test("identity-bound cleanup closes only exact QA tabs and archives only the exa
         select: "id,action,entity_type,entity_id,message,user_id"
       }),
       Promise.all((recovery.mutationIds ?? []).map(async (mutationId: string, index: number) => {
-        const response = await page.request.post(`${identity.restBase}/rpc/get_financial_mutation_result`, {
-          headers: identity.headers,
+        const mutationActor = recovery.mutationActors?.[index] ?? recovery.actors.origin;
+        const actorContext = mutationActor === recovery.actors.observer
+          ? { request: observer.page.request, headers: observerIdentity.headers }
+          : { request: page.request, headers: identity.headers };
+        const response = await actorContext.request.post(`${identity.restBase}/rpc/get_financial_mutation_result`, {
+          headers: actorContext.headers,
           data: {
             payload: {
               organization_id: organizationId,
@@ -231,9 +247,11 @@ test("identity-bound cleanup closes only exact QA tabs and archives only the exa
     };
     const checkpointEvidence = (phase: string) => checkpoint(phase, {
       phase,
+      cleanupKind,
       cleanupRunId,
       fixtureRunId,
       recoveryArtifact: recoveryRelative,
+      recoverySha256,
       actors: recovery.actors,
       itemId,
       cleanupResults: [...cleanupResults],
@@ -305,9 +323,11 @@ test("identity-bound cleanup closes only exact QA tabs and archives only the exa
     expect(afterCompatibilityItem).toMatchObject({ id: itemId, active: false });
     expect(Number(afterCompatibilityItem?.stockQty)).toBe(Number(finalItems[0].stock_qty));
     finalEvidence = {
+      cleanupKind,
       cleanupRunId,
       fixtureRunId,
       recoveryArtifact: recoveryRelative,
+      recoverySha256,
       actors: recovery.actors,
       itemId,
       cleanupResults,

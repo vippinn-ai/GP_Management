@@ -12,28 +12,38 @@ import {
   STAGING_APP_URL,
   STAGING_PROJECT_REF
 } from "./playwright-staging-env.mjs";
+import { loadSessionItemRaceAdmin } from "./session-item-race-admin-env.mjs";
 
 const root = process.cwd();
 const stagingEnv = parseEnvFile(path.join(root, ".env.staging"));
 const localEnv = parseEnvFile(path.join(root, ".env.e2e.local"));
-const env = { ...localEnv, ...process.env };
 const organizationId = "org-primary";
 const args = process.argv.slice(2);
 
-if (args.length > 1 || args.some((argument) => argument !== "--verify")) {
-  throw new Error("Checkout-refund race preflight accepts only --verify.");
+const allowed = new Set(["--verify", "--void", "--verify-void"]);
+if (args.length > 1 || args.some((argument) => !allowed.has(argument))) {
+  throw new Error("Checkout disposition race preflight accepts only refund/void execution or exact verification.");
 }
-const verificationOnly = args[0] === "--verify";
+const disposition = args[0]?.includes("void") ? "void" : "refund";
+const verificationOnly = args[0] === "--verify" || args[0] === "--verify-void";
+const temporaryAdmin = disposition === "void" ? loadSessionItemRaceAdmin(root, { required: true }) : null;
+const env = { ...localEnv, ...process.env, ...(temporaryAdmin?.overlay ?? {}) };
+const requestedDisposition = env.E2E_CHECKOUT_REFUND_RACE_DISPOSITION ?? disposition;
+if (requestedDisposition !== disposition) {
+  throw new Error("Checkout disposition preflight mode does not match its exact environment binding.");
+}
+const fixtureLabel = disposition === "void" ? "Void" : "Refund";
+const artifactPrefix = disposition === "void" ? "checkout-void-race" : "checkout-refund-race";
 
 assertStagingSupabaseEnvironment(stagingEnv, true);
 const baseUrl = assertStagingBaseUrl(env.E2E_BASE_URL || STAGING_APP_URL);
 assertLiveCredentials(env);
 if (!env.E2E_RUN_ID?.trim()) throw new Error("An explicit E2E_RUN_ID is required.");
 const runId = sanitizeRunId(env.E2E_RUN_ID);
-const itemName = `QA Refund Race ${runId}`;
-const customerNames = [`QA Refund Source ${runId}`, `QA Refund Checkout ${runId}`];
+const itemName = `QA ${fixtureLabel} Race ${runId}`;
+const customerNames = [`QA ${fixtureLabel} Source ${runId}`, `QA ${fixtureLabel} Checkout ${runId}`];
 const billNumbers = ["ORIGINAL", "CHECKOUT"].map(
-  (suffix) => `BILL-QA-REFUND-RACE-${runId}-${suffix}`
+  (suffix) => `BILL-QA-${fixtureLabel.toUpperCase()}-RACE-${runId}-${suffix}`
 );
 
 async function deployedArtifact() {
@@ -111,7 +121,7 @@ for (const [label, result] of Object.entries({ openSessions, openTabs, appState,
 
 const artifactRoot = path.join(root, "test-artifacts");
 const artifactDirectory = path.join(artifactRoot, "preflight");
-const artifactPath = path.join(artifactDirectory, `checkout-refund-race-preflight-${runId}.json`);
+const artifactPath = path.join(artifactDirectory, `${artifactPrefix}-preflight-${runId}.json`);
 const artifactCollisions = [];
 function scan(directory) {
   if (!fs.existsSync(directory)) return;
@@ -127,10 +137,21 @@ scan(artifactRoot);
 
 const evidence = {
   runId,
+  disposition,
   checkedAt: new Date().toISOString(),
   projectRef: STAGING_PROJECT_REF,
+  baseUrl,
   organizationId,
+  productionAllowed: false,
+  safeForAutomaticRetry: false,
   actors: [origin.identity, observer.identity],
+  actorsDistinct: origin.identity.actorId !== observer.identity.actorId,
+  temporaryAdmin: temporaryAdmin ? {
+    accountRunId: temporaryAdmin.accountRunId,
+    actorId: temporaryAdmin.actorId,
+    createArtifact: path.relative(root, temporaryAdmin.createArtifactPath),
+    createArtifactSha256: temporaryAdmin.createArtifactSha256
+  } : null,
   deployedArtifact: artifact,
   fixture: { itemName, customerNames, billNumbers, openingStock: 2, price: 50, category: "Beverages" },
   openSessions: openSessions.data,
@@ -149,23 +170,30 @@ evidence.safeToRun =
   items.data.length === 0 &&
   tabs.data.length === 0 &&
   bills.data.length === 0 &&
-  artifactCollisions.length === 0;
+  artifactCollisions.length === 0 &&
+  (disposition !== "void" || (evidence.actorsDistinct && evidence.temporaryAdmin?.actorId === observer.identity.actorId));
 
 fs.mkdirSync(artifactDirectory, { recursive: true });
 if (verificationOnly) {
   if (!fs.existsSync(artifactPath)) throw new Error("The reviewed checkout-refund preflight artifact is missing.");
   const reviewed = JSON.parse(fs.readFileSync(artifactPath, "utf8"));
-  if (!reviewed.safeToRun || !evidence.safeToRun || reviewed.runId !== runId) {
+  if (!reviewed.safeToRun || !evidence.safeToRun || reviewed.runId !== runId ||
+    reviewed.disposition !== disposition || reviewed.productionAllowed !== false ||
+      reviewed.safeForAutomaticRetry !== false || reviewed.projectRef !== STAGING_PROJECT_REF ||
+      reviewed.baseUrl !== baseUrl || reviewed.organizationId !== organizationId ||
+      reviewed.actorsDistinct !== evidence.actorsDistinct) {
     throw new Error("The reviewed or freshly recomputed preflight is not safe.");
   }
   if (
     JSON.stringify(reviewed.fixture) !== JSON.stringify(evidence.fixture) ||
     JSON.stringify(reviewed.actors) !== JSON.stringify(evidence.actors) ||
+    JSON.stringify(reviewed.temporaryAdmin) !== JSON.stringify(evidence.temporaryAdmin) ||
     JSON.stringify(reviewed.openSessions) !== JSON.stringify(evidence.openSessions) ||
     JSON.stringify(reviewed.openTabs) !== JSON.stringify(evidence.openTabs) ||
     JSON.stringify(reviewed.identityCollisions) !== JSON.stringify(evidence.identityCollisions) ||
     reviewed.appState.version !== evidence.appState.version ||
     reviewed.appState.hash !== evidence.appState.hash ||
+    reviewed.deployedArtifact.path !== evidence.deployedArtifact.path ||
     reviewed.deployedArtifact.sha256 !== evidence.deployedArtifact.sha256
   ) {
     throw new Error("reviewed_preflight_drift");

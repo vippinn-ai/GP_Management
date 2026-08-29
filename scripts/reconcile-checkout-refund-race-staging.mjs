@@ -9,19 +9,39 @@ import {
   sanitizeRunId,
   STAGING_PROJECT_REF
 } from "./playwright-staging-env.mjs";
+import { loadSessionItemRaceAdmin } from "./session-item-race-admin-env.mjs";
 
 const root = process.cwd();
 const stagingEnv = parseEnvFile(path.join(root, ".env.staging"));
 const localEnv = parseEnvFile(path.join(root, ".env.e2e.local"));
-const env = { ...localEnv, ...process.env };
+const args = process.argv.slice(2);
+if (args.length > 1 || args.some((argument) => argument !== "--void")) {
+  throw new Error("Checkout disposition reconciliation accepts only refund or exact --void mode.");
+}
+const disposition = args[0] === "--void" ? "void" : "refund";
+const temporaryAdmin = disposition === "void" ? loadSessionItemRaceAdmin(root, { required: true }) : null;
+const env = {
+  ...localEnv,
+  ...process.env,
+  ...(temporaryAdmin?.overlay ?? {}),
+  E2E_CHECKOUT_REFUND_RACE_DISPOSITION: disposition
+};
 assertStagingSupabaseEnvironment(stagingEnv, true);
 assertLiveCredentials(env);
 
 const runId = sanitizeRunId(env.E2E_REFUND_RACE_RECONCILE_RUN_ID || env.E2E_RUN_ID);
 const organizationId = "org-primary";
-const itemName = `QA Refund Race ${runId}`;
-const customerNames = [`QA Refund Source ${runId}`, `QA Refund Checkout ${runId}`];
-const billNumbers = ["ORIGINAL", "CHECKOUT"].map((suffix) => `BILL-QA-REFUND-RACE-${runId}-${suffix}`);
+const fixtureLabel = disposition === "void" ? "Void" : "Refund";
+const artifactPrefix = disposition === "void" ? "checkout-void-race" : "checkout-refund-race";
+const adjustmentMutationKind = disposition === "void" ? "voidBill" : "refundBill";
+const adjustedBillStatus = disposition === "void" ? "voided" : "refunded";
+const adjustmentAuditAction = disposition === "void" ? "bill_voided" : "bill_refunded";
+const adjustmentAuditVerb = disposition === "void" ? "Voided" : "Refunded";
+const itemName = `QA ${fixtureLabel} Race ${runId}`;
+const customerNames = [`QA ${fixtureLabel} Source ${runId}`, `QA ${fixtureLabel} Checkout ${runId}`];
+const billNumbers = ["ORIGINAL", "CHECKOUT"].map((suffix) =>
+  `BILL-QA-${fixtureLabel.toUpperCase()}-RACE-${runId}-${suffix}`
+);
 const evidenceDirectory = path.join(root, "test-artifacts", "evidence");
 const phases = [
   "final",
@@ -38,11 +58,39 @@ const phases = [
   "setup-prepared"
 ];
 const selected = phases
-  .map((phase) => ({ phase, path: path.join(evidenceDirectory, `checkout-refund-race-${phase}-${runId}.json`) }))
+  .map((phase) => ({ phase, path: path.join(evidenceDirectory, `${artifactPrefix}-${phase}-${runId}.json`) }))
   .find((candidate) => fs.existsSync(candidate.path));
-if (!selected) throw new Error("No immutable checkout-refund race checkpoint exists for this identity.");
+if (!selected) throw new Error("No immutable checkout disposition race checkpoint exists for this identity.");
 const evidence = JSON.parse(fs.readFileSync(selected.path, "utf8"));
-if (evidence.runId !== runId) throw new Error("Checkpoint identity mismatch.");
+if (disposition === "refund" && evidence.disposition === undefined) {
+  evidence.disposition = "refund";
+  evidence.adjustmentMutationId ??= evidence.refundMutationId;
+  evidence.adjustmentMutationKind ??= "refundBill";
+  evidence.adjustmentMovementIds ??= evidence.refundMovementIds;
+  evidence.adjustmentAuditIds ??= evidence.refundAuditIds;
+  evidence.adjustmentReason ??= evidence.refundReason;
+  if (evidence.responses?.refund && !evidence.responses.adjustment) {
+    evidence.responses.adjustment = evidence.responses.refund;
+  }
+}
+if (evidence.runId !== runId || evidence.disposition !== disposition) {
+  throw new Error("Checkpoint identity or disposition mismatch.");
+}
+const preflightPath = path.join(root, "test-artifacts", "preflight", `${artifactPrefix}-preflight-${runId}.json`);
+const preflightBytes = fs.existsSync(preflightPath) ? fs.readFileSync(preflightPath) : null;
+const preflight = preflightBytes ? JSON.parse(preflightBytes.toString("utf8")) : null;
+if (disposition === "void" && (!preflight || preflight.runId !== runId || preflight.disposition !== "void" ||
+    preflight.projectRef !== STAGING_PROJECT_REF || preflight.productionAllowed !== false ||
+    preflight.safeForAutomaticRetry !== false || preflight.safeToRun !== true || preflight.actorsDistinct !== true ||
+    preflight.temporaryAdmin?.actorId !== evidence.actors?.observer ||
+    JSON.stringify(preflight.actors?.map((actor) => actor.actorId)) !==
+      JSON.stringify([evidence.actors?.origin, evidence.actors?.observer]))) {
+  throw new Error("The immutable void-race preflight lineage is missing or invalid.");
+}
+const preflightLineage = preflightBytes ? {
+  artifact: path.relative(root, preflightPath),
+  sha256: createHash("sha256").update(preflightBytes).digest("hex")
+} : null;
 
 const supabaseUrl = stagingEnv.VITE_SUPABASE_URL?.trim();
 const supabaseAnonKey = stagingEnv.VITE_SUPABASE_ANON_KEY?.trim();
@@ -94,8 +142,8 @@ function canonicalEqual(actual, expected, message) {
 function hash(data) {
   return createHash("sha256").update(JSON.stringify(data)).digest("hex");
 }
-async function mutationStatus(mutationId, mutationKind) {
-  const result = await supabase.rpc("get_financial_mutation_result", {
+async function mutationStatus(client, mutationId, mutationKind) {
+  const result = await client.rpc("get_financial_mutation_result", {
     payload: { organization_id: organizationId, mutation_id: mutationId, mutation_kind: mutationKind }
   });
   if (result.error) throw new Error(`Mutation lookup failed for ${mutationId}: ${result.error.message}`);
@@ -109,6 +157,9 @@ assert(
   evidence.actors?.origin === origin.actorId && evidence.actors?.observer === observer.actorId,
   "Current staging actors do not match the immutable execution actors."
 );
+if (disposition === "void") {
+  assert(origin.actorId !== observer.actorId, "Void-race reconciliation requires distinct authenticated actors.");
+}
 
 async function baseSnapshot() {
   const [items, bills, tabs, openSessions, openTabs, appState] = await Promise.all([
@@ -138,12 +189,12 @@ if (selected.phase !== "final") {
   const itemIds = snapshot.items.data.map((row) => row.id);
   const billIds = snapshot.bills.data.map((row) => row.id);
   const mutationRequests = [
-    { id: evidence.originalMutationId, kind: "commitCheckoutBill", actor: origin.actorId },
-    { id: evidence.checkoutMutationId, kind: "commitCheckoutBill", actor: origin.actorId },
-    { id: evidence.refundMutationId, kind: "refundBill", actor: observer.actorId }
+    { id: evidence.originalMutationId, kind: "commitCheckoutBill", actor: origin.actorId, client: origin.client },
+    { id: evidence.checkoutMutationId, kind: "commitCheckoutBill", actor: origin.actorId, client: origin.client },
+    { id: evidence.adjustmentMutationId, kind: adjustmentMutationKind, actor: observer.actorId, client: observer.client }
   ].filter((entry) => entry.id);
   const mutationStatuses = await Promise.all(
-    mutationRequests.map((entry) => mutationStatus(entry.id, entry.kind))
+    mutationRequests.map((entry) => mutationStatus(entry.client, entry.id, entry.kind))
   );
   const acknowledgedResults = [
     evidence.itemResult,
@@ -238,8 +289,10 @@ if (selected.phase !== "final") {
   });
   const recovery = {
     runId,
+    disposition,
     reconciledAt: new Date().toISOString(),
     projectRef: STAGING_PROJECT_REF,
+    preflightLineage,
     sourceCheckpoint: path.relative(root, selected.path),
     sourcePhase: selected.phase,
     status: "needs_guarded_recovery",
@@ -278,7 +331,7 @@ if (selected.phase !== "final") {
   };
   const directory = path.join(root, "test-artifacts", "reconciliation");
   fs.mkdirSync(directory, { recursive: true });
-  const artifactPath = path.join(directory, `checkout-refund-race-recovery-${runId}.json`);
+  const artifactPath = path.join(directory, `${artifactPrefix}-recovery-${runId}.json`);
   fs.writeFileSync(artifactPath, `${JSON.stringify(recovery, null, 2)}\n`, { encoding: "utf8", flag: "wx" });
   console.log(JSON.stringify({ artifact: path.relative(root, artifactPath), recovery }, null, 2));
   process.exitCode = 2;
@@ -289,7 +342,8 @@ if (selected.phase !== "final") {
     "checkoutBillId",
     "originalMutationId",
     "checkoutMutationId",
-    "refundMutationId",
+    "adjustmentMutationId",
+    "adjustmentMutationKind",
     "originalTabId",
     "checkoutTabId",
     "appStateBeforeRace",
@@ -298,19 +352,20 @@ if (selected.phase !== "final") {
     "archiveResult"
   ];
   for (const field of required) assert(evidence[field], `Final checkpoint is incomplete: ${field} is missing.`);
+  assert(evidence.adjustmentMutationKind === adjustmentMutationKind, "Adjustment mutation kind changed.");
 
   const snapshot = await baseSnapshot();
   const billIds = [evidence.originalBillId, evidence.checkoutBillId];
   const tabIds = [evidence.originalTabId, evidence.checkoutTabId];
-  const mutationIds = [evidence.originalMutationId, evidence.checkoutMutationId, evidence.refundMutationId];
+  const mutationIds = [evidence.originalMutationId, evidence.checkoutMutationId, evidence.adjustmentMutationId];
   const expectedPaymentIds = [...evidence.originalPaymentIds, ...evidence.checkoutPaymentIds];
   const expectedLineIds = [...evidence.originalLineIds, ...evidence.checkoutLineIds];
   const expectedMovementIds = [
     ...evidence.originalMovementIds,
     ...evidence.checkoutMovementIds,
-    ...evidence.refundMovementIds
+    ...evidence.adjustmentMovementIds
   ];
-  const expectedAuditIds = [...evidence.originalAuditIds, ...evidence.checkoutAuditIds, ...evidence.refundAuditIds];
+  const expectedAuditIds = [...evidence.originalAuditIds, ...evidence.checkoutAuditIds, ...evidence.adjustmentAuditIds];
   const archiveAuditIds = evidence.archiveResult.changed_rows?.audit_logs ?? [];
   const archiveEventId = evidence.archiveResult.event_id;
 
@@ -328,7 +383,7 @@ if (selected.phase !== "final") {
         .eq("organization_id", organizationId).in("id", [
           evidence.responses.original.event_id,
           evidence.responses.checkout.event_id,
-          evidence.responses.refund.event_id
+          evidence.responses.adjustment.event_id
         ]),
       supabase.from("customer_tabs").select("id,customer_name,status,close_disposition,closed_bill_id,close_reason")
         .eq("organization_id", organizationId).in("id", tabIds),
@@ -343,9 +398,9 @@ if (selected.phase !== "final") {
         .eq("organization_id", organizationId)
         .in("id", archiveAuditIds.length ? archiveAuditIds : ["missing-archive-audit"]),
       Promise.all([
-        mutationStatus(mutationIds[0], "commitCheckoutBill"),
-        mutationStatus(mutationIds[1], "commitCheckoutBill"),
-        mutationStatus(mutationIds[2], "refundBill")
+        mutationStatus(origin.client, mutationIds[0], "commitCheckoutBill"),
+        mutationStatus(origin.client, mutationIds[1], "commitCheckoutBill"),
+        mutationStatus(observer.client, mutationIds[2], adjustmentMutationKind)
       ])
     ]);
 
@@ -364,7 +419,7 @@ if (selected.phase !== "final") {
 
   canonicalEqual(mutationStatuses[0], evidence.responses.original, "Original canonical mutation result changed.");
   canonicalEqual(mutationStatuses[1], evidence.responses.checkout, "Checkout canonical mutation result changed.");
-  canonicalEqual(mutationStatuses[2], evidence.responses.refund, "Refund canonical mutation result changed.");
+  canonicalEqual(mutationStatuses[2], evidence.responses.adjustment, `${fixtureLabel} canonical mutation result changed.`);
   exact(ids(snapshot.items.data), [evidence.itemId], "QA fixture identity changed.");
   assert(snapshot.items.data[0].name === itemName, "QA fixture name changed.");
   assert(snapshot.items.data[0].active === false, "QA fixture was not archived.");
@@ -376,12 +431,12 @@ if (selected.phase !== "final") {
   const original = snapshot.bills.data.find((row) => row.id === evidence.originalBillId);
   const checkout = snapshot.bills.data.find((row) => row.id === evidence.checkoutBillId);
   assert(original?.bill_number === billNumbers[0], "Original bill number changed.");
-  assert(original?.status === "refunded", "Original bill is not refunded.");
+  assert(original?.status === adjustedBillStatus, `Original bill is not ${adjustedBillStatus}.`);
   assert(Number(original?.total) === 50 && Number(original?.amount_paid) === 50 && Number(original?.amount_due) === 0,
     "Original bill totals changed.");
-  assert(original?.void_reason === evidence.refundReason, "Refund reason changed.");
+  assert(original?.void_reason === evidence.adjustmentReason, `${fixtureLabel} reason changed.`);
   assert(original?.issued_by_user_id === origin.actorId, "Original issue actor is incorrect.");
-  assert(original?.voided_by_user_id === observer.actorId, "Refund actor is incorrect.");
+  assert(original?.voided_by_user_id === observer.actorId, `${fixtureLabel} actor is incorrect.`);
   assert(checkout?.bill_number === billNumbers[1] && checkout?.status === "issued", "Checkout bill state changed.");
   assert(Number(checkout?.total) === 50 && Number(checkout?.amount_paid) === 50 && Number(checkout?.amount_due) === 0,
     "Checkout bill totals changed.");
@@ -406,10 +461,10 @@ if (selected.phase !== "final") {
   exact(ids(movements.data), expectedMovementIds, "Stock movement IDs are not exact.");
   const quantities = movements.data.map((row) => Number(row.quantity)).sort((a, b) => a - b);
   assert(JSON.stringify(quantities) === JSON.stringify([-1, -1, 1]), "Stock movement arithmetic is incorrect.");
-  const refundMovement = movements.data.find((row) => Number(row.quantity) === 1);
-  assert(refundMovement?.type === "void_refund_reversal" && refundMovement.related_bill_id === evidence.originalBillId,
-    "Refund reversal mapping is incorrect.");
-  assert(refundMovement?.user_id === observer.actorId, "Refund movement actor is incorrect.");
+  const adjustmentMovement = movements.data.find((row) => Number(row.quantity) === 1);
+  assert(adjustmentMovement?.type === "void_refund_reversal" && adjustmentMovement.related_bill_id === evidence.originalBillId,
+    `${fixtureLabel} reversal mapping is incorrect.`);
+  assert(adjustmentMovement?.user_id === observer.actorId, `${fixtureLabel} movement actor is incorrect.`);
   assert(movements.data.filter((row) => Number(row.quantity) === -1).every((row) => row.type === "sale" && row.user_id === origin.actorId),
     "Sale movement actor/type is incorrect.");
   assert(movements.data.find((row) => evidence.originalMovementIds.includes(row.id))?.related_bill_id === evidence.originalBillId,
@@ -424,7 +479,7 @@ if (selected.phase !== "final") {
   const expectedAudits = [
     { action: "bill_issued", entityId: evidence.originalBillId, message: `Issued ${billNumbers[0]}.`, actor: origin.actorId },
     { action: "bill_issued", entityId: evidence.checkoutBillId, message: `Issued ${billNumbers[1]}.`, actor: origin.actorId },
-    { action: "bill_refunded", entityId: evidence.originalBillId, message: `Refunded ${billNumbers[0]}. Reason: ${evidence.refundReason}.`, actor: observer.actorId }
+    { action: adjustmentAuditAction, entityId: evidence.originalBillId, message: `${adjustmentAuditVerb} ${billNumbers[0]}. Reason: ${evidence.adjustmentReason}.`, actor: observer.actorId }
   ];
   for (const expected of expectedAudits) {
     const actual = audits.data.find((row) => row.action === expected.action && row.entity_id === expected.entityId);
@@ -436,7 +491,7 @@ if (selected.phase !== "final") {
   const operations = [
     { result: evidence.responses.original, actor: origin.actorId, kind: "commitCheckoutBill", entityType: "customer_tab", entityId: evidence.originalTabId, eventType: "financial_checkout_committed_v2" },
     { result: evidence.responses.checkout, actor: origin.actorId, kind: "commitCheckoutBill", entityType: "customer_tab", entityId: evidence.checkoutTabId, eventType: "financial_checkout_committed_v2" },
-    { result: evidence.responses.refund, actor: observer.actorId, kind: "refundBill", entityType: "bill", entityId: evidence.originalBillId, eventType: "financial_adjustment_committed_v2" }
+    { result: evidence.responses.adjustment, actor: observer.actorId, kind: adjustmentMutationKind, entityType: "bill", entityId: evidence.originalBillId, eventType: "financial_adjustment_committed_v2" }
   ];
   for (const operation of operations) {
     const event = events.data.find((row) => row.id === operation.result.event_id);
@@ -496,8 +551,12 @@ if (selected.phase !== "final") {
 
   const output = {
     runId,
+    disposition,
     reconciledAt: new Date().toISOString(),
     projectRef: STAGING_PROJECT_REF,
+    productionAllowed: false,
+    safeForAutomaticRetry: false,
+    preflightLineage,
     actors: { origin: origin.actorId, observer: observer.actorId },
     sourceCheckpoint: path.relative(root, selected.path),
     mutationStatuses,
@@ -518,7 +577,7 @@ if (selected.phase !== "final") {
     appState: { version: snapshot.appState.data.version, hash: hash(snapshot.appState.data.data) },
     checks: {
       bothRaceCommandsCommitted: true,
-      refundLifecycleExact: true,
+      dispositionLifecycleExact: true,
       stockArithmeticExact: true,
       actorsExact: true,
       reservationsReleased: true,
@@ -530,7 +589,7 @@ if (selected.phase !== "final") {
   };
   const directory = path.join(root, "test-artifacts", "reconciliation");
   fs.mkdirSync(directory, { recursive: true });
-  const artifactPath = path.join(directory, `checkout-refund-race-postflight-${runId}.json`);
+  const artifactPath = path.join(directory, `${artifactPrefix}-postflight-${runId}.json`);
   fs.writeFileSync(artifactPath, `${JSON.stringify(output, null, 2)}\n`, { encoding: "utf8", flag: "wx" });
   console.log(JSON.stringify({ status: "passed", artifact: path.relative(root, artifactPath), output }, null, 2));
 }

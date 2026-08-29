@@ -6,14 +6,20 @@ const root = process.cwd();
 const read = (relative: string) => readFileSync(join(root, relative), "utf8");
 
 describe("checkout-refund staging race harness", () => {
-  it("exposes one dedicated zero-retry execution and read-only discovery", () => {
+  it("exposes exact refund and void zero-retry execution and read-only discovery", () => {
     const packageJson = read("package.json");
     const runner = read("scripts/run-checkout-refund-race-staging-e2e.mjs");
     expect(packageJson).toContain('"test:e2e:staging:v2:checkout-refund-race"');
     expect(packageJson).toContain('"test:e2e:staging:v2:checkout-refund-race:list"');
     expect(packageJson).toContain('"test:db:staging:v2:checkout-refund-race:preflight"');
     expect(packageJson).toContain('"test:db:staging:v2:checkout-refund-race:reconcile"');
-    expect(runner).toContain('argument !== "--list"');
+    expect(packageJson).toContain('"test:e2e:staging:v2:checkout-void-race"');
+    expect(packageJson).toContain('"test:e2e:staging:v2:checkout-void-race:list"');
+    expect(packageJson).toContain('"test:db:staging:v2:checkout-void-race:preflight"');
+    expect(packageJson).toContain('"test:db:staging:v2:checkout-void-race:reconcile"');
+    expect(runner).toContain('new Set(["--list", "--void", "--void-list"])');
+    expect(runner).toContain('E2E_CHECKOUT_REFUND_RACE_DISPOSITION: disposition');
+    expect(runner).toContain('loadSessionItemRaceAdmin(root, { required: true })');
     expect(runner).toContain("release-b-checkout-refund-race-v2.e2e.ts");
     expect(runner).toContain("preflight-checkout-refund-race-staging.mjs");
   });
@@ -26,23 +32,34 @@ describe("checkout-refund staging race harness", () => {
     expect(source).toContain("openSessions.data.length === 0");
     expect(source).toContain("openTabs.data.length === 0");
     expect(source).toContain("artifactCollisions.length === 0");
+    expect(source).toContain('new Set(["--verify", "--void", "--verify-void"])');
+    expect(source).toContain('reviewed.disposition !== disposition');
+    expect(source).toContain('productionAllowed: false');
+    expect(source).toContain('safeForAutomaticRetry: false');
+    expect(source).toContain('actorsDistinct: origin.identity.actorId !== observer.identity.actorId');
+    expect(source).toContain('evidence.temporaryAdmin?.actorId === observer.identity.actorId');
+    expect(source).toContain('JSON.stringify(reviewed.temporaryAdmin) !== JSON.stringify(evidence.temporaryAdmin)');
+    expect(source).toContain('reviewed.deployedArtifact.path !== evidence.deployedArtifact.path');
     expect(source).toContain('openingStock: 2, price: 50');
     expect(source).toContain("!reviewed.safeToRun || !evidence.safeToRun");
     expect(source).toContain("reviewed_preflight_drift");
     expect(source).toContain('flag: "wx"');
   });
 
-  it("captures checkout and refund once, then submits both simultaneously", () => {
+  it("binds exact refund or void UI/RPC semantics and submits each command once", () => {
     const source = read("tests/e2e/staging/release-b-checkout-refund-race-v2.e2e.ts");
     expect(source).toContain('name: "Finalize Customer Tab Bill"');
     expect(source).toContain('name: `Void or Refund - ${originalBillNumber}`');
-    expect(source).toContain('selectOption("refund")');
+    expect(source).toContain('selectOption(disposition)');
+    expect(source).toContain('adjustmentMutationKind = disposition === "void" ? "voidBill" : "refundBill"');
+    expect(source).toContain('adjustedBillStatus = disposition === "void" ? "voided" : "refunded"');
+    expect(source).toContain('adjustmentEnvelope.payload.payload.payments).toEqual([])');
     expect(source).toContain('"**/rest/v1/rpc/commit_checkout_bill_v2"');
     expect(source).toContain('"**/rest/v1/rpc/commit_financial_adjustment_v2"');
     expect(source).toContain("checkoutCommand.captureCount()).toBe(1)");
-    expect(source).toContain("refundCommand.captureCount()).toBe(1)");
+    expect(source).toContain("adjustmentCommand.captureCount()).toBe(1)");
     expect(source).toContain("checkoutCommand.submit(checkoutEnvelope)");
-    expect(source).toContain("refundCommand.submit(refundEnvelope)");
+    expect(source).toContain("adjustmentCommand.submit(adjustmentEnvelope)");
     expect(source.indexOf('persistCheckpoint("race-prepared"')).toBeLessThan(
       source.indexOf("checkoutCommand.submit(checkoutEnvelope)")
     );
@@ -52,6 +69,9 @@ describe("checkout-refund staging race harness", () => {
     expect(source).toContain('flag: "wx"');
     expect(source).toContain('await signIn(page, credentials("A"))');
     expect(source).toContain('await signIn(observer.page, credentials("B"))');
+    expect(source).toContain('if (disposition === "void") {');
+    expect(source).toContain('expect(identity.actorId).not.toBe(observerIdentity.actorId)');
+    expect(source).toContain('expect(observerIdentity.actorId).toBe(process.env.E2E_SESSION_ITEM_ADMIN_EXPECTED_ACTOR_ID)');
     expect(source).not.toContain('Promise.all([signIn(page, credentials("A")), signIn(observer.page, credentials("B"))])');
   });
 
@@ -70,9 +90,15 @@ describe("checkout-refund staging race harness", () => {
     expect(source).toContain("productionAllowed: false");
     expect(source).toContain("Original canonical mutation result changed");
     expect(source).toContain("Checkout canonical mutation result changed");
-    expect(source).toContain("Refund canonical mutation result changed");
-    expect(source).toContain("Original bill is not refunded");
-    expect(source).toContain("Refund actor is incorrect");
+    expect(source).toContain('adjustmentMutationKind = disposition === "void" ? "voidBill" : "refundBill"');
+    expect(source).toContain('adjustmentAuditAction = disposition === "void" ? "bill_voided" : "bill_refunded"');
+    expect(source).toContain('mutationStatus(origin.client, mutationIds[1], "commitCheckoutBill")');
+    expect(source).toContain('mutationStatus(observer.client, mutationIds[2], adjustmentMutationKind)');
+    expect(source).toContain('preflight.temporaryAdmin?.actorId !== evidence.actors?.observer');
+    expect(source).toContain('preflightLineage');
+    expect(source).toContain('evidence.responses.adjustment');
+    expect(source).toContain('original?.status === adjustedBillStatus');
+    expect(source).toContain('original?.voided_by_user_id === observer.actorId');
     expect(source).toContain("Stock movement arithmetic is incorrect");
     expect(source).toContain("Physical stock arithmetic is not exactly 2 - 1 - 1 + 1 = 1");
     expect(source).toContain('eventType: "financial_adjustment_committed_v2"');
@@ -84,20 +110,28 @@ describe("checkout-refund staging race harness", () => {
     expect(source).toContain('flag: "wx"');
   });
 
-  it("provides separately identified identity-bound cleanup with mandatory postflight", () => {
+  it("provides disposition-bound identity cleanup with SHA lineage and mandatory actor-bound postflight", () => {
     const packageJson = read("package.json");
     const runner = read("scripts/run-checkout-refund-race-cleanup-staging-e2e.mjs");
     const scenario = read("tests/e2e/staging/release-b-checkout-replacement-race-cleanup.e2e.ts");
     const postflight = read("scripts/reconcile-checkout-replacement-race-cleanup-staging.mjs");
     expect(packageJson).toContain('"test:e2e:staging:v2:checkout-refund-race:cleanup"');
     expect(packageJson).toContain('"test:db:staging:v2:checkout-refund-race:cleanup-postflight"');
+    expect(packageJson).toContain('"test:e2e:staging:v2:checkout-void-race:cleanup"');
+    expect(packageJson).toContain('"test:db:staging:v2:checkout-void-race:cleanup-postflight"');
     expect(runner).toContain("safeForIdentityBoundCleanup !== true");
     expect(runner).toContain("safeForAutomaticRetry !== false");
     expect(runner).toContain("productionAllowed !== false");
     expect(runner).toContain("Cleanup E2E_RUN_ID must differ from the fixture run identity");
     expect(runner).toContain("collectCollisions(artifactRoot)");
-    expect(runner).toContain('E2E_CLEANUP_RACE_KIND: "refund"');
-    expect(scenario).toContain('cleanupKind = process.env.E2E_CLEANUP_RACE_KIND === "refund"');
+    expect(runner).toContain('new Set(["--list", "--void", "--void-list"])');
+    expect(runner).toContain('disposition === "void" ? recovery.disposition !== "void"');
+    expect(runner).toContain('E2E_CHECKOUT_DISPOSITION_RACE_RECOVERY_SHA256');
+    expect(runner).toContain('loadSessionItemRaceAdmin(root, { required: true })');
+    expect(runner).toContain('Void cleanup preflight lineage changed.');
+    expect(scenario).toContain('cleanupKind !== "replacement" && cleanupKind !== "refund" && cleanupKind !== "void"');
+    expect(scenario).toContain('expect(recovery.disposition).toBe(cleanupKind)');
+    expect(scenario).toContain('expect(recoverySha256).toBe(process.env.E2E_CHECKOUT_DISPOSITION_RACE_RECOVERY_SHA256)');
     expect(scenario).toContain("expectExactAuthorizedRows(items, recoveryItems");
     expect(scenario).toContain("expectExactAuthorizedRows(tabItems, recovery.tabItems");
     expect(scenario).toContain("recovery.mutationKinds?.[index]");
@@ -105,7 +139,9 @@ describe("checkout-refund staging race harness", () => {
     expect(scenario).toContain('checkpointEvidence("prepared")');
     expect(scenario).toContain('checkpointEvidence(`reject-${index + 1}-acknowledged`)');
     expect(scenario).toContain('checkpointEvidence("archive-acknowledged")');
-    expect(postflight).toContain('cleanupKind = env.E2E_CLEANUP_RACE_KIND === "refund"');
+    expect(postflight).toContain('requestedCleanupKind !== "replacement" && requestedCleanupKind !== "refund" && requestedCleanupKind !== "void"');
+    expect(postflight).toContain('mutationClient = mutationActor === recovery.actors.observer ? observer.client : origin.client');
+    expect(postflight).toContain('recoverySha256 !== evidence.recoverySha256');
     expect(postflight).toContain("Cleanup changed committed bills");
     expect(postflight).toContain("Cleanup changed reservation source rows");
     expect(postflight).toContain("Cleanup created or changed stock movements");
