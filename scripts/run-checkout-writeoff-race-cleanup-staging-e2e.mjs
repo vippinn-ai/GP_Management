@@ -7,9 +7,11 @@ import { sanitizeRunId, STAGING_PROJECT_REF } from "./playwright-staging-env.mjs
 if (process.argv.slice(2).length) throw new Error("The checkout-writeoff cleanup runner accepts no arguments.");
 const root = process.cwd();
 const recoveryInput = process.env.E2E_CHECKOUT_WRITEOFF_RECOVERY_ARTIFACT?.trim();
+const recoveryRevisionInput = process.env.E2E_CHECKOUT_WRITEOFF_RECOVERY_REVISION_ID?.trim();
 const cleanupInput = process.env.E2E_RUN_ID?.trim();
 if (!recoveryInput || !cleanupInput) throw new Error("Exact recovery artifact and fresh cleanup E2E_RUN_ID are required.");
 const cleanupRunId = sanitizeRunId(cleanupInput);
+const recoveryRevisionId = recoveryRevisionInput ? sanitizeRunId(recoveryRevisionInput) : null;
 const recoveryPath = path.resolve(root, recoveryInput);
 const reconciliationDirectory = path.resolve(root, "test-artifacts", "reconciliation");
 if (path.dirname(recoveryPath) !== reconciliationDirectory || !fs.existsSync(recoveryPath)) {
@@ -17,8 +19,9 @@ if (path.dirname(recoveryPath) !== reconciliationDirectory || !fs.existsSync(rec
 }
 const recovery = JSON.parse(fs.readFileSync(recoveryPath, "utf8"));
 const recoverySha256 = createHash("sha256").update(fs.readFileSync(recoveryPath)).digest("hex");
-const expectedName = `checkout-writeoff-race-reconciliation-${recovery.runId}.json`;
+const expectedName = `checkout-writeoff-race-reconciliation-${recovery.runId}${recoveryRevisionId ? `-${recoveryRevisionId}` : ""}.json`;
 if (path.basename(recoveryPath) !== expectedName || recovery.projectRef !== STAGING_PROJECT_REF ||
+    (recovery.reconciliationRevisionId ?? null) !== recoveryRevisionId ||
     recovery.productionAllowed !== false || recovery.safeForAutomaticRetry !== false ||
     recovery.status !== "partial" || recovery.safeForIdentityBoundCleanup !== true ||
     !Array.isArray(recovery.failures) || recovery.failures.length !== 0 ||

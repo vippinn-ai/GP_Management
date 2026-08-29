@@ -21,7 +21,7 @@ describe("checkout-settlement race harness contract", () => {
     expect(packageJson.scripts["test:db:staging:v2:checkout-settlement-race:preflight"]).toBe(
       "node scripts/preflight-checkout-settlement-race-staging.mjs"
     );
-    expect(runner).toContain('const allowed = new Set(["--list", "--writeoff", "--writeoff-list"])');
+    expect(runner).toContain('"--writeoff-remaining-two", "--writeoff-remaining-two-list"');
     expect(runner).toContain("args.length > 1");
     expect(runner).toContain("run-financial-v2-staging-e2e.mjs");
     expect(runner).toContain("release-b-checkout-settlement-race-v2.e2e.ts");
@@ -83,16 +83,31 @@ describe("checkout-settlement race harness contract", () => {
     expect(packageJson.scripts["test:e2e:staging:v2:checkout-settlement-race:writeoff:cleanup"]).toContain(
       "run-checkout-writeoff-race-cleanup-staging-e2e.mjs"
     );
+    expect(packageJson.scripts["test:e2e:staging:v2:checkout-settlement-race:writeoff:remaining-two"]).toContain(
+      "--writeoff-remaining-two"
+    );
+    expect(packageJson.scripts["test:db:staging:v2:checkout-settlement-race:writeoff:remaining-two:preflight"]).toContain(
+      "--remaining-two"
+    );
+    expect(packageJson.scripts["test:e2e:staging:v2:checkout-settlement-race:writeoff:simultaneous-only"]).toContain(
+      "--writeoff-simultaneous-only"
+    );
+    expect(packageJson.scripts["test:db:staging:v2:checkout-settlement-race:writeoff:simultaneous-only:preflight"]).toContain(
+      "--simultaneous-only"
+    );
     expect(runner).toContain('E2E_CHECKOUT_SETTLEMENT_RACE_MODE: writeoffMode ? "writeoff" : "settlement"');
     expect(runner).toContain("release-b-checkout-writeoff-race-v2.e2e.ts");
     expect(runner).toContain("checkout-writeoff-race-preflight-");
-    expect(runner).toContain('JSON.stringify(["checkout_first", "writeoff_first", "simultaneous"])');
-    expect(runner).toContain('"preflight-checkout-writeoff-race-staging.mjs"), "--verify"');
+    expect(runner).toContain('["writeoff_first", "simultaneous"]');
+    expect(runner).toContain('E2E_CHECKOUT_WRITEOFF_SCENARIOS: selectedWriteoffScenarios.join(",")');
+    expect(runner).toContain('simultaneousOnly ? "--verify-simultaneous-only" : remainingTwo ? "--verify-remaining-two" : "--verify"');
     expect(runner).toContain("preflight.safeForAutomaticRetry !== false");
     expect(runner).toContain("preflight.actorsDistinct !== true");
     expect(runner).toContain("preflight.deployedArtifact?.sha256");
     expect(runner).toContain("preflight.snapshot.candidateBills.length !== 0");
-    expect(preflight).toContain('const scenarios = ["checkout_first", "writeoff_first", "simultaneous"]');
+    expect(preflight).toContain('? ["writeoff_first", "simultaneous"]');
+    expect(preflight).toContain('? ["simultaneous"]');
+    expect(preflight).toContain('E2E_CHECKOUT_WRITEOFF_SCENARIOS');
     expect(preflight).toContain('productionAllowed: false');
     expect(preflight).toContain("safeForAutomaticRetry: false");
     expect(preflight).toContain("actorsDistinct: true");
@@ -107,6 +122,10 @@ describe("checkout-settlement race harness contract", () => {
     expect(scenario).toContain('{ scenario: "checkout_first", expectedWinner: "checkout" }');
     expect(scenario).toContain('{ scenario: "writeoff_first", expectedWinner: "writeoff" }');
     expect(scenario).toContain('{ scenario: "simultaneous" }');
+    expect(scenario).toContain('["writeoff_first", "simultaneous"]');
+    expect(scenario).toContain('["simultaneous"]');
+    expect(scenario).toContain('E2E_CHECKOUT_WRITEOFF_SCENARIOS');
+    expect(scenario).toContain('expect(runEvidence).toHaveLength(selectedScenarioNames.length)');
     expect(scenario).toContain('writeoff.payload.mutation_kind).toBe("writeOffPendingBills")');
     expect(scenario).toContain('writeoffPatch.payments).toEqual([])');
     expect(scenario).toContain('writeoffPatch.stock_movements).toEqual([])');
@@ -120,6 +139,10 @@ describe("checkout-settlement race harness contract", () => {
     expect(scenario).toContain('losingPage.locator(".remote-error-banner")');
     expect(scenario).toContain("toContainText(expectedLoserUiMessage)");
     expect(scenario).toContain('getByRole("button", { name: "Dismiss", exact: true }).click()');
+    expect(scenario).toContain('const losingModal = checkoutWon ? writeoffDialog : checkoutDialog');
+    expect(scenario).toContain('losingModal.getByRole("button", { name: "Cancel", exact: true }).click()');
+    expect(scenario).toContain('getByRole("dialog", { name: station, exact: true })');
+    expect(scenario).toContain('managedSessionDialog.getByRole("button", { name: "Close", exact: true }).click()');
     expect(scenario).toContain('getByText("1 conflict", { exact: true })).toHaveCount(0)');
     expect(scenario).not.toContain('getByRole("button", { name: "Clear", exact: true }).click()');
     expect(scenario).toContain("expect(origin.actorId).not.toBe(adjustment.actorId)");
@@ -133,6 +156,10 @@ describe("checkout-settlement race harness contract", () => {
     expect(scenario).toContain('compatibilityAfterFinancial');
     expect(scenario).toContain('rejectSessionIfOpen(page, station, customerName, cleanupReason)');
     expect(reconciliation).toContain('safeForAutomaticRetry: false');
+    expect(reconciliation).toContain('approvedSelections = [allScenarios, ["writeoff_first", "simultaneous"], ["simultaneous"]]');
+    expect(reconciliation).toContain('selectedScenarios: expectedScenarios');
+    expect(reconciliation).toContain('mutationStatus(origin.client, source.checkoutMutationId, "commitCheckoutBill")');
+    expect(reconciliation).toContain('mutationStatus(observer.client, source.writeoffMutationId, "writeOffPendingBills")');
     expect(reconciliation).toContain('const phases = ["reconciled", "cleanup-acknowledged", "responses", "prepared"]');
     expect(reconciliation).toContain('const winner = checkoutStatus ? "checkout" : writeoffStatus ? "writeoff" : null');
     expect(reconciliation).toContain('safeForIdentityBoundCleanup');
@@ -159,6 +186,9 @@ describe("checkout-settlement race harness contract", () => {
     expect(cleanupRunner).toContain("recovery.safeForIdentityBoundCleanup !== true");
     expect(cleanupRunner).toContain("recovery.safeForAutomaticRetry !== false");
     expect(cleanupRunner).toContain("recovery.cleanupCandidates.length !== 1");
+    expect(cleanupRunner).toContain("E2E_CHECKOUT_WRITEOFF_RECOVERY_REVISION_ID");
+    expect(cleanupRunner).toContain('(recovery.reconciliationRevisionId ?? null) !== recoveryRevisionId');
+    expect(cleanupRunner).toContain('recoveryRevisionId ? `-${recoveryRevisionId}` : ""');
     expect(cleanupRunner).toContain("run-checkout-settlement-cleanup-staging-e2e.mjs");
     expect(cleanupRunner).toContain("reconcile-checkout-writeoff-race-staging.mjs");
     expect(cleanupRunner).toContain("E2E_CHECKOUT_WRITEOFF_RECONCILIATION_ID");

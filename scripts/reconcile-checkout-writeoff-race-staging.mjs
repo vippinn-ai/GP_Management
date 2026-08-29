@@ -52,7 +52,18 @@ if (reconciliationId) {
   cleanupLineage = { recoveryPath, recoverySha256, cleanupPath, cleanupSha256, recovery, cleanup };
 }
 const organizationId = "org-primary";
-const expectedScenarios = ["checkout_first", "writeoff_first", "simultaneous"];
+const allScenarios = ["checkout_first", "writeoff_first", "simultaneous"];
+const approvedSelections = [allScenarios, ["writeoff_first", "simultaneous"], ["simultaneous"]];
+const preflightPath = path.join(root, "test-artifacts", "preflight", `checkout-writeoff-race-preflight-${runId}.json`);
+if (!fs.existsSync(preflightPath)) throw new Error("The exact checkout-writeoff preflight is required for reconciliation.");
+const preflight = JSON.parse(fs.readFileSync(preflightPath, "utf8"));
+const expectedScenarios = Array.isArray(preflight.scenarios) && approvedSelections.some((selection) =>
+  JSON.stringify(selection) === JSON.stringify(preflight.scenarios)
+) ? preflight.scenarios : null;
+if (!expectedScenarios || preflight.runId !== runId || preflight.mode !== "writeoff" ||
+    preflight.productionAllowed !== false || preflight.safeForAutomaticRetry !== false) {
+  throw new Error("The checkout-writeoff preflight identity or scenario selection is invalid.");
+}
 const evidenceDirectory = path.join(root, "test-artifacts", "evidence");
 const finalPath = path.join(evidenceDirectory, `checkout-writeoff-race-final-checkpoint-${runId}.json`);
 const phases = ["reconciled", "cleanup-acknowledged", "responses", "prepared"];
@@ -66,7 +77,8 @@ let sources = [];
 if (fs.existsSync(finalPath)) {
   const final = readCheckpoint(finalPath);
   if (final.value.status !== "completed" || final.value.mode !== "writeoff" || final.value.runId !== runId ||
-      final.value.productionAllowed !== false || !Array.isArray(final.value.scenarios) ||
+      final.value.productionAllowed !== false ||
+      JSON.stringify(final.value.selectedScenarios) !== JSON.stringify(expectedScenarios) || !Array.isArray(final.value.scenarios) ||
       JSON.stringify(final.value.scenarios.map((entry) => entry.scenario)) !== JSON.stringify(expectedScenarios)) {
     throw new Error("The checkout-writeoff final checkpoint has an invalid identity or scenario set.");
   }
@@ -121,9 +133,9 @@ function check(condition, message, failures) {
 function ensureOk(label, result) {
   if (result.error) throw new Error(`${label} reconciliation query failed: ${result.error.message}`);
 }
-async function mutationStatus(mutationId, mutationKind) {
+async function mutationStatus(client, mutationId, mutationKind) {
   if (!mutationId) return null;
-  const result = await supabase.rpc("get_financial_mutation_result", {
+  const result = await client.rpc("get_financial_mutation_result", {
     payload: { organization_id: organizationId, mutation_id: mutationId, mutation_kind: mutationKind }
   });
   ensureOk(`${mutationKind}:${mutationId}`, result);
@@ -217,9 +229,9 @@ for (const selected of sources) {
   const caseFailures = [];
   const expectedWinner = selected.scenario === "checkout_first" ? "checkout" : selected.scenario === "writeoff_first" ? "writeoff" : null;
   const [setupStatus, checkoutStatus, writeoffStatus] = await Promise.all([
-    mutationStatus(source.setupMutationId, "commitCheckoutBill"),
-    mutationStatus(source.checkoutMutationId, "commitCheckoutBill"),
-    mutationStatus(source.writeoffMutationId, "writeOffPendingBills")
+    mutationStatus(origin.client, source.setupMutationId, "commitCheckoutBill"),
+    mutationStatus(origin.client, source.checkoutMutationId, "commitCheckoutBill"),
+    mutationStatus(observer.client, source.writeoffMutationId, "writeOffPendingBills")
   ]);
   check(Boolean(setupStatus), `${selected.scenario}: setup checkout mutation result is missing.`, caseFailures);
   check(Number(Boolean(checkoutStatus)) + Number(Boolean(writeoffStatus)) <= 1,
@@ -429,6 +441,7 @@ const report = {
   status, mode: "writeoff", runId, checkedAt: new Date().toISOString(), projectRef: STAGING_PROJECT_REF, organizationId,
   reconciliationRevisionId,
   productionAllowed: false, safeForAutomaticRetry: false, safeForIdentityBoundCleanup, failures,
+  selectedScenarios: expectedScenarios,
   sourceCheckpoints: sources.map((entry) => ({ scenario: entry.scenario, phase: entry.phase, path: path.relative(root, entry.path), sha256: entry.sha256 })),
   cleanupLineage: cleanupLineage ? {
     recoveryArtifact: path.relative(root, cleanupLineage.recoveryPath), recoverySha256: cleanupLineage.recoverySha256,

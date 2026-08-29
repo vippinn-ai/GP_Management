@@ -5,22 +5,34 @@ import { sanitizeRunId } from "./playwright-staging-env.mjs";
 import { loadSessionItemRaceAdmin } from "./session-item-race-admin-env.mjs";
 
 const args = process.argv.slice(2);
-const allowed = new Set(["--list", "--writeoff", "--writeoff-list"]);
+const allowed = new Set([
+  "--list", "--writeoff", "--writeoff-list", "--writeoff-remaining-two", "--writeoff-remaining-two-list",
+  "--writeoff-simultaneous-only", "--writeoff-simultaneous-only-list"
+]);
 if (args.some((argument) => !allowed.has(argument)) || args.length > 1) {
-  throw new Error("The checkout-settlement race runner accepts only settlement execution/list or exact write-off execution/list mode.");
+  throw new Error("The checkout-settlement race runner accepts only settlement execution/list or an exact full/remaining-two write-off execution/list mode.");
 }
 
 const root = process.cwd();
 const genericRunner = path.join(root, "scripts", "run-financial-v2-staging-e2e.mjs");
-const writeoffMode = args[0] === "--writeoff" || args[0] === "--writeoff-list";
-const discoveryOnly = args[0] === "--list" || args[0] === "--writeoff-list";
+const writeoffMode = args[0]?.startsWith("--writeoff") ?? false;
+const remainingTwo = args[0] === "--writeoff-remaining-two" || args[0] === "--writeoff-remaining-two-list";
+const simultaneousOnly = args[0] === "--writeoff-simultaneous-only" || args[0] === "--writeoff-simultaneous-only-list";
+const discoveryOnly = args[0] === "--list" || args[0] === "--writeoff-list" ||
+  args[0] === "--writeoff-remaining-two-list" || args[0] === "--writeoff-simultaneous-only-list";
+const selectedWriteoffScenarios = simultaneousOnly
+  ? ["simultaneous"]
+  : remainingTwo
+    ? ["writeoff_first", "simultaneous"]
+    : ["checkout_first", "writeoff_first", "simultaneous"];
 const temporaryAdmin = writeoffMode && !discoveryOnly
   ? loadSessionItemRaceAdmin(root, { required: true })
   : null;
 const childEnv = {
   ...process.env,
   ...(temporaryAdmin?.overlay ?? {}),
-  E2E_CHECKOUT_SETTLEMENT_RACE_MODE: writeoffMode ? "writeoff" : "settlement"
+  E2E_CHECKOUT_SETTLEMENT_RACE_MODE: writeoffMode ? "writeoff" : "settlement",
+  ...(writeoffMode ? { E2E_CHECKOUT_WRITEOFF_SCENARIOS: selectedWriteoffScenarios.join(",") } : {})
 };
 const spec = writeoffMode
   ? "tests/e2e/staging/release-b-checkout-writeoff-race-v2.e2e.ts"
@@ -38,11 +50,12 @@ if (!discoveryOnly && writeoffMode) {
       !Array.isArray(preflight.artifactCollisions) || preflight.artifactCollisions.length !== 0 ||
       !Array.isArray(preflight.snapshot?.candidateBills) || preflight.snapshot.candidateBills.length !== 0 ||
       !Array.isArray(preflight.scenarios) ||
-      JSON.stringify(preflight.scenarios) !== JSON.stringify(["checkout_first", "writeoff_first", "simultaneous"])) {
+      JSON.stringify(preflight.scenarios) !== JSON.stringify(selectedWriteoffScenarios)) {
     throw new Error("The exact checkout-writeoff preflight is not safe.");
   }
   const verify = spawnSync(process.execPath, [
-    path.join(root, "scripts", "preflight-checkout-writeoff-race-staging.mjs"), "--verify"
+    path.join(root, "scripts", "preflight-checkout-writeoff-race-staging.mjs"),
+    simultaneousOnly ? "--verify-simultaneous-only" : remainingTwo ? "--verify-remaining-two" : "--verify"
   ], { cwd: root, env: childEnv, stdio: "inherit", shell: false });
   if ((verify.status ?? 1) !== 0) process.exit(verify.status ?? 1);
 }

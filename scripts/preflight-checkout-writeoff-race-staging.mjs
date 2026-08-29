@@ -15,10 +15,14 @@ import {
 import { loadSessionItemRaceAdmin } from "./session-item-race-admin-env.mjs";
 
 const args = process.argv.slice(2);
-if (args.length > 1 || args.some((argument) => argument !== "--verify")) {
-  throw new Error("Checkout-writeoff preflight accepts only one fresh execution or --verify.");
+const allowedModes = new Set(["--verify", "--remaining-two", "--verify-remaining-two", "--simultaneous-only", "--verify-simultaneous-only"]);
+if (args.length > 1 || args.some((argument) => !allowedModes.has(argument))) {
+  throw new Error("Checkout-writeoff preflight accepts only full/remaining-two execution or exact verification.");
 }
-const verificationOnly = args[0] === "--verify";
+const mode = args[0] ?? "--all";
+const verificationOnly = mode === "--verify" || mode === "--verify-remaining-two" || mode === "--verify-simultaneous-only";
+const remainingTwo = mode === "--remaining-two" || mode === "--verify-remaining-two";
+const simultaneousOnly = mode === "--simultaneous-only" || mode === "--verify-simultaneous-only";
 const root = process.cwd();
 const stagingEnv = parseEnvFile(path.join(root, ".env.staging"));
 const localEnv = parseEnvFile(path.join(root, ".env.e2e.local"));
@@ -33,7 +37,16 @@ if (!env.E2E_RUN_ID?.trim()) throw new Error("An explicit E2E_RUN_ID is required
 const runId = sanitizeRunId(env.E2E_RUN_ID);
 const organizationId = "org-primary";
 const baseUrl = assertStagingBaseUrl(env.E2E_BASE_URL || STAGING_APP_URL);
-const scenarios = ["checkout_first", "writeoff_first", "simultaneous"];
+const scenarios = simultaneousOnly
+  ? ["simultaneous"]
+  : remainingTwo
+    ? ["writeoff_first", "simultaneous"]
+    : ["checkout_first", "writeoff_first", "simultaneous"];
+const requestedScenarios = (env.E2E_CHECKOUT_WRITEOFF_SCENARIOS ?? scenarios.join(","))
+  .split(",").map((value) => value.trim()).filter(Boolean);
+if (JSON.stringify(requestedScenarios) !== JSON.stringify(scenarios)) {
+  throw new Error("Checkout-writeoff preflight scenario selection does not match its exact mode.");
+}
 const customerNames = scenarios.map((scenario) => `QA Checkout Writeoff Race ${runId} ${scenario}`);
 const candidateBillNumbers = scenarios.map((scenario) => `BILL-QA-WRITEOFF-RACE-${runId}-${scenario}`);
 const supabaseUrl = stagingEnv.VITE_SUPABASE_URL?.trim();

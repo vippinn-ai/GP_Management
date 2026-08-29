@@ -69,11 +69,22 @@ type WriteoffEnvelope = {
 const runId = process.env.E2E_RUN_ID ?? "missing-run-id";
 const organizationId = "org-primary";
 const station = process.env.E2E_V2_CHECKOUT_SETTLEMENT_RACE_STATION?.trim() || "8 Ball Pool";
-const scenarios: Array<{ scenario: Scenario; expectedWinner?: Winner }> = [
+const allScenarios: Array<{ scenario: Scenario; expectedWinner?: Winner }> = [
   { scenario: "checkout_first", expectedWinner: "checkout" },
   { scenario: "writeoff_first", expectedWinner: "writeoff" },
   { scenario: "simultaneous" }
 ];
+const selectedScenarioNames = (process.env.E2E_CHECKOUT_WRITEOFF_SCENARIOS ?? allScenarios.map(({ scenario }) => scenario).join(","))
+  .split(",").map((value) => value.trim()).filter(Boolean);
+const allowedScenarioSelections = [
+  ["checkout_first", "writeoff_first", "simultaneous"],
+  ["writeoff_first", "simultaneous"],
+  ["simultaneous"]
+];
+if (!allowedScenarioSelections.some((selection) => selection.join(",") === selectedScenarioNames.join(","))) {
+  throw new Error("E2E_CHECKOUT_WRITEOFF_SCENARIOS is not an approved exact scenario selection.");
+}
+const scenarios = allScenarios.filter(({ scenario }) => selectedScenarioNames.includes(scenario));
 
 function appStateHash(data: unknown) {
   return createHash("sha256").update(JSON.stringify(data)).digest("hex");
@@ -460,6 +471,16 @@ test.describe.serial("Release B checkout versus pending write-off concurrency", 
           .toHaveCount(1);
         await expect(losingError).toContainText(expectedLoserUiMessage);
         await expect(losingPage.getByText("1 conflict", { exact: true })).toHaveCount(0);
+        const losingModal = checkoutWon ? writeoffDialog : checkoutDialog;
+        await expect(losingModal).toBeVisible();
+        await losingModal.getByRole("button", { name: "Cancel", exact: true }).click();
+        await expect(losingModal).toBeHidden();
+        if (!checkoutWon) {
+          const managedSessionDialog = losingPage.getByRole("dialog", { name: station, exact: true });
+          await expect(managedSessionDialog).toBeVisible();
+          await managedSessionDialog.getByRole("button", { name: "Close", exact: true }).click();
+          await expect(managedSessionDialog).toBeHidden();
+        }
         await losingError.getByRole("button", { name: "Dismiss", exact: true }).click();
         await expect(losingError).toHaveCount(0);
         await waitForSynced(losingPage);
@@ -571,12 +592,13 @@ test.describe.serial("Release B checkout versus pending write-off concurrency", 
   }
 
   test.afterAll(async () => {
-    expect(runEvidence).toHaveLength(3);
+    expect(runEvidence).toHaveLength(selectedScenarioNames.length);
     const finalEvidence = {
       status: "completed",
       mode: "writeoff",
       runId,
       productionAllowed: false,
+      selectedScenarios: selectedScenarioNames,
       scenarios: runEvidence,
       winners: runEvidence.map((entry) => ({ scenario: entry.scenario, winner: entry.winner }))
     };
