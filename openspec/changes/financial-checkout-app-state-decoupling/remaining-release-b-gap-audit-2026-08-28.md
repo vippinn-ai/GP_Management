@@ -2,7 +2,7 @@
 
 ## Decision
 
-Release B remains production **NO-GO**. The direct live session-item subgate and all twelve customer-tab item/combo orderings are closed, but four release-gate families remain open: two financial-writer races, the complex payment/discount/carryover UI matrix, mixed representative performance plus deployed query-plan/error evidence, and independent final release sign-off.
+Release B remains production **NO-GO**. The financial-writer concurrency matrix, direct live session-item subgate, and all twelve customer-tab item/combo orderings are closed, but three release-gate families remain open: the complex payment/discount/carryover UI matrix, mixed representative performance plus deployed query-plan/error evidence, and independent final release sign-off.
 
 This audit is read-only. It does not authorize production access or represent staging evidence for a case that has not run.
 
@@ -23,7 +23,7 @@ This audit is read-only. It does not authorize production access or represent st
 | Direct live customer-tab item removal | `tab-mut-rem11-20260829-1305` plus `tab-mut-rem4-20260829-1338` prove all three orderings | Closed |
 | Direct live customer-tab combo application | `tab-mut-rem4-20260829-1338` proves checkout-first, mutation-first, and simultaneous with exact application/item snapshots | Closed |
 | Pending bad-debt write-off sharing the pending bill selected during checkout | `writeoff-race-20260829-1424`, `writeoff-rem2-20260829-1445`, and `writeoff-sim-20260829-1457` prove checkout-first, write-off-first, and simultaneous | Closed |
-| Issued-bill void sharing a non-reusable inventory row with checkout | Refund proves the shared row-lock/reversal family, but no `voidBill` concurrent command result exists | **Open** |
+| Issued-bill void sharing a non-reusable inventory row with checkout | `void-race-20260829-2027` proves both commands commit once with exact `-1/-1/+1` stock arithmetic | Closed |
 
 The SQL confirms these are distinct contracts. Each customer-tab mutation locks the source tab and then follows its own item/combo validation and write path; checkout independently locks the same tab before validating the canonical source items and combo snapshots. Release A behavior/realtime evidence is not concurrency evidence. `writeOffPendingBills` locks the expected pending bill, produces no payment or stock movement, and must conflict with checkout settlement if the bill changes first. `voidBill` locks the issued bill, derives reversal deltas from canonical bill lines, locks affected inventory rows, and uses the same positive `void_refund_reversal` stock contract as refund.
 
@@ -67,7 +67,7 @@ Extend the proven shared-inventory refund framework through an exact `void` mode
 - Both commands SHALL commit once. The original bill SHALL become `voided`; the second bill SHALL remain issued. Exact movements SHALL be first sale `-1`, second sale `-1`, and void reversal `+1`, leaving physical stock `1` with no extra movement.
 - Both bills, payments, lines, tabs, mutation results, audits, events, reasons, and actors SHALL be exact. The financial race must not change `app_state`; archiving only the exact fixture may advance compatibility once. Final floor and reservations SHALL be empty.
 
-Local implementation status on 2026-08-29: the existing checkout-versus-refund framework is now parameterized by one exact `refund | void` disposition while preserving refund as the default. New `checkout-void-race` package entry points bind `--void` across runner, preflight/verify, Playwright checkpoints, actor-bound reconciliation, recovery, SHA-bound identity cleanup, and mandatory postflight. Void mode requires a fresh distinct active temporary admin, exact `voidBill` / `voided` / `bill_voided` semantics, no adjustment payment, one `+1` `void_refund_reversal`, both HTTP 200 responses, final stock `1`, unchanged financial `app_state`, and disposition-specific fixture/artifact identities. Local syntax, focused contract 5/5, full 46-file/494-test suite, build, lint at zero errors/five baseline warnings, and read-only one-test race/cleanup discovery pass. No void preflight or staging mutation has been run at this checkpoint; independent static GO remains required before execution.
+Final execution status on 2026-08-29: fresh preflight `void-race-20260829-2027` passed with exact `void` disposition, staging project/bundle identity, distinct active admins, empty floor, zero collisions, and compatibility v693/hash `6af03b34ea29896c9bd5c9725f03db36954080bb4b32c8f10a4b843cf9efafc4`. One one-worker, retries-zero Playwright race ran once and passed. Original Rs 50 bill `BILL-QA-VOID-RACE-void-race-20260829-2027-ORIGINAL` is `voided` by actor B, while checkout bill `BILL-QA-VOID-RACE-void-race-20260829-2027-CHECKOUT` remains issued by actor A. Exactly two Rs 50 cash payments remain, both tabs are closed/billed, and movements are exactly original sale `-1`, checkout sale `-1`, and void reversal `+1`, leaving stock `1`. Immutable reconciliation and final evidence returned `passed` with exact mutations, bills, lines, payments, actors, audit, event, floor, and archive state; the financial race preserved compatibility v694/hash `fa0b94c6756e185c6e19c990127265a16fc7022e3f6fb7235a8428bc7b761d82`, and only exact fixture archival advanced it to v695/hash `59d1d3d0907e2d191fdc0b6c8bb5d22f33ca8ac2b685c932c4bacaa3e3d90742`. No recovery cleanup was needed. Independent review issued GO to close this subgate. Temporary admin `void-race-admin-20260829-2026` is inactive, its credential file is removed, no password was printed, and deactivation artifact SHA-256 is `8f0003654445fcf909edfcc822422f8a04611b854b57fdfd9675e2717a31feb5`.
 
 Both modes require independent static GO before staging execution, unique run identities, one worker, retries `0`, no trace capture, mandatory reconciliation after any ambiguity, and no production path.
 
@@ -98,7 +98,7 @@ Use database/API scripts for load, reconciliation, plans, and logs. Use Playwrig
 ## Execution order
 
 1. Retain the completed and independently reviewed twelve-case customer-tab source-mutation evidence; do not rerun it.
-2. Retain the completed three-ordering write-off evidence; implement, review, execute, and reconcile the exact issued-bill void mode.
+2. Retain the completed write-off and issued-bill-void evidence; do not rerun either financial-writer subgate.
 3. Run the consolidated complex UI matrix.
 4. Run mixed performance/contention and capture deployed plans/errors.
 5. Obtain the independent final report and production recommendation.
