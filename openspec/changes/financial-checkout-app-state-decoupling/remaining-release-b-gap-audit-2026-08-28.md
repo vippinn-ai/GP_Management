@@ -2,7 +2,7 @@
 
 ## Decision
 
-Release B remains production **NO-GO**. The direct live session-item subgate is closed and eight of twelve customer-tab item/combo orderings are reconciled, but five release-gate families remain open: the remaining four customer-tab orderings, two financial-writer races, the complex payment/discount/carryover UI matrix, mixed representative performance plus deployed query-plan/error evidence, and independent final release sign-off.
+Release B remains production **NO-GO**. The direct live session-item subgate and all twelve customer-tab item/combo orderings are closed, but four release-gate families remain open: two financial-writer races, the complex payment/discount/carryover UI matrix, mixed representative performance plus deployed query-plan/error evidence, and independent final release sign-off.
 
 This audit is read-only. It does not authorize production access or represent staging evidence for a case that has not run.
 
@@ -20,8 +20,8 @@ This audit is read-only. It does not authorize production access or represent st
 | Direct live session-item mutation | Checkout-first runs `session-item-race-202608280924` and `session-item-race-202608280936`; remaining-two pass `session-item-race-rem2-202608280950` | Closed |
 | Direct live customer-tab item add | `tab-mut-race-20260828-1755` plus `tab-mut-rem11-20260829-1305` prove all three orderings | Closed |
 | Direct live customer-tab item quantity update | `tab-mut-rem11-20260829-1305` proves checkout-first, mutation-first, and simultaneous | Closed |
-| Direct live customer-tab item removal | `tab-mut-rem11-20260829-1305` proves checkout-first and mutation-first; simultaneous was prepared but no race command was submitted | **Open (1/3 orderings remains)** |
-| Direct live customer-tab combo application | Release A proves ordinary `apply_customer_tab_combo` behavior only; the session-only repeat-combo race does not exercise this RPC | **Open** |
+| Direct live customer-tab item removal | `tab-mut-rem11-20260829-1305` plus `tab-mut-rem4-20260829-1338` prove all three orderings | Closed |
+| Direct live customer-tab combo application | `tab-mut-rem4-20260829-1338` proves checkout-first, mutation-first, and simultaneous with exact application/item snapshots | Closed |
 | Pending bad-debt write-off sharing the pending bill selected during checkout | No financial-v2 concurrency result exists | **Open** |
 | Issued-bill void sharing a non-reusable inventory row with checkout | Refund proves the shared row-lock/reversal family, but no `voidBill` concurrent command result exists | **Open** |
 
@@ -31,7 +31,7 @@ The SQL confirms these are distinct contracts. Each customer-tab mutation locks 
 
 ### Checkout versus live customer-tab item/combo mutation
 
-The fail-closed parameterized harness, immutable recovery, identity-bound cleanup, partial-cleanup recovery, item-only continuation, and independent postflight are implemented. Runs through `tab-mut-rem11-20260829-1305` prove eight exact orderings. The remaining-eleven run timed out after seven complete cases and while only preparing the eighth; do not relabel its prepared `remove_item / simultaneous` entry as a race result.
+The fail-closed parameterized harness, immutable recovery, identity-bound cleanup, partial-cleanup recovery, item-only continuation, and independent postflight are implemented. Runs through `tab-mut-rem11-20260829-1305` prove eight exact orderings. The remaining-eleven run timed out after seven complete cases and while only preparing the eighth; that prepared entry is not treated as a race result. Fresh run `tab-mut-rem4-20260829-1338` independently executed and reconciled exactly the remaining four orderings. All twelve customer-tab source-mutation orderings are therefore closed.
 
 - The allowed mutation modes SHALL be exactly `add_item | update_item | remove_item | apply_combo`. Preflight, runner, browser checkpoints, reconciliation, recovery cleanup, and postflight SHALL bind the same exact ordered mode selection.
 - Every mode SHALL run three separately identified, zero-retry orderings: checkout-first, mutation-first, and simultaneous. Capture the checkout and the mode-specific UI-generated RPC once in independent authenticated contexts and submit each command exactly once.
@@ -89,10 +89,9 @@ Use database/API scripts for load, reconciliation, plans, and logs. Use Playwrig
 
 ## Execution order
 
-1. Retain the independently reviewed expected-conflict correction, completed partial-cleanup/item-only postflight paths, and fail-closed `remaining-four` selector for the customer-tab source-mutation harness.
-2. Use a new run identity with the reviewed `remaining-four` preflight and runner; do not rerun any of the eight reconciled cases. The selector is locally verified but has not executed live.
-3. Implement, review, execute, and reconcile the exact write-off and void modes one at a time.
-4. Run the consolidated complex UI matrix.
-5. Run mixed performance/contention and capture deployed plans/errors.
-6. Obtain the independent final report and production recommendation.
-7. Seek explicit production approval only after every gate above is closed.
+1. Retain the completed and independently reviewed twelve-case customer-tab source-mutation evidence; do not rerun it.
+2. Implement, review, execute, and reconcile the exact write-off and void modes one at a time.
+3. Run the consolidated complex UI matrix.
+4. Run mixed performance/contention and capture deployed plans/errors.
+5. Obtain the independent final report and production recommendation.
+6. Seek explicit production approval only after every gate above is closed.
