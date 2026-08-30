@@ -11,6 +11,7 @@ import {
   reconcileOperationalServerIdentity,
   rebasePendingMutations,
   savePendingOperationalMutations,
+  shouldReapplyAcknowledgedOperationalMutation,
   validateOperationalMutation,
   type OperationalMutation,
   type OperationalMutationKind,
@@ -1372,5 +1373,12 @@ describe("operational sync", () => {
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
 
     expect(() => savePendingOperationalMutations([pending])).not.toThrow();
+  });
+
+  it("reapplies only idempotent live-detail saves after server acknowledgement", () => {
+    expect(shouldReapplyAcknowledgedOperationalMutation("saveLiveSessionDetails")).toBe(true);
+    expect(shouldReapplyAcknowledgedOperationalMutation("saveLiveCustomerTabDetails")).toBe(true);
+    expect(shouldReapplyAcknowledgedOperationalMutation("addSessionItem")).toBe(false);
+    expect(shouldReapplyAcknowledgedOperationalMutation("addCustomerTabItem")).toBe(false);
   });
 });

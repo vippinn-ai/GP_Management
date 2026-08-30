@@ -40,9 +40,19 @@ const choiceSelections = JSON.parse(process.env.E2E_REPEAT_COMBO_CHOICE_SELECTIO
 const preflightAppStateVersion = Number(process.env.E2E_REPEAT_COMBO_PREFLIGHT_VERSION);
 const preflightAppStateHash = process.env.E2E_REPEAT_COMBO_PREFLIGHT_HASH ?? "missing-preflight-hash";
 const organizationId = "org-primary";
+const projectRef = "tkbdyzxwwbhkpztgjjxh";
 let expectedCompatibility = { version: preflightAppStateVersion, hash: preflightAppStateHash };
 
 type Scenario = "checkout_first" | "combo_first" | "simultaneous";
+type TimingPoint = { iso: string; monotonicMs: number };
+
+function timingPoint(): TimingPoint {
+  return { iso: new Date().toISOString(), monotonicMs: performance.now() };
+}
+
+function elapsed(start: TimingPoint, end: TimingPoint) {
+  return Number((end.monotonicMs - start.monotonicMs).toFixed(3));
+}
 type OperationalEnvelope = {
   payload: {
     organization_id: string;
@@ -222,6 +232,8 @@ test.describe.serial("Release B checkout versus repeat-session-combo concurrency
       let outcomeResolved = false;
       let checkoutSubmitted = false;
       let comboSubmitted = false;
+      let checkoutSubmissionCount = 0;
+      let comboSubmissionCount = 0;
       let checkoutCaptureCount = 0;
       let comboCaptureCount = 0;
       let raceWinner: "checkout" | "combo" | undefined;
@@ -229,7 +241,16 @@ test.describe.serial("Release B checkout versus repeat-session-combo concurrency
       let comboCommand: Awaited<ReturnType<typeof interceptSingleRpcCommand>> | undefined;
       let cleanupRest: { restBase: string; headers: Record<string, string> } | undefined;
       let cleanupActorId: string | undefined;
-      let evidence: Record<string, unknown> = { runId, scenario, customerName, station, comboId };
+      let evidence: Record<string, unknown> = {
+        runId,
+        scenario,
+        projectRef,
+        productionAllowed: false,
+        safeForAutomaticRetry: false,
+        customerName,
+        station,
+        comboId
+      };
       let cleanupError: string | undefined;
       const dismissDialog = (dialog: { dismiss(): Promise<void> }) => void dialog.dismiss();
 
@@ -416,6 +437,8 @@ test.describe.serial("Release B checkout versus repeat-session-combo concurrency
             outcomeResolved,
             checkoutSubmitted,
             comboSubmitted,
+            checkoutSubmissionCount,
+            comboSubmissionCount,
             checkoutCaptureCount,
             comboCaptureCount
           },
@@ -428,21 +451,28 @@ test.describe.serial("Release B checkout versus repeat-session-combo concurrency
         await persistEvidenceCheckpoint(scenario, "prepared", preparedEvidence);
         evidence = preparedEvidence;
         raceStarted = true;
+        const submission = timingPoint();
         let checkoutResponse: APIResponse;
         let comboResponse: APIResponse;
         if (scenario === "checkout_first") {
           checkoutSubmitted = true;
+          checkoutSubmissionCount += 1;
           checkoutResponse = await checkoutCommand.submit(checkoutEnvelope);
           comboSubmitted = true;
+          comboSubmissionCount += 1;
           comboResponse = await comboCommand.submit(comboEnvelope);
         } else if (scenario === "combo_first") {
           comboSubmitted = true;
+          comboSubmissionCount += 1;
           comboResponse = await comboCommand.submit(comboEnvelope);
           checkoutSubmitted = true;
+          checkoutSubmissionCount += 1;
           checkoutResponse = await checkoutCommand.submit(checkoutEnvelope);
         } else {
           checkoutSubmitted = true;
           comboSubmitted = true;
+          checkoutSubmissionCount += 1;
+          comboSubmissionCount += 1;
           [checkoutResponse, comboResponse] = await Promise.all([
             checkoutCommand.submit(checkoutEnvelope),
             comboCommand.submit(comboEnvelope)
@@ -452,6 +482,7 @@ test.describe.serial("Release B checkout versus repeat-session-combo concurrency
           readApiResponseBody(checkoutResponse),
           readApiResponseBody(comboResponse)
         ]);
+        const responseReceived = timingPoint();
         const responseEvidence = {
           ...evidence,
           lifecycle: {
@@ -460,12 +491,19 @@ test.describe.serial("Release B checkout versus repeat-session-combo concurrency
             outcomeResolved,
             checkoutSubmitted,
             comboSubmitted,
+            checkoutSubmissionCount,
+            comboSubmissionCount,
             checkoutCaptureCount,
             comboCaptureCount
           },
           responses: {
             checkout: { status: checkoutResponse.status(), body: checkoutBody },
             combo: { status: comboResponse.status(), body: comboBody }
+          },
+          timings: {
+            submission,
+            response: responseReceived,
+            responseMs: elapsed(submission, responseReceived)
           }
         };
         await persistEvidenceCheckpoint(scenario, "responses", responseEvidence);
@@ -487,6 +525,17 @@ test.describe.serial("Release B checkout versus repeat-session-combo concurrency
         await expect(loserError, "The losing command must surface its exact conflict message in the UI.")
           .toHaveCount(1);
         await expect(loserError).toContainText(expectedLoserUiMessage);
+        const uiTerminal = timingPoint();
+        const raceTimings = {
+          submission,
+          response: responseReceived,
+          uiTerminal,
+          responseMs: elapsed(submission, responseReceived),
+          browserCompletionMs: elapsed(submission, uiTerminal)
+        };
+        expect(raceTimings.responseMs).toBeGreaterThanOrEqual(0);
+        expect(raceTimings.browserCompletionMs).toBeGreaterThanOrEqual(raceTimings.responseMs);
+        expect(raceTimings.browserCompletionMs).toBeLessThan(7_000);
 
         const checkoutStatus = await mutationStatus(page, capturedCheckout, checkoutEnvelope.payload);
         expect(checkoutWon ? checkoutStatus : null).toEqual(checkoutWon ? checkoutBody : null);
@@ -640,6 +689,7 @@ test.describe.serial("Release B checkout versus repeat-session-combo concurrency
           winner: raceWinner,
           loserUiMessage: expectedLoserUiMessage,
           responses: responseEvidence.responses,
+          timings: raceTimings,
           checkoutMutationStatus: checkoutStatus,
           afterRace: {
             session: sessionAfterRace[0], combos: combosAfterRace, items: itemsAfterRace,
@@ -736,6 +786,8 @@ test.describe.serial("Release B checkout versus repeat-session-combo concurrency
             outcomeResolved,
             checkoutSubmitted,
             comboSubmitted,
+            checkoutSubmissionCount,
+            comboSubmissionCount,
             checkoutCaptureCount,
             comboCaptureCount
           },
@@ -833,6 +885,8 @@ test.describe.serial("Release B checkout versus repeat-session-combo concurrency
             outcomeResolved,
             checkoutSubmitted,
             comboSubmitted,
+            checkoutSubmissionCount,
+            comboSubmissionCount,
             checkoutCaptureCount,
             comboCaptureCount
           },

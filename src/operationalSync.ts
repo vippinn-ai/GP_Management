@@ -46,6 +46,10 @@ export type OperationalMutationKind =
 
 export type OperationalSyncStatus = "pending" | "syncing" | "failed" | "conflict";
 
+export function shouldReapplyAcknowledgedOperationalMutation(kind: OperationalMutationKind) {
+  return kind === "saveLiveSessionDetails" || kind === "saveLiveCustomerTabDetails";
+}
+
 export type OperationalMutationAcknowledgement =
   | { status: "synced" }
   | { status: "failed" | "conflict"; failureReason: string };

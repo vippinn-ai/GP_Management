@@ -72,9 +72,12 @@ const report = {
   supersedes: revision ? path.relative(root, baseOutputPath) : null,
   checkedAt: new Date().toISOString(),
   projectRef: STAGING_PROJECT_REF,
+  productionAllowed: false,
+  safeForAutomaticRetry: false,
   classifications: artifacts.map(({ scenario, artifactPath, classification, evidence, rejectedCandidates }) => ({
     scenario,
     artifactPath,
+    artifactSha256: artifactPath ? createHash("sha256").update(fs.readFileSync(artifactPath)).digest("hex") : null,
     classification,
     rejectedCandidates,
     sessionId: evidence?.sessionId ?? null,
@@ -269,6 +272,7 @@ try {
     if (artifact.classification !== "completed") continue;
     check(entry.lifecycle?.outcomeResolved === true, `${artifact.scenario} completed artifact records resolved outcome.`);
     check(entry.lifecycle?.checkoutSubmitted === true && entry.lifecycle?.comboSubmitted === true, `${artifact.scenario} submitted each command exactly once.`);
+    check(entry.lifecycle?.checkoutSubmissionCount === 1 && entry.lifecycle?.comboSubmissionCount === 1, `${artifact.scenario} records exactly one submission for each command.`);
     check(entry.lifecycle?.checkoutCaptureCount === 1 && entry.lifecycle?.comboCaptureCount === 1, `${artifact.scenario} captured each command exactly once.`);
     check(entry.appStateBefore?.version === compatibility.version && entry.appStateBefore?.hash === compatibility.hash, `${artifact.scenario} compatibility baseline chains from the prior scenario.`);
     check(entry.afterRace?.appState?.version === entry.appStateBefore?.version && entry.afterRace?.appState?.hash === entry.appStateBefore?.hash, `${artifact.scenario} race leaves app_state unchanged.`);
@@ -372,7 +376,7 @@ try {
   }
 
   report.terminal = {
-    runSessions, runBills, sessions, bills, billLines, payments, events, audits, movements, saleMovements, inventory,
+    runSessions, runBills, sessions, combos, items, bills, billLines, payments, events, audits, movements, saleMovements, inventory,
     checkoutStatuses, openSessions, openTabs,
     appState: { version: appStateResult.data.version, hash: hash(appStateResult.data.data) }
   };

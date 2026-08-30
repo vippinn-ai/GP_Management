@@ -216,6 +216,7 @@ import {
   reconcileOperationalServerIdentity,
   rebasePendingMutations,
   savePendingOperationalMutations,
+  shouldReapplyAcknowledgedOperationalMutation,
   type OperationalMutation,
   type OperationalMutationKind,
   type OperationalMutationPayload
@@ -2415,7 +2416,7 @@ export default function App() {
             const result = await defaultRemoteDataGateway.commitOperationalMutation(mutation);
             const lineReconciliation = getCustomerTabLineIdReconciliation(mutation, result);
             let reconciledData = reconcileOperationalRpcResult(appDataRef.current, mutation, result);
-            if (mutation.optimistic === false) {
+            if (mutation.optimistic === false || shouldReapplyAcknowledgedOperationalMutation(mutation.kind)) {
               reconciledData = applyOperationalMutation(reconciledData, mutation, { skipValidation: true });
             }
             if (result.appStateVersion) {
