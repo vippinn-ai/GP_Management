@@ -14,6 +14,7 @@
     "build:production:release-b:rollback": "node scripts/build-release-b-production-rollback.mjs",
     "build:production:release-b:sql": "node scripts/build-release-b-production-install.mjs",
     "normalize:production:release-b:baseline": "node scripts/normalize-release-b-production-baseline.mjs",
+    "restore:production:release-b:verify": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/restore-verify-release-b-backup.ps1",
     "prepare:production:release-b": "node scripts/prepare-release-b-production.mjs",
     "verify:production:release-b": "node scripts/verify-release-b-production-build.mjs",
     "deploy:production": "tsc -b && vite build --mode production && npx wrangler deploy --name management",
