@@ -39,6 +39,12 @@ const evidenceFiles = [
     sha256: "cdbd15aa163cc583500f0f8080f7fa699391cc1c711c1c57901d063fdd6b2de6"
   }
 ];
+const productionArtifactPaths = {
+  rollbackEvidence: "test-artifacts/evidence/release-b-production-compatibility-rollback-build.json",
+  rollbackBundleRoot: "dist-production-rollback",
+  installEvidence: "test-artifacts/evidence/release-b-production-install-build.json",
+  installSql: "test-artifacts/production-sql/release-b-production-install.sql"
+};
 
 function getArgument(name) {
   const prefix = `${name}=`;
@@ -83,6 +89,10 @@ async function sha256(relativePath) {
   return createHash("sha256").update(content).digest("hex");
 }
 
+async function readJson(relativePath) {
+  return JSON.parse(await readFile(path.join(projectRoot, relativePath), "utf8"));
+}
+
 const apply = process.argv.includes("--apply");
 const releaseCheck = process.argv.includes("--release-check");
 const sourceEnv = getArgument("--source-env");
@@ -112,6 +122,22 @@ const evidence = await Promise.all(evidenceFiles.map(async (item) => {
   const actualSha256 = await sha256(item.path);
   return { ...item, actualSha256, matches: actualSha256 === item.sha256 };
 }));
+let rollbackEvidence = null;
+let installEvidence = null;
+let rollbackBundleHashMatches = false;
+let installSqlHashMatches = false;
+if (releaseCheck) {
+  rollbackEvidence = await readJson(productionArtifactPaths.rollbackEvidence);
+  installEvidence = await readJson(productionArtifactPaths.installEvidence);
+  const rollbackBundleRelativePath = rollbackEvidence.bundle?.path;
+  rollbackBundleHashMatches = Boolean(
+    rollbackBundleRelativePath &&
+    rollbackBundleRelativePath.startsWith(`${productionArtifactPaths.rollbackBundleRoot}/`) &&
+    await sha256(rollbackBundleRelativePath) === rollbackEvidence.bundle?.sha256
+  );
+  installSqlHashMatches =
+    await sha256(productionArtifactPaths.installSql) === installEvidence.output?.sha256;
+}
 const branch = runGit(["branch", "--show-current"]);
 const head = runGit(["rev-parse", "HEAD"]);
 const dirtyEntries = runGit(["status", "--short"]).split(/\r?\n/).filter(Boolean);
@@ -127,6 +153,21 @@ const checks = {
   anonymousKeyPresent: Boolean(env.get("VITE_SUPABASE_ANON_KEY")),
   allReleaseBFlagsTrue: Object.values(flags).every(Boolean),
   evidenceHashesMatch: evidence.every((item) => item.matches),
+  compatibilityRollbackBuildPassed:
+    !releaseCheck || (
+    rollbackEvidence?.status === "passed" &&
+    rollbackEvidence.compatibilityContract?.normalizedReadsRemainEnabled === true &&
+    rollbackEvidence.compatibilityContract?.financialRpcV2Enabled === false &&
+    rollbackEvidence.compatibilityContract?.v1FinancialFallbackEnabled === true &&
+    rollbackEvidence.compatibilityContract?.legacyAppStateReadRollbackAllowed === false &&
+    rollbackBundleHashMatches),
+  productionInstallBuildPassed:
+    !releaseCheck || (
+    installEvidence?.status === "passed" &&
+    installEvidence.checks?.sourceHashesMatch === true &&
+    installEvidence.checks?.singleOuterTransaction === true &&
+    installEvidence.checks?.sourcesDoNotAccessAppState === true &&
+    installSqlHashMatches),
   expectedBranch: branch === "codex/checkout-app-state-decoupling",
   productionDeployScriptExact:
     deployCommand.includes("vite build --mode production") &&
@@ -136,6 +177,12 @@ const checks = {
   expectedCommitProvidedWhenReleaseChecked: !releaseCheck || Boolean(expectedCommit),
   expectedCommitMatches
 };
+if (releaseCheck) {
+  checks.compatibilityRollbackBoundToReleaseCommit =
+    rollbackEvidence.sourceCommit === head && rollbackEvidence.sourceTreeClean === true;
+  checks.productionInstallBoundToReleaseCommit =
+    installEvidence.sourceCommit === head && installEvidence.sourceTreeClean === true;
+}
 const failures = Object.entries(checks).filter(([, passed]) => !passed).map(([name]) => name);
 const result = {
   schemaVersion: 1,
@@ -153,6 +200,14 @@ const result = {
   wranglerVersion: wranglerPackage.version,
   flags,
   evidence,
+  productionArtifacts: {
+    rollbackEvidence: productionArtifactPaths.rollbackEvidence,
+    rollbackBundleSha256: rollbackEvidence?.bundle?.sha256 ?? null,
+    rollbackBundleHashMatches,
+    installEvidence: productionArtifactPaths.installEvidence,
+    installSqlSha256: installEvidence?.output?.sha256 ?? null,
+    installSqlHashMatches
+  },
   checks,
   failures,
   status: failures.length === 0 ? "passed" : "failed"

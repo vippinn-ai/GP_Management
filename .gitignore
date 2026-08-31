@@ -1,5 +1,7 @@
 node_modules/
 dist/
+dist-production-rollback/
+production-backups/
 .DS_Store
 .env
 .env.local

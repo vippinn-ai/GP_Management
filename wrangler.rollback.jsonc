@@ -1,0 +1,7 @@
+{
+  "name": "management",
+  "compatibility_date": "2026-04-16",
+  "assets": {
+    "directory": "./dist-production-rollback"
+  }
+}
