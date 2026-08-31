@@ -137,6 +137,18 @@ describe("Release B production preparation contract", () => {
     expect(source).toContain("$Baseline.provenance.rawExport.sha256");
     expect(source).toContain("$ExpectedBaselineSqlSha256");
     expect(source).toContain("[switch]$ValidateOnly");
+    expect(source).toContain("[switch]$UsePasswordFromEnvironment");
+    expect(source).toContain("aws-1-ap-southeast-2.pooler.supabase.com");
+    expect(source).toContain("pg_dump.exe");
+    expect(source).toContain("pg_dumpall.exe");
+    expect(source).toContain("--no-role-passwords");
+    expect(source).toContain("Remove-Item Env:PGPASSWORD");
+    expect(source).toContain("6eabdf00d2893713b75db4336a23c3fdf505f056e217ec6e2e95d901750cfea3");
+    expect(source).toContain("ff766351cc88b0ea2bc7b6e365777cb51f792b16000688a378f64124810ffa88");
+    expect(source).toContain("25ac39cfdac4eb7a24eb384eed52521820ec38515517042c7ddea1a05bb48a0d");
+    expect(source).toContain('"pg_dump (PostgreSQL) 17.11"');
+    expect(source).toContain('"pg_dumpall (PostgreSQL) 17.11"');
+    expect(source).not.toContain("[string]$PgBin");
     expect(source).toContain("release-b-production-baseline-verifier.mjs");
     expect(source).toContain("rawLineageReverified");
   });

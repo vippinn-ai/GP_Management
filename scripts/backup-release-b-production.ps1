@@ -3,11 +3,22 @@ param(
   [string]$OutputRoot = "production-backups",
   [Parameter(Mandatory = $true)]
   [string]$BaselineEvidencePath,
-  [switch]$ValidateOnly
+  [switch]$ValidateOnly,
+  [switch]$UsePasswordFromEnvironment
 )
 
 $ErrorActionPreference = "Stop"
 $ProjectRef = "rrdwbxvuwrbxefarxnse"
+$DatabaseHost = "aws-1-ap-southeast-2.pooler.supabase.com"
+$DatabasePort = "5432"
+$DatabaseName = "postgres"
+$DatabaseUser = "postgres.$ProjectRef"
+$PortableArchiveRelativePath = "test-artifacts\tools\postgresql-17.11-1-windows-x64-binaries.zip"
+$PortableArchiveSha256 = "6eabdf00d2893713b75db4336a23c3fdf505f056e217ec6e2e95d901750cfea3"
+$PgDumpSha256 = "ff766351cc88b0ea2bc7b6e365777cb51f792b16000688a378f64124810ffa88"
+$PgDumpAllSha256 = "25ac39cfdac4eb7a24eb384eed52521820ec38515517042c7ddea1a05bb48a0d"
+$ExpectedPgDumpVersion = "pg_dump (PostgreSQL) 17.11"
+$ExpectedPgDumpAllVersion = "pg_dumpall (PostgreSQL) 17.11"
 $ExpectedBaselineSqlSha256 = "650d67292814417f168dcc33f61C6D930D5493D3C6096F80341BE940A22EF2C8".ToLowerInvariant()
 $ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $ResolvedOutputRoot = [System.IO.Path]::GetFullPath((Join-Path $ProjectRoot $OutputRoot))
@@ -85,33 +96,62 @@ if ($ValidateOnly) {
 }
 
 $BackupDirectory = Join-Path $ResolvedOutputRoot "release-b-$Timestamp"
-$WorkDirectory = Join-Path $BackupDirectory "supabase-cli-workdir"
-$SupabaseDirectory = Join-Path $WorkDirectory "supabase"
-New-Item -ItemType Directory -Path $SupabaseDirectory -Force | Out-Null
-Copy-Item -LiteralPath (Join-Path $ProjectRoot "supabase\config.toml") -Destination (Join-Path $SupabaseDirectory "config.toml")
+$PortableArchive = [System.IO.Path]::GetFullPath((Join-Path $ProjectRoot $PortableArchiveRelativePath))
+$ResolvedPgBin = [System.IO.Path]::GetFullPath((Join-Path $ProjectRoot "test-artifacts\tools\postgresql-17.11\pgsql\bin"))
+$PgDump = Join-Path $ResolvedPgBin "pg_dump.exe"
+$PgDumpAll = Join-Path $ResolvedPgBin "pg_dumpall.exe"
+$ToolFiles = @($PortableArchive, $PgDump, $PgDumpAll)
+if ($ToolFiles | Where-Object { -not (Test-Path -LiteralPath $_ -PathType Leaf) }) {
+  throw "The pinned official PostgreSQL 17.11 archive and client binaries are required for backup."
+}
+$ActualPortableArchiveSha256 = (Get-FileHash -LiteralPath $PortableArchive -Algorithm SHA256).Hash.ToLowerInvariant()
+$ActualPgDumpSha256 = (Get-FileHash -LiteralPath $PgDump -Algorithm SHA256).Hash.ToLowerInvariant()
+$ActualPgDumpAllSha256 = (Get-FileHash -LiteralPath $PgDumpAll -Algorithm SHA256).Hash.ToLowerInvariant()
+$ActualPgDumpVersion = (& $PgDump --version).Trim()
+$ActualPgDumpAllVersion = (& $PgDumpAll --version).Trim()
+if (
+  $ActualPortableArchiveSha256 -ne $PortableArchiveSha256 -or
+  $ActualPgDumpSha256 -ne $PgDumpSha256 -or
+  $ActualPgDumpAllSha256 -ne $PgDumpAllSha256 -or
+  $ActualPgDumpVersion -ne $ExpectedPgDumpVersion -or
+  $ActualPgDumpAllVersion -ne $ExpectedPgDumpAllVersion
+) {
+  throw "The PostgreSQL backup toolchain does not match the pinned official 17.11 release."
+}
+New-Item -ItemType Directory -Path $BackupDirectory -Force | Out-Null
+$RolesPath = Join-Path $BackupDirectory "roles.sql"
+$SchemaPath = Join-Path $BackupDirectory "public-schema.sql"
+$DataPath = Join-Path $BackupDirectory "public-auth-storage-data.sql"
 
-$SecurePassword = Read-Host "Enter the production Supabase database password" -AsSecureString
-$PasswordPointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecurePassword)
+$PasswordPointer = [IntPtr]::Zero
 try {
-  $env:SUPABASE_DB_PASSWORD = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($PasswordPointer)
-  if ([string]::IsNullOrWhiteSpace($env:SUPABASE_DB_PASSWORD)) {
+  if ($UsePasswordFromEnvironment) {
+    if ([string]::IsNullOrWhiteSpace($env:SUPABASE_DB_PASSWORD)) {
+      throw "SUPABASE_DB_PASSWORD must already be set in the current process."
+    }
+    $env:PGPASSWORD = $env:SUPABASE_DB_PASSWORD
+  }
+  else {
+    $SecurePassword = Read-Host "Enter the production Supabase database password" -AsSecureString
+    $PasswordPointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecurePassword)
+    $env:PGPASSWORD = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($PasswordPointer)
+  }
+  if ([string]::IsNullOrWhiteSpace($env:PGPASSWORD)) {
     throw "The production database password is required."
   }
 
-  & npx supabase link --project-ref $ProjectRef --workdir $WorkDirectory --yes
-  if ($LASTEXITCODE -ne 0) { throw "Supabase production link failed." }
-
-  & npx supabase db dump --linked --workdir $WorkDirectory --role-only --file (Join-Path $BackupDirectory "roles.sql")
+  & $PgDumpAll --host=$DatabaseHost --port=$DatabasePort --username=$DatabaseUser --database=$DatabaseName --roles-only --no-role-passwords --file=$RolesPath
   if ($LASTEXITCODE -ne 0) { throw "Supabase role backup failed." }
 
-  & npx supabase db dump --linked --workdir $WorkDirectory --schema public --file (Join-Path $BackupDirectory "public-schema.sql")
+  & $PgDump --host=$DatabaseHost --port=$DatabasePort --username=$DatabaseUser --dbname=$DatabaseName --schema-only --no-owner --no-privileges --schema=public --file=$SchemaPath
   if ($LASTEXITCODE -ne 0) { throw "Supabase public schema backup failed." }
 
-  & npx supabase db dump --linked --workdir $WorkDirectory --data-only --use-copy --schema public,auth,storage --exclude storage.buckets_vectors --exclude storage.vector_indexes --file (Join-Path $BackupDirectory "public-auth-storage-data.sql")
+  & $PgDump --host=$DatabaseHost --port=$DatabasePort --username=$DatabaseUser --dbname=$DatabaseName --data-only --no-owner --no-privileges --schema=public --schema=auth --schema=storage --exclude-table=storage.buckets_vectors --exclude-table=storage.vector_indexes --file=$DataPath
   if ($LASTEXITCODE -ne 0) { throw "Supabase public/auth/storage data backup failed." }
 }
 finally {
   Remove-Item Env:SUPABASE_DB_PASSWORD -ErrorAction SilentlyContinue
+  Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue
   if ($PasswordPointer -ne [IntPtr]::Zero) {
     [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($PasswordPointer)
   }
@@ -128,6 +168,20 @@ $Manifest = [ordered]@{
   projectRef = $ProjectRef
   capturedAt = (Get-Date).ToUniversalTime().ToString("o")
   gitCommit = $GitCommit
+  sourceConnection = [ordered]@{
+    host = $DatabaseHost
+    port = $DatabasePort
+    database = $DatabaseName
+    user = $DatabaseUser
+  }
+  postgresClient = [ordered]@{
+    archivePath = $PortableArchiveRelativePath.Replace('\','/')
+    archiveSha256 = $ActualPortableArchiveSha256
+    pgDumpVersion = $ActualPgDumpVersion
+    pgDumpSha256 = $ActualPgDumpSha256
+    pgDumpAllVersion = $ActualPgDumpAllVersion
+    pgDumpAllSha256 = $ActualPgDumpAllSha256
+  }
   includes = @("public schema", "public data", "auth data", "storage metadata", "roles")
   excludes = @("Supabase-managed migration history", "Storage object binaries")
   baselineEvidence = [ordered]@{

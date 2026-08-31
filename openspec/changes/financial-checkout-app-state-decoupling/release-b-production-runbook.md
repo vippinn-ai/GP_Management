@@ -80,8 +80,8 @@ Any nonzero floor result consumes the release window. A later deployment require
 The Free plan has no platform restore point. Before the first production SQL write:
 
 1. Obtain the production database password without placing it in a file, command line, log, evidence artifact, or source control. If it is unknown, stop and separately approve a database-password reset; do not guess credentials.
-2. Run `scripts/backup-release-b-production.ps1`. It prompts through a masked secure-string input and keeps `SUPABASE_DB_PASSWORD` only in the child process environment.
-3. The script uses an isolated Supabase CLI work directory so it cannot replace the staging link. It produces ignored, local `roles.sql`, `public-schema.sql`, and `public-auth-storage-data.sql` files under `production-backups/`.
+2. Run `scripts/backup-release-b-production.ps1`. It normally prompts through a masked secure-string input. For an approved remote operation, `-UsePasswordFromEnvironment` accepts `SUPABASE_DB_PASSWORD` only from the current process and clears both that variable and `PGPASSWORD` in `finally`; never place the password in a file or command argument.
+3. The script uses the reviewed IPv4 session-pooler identity and portable official PostgreSQL 17.11 clients, without changing the staging link. Before reading the password, it requires the pinned official archive, `pg_dump`, and `pg_dumpall` SHA-256 values and exact tool versions. It produces ignored, local `roles.sql` (without role passwords), `public-schema.sql`, and `public-auth-storage-data.sql` files under `production-backups/`.
 4. Require all three files to be non-empty and require the manifest SHA-256 for each file and for the read-only baseline evidence.
 5. The 2026-08-31 baseline shows eight Auth users and zero Storage buckets/objects. Auth data and Storage metadata are included in the data dump; there are currently no Storage object binaries to copy.
 6. Do not call the backup disaster-recovery-ready until a restore drill succeeds in a separate disposable database/project. A failed restore drill blocks the release.
