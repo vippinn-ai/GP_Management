@@ -16,6 +16,7 @@ const customerName = env.E2E_REPLACEMENT_PARITY_CUSTOMER;
 const itemName = env.E2E_REPLACEMENT_PARITY_ITEM;
 const originalBillNumber = env.E2E_REPLACEMENT_PARITY_ORIGINAL_BILL;
 const replacementBillNumber = env.E2E_REPLACEMENT_PARITY_REPLACEMENT_BILL;
+const replacementPaymentMode = env.E2E_REPLACEMENT_PAYMENT_MODE === "upi" ? "upi" : "cash";
 if (!customerName || !itemName || !originalBillNumber || !replacementBillNumber) throw new Error("Exact replacement-parity identity bindings are required.");
 
 const evidenceDirectory = path.join(root, "test-artifacts", "evidence");
@@ -258,7 +259,7 @@ if (stages.original && stages.replacement) {
   checkIntegrity(replacementBill?.bill_number === replacementBillNumber && replacementBill?.status === "issued" && replacementBill?.replacement_of_bill_id === originalBillId && replacementBill?.issued_by_user_id === observer.actorId, "Replacement linkage/status/actor is incorrect.");
   checkIntegrity(money(replacementBill?.total) === 50 && money(replacementBill?.amount_paid) === 50 && money(replacementBill?.amount_due) === 0, "Replacement totals are incorrect.");
   checkIntegrity(lines.length === 2 && lines.some((line) => line.bill_id === originalBillId && line.inventory_item_id === itemId && money(line.quantity) === 2 && money(line.total) === 100) && lines.some((line) => line.bill_id === replacementBillId && line.inventory_item_id === itemId && money(line.quantity) === 1 && money(line.total) === 50), "Bill lines do not prove quantity 2 to 1.");
-  checkIntegrity(payments.length === 2 && payments.some((payment) => payment.bill_id === originalBillId && payment.mode === "cash" && money(payment.amount) === 100 && payment.received_by_user_id === origin.actorId) && payments.some((payment) => payment.bill_id === replacementBillId && payment.mode === "cash" && money(payment.amount) === 50 && payment.received_by_user_id === observer.actorId), "Payment linkage/amount/actors are incorrect.");
+  checkIntegrity(payments.length === 2 && payments.some((payment) => payment.bill_id === originalBillId && payment.mode === "cash" && money(payment.amount) === 100 && payment.received_by_user_id === origin.actorId) && payments.some((payment) => payment.bill_id === replacementBillId && payment.mode === replacementPaymentMode && money(payment.amount) === 50 && payment.received_by_user_id === observer.actorId), "Payment linkage/amount/actors are incorrect.");
   checkIntegrity(movements.length === 2 && movements.some((movement) => movement.related_bill_id === originalBillId && movement.item_id === itemId && movement.type === "sale" && money(movement.quantity) === -2 && movement.user_id === origin.actorId) && movements.some((movement) => movement.related_bill_id === replacementBillId && movement.item_id === itemId && movement.type === "void_refund_reversal" && money(movement.quantity) === 1 && movement.user_id === observer.actorId), "Stock movements do not prove exact -2 sale and +1 reversal with actors.");
   checkIntegrity(items[0]?.stock_qty !== undefined && money(items[0].stock_qty) === 4, "Final physical stock is not 4.");
   checkIntegrity(tabs.length === 1 && tabs[0].status === "closed" && tabs[0].close_disposition === "billed" && tabs[0].closed_bill_id === originalBillId, "Source tab closure is incorrect.");

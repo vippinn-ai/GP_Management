@@ -299,26 +299,29 @@ export function mapNormalizedBillLine(row: BillLineRow): BillLine {
   const raw = toRecord(row.raw_data);
   return {
     id: row.id,
-    type: toStringValue(raw.type, row.type) as LineType,
+    type: toStringValue(row.type, toStringValue(raw.type, "inventory_item")) as LineType,
     description: row.description,
-    quantity: toNumberValue(raw.quantity, row.quantity),
-    unitPrice: toNumberValue(raw.unitPrice, row.unit_price),
-    subtotal: toNumberValue(raw.subtotal, row.subtotal),
-    discountAmount: toNumberValue(raw.discountAmount, row.discount_amount),
-    total: toNumberValue(raw.total, row.total),
-    linkedSessionId: toOptionalString(raw.linkedSessionId) ?? toOptionalString(row.linked_session_id),
-    inventoryItemId: toOptionalString(raw.inventoryItemId) ?? toOptionalString(row.inventory_item_id),
+    // The normalized columns are the transactional source of truth. Legacy raw
+    // JSON can retain pre-column precision (for example, recurring timed-session
+    // rates) and must not be sent back through strict replacement validation.
+    quantity: toNumberValue(row.quantity, raw.quantity),
+    unitPrice: toNumberValue(row.unit_price, raw.unitPrice),
+    subtotal: toNumberValue(row.subtotal, raw.subtotal),
+    discountAmount: toNumberValue(row.discount_amount, raw.discountAmount),
+    total: toNumberValue(row.total, raw.total),
+    linkedSessionId: toOptionalString(row.linked_session_id) ?? toOptionalString(raw.linkedSessionId),
+    inventoryItemId: toOptionalString(row.inventory_item_id) ?? toOptionalString(raw.inventoryItemId),
     soldAsPackOf:
-      raw.soldAsPackOf !== undefined || row.sold_as_pack_of !== null
-        ? toNumberValue(raw.soldAsPackOf, row.sold_as_pack_of)
+      row.sold_as_pack_of !== null || raw.soldAsPackOf !== undefined
+        ? toNumberValue(row.sold_as_pack_of, raw.soldAsPackOf)
         : undefined,
-    saleVariantId: toOptionalString(raw.saleVariantId) ?? toOptionalString(row.sale_variant_id),
+    saleVariantId: toOptionalString(row.sale_variant_id) ?? toOptionalString(raw.saleVariantId),
     stockUnitsPerSale:
-      raw.stockUnitsPerSale !== undefined || row.stock_units_per_sale !== null
-        ? toNumberValue(raw.stockUnitsPerSale, row.stock_units_per_sale)
+      row.stock_units_per_sale !== null || raw.stockUnitsPerSale !== undefined
+        ? toNumberValue(row.stock_units_per_sale, raw.stockUnitsPerSale)
         : undefined,
-    comboApplicationId: toOptionalString(raw.comboApplicationId) ?? toOptionalString(row.combo_application_id),
-    comboId: toOptionalString(raw.comboId) ?? toOptionalString(row.combo_id)
+    comboApplicationId: toOptionalString(row.combo_application_id) ?? toOptionalString(raw.comboApplicationId),
+    comboId: toOptionalString(row.combo_id) ?? toOptionalString(raw.comboId)
   };
 }
 

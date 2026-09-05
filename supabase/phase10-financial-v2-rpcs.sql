@@ -1349,7 +1349,11 @@ begin
       or coalesce((line->>'discountAmount')::numeric, 0) > coalesce((line->>'subtotal')::numeric, 0) + 0.01
       or abs(coalesce((line->>'subtotal')::numeric, 0) - coalesce((line->>'quantity')::numeric, 0) * coalesce((line->>'unitPrice')::numeric, 0)) > 0.01
       or abs(coalesce((line->>'total')::numeric, 0) - (coalesce((line->>'subtotal')::numeric, 0) - coalesce((line->>'discountAmount')::numeric, 0))) > 0.01
-      or (nullif(line->>'linkedSessionId', '') is not null and not (line->>'linkedSessionId' = any(v_source_session_ids)))
+      or (
+        v_mode <> 'bill_replacement'
+        and nullif(line->>'linkedSessionId', '') is not null
+        and not (line->>'linkedSessionId' = any(v_source_session_ids))
+      )
   ) or exists (
     select 1
     from jsonb_array_elements(coalesce(v_bill->'lines', '[]'::jsonb)) as source(line)

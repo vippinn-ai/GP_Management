@@ -486,6 +486,7 @@ export default function App() {
   const [showStartSessionModal, setShowStartSessionModal] = useState(false);
   const [manageSessionId, setManageSessionId] = useState<string | null>(null);
   const [checkoutState, setCheckoutState] = useState<CheckoutState | null>(null);
+  const [checkoutSubmissionError, setCheckoutSubmissionError] = useState("");
   const [isHopMode, setIsHopMode] = useState(false);
   const [lastHoppedSessionId, setLastHoppedSessionIdState] = useState<string | null>(null);
   const lastHoppedSessionIdRef = useRef<string | null>(null);
@@ -1961,15 +1962,15 @@ export default function App() {
         }
         setNormalizedBillRegisterState((previous) => ({
           ...previous,
-          bills: [],
-          relatedBills: [],
-          payments: [],
-          nextCursor: undefined,
-          hasMore: false,
+          bills: previous.loaded ? previous.bills : [],
+          relatedBills: previous.loaded ? previous.relatedBills : [],
+          payments: previous.loaded ? previous.payments : [],
+          nextCursor: previous.loaded ? previous.nextCursor : undefined,
+          hasMore: previous.loaded ? previous.hasMore : false,
           loading: false,
           loadingMore: false,
           error: error instanceof Error ? error.message : "Unable to load normalized bill history.",
-          loaded: false,
+          loaded: previous.loaded,
           queryKey: normalizedBillRegisterQueryKey
         }));
       });
@@ -4196,6 +4197,7 @@ export default function App() {
       : closedAt;
     const directlyLinkedHops = getUnbilledHoppedSessionsForSession(session);
     setIsHopMode(false);
+    setCheckoutSubmissionError("");
     setCheckoutState({
       mode: "session",
       mutationId: createId("financial"),
@@ -4773,6 +4775,7 @@ export default function App() {
       scheduleOperationalSync(0);
       return;
     }
+    setCheckoutSubmissionError("");
     setCheckoutState({
       mode: "customer_tab",
       mutationId: createId("financial"),
@@ -4828,6 +4831,7 @@ export default function App() {
       customerName: tab.customerName,
       customerPhone: tab.customerPhone ?? ""
     });
+    setCheckoutSubmissionError("");
     setCheckoutState({
       mode: "customer_tab",
       mutationId: createId("financial"),
@@ -5307,6 +5311,8 @@ export default function App() {
     if (!activeUser || !canReplaceIssuedBills) {
       return;
     }
+    setRemoteError("");
+    setCheckoutSubmissionError("");
     const bill = getBillById(billId);
     if (!bill || bill.status !== "issued") {
       return;
@@ -6128,6 +6134,23 @@ export default function App() {
       status: "success",
       skippedFullSnapshot: canSkipFullSnapshotPrecheck
     });
+  }
+
+  async function submitCheckout() {
+    setCheckoutSubmissionError("");
+    try {
+      await runBlockingAction(
+        checkoutState?.mode === "bill_replacement" ? "Issuing replacement bill..." : "Issuing bill...",
+        finalizeCheckout
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "The server rejected this bill.";
+      setCheckoutSubmissionError(
+        checkoutState?.mode === "bill_replacement"
+          ? `Replacement was not issued. ${message}`
+          : `Bill was not issued. ${message}`
+      );
+    }
   }
 
   async function settlePayment(draft: SettlementDraft): Promise<boolean> {
@@ -7120,6 +7143,7 @@ export default function App() {
     normalizedBillHistoryReadsEnabled &&
     activeTab === "bills" &&
     normalizedBillRegisterState.loaded &&
+    !normalizedBillRegisterState.loading &&
     !normalizedBillRegisterState.error &&
     normalizedBillRegisterState.queryKey === normalizedBillRegisterQueryKey;
   const billRegisterBills = normalizedBillHistoryReadsEnabled ? normalizedBillRegisterState.bills : appData.bills;
@@ -7946,6 +7970,7 @@ export default function App() {
               normalizedBillHistoryReadsEnabled
                 ? {
                     enabled: true,
+                    initialized: normalizedBillRegisterState.loaded,
                     ready: normalizedBillRegisterDisplayEnabled,
                     loading: normalizedBillRegisterState.loading,
                     loadingMore: normalizedBillRegisterState.loadingMore,
@@ -9356,7 +9381,7 @@ export default function App() {
                 <div><span className="muted pending-amount">Amount Due Later</span><strong className="pending-amount">{checkoutSummaryCurrency(Math.max(0, checkoutPreview.total - checkoutState.collectAmount))}</strong></div>
               </>
             )}
-            {checkoutPendingSettlementAmount > 0 && (
+          {checkoutPendingSettlementAmount > 0 && (
               <div>
                 <span className="muted">Previous Dues Collection</span>
                 <strong className="pending-amount">{currency(checkoutPendingSettlementAmount)}</strong>
@@ -9369,6 +9394,11 @@ export default function App() {
               </div>
             )}
           </div>
+          {checkoutSubmissionError && (
+            <div className="form-error" role="alert">
+              {checkoutSubmissionError}
+            </div>
+          )}
           {checkoutRetryableHopMutation && (
             <div className="inline-sync-warning">
               The previous hop attempt was not confirmed. No further retries will run automatically.
@@ -9412,12 +9442,7 @@ export default function App() {
               <button
                 className="primary-button"
                 type="button"
-                onClick={() =>
-                  void runBlockingAction(
-                    checkoutState.mode === "bill_replacement" ? "Issuing replacement bill..." : "Issuing bill...",
-                    finalizeCheckout
-                  )
-                }
+                onClick={() => void submitCheckout()}
                 disabled={remoteSaving || Boolean(blockingActionLabel) || checkoutPreview.isZeroTotal || checkoutHasPendingOperational}
                 title={
                   checkoutHasPendingOperational

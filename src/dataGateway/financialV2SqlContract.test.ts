@@ -115,6 +115,9 @@ describe("financial v2 SQL contract", () => {
     expect(checkout).toMatch(/invalid_ltp_result/i);
     expect(checkout).toMatch(/invalid_customer_scope/i);
     expect(checkout).toMatch(/replacement_source_mismatch/i);
+    expect(checkout).toMatch(
+      /v_mode <> 'bill_replacement'\s+and nullif\(line->>'linkedSessionId', ''\) is not null\s+and not \(line->>'linkedSessionId' = any\(v_source_session_ids\)\)/i
+    );
     expect(checkout).toMatch(/original_line\.stock_units_per_sale[\s\S]*variant\.stock_units_per_sale/i);
     expect(checkout).toMatch(/current normalized catalog/i);
     expect(checkout).not.toMatch(/full join/i);

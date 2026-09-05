@@ -12,16 +12,19 @@ import {
 
 const root = process.cwd();
 const args = process.argv.slice(2);
-if (args.length > 1 || (args.length === 1 && args[0] !== "--list")) {
-  throw new Error("Replacement-parity runner accepts only --list or one exact execution.");
+const allowedArgs = new Set(["--list", "--payment-change-upi"]);
+if (args.some((arg) => !allowedArgs.has(arg)) || args.length !== new Set(args).size) {
+  throw new Error("Replacement-parity runner accepts only --list and --payment-change-upi.");
 }
-const discovery = args[0] === "--list";
+const discovery = args.includes("--list");
+const replacementPaymentMode = args.includes("--payment-change-upi") ? "upi" : "cash";
 const localEnv = parseEnvFile(path.join(root, ".env.e2e.local"));
 const stagingEnv = parseEnvFile(path.join(root, ".env.staging"));
 const env = { ...localEnv, ...process.env };
 assertStagingSupabaseEnvironment(stagingEnv, true);
 env.E2E_BASE_URL = assertStagingBaseUrl(env.E2E_BASE_URL || STAGING_APP_URL);
 env.E2E_RUN_ID = sanitizeRunId(discovery ? env.E2E_RUN_ID || "discovery-replacement-parity" : env.E2E_RUN_ID);
+env.E2E_REPLACEMENT_PAYMENT_MODE = replacementPaymentMode;
 
 if (!discovery) {
   assertLiveCredentials(env);
@@ -47,6 +50,7 @@ console.log(JSON.stringify({
   runId: env.E2E_RUN_ID,
   baseUrl: env.E2E_BASE_URL,
   discoveryOnly: discovery,
+  replacementPaymentMode,
   productionAllowed: false,
   safeForAutomaticRetry: false,
   workers: 1,

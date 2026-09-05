@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState, useMemo } from "react";
+import { Fragment, useDeferredValue, useEffect, useState, useMemo } from "react";
 import type { Bill, BillStatus, BillPaymentMode, Payment, PendingReceivableGroup, Station } from "../types";
 import type { NormalizedBillRegisterQuery } from "../dataGateway";
 import type { ReceiptPreviewModel } from "../exporters";
@@ -41,6 +41,15 @@ function paymentModeLabel(mode: BillPaymentMode): string {
   return mode;
 }
 
+function useDebouncedValue<T>(value: T, delayMs: number): T {
+  const [debouncedValue, setDebouncedValue] = useState(value);
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => setDebouncedValue(value), delayMs);
+    return () => window.clearTimeout(timeoutId);
+  }, [delayMs, value]);
+  return debouncedValue;
+}
+
 export function BillRegisterPanel(props: {
   bills: Bill[];
   billBusinessDates: Record<string, string>;
@@ -60,6 +69,7 @@ export function BillRegisterPanel(props: {
   canSettlePendingBills: boolean;
   normalizedHistory?: {
     enabled: boolean;
+    initialized: boolean;
     ready: boolean;
     loading: boolean;
     loadingMore: boolean;
@@ -87,6 +97,10 @@ export function BillRegisterPanel(props: {
   const [filterTo, setFilterTo] = useState("");
   const [expandedReceivableGroupId, setExpandedReceivableGroupId] = useState<string | null>(null);
   const [selectedReceivableBillIds, setSelectedReceivableBillIds] = useState<Record<string, string[]>>({});
+  const deferredSearch = useDeferredValue(search);
+  const debouncedServerSearch = useDebouncedValue(search.trim(), 250);
+  const normalizedHistoryEnabled = props.normalizedHistory?.enabled ?? false;
+  const onNormalizedHistoryQueryChange = props.normalizedHistory?.onQueryChange;
 
   const today = currentBusinessDayKey();
   const yesterday = businessYesterdayKey();
@@ -140,8 +154,8 @@ export function BillRegisterPanel(props: {
     if (filterMode)    list = list.filter((b) => b.paymentMode === filterMode);
     if (filterStation) list = list.filter((b) => b.stationId === filterStation || (!b.stationId && filterStation === "__tab__"));
 
-    if (search.trim()) {
-      const q = search.trim().toLowerCase();
+    if (deferredSearch.trim()) {
+      const q = deferredSearch.trim().toLowerCase();
       list = list.filter((b) =>
         b.billNumber.toLowerCase().includes(q) ||
         (b.customerName ?? "").toLowerCase().includes(q) ||
@@ -150,12 +164,12 @@ export function BillRegisterPanel(props: {
     }
 
     return list;
-  }, [props.bills, props.billBusinessDates, props.billPaymentBusinessDates, quickFilter, search, filterStatus, filterMode, filterStation, filterFrom, filterTo, today, yesterday, weekAgo]);
+  }, [props.bills, props.billBusinessDates, props.billPaymentBusinessDates, quickFilter, deferredSearch, filterStatus, filterMode, filterStation, filterFrom, filterTo, today, yesterday, weekAgo]);
 
   const normalizedServerQuery = useMemo<BillRegisterServerQuery>(() => {
     const query: BillRegisterServerQuery = {};
-    if (search.trim()) {
-      query.search = search.trim();
+    if (debouncedServerSearch) {
+      query.search = debouncedServerSearch;
     }
     if (filterMode) {
       query.paymentMode = filterMode;
@@ -191,16 +205,16 @@ export function BillRegisterPanel(props: {
       }
     }
     return query;
-  }, [filterFrom, filterMode, filterStation, filterStatus, filterTo, quickFilter, search, today, weekAgo, yesterday]);
+  }, [debouncedServerSearch, filterFrom, filterMode, filterStation, filterStatus, filterTo, quickFilter, today, weekAgo, yesterday]);
 
   const normalizedServerQueryKey = useMemo(() => JSON.stringify(normalizedServerQuery), [normalizedServerQuery]);
 
   useEffect(() => {
-    if (!props.normalizedHistory?.enabled) {
+    if (!normalizedHistoryEnabled || !onNormalizedHistoryQueryChange || registerView !== "bills") {
       return;
     }
-    props.normalizedHistory.onQueryChange(normalizedServerQuery);
-  }, [props.normalizedHistory?.enabled, props.normalizedHistory?.onQueryChange, normalizedServerQuery, normalizedServerQueryKey]);
+    onNormalizedHistoryQueryChange(normalizedServerQuery);
+  }, [normalizedHistoryEnabled, onNormalizedHistoryQueryChange, normalizedServerQuery, normalizedServerQueryKey, registerView]);
 
   const filteredReceivableGroups = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -272,7 +286,7 @@ export function BillRegisterPanel(props: {
     }));
   }
 
-  if (props.normalizedHistory?.enabled && !props.normalizedHistory.ready) {
+  if (props.normalizedHistory?.enabled && !props.normalizedHistory.initialized) {
     return (
       <div className="bill-register-page">
         <div className={`read-only-banner ${props.normalizedHistory.error ? "is-warning" : ""}`}>
@@ -293,6 +307,8 @@ export function BillRegisterPanel(props: {
       </div>
     );
   }
+
+  const normalizedRowsActionable = !props.normalizedHistory?.enabled || props.normalizedHistory.ready;
 
   if (registerView === "receivables") {
     return (
@@ -485,7 +501,7 @@ export function BillRegisterPanel(props: {
       {props.normalizedHistory?.enabled && (
         <div className="bill-register-filter-bar">
           <span className="muted">
-            Normalized history {props.normalizedHistory.loading ? "loading..." : "active"}
+            Normalized history {props.normalizedHistory.loading ? "refreshing..." : props.normalizedHistory.ready ? "active" : "read-only"}
             {props.normalizedHistory.error ? ` - ${props.normalizedHistory.error}` : ""}
           </span>
           <button
@@ -545,16 +561,16 @@ export function BillRegisterPanel(props: {
                     <td>
                       <div className="button-row dense" onClick={(e) => e.stopPropagation()}>
                         {bill.status === "pending" && props.canSettlePendingBills && (
-                          <button className="ghost-button" type="button" onClick={() => props.onSettlePendingBill(bill.id)}>Settle</button>
+                          <button className="ghost-button" type="button" disabled={!normalizedRowsActionable} onClick={() => props.onSettlePendingBill(bill.id)}>Settle</button>
                         )}
                         {bill.status === "pending" && props.canVoidRefundBills && (
-                          <button className="ghost-button danger" type="button" onClick={() => props.onVoidPendingBill(bill.id)}>Write Off</button>
+                          <button className="ghost-button danger" type="button" disabled={!normalizedRowsActionable} onClick={() => props.onVoidPendingBill(bill.id)}>Write Off</button>
                         )}
                         {bill.status === "issued" && props.canReplaceIssuedBills && (
-                          <button className="ghost-button" type="button" onClick={() => props.onOpenBillReplacement(bill.id)}>Replace</button>
+                          <button className="ghost-button" type="button" disabled={!normalizedRowsActionable} onClick={() => props.onOpenBillReplacement(bill.id)}>Replace</button>
                         )}
                         {bill.status === "issued" && props.canVoidRefundBills && (
-                          <button className="ghost-button danger" type="button" onClick={() => props.onVoidOrRefundBill(bill.id)}>Void</button>
+                          <button className="ghost-button danger" type="button" disabled={!normalizedRowsActionable} onClick={() => props.onVoidOrRefundBill(bill.id)}>Void</button>
                         )}
                       </div>
                     </td>
@@ -673,22 +689,22 @@ export function BillRegisterPanel(props: {
                 Download PDF
               </button>
               {selected.status === "pending" && props.canSettlePendingBills && (
-                <button className="primary-button" type="button" onClick={() => props.onSettlePendingBill(selected.id)}>
+                <button className="primary-button" type="button" disabled={!normalizedRowsActionable} onClick={() => props.onSettlePendingBill(selected.id)}>
                   Settle Bill
                 </button>
               )}
               {selected.status === "pending" && props.canVoidRefundBills && (
-                <button className="danger-button" type="button" onClick={() => props.onVoidPendingBill(selected.id)}>
+                <button className="danger-button" type="button" disabled={!normalizedRowsActionable} onClick={() => props.onVoidPendingBill(selected.id)}>
                   Write Off
                 </button>
               )}
               {selected.status === "issued" && props.canReplaceIssuedBills && (
-                <button className="secondary-button" type="button" onClick={() => props.onOpenBillReplacement(selected.id)}>
+                <button className="secondary-button" type="button" disabled={!normalizedRowsActionable} onClick={() => props.onOpenBillReplacement(selected.id)}>
                   Replace Bill
                 </button>
               )}
               {selected.status === "issued" && props.canVoidRefundBills && (
-                <button className="danger-button" type="button" onClick={() => props.onVoidOrRefundBill(selected.id)}>
+                <button className="danger-button" type="button" disabled={!normalizedRowsActionable} onClick={() => props.onVoidOrRefundBill(selected.id)}>
                   Void / Refund
                 </button>
               )}

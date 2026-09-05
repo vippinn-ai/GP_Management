@@ -18,6 +18,14 @@ import {
 
 const runId = process.env.E2E_RUN_ID ?? "missing-run-id";
 const station = process.env.E2E_V2_REPLACEMENT_STATION?.trim() || "Arcade 2";
+const originalPaymentMode = process.env.E2E_V2_ORIGINAL_PAYMENT_MODE?.trim() === "upi" ? "upi" : "cash";
+const replacementPaymentMode = process.env.E2E_V2_REPLACEMENT_PAYMENT_MODE?.trim() === "upi" ? "upi" : "cash";
+const useFractionalTimedCharge = process.env.E2E_V2_FRACTIONAL_TIMED_CHARGE === "true";
+
+function localDateTimeInputValue(date: Date): string {
+  const offset = date.getTimezoneOffset() * 60_000;
+  return new Date(date.getTime() - offset).toISOString().slice(0, 16);
+}
 
 async function openBillRegisterRow(page: Parameters<typeof capturePageErrors>[0], billNumber: string) {
   await page.getByRole("button", { name: "Bill Register", exact: true }).click();
@@ -53,6 +61,15 @@ test.describe.serial("Release B replacement v2", () => {
       const sessionDialog = await openManagedSession(page, station);
       await sessionDialog.getByRole("button", { name: "Proceed to Checkout", exact: true }).click();
       const checkout = page.getByRole("dialog", { name: "Close Session Bill", exact: true });
+      if (useFractionalTimedCharge) {
+        const endedAt = new Date();
+        const startedAt = new Date(endedAt.getTime() - 43 * 60_000);
+        await checkout.getByLabel("Session Start Time").fill(localDateTimeInputValue(startedAt));
+        await checkout.getByLabel("Session End Time").fill(localDateTimeInputValue(endedAt));
+      }
+      if (originalPaymentMode === "upi") {
+        await checkout.getByLabel("Payment Mode").selectOption("upi");
+      }
       await checkout.getByRole("button", { name: "Issue Bill", exact: true }).click();
       await expect(checkout).toBeHidden();
       await waitForSynced(page);
@@ -67,6 +84,7 @@ test.describe.serial("Release B replacement v2", () => {
       const originOriginalRow = await openBillRegisterRow(page, originalBillNumber!);
       await originOriginalRow.getByRole("button", { name: "Replace", exact: true }).click();
       const replacement = page.getByRole("dialog", { name: "Replace Issued Bill", exact: true });
+      await replacement.getByLabel("Payment Mode").selectOption(replacementPaymentMode);
       await replacement.getByPlaceholder("Explain what was wrong in the original bill").fill(
         `Playwright unchanged replacement ${runId}`
       );
@@ -95,6 +113,9 @@ test.describe.serial("Release B replacement v2", () => {
         runId,
         station,
         customerName,
+        originalPaymentMode,
+        replacementPaymentMode,
+        useFractionalTimedCharge,
         originalBillNumber,
         replacementBillNumber,
         originalResult,

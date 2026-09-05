@@ -34,8 +34,8 @@ function renderBillRegisterPanel(overrides: Partial<Parameters<typeof BillRegist
     ...overrides
   };
 
-  render(<BillRegisterPanel {...props} />);
-  return props;
+  const view = render(<BillRegisterPanel {...props} />);
+  return { props, ...view };
 }
 
 describe("BillRegisterPanel normalized history", () => {
@@ -44,6 +44,7 @@ describe("BillRegisterPanel normalized history", () => {
     renderBillRegisterPanel({
       normalizedHistory: {
         enabled: true,
+        initialized: true,
         ready: true,
         loading: false,
         loadingMore: false,
@@ -71,6 +72,7 @@ describe("BillRegisterPanel normalized history", () => {
     renderBillRegisterPanel({
       normalizedHistory: {
         enabled: true,
+        initialized: true,
         ready: true,
         loading: false,
         loadingMore: false,
@@ -93,6 +95,7 @@ describe("BillRegisterPanel normalized history", () => {
       bills: [{ id: "stale-bill", billNumber: "STALE" } as never],
       normalizedHistory: {
         enabled: true,
+        initialized: false,
         ready: false,
         loading: false,
         loadingMore: false,
@@ -108,5 +111,44 @@ describe("BillRegisterPanel normalized history", () => {
     expect(screen.queryByText("STALE")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     expect(onRefresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the focused search input mounted while a follow-up query is loading", async () => {
+    const onQueryChange = vi.fn();
+    const view = renderBillRegisterPanel({
+      normalizedHistory: {
+        enabled: true,
+        initialized: true,
+        ready: true,
+        loading: false,
+        loadingMore: false,
+        error: "",
+        hasMore: false,
+        onQueryChange,
+        onLoadMore: vi.fn(),
+        onRefresh: vi.fn()
+      }
+    });
+    const input = screen.getByPlaceholderText("Search bill #, customer name or phone...");
+    input.focus();
+    fireEvent.change(input, { target: { value: "V" } });
+
+    await waitFor(() => expect(onQueryChange).toHaveBeenLastCalledWith({ search: "V" }));
+    view.rerender(
+      <BillRegisterPanel
+        {...view.props}
+        normalizedHistory={{
+          ...view.props.normalizedHistory!,
+          initialized: true,
+          ready: false,
+          loading: true
+        }}
+      />
+    );
+
+    expect(screen.getByPlaceholderText("Search bill #, customer name or phone...")).toBe(input);
+    expect(input).toHaveValue("V");
+    expect(input).toHaveFocus();
+    expect(screen.getByText(/Normalized history refreshing/)).toBeInTheDocument();
   });
 });

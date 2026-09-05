@@ -26,6 +26,7 @@ import {
 const root = process.cwd();
 const organizationId = "org-primary";
 const runId = process.env.E2E_RUN_ID ?? "missing-run-id";
+const replacementPaymentMode = process.env.E2E_REPLACEMENT_PAYMENT_MODE === "upi" ? "upi" : "cash";
 const customerName = process.env.E2E_REPLACEMENT_PARITY_CUSTOMER ?? `QA Replacement Parity ${runId}`;
 const itemName = process.env.E2E_REPLACEMENT_PARITY_ITEM ?? `QA Replacement Item ${runId}`;
 const itemBarcode = process.env.E2E_REPLACEMENT_PARITY_BARCODE ?? `QA-REPLACE-${runId}`;
@@ -272,6 +273,7 @@ test("quantity-decreasing replacement remains exact across normalized hard-refre
     await originalRow.getByRole("button", { name: "Replace", exact: true }).click();
     const replacementDialog = observer.page.getByRole("dialog", { name: "Replace Issued Bill", exact: true });
     await replacementDialog.getByPlaceholder("Explain what was wrong in the original bill").fill(`Quantity correction ${runId}`);
+    await replacementDialog.locator("label").filter({ hasText: "Payment Mode" }).locator("select").selectOption(replacementPaymentMode);
     const replacementLine = replacementDialog.locator("tbody tr").filter({ hasText: itemName });
     const replacementQuantity = replacementLine.locator('input[inputmode="numeric"]');
     await expect(replacementQuantity).toHaveValue("2");
@@ -311,7 +313,7 @@ test("quantity-decreasing replacement remains exact across normalized hard-refre
     expect(replacementBill).toMatchObject({ bill_number: replacementBillNumber, status: "issued", replacement_of_bill_id: originalBillId, issued_by_user_id: observerIdentity.actorId });
     expect([Number(replacementBill.total), Number(replacementBill.amount_paid), Number(replacementBill.amount_due)]).toEqual([50, 50, 0]);
     expect(lines.map((line) => [line.bill_id, Number(line.quantity), Number(line.total)]).sort()).toEqual([[originalBillId, 2, 100], [replacementBillId, 1, 50]].sort());
-    expect(payments.map((payment) => [payment.bill_id, payment.mode, Number(payment.amount)]).sort()).toEqual([[originalBillId, "cash", 100], [replacementBillId, "cash", 50]].sort());
+    expect(payments.map((payment) => [payment.bill_id, payment.mode, Number(payment.amount)]).sort()).toEqual([[originalBillId, "cash", 100], [replacementBillId, replacementPaymentMode, 50]].sort());
     expect(movements.map((movement) => [movement.related_bill_id, movement.type, Number(movement.quantity)]).sort()).toEqual([[originalBillId, "sale", -2], [replacementBillId, "void_refund_reversal", 1]].sort());
     expect(tabs).toEqual([expect.objectContaining({ id: tabId, status: "closed", close_disposition: "billed", closed_bill_id: originalBillId })]);
 
@@ -328,9 +330,9 @@ test("quantity-decreasing replacement remains exact across normalized hard-refre
     await expect(preview.getByText(itemName, { exact: true })).toBeVisible();
     await expect(preview.getByText("₹50.00", { exact: true }).first()).toBeVisible();
     const paymentMeta = await preview.getByText("Payment", { exact: true }).locator("..").innerText();
-    expect(paymentMeta).toContain("CASH");
+    expect(paymentMeta).toContain(replacementPaymentMode.toUpperCase());
     const replacementPayment = payments.find((payment) => payment.bill_id === replacementBillId)!;
-    expect(replacementPayment).toMatchObject({ id: expect.any(String), bill_id: replacementBillId, mode: "cash", received_by_user_id: observerIdentity.actorId });
+    expect(replacementPayment).toMatchObject({ id: expect.any(String), bill_id: replacementBillId, mode: replacementPaymentMode, received_by_user_id: observerIdentity.actorId });
     expect(Number(replacementPayment.amount)).toBe(50);
 
     await page.getByRole("button", { name: /^Receivables \(\d+\)$/ }).click();
@@ -420,7 +422,7 @@ test("quantity-decreasing replacement remains exact across normalized hard-refre
     const terminalPath = writeEvidence("terminal", {
       status: "passed",
       actors: { origin: identity.actorId, observer: observerIdentity.actorId },
-      fixture: { customerName, itemId, itemName, itemBarcode, tabId, originalBillId, originalBillNumber, replacementBillId, replacementBillNumber, pendingBillNumber: pendingBillNumber || null },
+      fixture: { customerName, itemId, itemName, itemBarcode, tabId, originalBillId, originalBillNumber, replacementBillId, replacementBillNumber, replacementPaymentMode, pendingBillNumber: pendingBillNumber || null },
       operations: {
         created: { request: created.submitted, response: created.body, evidence: [created.preparedPath, created.submittedPath, created.responsePath] },
         opened: { request: opened.submitted, response: opened.body, evidence: [opened.preparedPath, opened.submittedPath, opened.responsePath] },

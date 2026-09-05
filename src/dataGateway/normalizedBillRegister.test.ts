@@ -202,6 +202,45 @@ describe("normalized bill register row mapping", () => {
     });
   });
 
+  it("uses normalized financial precision instead of stale raw session precision", () => {
+    expect(
+      mapNormalizedBillLine({
+        bill_id: "bill-session",
+        id: "line-session",
+        type: "session_charge",
+        description: "Snooker session (43 min)",
+        quantity: "1.00",
+        unit_price: "285.14",
+        subtotal: "285.14",
+        discount_amount: "0.00",
+        total: "285.14",
+        linked_session_id: "session-1",
+        inventory_item_id: null,
+        sold_as_pack_of: null,
+        sale_variant_id: null,
+        stock_units_per_sale: null,
+        combo_application_id: null,
+        combo_id: null,
+        raw_data: {
+          type: "session_charge",
+          quantity: 1,
+          unitPrice: 285.14166666666665,
+          subtotal: 285.14166666666665,
+          discountAmount: 0,
+          total: 285.14166666666665,
+          linkedSessionId: "session-1"
+        }
+      })
+    ).toMatchObject({
+      quantity: 1,
+      unitPrice: 285.14,
+      subtotal: 285.14,
+      discountAmount: 0,
+      total: 285.14,
+      linkedSessionId: "session-1"
+    });
+  });
+
   it("maps bill rows and preserves optional status metadata", () => {
     expect(
       mapNormalizedBill({
