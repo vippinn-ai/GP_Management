@@ -158,6 +158,7 @@ describe("Release B production preparation contract", () => {
     expect(source).toContain('expectedProjectRef = "rrdwbxvuwrbxefarxnse"');
     expect(source).toContain('expectedDashboardTitleFragment = "breakperfect-production"');
     expect(source).toContain('expectedBaselineSqlSha256 = "650d67292814417f168dcc33f61c6d930d5493d3c6096f80341be940a22ef2c8"');
+    expect(source).toContain('raw.replace(/\\r\\n/g, "\\n")');
     expect(source).toContain('rowKeys[0] !== "release_b_production_baseline"');
     expect(source).toContain('captureMethod: "supabase-sql-editor-copy-as-json"');
     expect(source).toContain("rawExportSha256");
@@ -171,6 +172,7 @@ describe("Release B production preparation contract", () => {
     expect(verifier).toContain("capturedAtMatches");
     expect(verifier).toContain("collectionsMatch");
     expect(verifier).toContain("isDeepStrictEqual");
+    expect(verifier).toContain('raw.replace(/\\r\\n/g, "\\n")');
   });
 
   it("reopens and rejects a raw baseline export changed after normalization", () => {

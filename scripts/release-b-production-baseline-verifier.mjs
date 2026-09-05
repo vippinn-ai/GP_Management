@@ -16,6 +16,10 @@ function sha256(raw) {
   return createHash("sha256").update(Buffer.from(raw, "utf8")).digest("hex");
 }
 
+function canonicalizeSqlText(raw) {
+  return raw.replace(/\r\n/g, "\n");
+}
+
 function resolveEvidenceChild(projectRoot, candidate, label) {
   if (typeof candidate !== "string" || candidate.length === 0) throw new Error(`${label} is required.`);
   const evidenceRoot = path.join(projectRoot, "test-artifacts", "evidence");
@@ -60,7 +64,7 @@ export async function verifyReleaseBProductionBaseline({
   const expectedCapturedAt = Number.isFinite(capturedAtMs) ? new Date(capturedAtMs).toISOString() : null;
   const actualRawFileSha256 = sha256(rawExport);
   const actualRawCanonicalSha256 = sha256(JSON.stringify(exportedRows));
-  const actualBaselineSqlSha256 = sha256(baselineSql);
+  const actualBaselineSqlSha256 = sha256(canonicalizeSqlText(baselineSql));
   const dashboardUrl = new URL(baseline.provenance?.dashboardUrl ?? "https://invalid.invalid/");
   const dashboardProjectMatch = dashboardUrl.pathname.match(/^\/dashboard\/project\/([^/]+)\/sql(?:\/|$)/);
   const appStateVersion = Number(raw?.app_state?.version);

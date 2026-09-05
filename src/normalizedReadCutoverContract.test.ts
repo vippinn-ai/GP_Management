@@ -45,6 +45,10 @@ describe("normalized Release A read-path contract", () => {
     expect(appSource).toMatch(
       /const refreshNormalizedBillRegister = useCallback\([\s\S]*?setNormalizedBillRegisterRefreshSignal\(\(previous\) => previous \+ 1\);/
     );
+    const refreshBlock = appSource.match(
+      /const refreshNormalizedBillRegister = useCallback\(\(\) => \{[\s\S]*?\}, \[\]\);/
+    )?.[0];
+    expect(refreshBlock).not.toContain("loaded: false");
   });
 
   it("uses a controlled modal for void and refund instead of native dialogs", () => {

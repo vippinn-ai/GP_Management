@@ -44,7 +44,7 @@ test.describe.serial("Release B replacement v2", () => {
     const observerErrors = capturePageErrors(observer.page);
     captureRpcEvidence(page, "origin", rpcEvidence);
     captureRpcEvidence(observer.page, "observer", rpcEvidence);
-    const customerName = `QA V2 Replace ${runId}`;
+    const customerName = process.env.E2E_V2_REPLACEMENT_CUSTOMER?.trim() || `QA V2 Replace ${runId}`;
     let sessionStarted = false;
     let checkoutCommitted = false;
     let replacementCommitted = false;

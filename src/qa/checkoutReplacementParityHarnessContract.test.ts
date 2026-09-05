@@ -26,6 +26,7 @@ describe("checkout replacement/downstream parity staging harness", () => {
     expect(source).toContain('role.data !== "admin"');
     expect(source).toContain("openSessions.data.length === 0 && openTabs.data.length === 0");
     expect(source).toContain("collisionsEmpty");
+    expect(source).toContain("E2E_V2_REPLACEMENT_CUSTOMER");
     expect(source).toContain('throw new Error("reviewed_preflight_drift")');
     expect(source).toContain('safeForAutomaticRetry: false');
     expect(source).toContain('flag: "wx"');

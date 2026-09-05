@@ -30,7 +30,10 @@ const baseUrl = assertStagingBaseUrl(env.E2E_BASE_URL || STAGING_APP_URL);
 if (!env.E2E_RUN_ID?.trim()) throw new Error("An explicit E2E_RUN_ID is required.");
 const runId = sanitizeRunId(env.E2E_RUN_ID);
 const fixture = {
-  customerName: `QA Replacement Parity ${runId}`,
+  customerName:
+    env.E2E_V2_REPLACEMENT_CUSTOMER?.trim() ||
+    env.E2E_REPLACEMENT_PARITY_CUSTOMER?.trim() ||
+    `QA Replacement Parity ${runId}`,
   itemName: `QA Replacement Item ${runId}`,
   itemBarcode: `QA-REPLACE-${runId}`,
   originalBillNumber: `BILL-QA-REPLACE-PARITY-${runId}-ORIGINAL`,

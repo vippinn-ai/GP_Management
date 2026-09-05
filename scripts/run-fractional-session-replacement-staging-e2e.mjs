@@ -23,6 +23,7 @@ assertStagingSupabaseEnvironment(stagingEnv, true);
 env.E2E_BASE_URL = assertStagingBaseUrl(env.E2E_BASE_URL || STAGING_APP_URL);
 env.E2E_RUN_ID = sanitizeRunId(discoveryOnly ? env.E2E_RUN_ID || "discovery-fractional-replacement" : env.E2E_RUN_ID);
 env.E2E_V2_REPLACEMENT_STATION = "Snooker Star Table";
+env.E2E_V2_REPLACEMENT_CUSTOMER = `QA V2 Replace ${env.E2E_RUN_ID}`;
 env.E2E_V2_ORIGINAL_PAYMENT_MODE = "upi";
 env.E2E_V2_REPLACEMENT_PAYMENT_MODE = "cash";
 env.E2E_V2_FRACTIONAL_TIMED_CHARGE = "true";

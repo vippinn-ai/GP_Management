@@ -30,6 +30,10 @@ function sha256(raw) {
   return createHash("sha256").update(Buffer.from(raw, "utf8")).digest("hex");
 }
 
+function canonicalizeSqlText(raw) {
+  return raw.replace(/\r\n/g, "\n");
+}
+
 const rawExportPath = resolveEvidencePath(getArgument("--raw-export"), "--raw-export");
 const outputPath = resolveEvidencePath(getArgument("--output"), "--output");
 const dashboardUrl = getArgument("--dashboard-url");
@@ -55,7 +59,9 @@ const [rawExport, baselineSql] = await Promise.all([
   readFile(rawExportPath, "utf8"),
   readFile(baselineSqlPath, "utf8")
 ]);
-const baselineSqlSha256 = sha256(baselineSql);
+// Git may materialize text files with CRLF on Windows. Bind the reviewed SQL
+// content, not the checkout platform's line-ending representation.
+const baselineSqlSha256 = sha256(canonicalizeSqlText(baselineSql));
 if (baselineSqlSha256 !== expectedBaselineSqlSha256) {
   throw new Error("Baseline SQL hash drifted; independently review and pin the new query before capture.");
 }

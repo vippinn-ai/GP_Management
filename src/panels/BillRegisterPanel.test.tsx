@@ -150,5 +150,23 @@ describe("BillRegisterPanel normalized history", () => {
     expect(input).toHaveValue("V");
     expect(input).toHaveFocus();
     expect(screen.getByText(/Normalized history refreshing/)).toBeInTheDocument();
+
+    view.rerender(
+      <BillRegisterPanel
+        {...view.props}
+        normalizedHistory={{
+          ...view.props.normalizedHistory!,
+          initialized: true,
+          ready: false,
+          loading: false,
+          error: "Backend read failed."
+        }}
+      />
+    );
+
+    expect(screen.getByPlaceholderText("Search bill #, customer name or phone...")).toBe(input);
+    expect(input).toHaveValue("V");
+    expect(input).toHaveFocus();
+    expect(screen.getByText(/Backend read failed/)).toBeInTheDocument();
   });
 });

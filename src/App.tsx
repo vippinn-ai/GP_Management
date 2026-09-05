@@ -2066,7 +2066,6 @@ export default function App() {
     normalizedBillRegisterGenerationRef.current += 1;
     setNormalizedBillRegisterState((previous) => ({
       ...previous,
-      loaded: false,
       queryKey: `${previous.queryKey}:refresh:${Date.now()}`
     }));
     setNormalizedBillRegisterRefreshSignal((previous) => previous + 1);

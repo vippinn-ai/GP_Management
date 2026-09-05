@@ -70,11 +70,11 @@ const mutationIds = [browser.originalResult.mutationId, browser.replacementResul
 const sessionId = browser.originalResult.entityId;
 
 const [bills, lines, payments, audits, events, session, appState, mutationResults] = await Promise.all([
-  rows("bills", client.from("bills").select("id,bill_number,status,total,amount_paid,amount_due,payment_mode,replacement_of_bill_id,replaced_by_bill_id,replaced_by_user_id,issued_by_user_id").eq("organization_id", organizationId).in("id", billIds)),
+  rows("bills", client.from("bills").select("id,bill_number,status,total,amount_paid,amount_due,payment_mode,replacement_of_bill_id,replaced_by_bill_id,replaced_by_user_id,issued_by_user_id").eq("organization_id", organizationId).eq("customer_name", preflight.fixture.customerName)),
   rows("lines", client.from("bill_lines").select("id,bill_id,type,description,quantity,unit_price,subtotal,discount_amount,total,linked_session_id").eq("organization_id", organizationId).in("bill_id", billIds)),
-  rows("payments", client.from("payments").select("id,bill_id,mode,amount,received_by_user_id").eq("organization_id", organizationId).in("id", paymentIds)),
+  rows("payments", client.from("payments").select("id,bill_id,mode,amount,received_by_user_id").eq("organization_id", organizationId).in("bill_id", billIds)),
   rows("audits", client.from("audit_logs").select("id,action,entity_type,entity_id,message,user_id").eq("organization_id", organizationId).in("entity_id", billIds)),
-  rows("events", client.from("operational_events").select("id,event_type,entity_type,entity_id,metadata,created_by").eq("organization_id", organizationId).in("id", eventIds)),
+  rows("events", client.from("operational_events").select("id,event_type,entity_type,entity_id,metadata,created_by").eq("organization_id", organizationId).in("metadata->>mutation_id", mutationIds)),
   client.from("sessions").select("id,status,close_disposition,closed_bill_id").eq("organization_id", organizationId).eq("id", sessionId).single(),
   client.from("app_state").select("version,data").eq("id", "primary").single(),
   Promise.all(mutationIds.map(async (mutationId) => {
@@ -103,12 +103,14 @@ check(replacement?.status === "issued" && replacement.replacement_of_bill_id ===
 check(originalPayment?.mode === browser.originalPaymentMode, "Original payment mode mismatch.");
 check(replacementPayment?.mode === browser.replacementPaymentMode, "Replacement payment mode mismatch.");
 check(payments.length === 2, "Expected exactly one traced payment per bill.");
+check(paymentIds.every((paymentId) => payments.some((payment) => payment.id === paymentId)), "A reported payment is missing or an unreported payment replaced it.");
 check(lines.length === 2 && originalLine?.type === "session_charge" && replacementLine?.type === "session_charge", "Expected one session line per bill.");
 check(originalLine?.linked_session_id === sessionId && replacementLine?.linked_session_id === sessionId, "Session linkage was not preserved.");
 check(Number(originalLine?.unit_price) === Number(replacementLine?.unit_price), "Replacement changed the immutable normalized session rate.");
 check(session.data?.status === "closed" && session.data?.close_disposition === "billed" && session.data?.closed_bill_id === originalBillId, "Original session lifecycle changed.");
 check(audits.filter((audit) => audit.action === "bill_replaced" && audit.entity_id === replacementBillId).length === 1, "Replacement audit mismatch.");
 check(events.length === 2 && events.every((event) => event.event_type === "financial_checkout_committed_v2"), "Compact event evidence mismatch.");
+check(eventIds.every((eventId) => events.some((event) => event.id === eventId)), "A reported compact event is missing or an unreported event replaced it.");
 check(
   mutationResults.length === 2
     && mutationResults.every((result) => mutationIds.includes(result?.mutation_id))
