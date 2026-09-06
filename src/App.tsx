@@ -471,6 +471,7 @@ export default function App() {
   const [hasCachedAppData] = useState(() => hasStoredAppData({ useStoredCache: !backendConfigured }));
   const [remoteError, setRemoteError] = useState("");
   const [remoteVersion, setRemoteVersion] = useState(0);
+  const [latestActivityEventId, setLatestActivityEventId] = useState("none");
   const [remoteSaving, setRemoteSaving] = useState(false);
   const [blockingActionLabel, setBlockingActionLabel] = useState<string | null>(null);
   const [pendingOperationalMutations, setPendingOperationalMutations] = useState<OperationalMutation[]>(() =>
@@ -884,6 +885,9 @@ export default function App() {
     saveAppData(rebased.appData);
     remoteVersionRef.current = snapshot.version;
     setRemoteVersion(snapshot.version);
+    if (snapshot.sourceEventId) {
+      setLatestActivityEventId(snapshot.sourceEventId);
+    }
     if (snapshot.refreshedSlices?.includes("bills")) {
       setNormalizedBillRegisterRefreshSignal((previous) => previous + 1);
     }
@@ -1228,7 +1232,7 @@ export default function App() {
   const canEditSessionTiming = activeUser?.role === "admin";
   const canEditSessionCustomerDetails = activeUser?.role === "admin" || activeUser?.role === "manager" || activeUser?.role === "receptionist"; // all roles: admin, manager, receptionist can edit customer details
   const isManagerReadOnly = activeUser?.role === "manager";
-  const activityRefreshKey = `${remoteVersion}:${appData.auditLogs[0]?.id ?? "none"}:${appData.auditLogs.length}`;
+  const activityRefreshKey = `${remoteVersion}:${latestActivityEventId}:${appData.auditLogs[0]?.id ?? "none"}:${appData.auditLogs.length}`;
   const dashboardActivity = useActivityFeed({
     active: Boolean(activeUser && activeTab === "dashboard"),
     remoteEnabled: backendConfigured && BACKEND_FEATURE_FLAGS.activityFeed,
@@ -8136,7 +8140,7 @@ export default function App() {
         {activeTab === "activity" && canAccessTab("activity") && (
           <ActivityPanel
             events={detailedActivity.items}
-            users={appData.users.filter((user) => user.active)}
+            actors={detailedActivity.actors}
             filters={activityFilters}
             loading={detailedActivity.loading}
             loadingMore={detailedActivity.loadingMore}

@@ -24,6 +24,7 @@ function formatActivityTimestamp(value: string): string {
 }
 
 export function ActivityEventRow({ event, compact = false }: { event: ActivityEvent; compact?: boolean }) {
+  const localRecord = event.details.source === "local_audit_log";
   const actorMeta = [event.actorRole?.toUpperCase(), event.actorUsername ? `@${event.actorUsername}` : ""]
     .filter(Boolean)
     .join(" · ");
@@ -49,7 +50,15 @@ export function ActivityEventRow({ event, compact = false }: { event: ActivityEv
           {(event.entityLabel || event.entityId) && (
             <span>{event.entityLabel || event.entityId}</span>
           )}
-          {event.legacy && <span className="activity-legacy-badge" title="Imported from the historical audit record">Historical</span>}
+          {event.legacy && (
+            <span
+              className="activity-legacy-badge"
+              title="Imported evidence. Staff and entity labels use the current records because historical labels were not stored."
+            >
+              Historical
+            </span>
+          )}
+          {localRecord && <span className="activity-legacy-badge" title="Recorded in this local browser">Local record</span>}
         </div>
         {!compact && (
           <details className="activity-technical-details">

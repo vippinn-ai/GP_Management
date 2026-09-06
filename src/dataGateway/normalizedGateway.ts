@@ -459,6 +459,7 @@ export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): 
                 refreshedSlices: overlay.refreshedSlices
               };
             }
+            lastSnapshot = { ...lastSnapshot, sourceEventId: event.id };
             recordCompactRealtimeTelemetry({
               eventPayload: event,
               eventType: event.event_type,

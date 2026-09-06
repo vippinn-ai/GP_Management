@@ -3169,6 +3169,8 @@ span.catalog-card-icon-large {
 }
 
 .activity-event {
+  contain-intrinsic-size: auto 7rem;
+  content-visibility: auto;
   display: grid;
   gap: 0.9rem;
   grid-template-columns: 0.7rem minmax(0, 1fr);
@@ -3251,10 +3253,13 @@ span.catalog-card-icon-large {
 }
 
 .activity-technical-details summary {
+  align-items: center;
   color: #277356;
   cursor: pointer;
+  display: inline-flex;
   font-size: 0.75rem;
   font-weight: 700;
+  min-height: 2rem;
 }
 
 .activity-technical-details pre {

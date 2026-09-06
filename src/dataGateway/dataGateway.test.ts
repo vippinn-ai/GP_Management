@@ -1043,6 +1043,7 @@ describe("app_state data gateway", () => {
     await vi.waitFor(() => expect(onChange).toHaveBeenCalledTimes(1));
     expect(onChange.mock.calls[0][0]).toMatchObject({
       version: 21,
+      sourceEventId: "event-1",
       appData: {
         customerTabs: [expect.objectContaining({ id: "tab-1", customerName: "Realtime Customer" })]
       }
@@ -1054,6 +1055,55 @@ describe("app_state data gateway", () => {
       { sessionIds: [], customerTabIds: ["tab-1"] },
       client
     );
+  });
+
+  it("carries the event identity through a realtime full refresh", async () => {
+    const baseSnapshot = createSnapshot(20);
+    const refreshedSnapshot = createSnapshot(20);
+    let realtimeHandler: ((payload: { new: unknown }) => void) | undefined;
+    const channel = {
+      on: vi.fn((_kind, _config, handler) => {
+        realtimeHandler = handler;
+        return channel;
+      }),
+      subscribe: vi.fn().mockReturnThis()
+    };
+    const client = {
+      channel: vi.fn(() => channel),
+      removeChannel: vi.fn()
+    };
+    backendMocks.getSupabaseClient.mockReturnValue(client);
+    backendMocks.loadRemoteAppDataSnapshot
+      .mockResolvedValueOnce(baseSnapshot)
+      .mockResolvedValueOnce(refreshedSnapshot);
+    normalizedReadMocks.loadNormalizedAppDataOverlay.mockResolvedValue({ appData: {}, organizationId: "org-primary" });
+    const gateway = createRemoteDataGateway({
+      ...DEFAULT_BACKEND_FEATURE_FLAGS,
+      normalizedRealtime: true
+    });
+    const onChange = vi.fn();
+
+    await gateway.loadAppDataSnapshot();
+    gateway.subscribeToAppData(onChange);
+    realtimeHandler?.({
+      new: {
+        organization_id: "org-primary",
+        id: "event-full-refresh",
+        event_type: "app_state_saved",
+        entity_type: "app_state",
+        entity_id: "primary",
+        created_at: "2026-09-06T14:00:00.000Z",
+        metadata: { requires_full_refresh: true, app_state_version: 20 }
+      }
+    });
+
+    await vi.waitFor(() => expect(onChange).toHaveBeenCalledTimes(1));
+    expect(onChange.mock.calls[0][0]).toMatchObject({
+      version: 20,
+      sourceEventId: "event-full-refresh",
+      refreshedSlices: ["full_app_state"]
+    });
+    expect(backendMocks.loadRemoteAppDataSnapshot).toHaveBeenCalledTimes(2);
   });
 
   it("marks compact financial realtime snapshots so screen-specific bill readers refetch", async () => {
@@ -1105,6 +1155,7 @@ describe("app_state data gateway", () => {
     expect(onChange.mock.calls[0][0]).toMatchObject({
       version: 41,
       sourceMutationId: "financial-adjustment-1",
+      sourceEventId: "event-financial",
       refreshedSlices: ["bills"],
       appData: {
         bills: [expect.objectContaining({ id: "bill-replacement" })]

@@ -1,0 +1,31 @@
+## ADDED Requirements
+
+### Requirement: Authorized roles have read-only activity access
+Active admin, manager, and receptionist organization members SHALL be able to read the Activity page, and no Activity UI control SHALL mutate business or evidence data.
+
+#### Scenario: Organization isolation
+- **WHEN** an anonymous, inactive, or different-organization caller requests activity
+- **THEN** the reader denies the request and returns no cross-organization records
+
+#### Scenario: Historical staff filter
+- **WHEN** an actor is inactive or no longer present in the current staff list but has retained activity snapshots
+- **THEN** that actor remains available in the server-provided actor filter and can be selected by immutable actor ID
+
+### Requirement: Activity filters and pagination are server-side
+The reader SHALL support bounded keyset pagination plus search, actor, category, action, entity type/ID, date, ISO timestamp, and IST time-of-day filters.
+
+#### Scenario: Equal timestamps
+- **WHEN** multiple records share the same timestamp across a page boundary
+- **THEN** the `(occurred_at, id)` cursor returns each record exactly once with no gaps or duplicates
+
+#### Scenario: Cross-midnight time range
+- **WHEN** a time filter starts later than it ends
+- **THEN** the reader interprets it as an IST range crossing midnight
+
+### Requirement: Historical limitations are explicit
+Legacy actor timestamps SHALL be preserved, while mutable current staff/entity lookup labels SHALL be identified as lookup provenance rather than historical fact.
+
+#### Scenario: Legacy row rendering
+- **WHEN** a backfilled row is displayed
+- **THEN** the UI marks it Historical and explains that current labels were used where immutable historical labels did not exist
+

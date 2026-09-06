@@ -4,6 +4,7 @@ import {
   buildLocalActivityEvents,
   loadActivityFeedPage,
   queryLocalActivityFeed,
+  type ActivityActorOption,
   type ActivityEvent,
   type ActivityFeedCursor,
   type ActivityFeedFilters
@@ -23,6 +24,7 @@ export function useActivityFeed(params: {
   const { active, remoteEnabled, pageSize, auditLogs, users, refreshKey = "" } = params;
   const filters = params.filters ?? EMPTY_ACTIVITY_FILTERS;
   const [items, setItems] = useState<ActivityEvent[]>([]);
+  const [actors, setActors] = useState<ActivityActorOption[]>([]);
   const [cursor, setCursor] = useState<ActivityFeedCursor | null>(null);
   const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -42,12 +44,14 @@ export function useActivityFeed(params: {
     setLoading(true);
     setError("");
     setItems([]);
+    setActors([]);
     setCursor(null);
     setHasMore(false);
     try {
       const page = await readPage(null);
       if (version !== requestVersion.current) return;
       setItems(page.items);
+      setActors(page.actors);
       setCursor(page.nextCursor);
       setHasMore(page.hasMore);
     } catch (readError) {
@@ -89,5 +93,5 @@ export function useActivityFeed(params: {
     };
   }, [reload, refreshKey]);
 
-  return { items, hasMore, loading, loadingMore, error, reload, loadMore };
+  return { items, actors, hasMore, loading, loadingMore, error, reload, loadMore };
 }

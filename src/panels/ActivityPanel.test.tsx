@@ -23,7 +23,7 @@ const event = {
 function renderPanel(overrides: Partial<Parameters<typeof ActivityPanel>[0]> = {}) {
   const props: Parameters<typeof ActivityPanel>[0] = {
     events: [event],
-    users: [{ id: "user-1", name: "Reception Desk", username: "desk", role: "receptionist", active: true }],
+    actors: [{ userId: "user-1", name: "Reception Desk", username: "desk", role: "receptionist" }],
     filters: {},
     loading: false,
     loadingMore: false,
@@ -66,5 +66,15 @@ describe("ActivityPanel", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("Read failed");
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     expect(props.onRefresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps inactive historical staff available in the actor filter", () => {
+    renderPanel({
+      actors: [
+        { userId: "user-1", name: "Reception Desk", username: "desk", role: "receptionist" },
+        { userId: "user-old", name: "Former Manager", username: "former", role: "manager" }
+      ]
+    });
+    expect(screen.getByRole("option", { name: "Former Manager (manager)" })).toBeInTheDocument();
   });
 });

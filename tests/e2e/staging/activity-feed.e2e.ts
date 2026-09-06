@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Request } from "@playwright/test";
 import { attachJson, capturePageErrors, credentials, signIn } from "./support/app";
 
 const runId = process.env.E2E_RUN_ID ?? "missing-run-id";
@@ -6,10 +6,16 @@ const runId = process.env.E2E_RUN_ID ?? "missing-run-id";
 test("activity ledger is readable, filterable, stable, and reachable from dashboard", async ({ page }, testInfo) => {
   const errors = capturePageErrors(page);
   const activityResponses: Array<{ status: number; durationMs: number }> = [];
+  const activityRequestStartedAt = new WeakMap<Request, number>();
+  page.on("request", (request) => {
+    if (request.url().includes("/rest/v1/rpc/list_activity_events")) {
+      activityRequestStartedAt.set(request, Date.now());
+    }
+  });
   page.on("response", (response) => {
     if (response.url().includes("/rest/v1/rpc/list_activity_events")) {
-      const timing = response.request().timing();
-      activityResponses.push({ status: response.status(), durationMs: Math.max(0, timing.responseEnd) });
+      const startedAt = activityRequestStartedAt.get(response.request());
+      activityResponses.push({ status: response.status(), durationMs: startedAt ? Date.now() - startedAt : -1 });
     }
   });
 
@@ -39,6 +45,11 @@ test("activity ledger is readable, filterable, stable, and reachable from dashbo
   await expect.poll(() => activityResponses.length).toBeGreaterThan(beforeApplyCount);
   await expect(search).toHaveValue("BI");
   expect(await inputHandle.evaluate((element) => element.isConnected)).toBe(true);
+  const filteredRows = panel.locator(".activity-event");
+  await expect(filteredRows.first()).toBeVisible();
+  const filteredText = await filteredRows.allTextContents();
+  expect(filteredText.length).toBeGreaterThan(0);
+  expect(filteredText.every((row) => /bi/i.test(row))).toBe(true);
 
   await panel.getByRole("button", { name: "Clear", exact: true }).click();
   await expect(search).toHaveValue("");

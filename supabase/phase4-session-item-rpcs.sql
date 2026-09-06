@@ -361,7 +361,13 @@ begin
       'mutation_kind', v_mutation_kind,
       'session_item_id', v_session_item_id,
       'stock_movement_id', v_stock_movement_id,
-      'audit_log_id', v_audit_log_id
+      'audit_log_id', v_audit_log_id,
+      'activity_detail', jsonb_build_object(
+        'item_name', coalesce(nullif(v_item->>'name', ''), 'Session item'),
+        'quantity', v_quantity,
+        'unit_price', coalesce(nullif(v_item->>'unitPrice', '')::numeric, 0),
+        'total', v_quantity * coalesce(nullif(v_item->>'unitPrice', '')::numeric, 0)
+      )
     )
   )
   returning id into v_event_id;
@@ -405,6 +411,9 @@ declare
   v_audit_log jsonb := payload #> '{payload,auditLog}';
   v_session_status text;
   v_existing_item_id text;
+  v_item_name text;
+  v_item_quantity numeric;
+  v_item_unit_price numeric;
   v_event_id text;
   v_event_metadata jsonb := '{}'::jsonb;
   v_stock_movement_id text := nullif(v_stock_movement->>'id', '');
@@ -519,8 +528,8 @@ begin
     );
   end if;
 
-  select session_items.id
-  into v_existing_item_id
+  select session_items.id, session_items.name, session_items.quantity, session_items.unit_price
+  into v_existing_item_id, v_item_name, v_item_quantity, v_item_unit_price
   from public.session_items
   where session_items.organization_id = v_organization_id
     and session_items.session_id = v_session_id
@@ -629,7 +638,13 @@ begin
       'mutation_kind', v_mutation_kind,
       'session_item_id', v_session_item_id,
       'stock_movement_id', v_stock_movement_id,
-      'audit_log_id', v_audit_log_id
+      'audit_log_id', v_audit_log_id,
+      'activity_detail', jsonb_build_object(
+        'item_name', v_item_name,
+        'quantity', v_item_quantity,
+        'unit_price', v_item_unit_price,
+        'total', v_item_quantity * v_item_unit_price
+      )
     )
   )
   returning id into v_event_id;

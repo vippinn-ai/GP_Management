@@ -426,6 +426,9 @@ declare
   v_available numeric := 0;
   v_existing_line_id text;
   v_changed_line_id text;
+  v_activity_item_name text;
+  v_activity_resulting_quantity numeric;
+  v_activity_unit_price numeric;
   v_event_id text;
   v_event_metadata jsonb := '{}'::jsonb;
   v_audit_log_id text := nullif(v_audit_log->>'id', '');
@@ -688,6 +691,13 @@ begin
   where customer_tabs.organization_id = v_organization_id
     and customer_tabs.id = v_customer_tab_id;
 
+  select customer_tab_items.name, customer_tab_items.quantity, customer_tab_items.unit_price
+  into v_activity_item_name, v_activity_resulting_quantity, v_activity_unit_price
+  from public.customer_tab_items
+  where customer_tab_items.organization_id = v_organization_id
+    and customer_tab_items.customer_tab_id = v_customer_tab_id
+    and customer_tab_items.id = v_changed_line_id;
+
   if v_audit_log_id is not null then
     insert into public.audit_logs (
       organization_id,
@@ -732,7 +742,14 @@ begin
       'mutation_id', v_mutation_id,
       'mutation_kind', v_mutation_kind,
       'line_id', v_changed_line_id,
-      'audit_log_id', v_audit_log_id
+      'audit_log_id', v_audit_log_id,
+      'activity_detail', jsonb_build_object(
+        'item_name', v_activity_item_name,
+        'quantity', v_quantity_delta,
+        'resulting_quantity', v_activity_resulting_quantity,
+        'unit_price', v_activity_unit_price,
+        'total', v_quantity_delta * v_activity_unit_price
+      )
     )
   )
   returning id into v_event_id;
@@ -779,6 +796,8 @@ declare
   v_sale_variant_id text;
   v_stock_units_per_sale numeric;
   v_combo_application_id text;
+  v_previous_quantity numeric;
+  v_line_unit_price numeric;
   v_item_name text;
   v_item_stock numeric;
   v_session_reserved numeric := 0;
@@ -887,14 +906,18 @@ begin
     customer_tab_items.sold_as_pack_of,
     customer_tab_items.sale_variant_id,
     coalesce(customer_tab_items.stock_units_per_sale, customer_tab_items.sold_as_pack_of, 1),
-    customer_tab_items.combo_application_id
+    customer_tab_items.combo_application_id,
+    customer_tab_items.quantity,
+    customer_tab_items.unit_price
   into
     v_inventory_item_id,
     v_line_name,
     v_sold_as_pack_of,
     v_sale_variant_id,
     v_stock_units_per_sale,
-    v_combo_application_id
+    v_combo_application_id,
+    v_previous_quantity,
+    v_line_unit_price
   from public.customer_tab_items
   where customer_tab_items.organization_id = v_organization_id
     and customer_tab_items.customer_tab_id = v_customer_tab_id
@@ -1008,7 +1031,15 @@ begin
       'mutation_id', v_mutation_id,
       'mutation_kind', v_mutation_kind,
       'line_id', v_line_id,
-      'quantity', v_quantity
+      'quantity', v_quantity,
+      'activity_detail', jsonb_build_object(
+        'item_name', v_line_name,
+        'previous_quantity', v_previous_quantity,
+        'quantity', v_quantity,
+        'unit_price', v_line_unit_price,
+        'previous_total', v_previous_quantity * v_line_unit_price,
+        'total', v_quantity * v_line_unit_price
+      )
     )
   )
   returning id into v_event_id;
@@ -1050,6 +1081,9 @@ declare
   v_tab_status text;
   v_existing_line_id text;
   v_combo_application_id text;
+  v_line_name text;
+  v_line_quantity numeric;
+  v_line_unit_price numeric;
   v_event_id text;
   v_event_metadata jsonb := '{}'::jsonb;
   v_audit_log_id text := nullif(v_audit_log->>'id', '');
@@ -1155,8 +1189,13 @@ begin
     );
   end if;
 
-  select customer_tab_items.id, customer_tab_items.combo_application_id
-  into v_existing_line_id, v_combo_application_id
+  select
+    customer_tab_items.id,
+    customer_tab_items.combo_application_id,
+    customer_tab_items.name,
+    customer_tab_items.quantity,
+    customer_tab_items.unit_price
+  into v_existing_line_id, v_combo_application_id, v_line_name, v_line_quantity, v_line_unit_price
   from public.customer_tab_items
   where customer_tab_items.organization_id = v_organization_id
     and customer_tab_items.customer_tab_id = v_customer_tab_id
@@ -1233,7 +1272,13 @@ begin
       'mutation_id', v_mutation_id,
       'mutation_kind', v_mutation_kind,
       'line_id', v_line_id,
-      'audit_log_id', v_audit_log_id
+      'audit_log_id', v_audit_log_id,
+      'activity_detail', jsonb_build_object(
+        'item_name', v_line_name,
+        'quantity', v_line_quantity,
+        'unit_price', v_line_unit_price,
+        'total', v_line_quantity * v_line_unit_price
+      )
     )
   )
   returning id into v_event_id;

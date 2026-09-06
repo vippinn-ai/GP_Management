@@ -41,6 +41,13 @@ export interface ActivityEvent {
   legacy: boolean;
 }
 
+export interface ActivityActorOption {
+  userId: string;
+  name: string;
+  username?: string;
+  role?: string;
+}
+
 export interface ActivityFeedFilters {
   search?: string;
   actorUserId?: string;
@@ -59,6 +66,7 @@ export interface ActivityFeedCursor {
 
 export interface ActivityFeedPage {
   items: ActivityEvent[];
+  actors: ActivityActorOption[];
   hasMore: boolean;
   nextCursor: ActivityFeedCursor | null;
 }
@@ -138,6 +146,17 @@ export function mapActivityFeedPage(value: unknown): ActivityFeedPage {
     : null;
   return {
     items: (Array.isArray(root.items) ? root.items : []).map(mapActivityEvent),
+    actors: (Array.isArray(root.actors) ? root.actors : []).flatMap((value) => {
+      const actor = toRecord(value);
+      const userId = toOptionalString(actor.user_id);
+      if (!userId) return [];
+      return [{
+        userId,
+        name: toStringValue(actor.name, "Unknown user"),
+        username: toOptionalString(actor.username),
+        role: toOptionalString(actor.role)
+      }];
+    }),
     hasMore: toBooleanValue(root.has_more),
     nextCursor
   };
@@ -202,7 +221,7 @@ export function buildLocalActivityEvents(auditLogs: AuditLog[], users: User[]): 
         summary: entry.message,
         details: { source: "local_audit_log", audit_id: entry.id },
         sourceKind: "audit_log",
-        legacy: true
+        legacy: false
       };
     })
     .sort((left, right) => right.occurredAt.localeCompare(left.occurredAt) || right.id.localeCompare(left.id));
@@ -256,8 +275,16 @@ export function queryLocalActivityFeed(
   const items = filtered.slice(start, start + limit);
   const hasMore = start + limit < filtered.length;
   const tail = items.at(-1);
+  const actors = Array.from(new Map(activityEvents.flatMap((entry) => entry.actorUserId ? [[entry.actorUserId, {
+    userId: entry.actorUserId,
+    name: entry.actorName,
+    username: entry.actorUsername,
+    role: entry.actorRole
+  }] as const] : [])).values())
+    .sort((left, right) => left.name.localeCompare(right.name) || left.userId.localeCompare(right.userId));
   return {
     items,
+    actors,
     hasMore,
     nextCursor: hasMore && tail ? { occurredAt: tail.occurredAt, id: tail.id } : null
   };

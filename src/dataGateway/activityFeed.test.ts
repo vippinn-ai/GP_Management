@@ -26,6 +26,7 @@ describe("activity feed data gateway", () => {
         source_kind: "audit_log",
         legacy: false
       }],
+      actors: [{ user_id: "actor-1", name: "Vipin", username: "vipin", role: "admin" }],
       has_more: true,
       next_cursor: { occurred_at: "2026-09-06T10:00:00Z", id: "activity-1" }
     });
@@ -37,6 +38,7 @@ describe("activity feed data gateway", () => {
       entityLabel: "BILL-1 · Vansh",
       legacy: false
     });
+    expect(page.actors).toEqual([{ userId: "actor-1", name: "Vipin", username: "vipin", role: "admin" }]);
     expect(page.nextCursor).toEqual({ occurredAt: "2026-09-06T10:00:00Z", id: "activity-1" });
   });
 
@@ -84,5 +86,6 @@ describe("activity feed data gateway", () => {
     expect(first.hasMore).toBe(true);
     expect(second.items.map((entry) => entry.id)).toEqual(["a1"]);
     expect(second.hasMore).toBe(false);
+    expect(second.actors.map((actor) => actor.userId)).toEqual(["u2", "u1"]);
   });
 });

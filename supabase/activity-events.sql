@@ -10,7 +10,7 @@ create table if not exists public.activity_events (
   id text primary key default ('activity-' || gen_random_uuid()::text),
   organization_id text not null references public.organizations (id) on delete cascade,
   occurred_at timestamptz not null default now(),
-  actor_user_id uuid references public.profiles (id) on delete set null,
+  actor_user_id uuid,
   actor_name_snapshot text,
   actor_username_snapshot text,
   actor_role_snapshot text,
@@ -22,6 +22,7 @@ create table if not exists public.activity_events (
   summary text not null,
   details jsonb not null default '{}'::jsonb,
   mutation_id text,
+  audit_reference_ids text[] not null default '{}'::text[],
   source_kind text not null check (source_kind in ('audit_log', 'operational_event')),
   source_id text not null,
   legacy boolean not null default false,
@@ -39,6 +40,11 @@ create table if not exists public.activity_events (
   unique (organization_id, source_kind, source_id)
 );
 
+alter table public.activity_events
+  add column if not exists audit_reference_ids text[] not null default '{}'::text[];
+alter table public.activity_events
+  drop constraint if exists activity_events_actor_user_id_fkey;
+
 create index if not exists activity_events_org_cursor_idx
   on public.activity_events (organization_id, occurred_at desc, id desc);
 create index if not exists activity_events_org_actor_cursor_idx
@@ -49,6 +55,8 @@ create index if not exists activity_events_org_entity_cursor_idx
   on public.activity_events (organization_id, entity_type, entity_id, occurred_at desc, id desc);
 create index if not exists activity_events_search_trgm_idx
   on public.activity_events using gin (search_text gin_trgm_ops);
+create index if not exists activity_events_audit_references_idx
+  on public.activity_events using gin (audit_reference_ids);
 
 alter table public.activity_events enable row level security;
 
@@ -90,6 +98,85 @@ language sql
 immutable
 as $$
   select initcap(replace(coalesce(nullif(p_value, ''), 'activity'), '_', ' '));
+$$;
+
+create or replace function public.resolve_activity_summary(
+  p_event_type text,
+  p_detail jsonb
+)
+returns text
+language plpgsql
+immutable
+as $$
+declare
+  v_item_name text := nullif(p_detail->>'item_name', '');
+  v_quantity text := nullif(p_detail->>'quantity', '');
+  v_previous_quantity text := nullif(p_detail->>'previous_quantity', '');
+  v_unit_price text := nullif(p_detail->>'unit_price', '');
+begin
+  if p_event_type in ('add_session_item', 'add_customer_tab_item') and v_item_name is not null then
+    return format(
+      'Added %s x %s%s.',
+      coalesce(v_quantity, '1'),
+      v_item_name,
+      case when v_unit_price is null then '' else format(' at Rs %s each', v_unit_price) end
+    );
+  end if;
+  if p_event_type in ('remove_session_item', 'remove_customer_tab_item') and v_item_name is not null then
+    return format('Removed %s x %s.', coalesce(v_quantity, '1'), v_item_name);
+  end if;
+  if p_event_type = 'update_customer_tab_item_quantity' and v_item_name is not null then
+    return format(
+      'Changed %s quantity from %s to %s.',
+      v_item_name,
+      coalesce(v_previous_quantity, '?'),
+      coalesce(v_quantity, '?')
+    );
+  end if;
+  return public.activity_humanize(p_event_type);
+end;
+$$;
+
+create or replace function public.extract_activity_audit_reference_ids(p_metadata jsonb)
+returns text[]
+language plpgsql
+immutable
+as $$
+declare
+  v_references text[] := '{}'::text[];
+  v_value text;
+begin
+  if p_metadata is null or jsonb_typeof(p_metadata) <> 'object' then
+    return v_references;
+  end if;
+
+  v_value := nullif(p_metadata->>'audit_log_id', '');
+  if v_value is not null then
+    v_references := array_append(v_references, v_value);
+  end if;
+
+  if jsonb_typeof(p_metadata->'audit_log_ids') = 'array' then
+    v_references := v_references || array(
+      select value
+      from jsonb_array_elements_text(p_metadata->'audit_log_ids') as values_(value)
+      where nullif(value, '') is not null
+    );
+  end if;
+
+  if jsonb_typeof(p_metadata #> '{changed_rows,audit_logs}') = 'array' then
+    v_references := v_references || array(
+      select value
+      from jsonb_array_elements_text(p_metadata #> '{changed_rows,audit_logs}') as values_(value)
+      where nullif(value, '') is not null
+    );
+  end if;
+
+  return coalesce(array(
+    select distinct value
+    from unnest(v_references) as values_(value)
+    order by value
+  ), '{}'::text[]);
+end;
 $$;
 
 create or replace function public.resolve_activity_entity_label(
@@ -200,6 +287,19 @@ begin
 end;
 $$;
 
+create or replace function public.prevent_authenticated_activity_source_delete()
+returns trigger
+language plpgsql
+set search_path = public
+as $$
+begin
+  if auth.uid() is not null then
+    raise exception 'Activity evidence cannot be deleted by an authenticated application user.' using errcode = '42501';
+  end if;
+  return old;
+end;
+$$;
+
 create or replace function public.append_activity_from_audit_log()
 returns trigger
 language plpgsql
@@ -217,10 +317,12 @@ begin
   end if;
 
   if v_actor is not null then
-    select name, username, role::text
+    select profile.name, profile.username, coalesce(member.role::text, profile.role::text)
     into v_name, v_username, v_role
-    from public.profiles
-    where id = v_actor;
+    from public.profiles profile
+    left join public.organization_members member
+      on member.organization_id = new.organization_id and member.user_id = profile.id
+    where profile.id = v_actor;
   end if;
 
   insert into public.activity_events (
@@ -278,26 +380,21 @@ declare
   v_name text;
   v_username text;
   v_role text;
-  v_has_audit_reference boolean;
+  v_audit_reference_ids text[];
 begin
-  v_has_audit_reference := coalesce(nullif(new.metadata->>'audit_log_id', ''), '') <> ''
-    or jsonb_typeof(new.metadata #> '{changed_rows,audit_logs}') = 'array'
-       and jsonb_array_length(new.metadata #> '{changed_rows,audit_logs}') > 0;
-
-  -- An audit row is the canonical presentation record when both sources exist.
-  if v_has_audit_reference then
-    return new;
-  end if;
+  v_audit_reference_ids := public.extract_activity_audit_reference_ids(new.metadata);
 
   if new.created_by ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$' then
     v_actor := new.created_by::uuid;
   end if;
 
   if v_actor is not null then
-    select name, username, role::text
+    select profile.name, profile.username, coalesce(member.role::text, profile.role::text)
     into v_name, v_username, v_role
-    from public.profiles
-    where id = v_actor;
+    from public.profiles profile
+    left join public.organization_members member
+      on member.organization_id = new.organization_id and member.user_id = profile.id
+    where profile.id = v_actor;
   end if;
 
   insert into public.activity_events (
@@ -315,6 +412,7 @@ begin
     summary,
     details,
     mutation_id,
+    audit_reference_ids,
     source_kind,
     source_id,
     legacy
@@ -330,13 +428,14 @@ begin
     new.entity_type,
     new.entity_id,
     public.resolve_activity_entity_label(new.organization_id, new.entity_type, new.entity_id),
-    public.activity_humanize(new.event_type),
+    public.resolve_activity_summary(new.event_type, coalesce(new.metadata->'activity_detail', '{}'::jsonb)),
     jsonb_strip_nulls(jsonb_build_object(
       'event_id', new.id,
       'source', 'operational_event',
       'entity_version', new.entity_version
-    )),
+    ) || coalesce(new.metadata->'activity_detail', '{}'::jsonb)),
     nullif(new.metadata->>'mutation_id', ''),
+    v_audit_reference_ids,
     'operational_event',
     new.id,
     false
@@ -347,74 +446,8 @@ begin
 end;
 $$;
 
--- Historical data is explicitly marked legacy. Actor/time values are preserved,
--- never guessed or rewritten during backfill.
-insert into public.activity_events (
-  organization_id, occurred_at, actor_user_id,
-  actor_name_snapshot, actor_username_snapshot, actor_role_snapshot,
-  action, category, entity_type, entity_id, entity_label, summary, details,
-  source_kind, source_id, legacy
-)
-select
-  audit.organization_id,
-  coalesce(audit.audit_at, audit.created_at),
-  profile.id,
-  profile.name,
-  profile.username,
-  profile.role::text,
-  audit.action,
-  public.activity_category(audit.action, audit.entity_type),
-  audit.entity_type,
-  audit.entity_id,
-  public.resolve_activity_entity_label(audit.organization_id, audit.entity_type, audit.entity_id),
-  coalesce(nullif(audit.message, ''), public.activity_humanize(audit.action)),
-  jsonb_build_object('audit_id', audit.id, 'source', 'audit_log'),
-  'audit_log',
-  audit.id,
-  true
-from public.audit_logs audit
-left join public.profiles profile
-  on profile.id::text = audit.user_id
-on conflict (organization_id, source_kind, source_id) do nothing;
-
-insert into public.activity_events (
-  organization_id, occurred_at, actor_user_id,
-  actor_name_snapshot, actor_username_snapshot, actor_role_snapshot,
-  action, category, entity_type, entity_id, entity_label, summary, details,
-  mutation_id, source_kind, source_id, legacy
-)
-select
-  event.organization_id,
-  event.created_at,
-  profile.id,
-  profile.name,
-  profile.username,
-  profile.role::text,
-  event.event_type,
-  public.activity_category(event.event_type, event.entity_type),
-  event.entity_type,
-  event.entity_id,
-  public.resolve_activity_entity_label(event.organization_id, event.entity_type, event.entity_id),
-  public.activity_humanize(event.event_type),
-  jsonb_strip_nulls(jsonb_build_object(
-    'event_id', event.id,
-    'source', 'operational_event',
-    'entity_version', event.entity_version
-  )),
-  nullif(event.metadata->>'mutation_id', ''),
-  'operational_event',
-  event.id,
-  true
-from public.operational_events event
-left join public.profiles profile
-  on profile.id::text = event.created_by
-where not (
-  coalesce(nullif(event.metadata->>'audit_log_id', ''), '') <> ''
-  or jsonb_typeof(event.metadata #> '{changed_rows,audit_logs}') = 'array'
-     and jsonb_array_length(event.metadata #> '{changed_rows,audit_logs}') > 0
-)
-on conflict (organization_id, source_kind, source_id) do nothing;
-
+-- Install capture before taking the backfill snapshots. Inserts that wait on the
+-- trigger DDL lock are captured normally after this transaction commits.
 drop trigger if exists audit_logs_canonical_identity on public.audit_logs;
 create trigger audit_logs_canonical_identity
 before insert on public.audit_logs
@@ -430,6 +463,11 @@ create trigger zz_audit_logs_preserve_immutable
 before update on public.audit_logs
 for each row execute function public.preserve_audit_log_immutability();
 
+drop trigger if exists zz_audit_logs_prevent_delete on public.audit_logs;
+create trigger zz_audit_logs_prevent_delete
+before delete on public.audit_logs
+for each row execute function public.prevent_authenticated_activity_source_delete();
+
 drop trigger if exists operational_events_canonical_identity on public.operational_events;
 create trigger operational_events_canonical_identity
 before insert on public.operational_events
@@ -439,6 +477,91 @@ drop trigger if exists operational_events_append_activity on public.operational_
 create trigger operational_events_append_activity
 after insert on public.operational_events
 for each row execute function public.append_activity_from_operational_event();
+
+drop trigger if exists zz_operational_events_prevent_delete on public.operational_events;
+create trigger zz_operational_events_prevent_delete
+before delete on public.operational_events
+for each row execute function public.prevent_authenticated_activity_source_delete();
+
+-- Every source is retained as evidence. Historical data is explicitly marked legacy. Actor/time values are preserved,
+-- never guessed or rewritten during backfill. Current profile/entity values are
+-- lookup labels only and their provenance is exposed in details.
+insert into public.activity_events (
+  organization_id, occurred_at, actor_user_id,
+  actor_name_snapshot, actor_username_snapshot, actor_role_snapshot,
+  action, category, entity_type, entity_id, entity_label, summary, details,
+  source_kind, source_id, legacy
+)
+select
+  audit.organization_id,
+  coalesce(audit.audit_at, audit.created_at),
+  profile.id,
+  profile.name,
+  profile.username,
+  coalesce(member.role::text, profile.role::text),
+  audit.action,
+  public.activity_category(audit.action, audit.entity_type),
+  audit.entity_type,
+  audit.entity_id,
+  public.resolve_activity_entity_label(audit.organization_id, audit.entity_type, audit.entity_id),
+  coalesce(nullif(audit.message, ''), public.activity_humanize(audit.action)),
+  jsonb_build_object(
+    'audit_id', audit.id,
+    'source', 'audit_log',
+    'legacy_identity_provenance', 'current_membership_profile_lookup',
+    'legacy_entity_label_provenance', 'current_entity_lookup'
+  ),
+  'audit_log',
+  audit.id,
+  true
+from public.audit_logs audit
+left join public.profiles profile
+  on profile.id::text = audit.user_id
+left join public.organization_members member
+  on member.organization_id = audit.organization_id and member.user_id = profile.id
+on conflict (organization_id, source_kind, source_id) do nothing;
+
+insert into public.activity_events (
+  organization_id, occurred_at, actor_user_id,
+  actor_name_snapshot, actor_username_snapshot, actor_role_snapshot,
+  action, category, entity_type, entity_id, entity_label, summary, details,
+  mutation_id, audit_reference_ids, source_kind, source_id, legacy
+)
+select
+  event.organization_id,
+  event.created_at,
+  profile.id,
+  profile.name,
+  profile.username,
+  coalesce(member.role::text, profile.role::text),
+  event.event_type,
+  public.activity_category(event.event_type, event.entity_type),
+  event.entity_type,
+  event.entity_id,
+  public.resolve_activity_entity_label(event.organization_id, event.entity_type, event.entity_id),
+  public.resolve_activity_summary(event.event_type, coalesce(event.metadata->'activity_detail', '{}'::jsonb)),
+  jsonb_strip_nulls(jsonb_build_object(
+    'event_id', event.id,
+    'source', 'operational_event',
+    'entity_version', event.entity_version,
+    'legacy_identity_provenance', 'current_membership_profile_lookup',
+    'legacy_entity_label_provenance', 'current_entity_lookup'
+  ) || coalesce(event.metadata->'activity_detail', '{}'::jsonb)),
+  nullif(event.metadata->>'mutation_id', ''),
+  public.extract_activity_audit_reference_ids(event.metadata),
+  'operational_event',
+  event.id,
+  true
+from public.operational_events event
+left join public.profiles profile
+  on profile.id::text = event.created_by
+left join public.organization_members member
+  on member.organization_id = event.organization_id and member.user_id = profile.id
+on conflict (organization_id, source_kind, source_id) do update
+set audit_reference_ids = excluded.audit_reference_ids,
+    summary = excluded.summary,
+    details = excluded.details,
+    mutation_id = excluded.mutation_id;
 
 -- Application clients may read compatibility rows, but all writes must go through
 -- authenticated SECURITY DEFINER business RPCs.
@@ -457,7 +580,9 @@ declare
   v_search text := nullif(btrim(payload->>'search'), '');
   v_actor_user_id uuid;
   v_category text := nullif(payload->>'category', '');
+  v_action text := nullif(payload->>'action', '');
   v_entity_type text := nullif(payload->>'entity_type', '');
+  v_entity_id text := nullif(payload->>'entity_id', '');
   v_from timestamptz;
   v_to timestamptz;
   v_time_from time;
@@ -478,9 +603,13 @@ begin
   end if;
   if nullif(payload->>'from_date', '') is not null then
     v_from := ((payload->>'from_date')::date::timestamp at time zone 'Asia/Kolkata');
+  elsif nullif(payload->>'from_iso', '') is not null then
+    v_from := (payload->>'from_iso')::timestamptz;
   end if;
   if nullif(payload->>'to_date', '') is not null then
     v_to := (((payload->>'to_date')::date + 1)::timestamp at time zone 'Asia/Kolkata');
+  elsif nullif(payload->>'to_iso_exclusive', '') is not null then
+    v_to := (payload->>'to_iso_exclusive')::timestamptz;
   end if;
   if nullif(payload->>'time_from', '') is not null then
     v_time_from := (payload->>'time_from')::time;
@@ -491,6 +620,9 @@ begin
   if nullif(payload->>'cursor_at', '') is not null then
     v_cursor_at := (payload->>'cursor_at')::timestamptz;
   end if;
+  if (v_cursor_at is null) <> (v_cursor_id is null) then
+    raise exception 'cursor_at and cursor_id must be supplied together.' using errcode = '22023';
+  end if;
 
   with matching as (
     select event.*
@@ -498,12 +630,48 @@ begin
     where event.organization_id = v_organization_id
       and (v_actor_user_id is null or event.actor_user_id = v_actor_user_id)
       and (v_category is null or event.category = v_category)
+      and (v_action is null or event.action = v_action)
       and (v_entity_type is null or event.entity_type = v_entity_type)
+      and (v_entity_id is null or event.entity_id = v_entity_id)
       and (v_from is null or event.occurred_at >= v_from)
       and (v_to is null or event.occurred_at < v_to)
-      and (v_time_from is null or (event.occurred_at at time zone 'Asia/Kolkata')::time >= v_time_from)
-      and (v_time_to is null or (event.occurred_at at time zone 'Asia/Kolkata')::time <= v_time_to)
+      and (
+        v_time_from is null
+        or v_time_to is null
+        or v_time_from <= v_time_to
+        or (event.occurred_at at time zone 'Asia/Kolkata')::time >= v_time_from
+        or (event.occurred_at at time zone 'Asia/Kolkata')::time <= v_time_to
+      )
+      and (
+        v_time_from is null
+        or (v_time_to is not null and v_time_from > v_time_to)
+        or (event.occurred_at at time zone 'Asia/Kolkata')::time >= v_time_from
+      )
+      and (
+        v_time_to is null
+        or (v_time_from is not null and v_time_from > v_time_to)
+        or (event.occurred_at at time zone 'Asia/Kolkata')::time <= v_time_to
+      )
       and (v_search is null or event.search_text ilike '%' || lower(v_search) || '%')
+      and not (
+        event.source_kind = 'audit_log'
+        and exists (
+          select 1
+          from public.activity_events operational
+          where operational.organization_id = event.organization_id
+            and operational.source_kind = 'operational_event'
+            and operational.audit_reference_ids @> array[event.source_id]
+            and (
+              (event.legacy and operational.legacy)
+              or (
+                not operational.legacy
+                and event.actor_user_id is not null
+                and operational.actor_user_id = event.actor_user_id
+                and operational.occurred_at = event.occurred_at
+              )
+            )
+        )
+      )
       and (
         v_cursor_at is null
         or (event.occurred_at, event.id) < (v_cursor_at, v_cursor_id)
@@ -516,6 +684,26 @@ begin
     limit v_limit
   )
   select jsonb_build_object(
+    'server_time', now(),
+    'actors', coalesce((
+      select jsonb_agg(jsonb_build_object(
+        'user_id', actor.actor_user_id,
+        'name', actor.actor_name_snapshot,
+        'username', actor.actor_username_snapshot,
+        'role', actor.actor_role_snapshot
+      ) order by actor.actor_name_snapshot, actor.actor_username_snapshot, actor.actor_user_id)
+      from (
+        select distinct on (event.actor_user_id)
+          event.actor_user_id,
+          event.actor_name_snapshot,
+          event.actor_username_snapshot,
+          event.actor_role_snapshot
+        from public.activity_events event
+        where event.organization_id = v_organization_id
+          and event.actor_user_id is not null
+        order by event.actor_user_id, event.occurred_at desc, event.id desc
+      ) actor
+    ), '[]'::jsonb),
     'items', coalesce((
       select jsonb_agg(jsonb_build_object(
         'id', row.id,

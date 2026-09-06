@@ -1,7 +1,6 @@
 import { type FormEvent, useState } from "react";
 import { ActivityEventRow } from "../components/ActivityEventRow";
-import type { ActivityCategory, ActivityEvent, ActivityFeedFilters } from "../dataGateway/activityFeed";
-import type { User } from "../types";
+import type { ActivityActorOption, ActivityCategory, ActivityEvent, ActivityFeedFilters } from "../dataGateway/activityFeed";
 
 const CATEGORY_OPTIONS: Array<{ value: ActivityCategory; label: string }> = [
   { value: "billing", label: "Billing" },
@@ -32,7 +31,7 @@ const EMPTY_FILTERS: ActivityFeedFilters = {};
 
 export function ActivityPanel(props: {
   events: ActivityEvent[];
-  users: User[];
+  actors: ActivityActorOption[];
   filters: ActivityFeedFilters;
   loading: boolean;
   loadingMore: boolean;
@@ -65,7 +64,11 @@ export function ActivityPanel(props: {
         <div>
           <span className="activity-eyebrow">Read-only operational ledger</span>
           <h2>Detailed Activity</h2>
-          <p>See who performed each recorded business action and its exact server time. All times are shown in IST.</p>
+          <p>
+            {props.remote
+              ? "See who performed each recorded business action and its exact server time. All times are shown in IST."
+              : "See the actions recorded in this browser and their local recorded time. All times are shown in IST."}
+          </p>
         </div>
         <div className="activity-source-note">{props.remote ? "Server activity" : "Local activity"}</div>
       </div>
@@ -84,7 +87,11 @@ export function ActivityPanel(props: {
           <span>Performed by</span>
           <select value={draft.actorUserId ?? ""} onChange={(event) => setDraft((current) => ({ ...current, actorUserId: event.target.value }))}>
             <option value="">All users</option>
-            {props.users.map((user) => <option key={user.id} value={user.id}>{user.name} ({user.role})</option>)}
+            {props.actors.map((actor) => (
+              <option key={actor.userId} value={actor.userId}>
+                {actor.name}{actor.role ? ` (${actor.role})` : ""}
+              </option>
+            ))}
           </select>
         </label>
         <label>
