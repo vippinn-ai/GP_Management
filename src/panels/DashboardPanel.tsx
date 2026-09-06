@@ -274,7 +274,7 @@ export function DashboardPanel(props: {
           <div className="panel-header">
             <div>
               <h2>Recent Activity</h2>
-              <p>Latest committed business actions with actor and exact server time.</p>
+              <p>Latest recorded business actions with actor and recorded time.</p>
             </div>
             {props.onShowAllActivity && <button className="ghost-button" type="button" onClick={props.onShowAllActivity}>Show All</button>}
           </div>
