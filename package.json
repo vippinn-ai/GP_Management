@@ -101,6 +101,8 @@
     "test:e2e:staging:v2:replacement-parity:payment-change-upi:list": "node scripts/run-checkout-replacement-parity-staging-e2e.mjs --payment-change-upi --list",
     "test:e2e:staging:bill-search-stability": "node scripts/run-bill-search-stability-staging-e2e.mjs",
     "test:e2e:staging:bill-search-stability:list": "node scripts/run-bill-search-stability-staging-e2e.mjs --list",
+    "test:e2e:staging:activity-feed": "node scripts/run-activity-feed-staging-e2e.mjs",
+    "test:e2e:staging:activity-feed:list": "node scripts/run-activity-feed-staging-e2e.mjs --list",
     "test:e2e:staging:v2:fractional-session-replacement": "node scripts/run-fractional-session-replacement-staging-e2e.mjs",
     "test:e2e:staging:v2:fractional-session-replacement:list": "node scripts/run-fractional-session-replacement-staging-e2e.mjs --list",
     "test:db:staging:v2:fractional-session-replacement:preflight": "node scripts/preflight-checkout-replacement-parity-staging.mjs",

@@ -1,6 +1,5 @@
 import { type Dispatch, type FormEvent, type SetStateAction, useEffect, useState } from "react";
 import type {
-  AuditLog,
   CheckoutState,
   Customer,
   CustomerTab,
@@ -15,10 +14,12 @@ import type {
   StartSessionDraft,
   Station
 } from "../types";
-import { currency, formatDateTime, formatTime } from "../utils";
+import { currency, formatTime } from "../utils";
 import { MetricCard } from "../components/MetricCard";
 import { NumericInput } from "../components/NumericInput";
 import { CustomerAutocompleteFields, type CustomerAutocompleteSuggestionProps } from "../components/CustomerAutocompleteFields";
+import { ActivityEventRow } from "../components/ActivityEventRow";
+import type { ActivityEvent } from "../dataGateway/activityFeed";
 
 const PAUSE_OVERTIME_MS = 10 * 60 * 1000;
 
@@ -48,7 +49,11 @@ function getPauseInfo(session: Session | undefined, sessionPauseLogs: SessionPau
 export function DashboardPanel(props: {
   stations: Station[];
   openCustomerTabs: CustomerTab[];
-  auditLogs: AuditLog[];
+  recentActivity: ActivityEvent[];
+  activityLoading?: boolean;
+  activityError?: string;
+  onShowAllActivity?: () => void;
+  onRefreshActivity?: () => void;
   customers: Customer[];
   customerAutocompleteSuggestions?: CustomerAutocompleteSuggestionProps;
   inventoryItems: InventoryItem[];
@@ -269,18 +274,25 @@ export function DashboardPanel(props: {
           <div className="panel-header">
             <div>
               <h2>Recent Activity</h2>
-              <p>Discounts, stock movements, and billing actions are all logged.</p>
+              <p>Latest committed business actions with actor and exact server time.</p>
             </div>
+            {props.onShowAllActivity && <button className="ghost-button" type="button" onClick={props.onShowAllActivity}>Show All</button>}
           </div>
           <div className="dashboard-tile-body panel-scroll">
-            <div className="activity-list">
-              {props.auditLogs.slice(0, 20).map((entry) => (
-                <div key={entry.id} className="activity-row">
-                  <strong>{entry.message}</strong>
-                  <span className="muted">{formatDateTime(entry.createdAt)}</span>
-                </div>
-              ))}
-            </div>
+            {props.activityError ? (
+              <div className="activity-read-error compact" role="alert">
+                <span>Recent activity is unavailable.</span>
+                {props.onRefreshActivity && <button className="ghost-button" type="button" onClick={props.onRefreshActivity}>Retry</button>}
+              </div>
+            ) : props.activityLoading ? (
+              <div className="empty-state">Loading recent activity...</div>
+            ) : props.recentActivity.length === 0 ? (
+              <div className="empty-state">No activity has been recorded yet.</div>
+            ) : (
+              <div className="activity-list activity-timeline is-dashboard-preview">
+                {props.recentActivity.map((entry) => <ActivityEventRow key={entry.id} event={entry} compact />)}
+              </div>
+            )}
           </div>
         </div>
       </div>

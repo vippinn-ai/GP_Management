@@ -320,7 +320,8 @@ describe("data gateway feature flags", () => {
       normalizedRealtime: false,
       rpcOperationalWrites: false,
       rpcFinancialWrites: false,
-      financialRpcV2: false
+      financialRpcV2: false,
+      activityFeed: false
     });
   });
 
@@ -341,7 +342,8 @@ describe("data gateway feature flags", () => {
         VITE_BACKEND_NORMALIZED_REALTIME: "true",
         VITE_BACKEND_RPC_OPERATIONAL_WRITES: "true",
         VITE_BACKEND_RPC_FINANCIAL_WRITES: "false",
-        VITE_BACKEND_FINANCIAL_RPC_V2: "true"
+        VITE_BACKEND_FINANCIAL_RPC_V2: "true",
+        VITE_BACKEND_ACTIVITY_FEED: "true"
       }
     );
 
@@ -357,6 +359,7 @@ describe("data gateway feature flags", () => {
     expect(flags.normalizedBillHistoryReads).toBe(true);
     expect(flags.rpcFinancialWrites).toBe(true);
     expect(flags.financialRpcV2).toBe(true);
+    expect(flags.activityFeed).toBe(true);
   });
 
   it("fails closed when financial v2 is enabled before normalized source-of-truth prerequisites", () => {

@@ -17,6 +17,8 @@ import { ReportsPanel } from "./panels/ReportsPanel";
 import { SalePanel } from "./panels/SalePanel";
 import { DashboardPanel } from "./panels/DashboardPanel";
 import { BillRegisterPanel } from "./panels/BillRegisterPanel";
+import { ActivityPanel } from "./panels/ActivityPanel";
+import { useActivityFeed } from "./hooks/useActivityFeed";
 import brandLogo from "../Branding/Logo.png";
 import {
   buildReceiptPreviewModel,
@@ -69,6 +71,7 @@ import {
   type FinancialCheckoutCommitResult,
   type FinancialCheckoutPatch,
   type AnalyticsSummaryData,
+  type ActivityFeedFilters,
   type NormalizedBillRegisterCursor,
   type NormalizedBillRegisterQuery,
   type NormalizedCustomerHistoryData,
@@ -456,6 +459,7 @@ export default function App() {
   );
   const [activeUserId, setActiveUserId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<TabId>("dashboard");
+  const [activityFilters, setActivityFilters] = useState<ActivityFeedFilters>({});
   const [online, setOnline] = useState<boolean>(navigator.onLine);
   const now = useClock();
   const [loginUsername, setLoginUsername] = useState("");
@@ -1192,14 +1196,19 @@ export default function App() {
   }, []);
 
   const activeUser = appData.users.find((user) => user.id === activeUserId && user.active) ?? null;
+  const activityFeedEnabled = !backendConfigured || BACKEND_FEATURE_FLAGS.activityFeed;
   const visibleTabs = useMemo(() => {
     if (!activeUser) return [];
-    const roleTabs = tabsByRole[activeUser.role];
+    const roleTabs = tabsByRole[activeUser.role].filter((tab) => tab.id !== "activity" || activityFeedEnabled);
     if (!activeUser.tabPermissions?.length) return roleTabs;
     const roleIds = new Set(roleTabs.map((t) => t.id));
-    const extras = ALL_TABS.filter((t) => activeUser.tabPermissions!.includes(t.id) && !roleIds.has(t.id));
+    const extras = ALL_TABS.filter((t) =>
+      (t.id !== "activity" || activityFeedEnabled)
+      && activeUser.tabPermissions!.includes(t.id)
+      && !roleIds.has(t.id)
+    );
     return [...roleTabs, ...extras];
-  }, [activeUser]);
+  }, [activeUser, activityFeedEnabled]);
   const canAccessTab = useCallback((tabId: TabId) => visibleTabs.some((tab) => tab.id === tabId), [visibleTabs]);
   const normalizedBillHistoryReadsEnabled = backendConfigured && BACKEND_FEATURE_FLAGS.normalizedBillHistoryReads;
   const normalizedCustomerSearchReadsEnabled = backendConfigured && BACKEND_FEATURE_FLAGS.normalizedCustomerSearchReads;
@@ -1219,6 +1228,24 @@ export default function App() {
   const canEditSessionTiming = activeUser?.role === "admin";
   const canEditSessionCustomerDetails = activeUser?.role === "admin" || activeUser?.role === "manager" || activeUser?.role === "receptionist"; // all roles: admin, manager, receptionist can edit customer details
   const isManagerReadOnly = activeUser?.role === "manager";
+  const activityRefreshKey = `${remoteVersion}:${appData.auditLogs[0]?.id ?? "none"}:${appData.auditLogs.length}`;
+  const dashboardActivity = useActivityFeed({
+    active: Boolean(activeUser && activeTab === "dashboard"),
+    remoteEnabled: backendConfigured && BACKEND_FEATURE_FLAGS.activityFeed,
+    pageSize: 10,
+    auditLogs: appData.auditLogs,
+    users: appData.users,
+    refreshKey: activityRefreshKey
+  });
+  const detailedActivity = useActivityFeed({
+    active: Boolean(activeUser && activeTab === "activity" && activityFeedEnabled),
+    remoteEnabled: backendConfigured && BACKEND_FEATURE_FLAGS.activityFeed,
+    filters: activityFilters,
+    pageSize: 50,
+    auditLogs: appData.auditLogs,
+    users: appData.users,
+    refreshKey: activityRefreshKey
+  });
   const pageTitle =
     activeTab === "sale"
       ? "Consumables Tab"
@@ -7770,7 +7797,11 @@ export default function App() {
             stations={stations}
             openCustomerTabs={openCustomerTabs}
             sessionPauseLogs={appData.sessionPauseLogs}
-            auditLogs={appData.auditLogs}
+            recentActivity={dashboardActivity.items}
+            activityLoading={dashboardActivity.loading}
+            activityError={dashboardActivity.error}
+            onShowAllActivity={canAccessTab("activity") ? () => setActiveTab("activity") : undefined}
+            onRefreshActivity={() => void dashboardActivity.reload()}
             customers={appData.customers}
             customerAutocompleteSuggestions={customerAutocompleteSuggestions}
             inventoryItems={appData.inventoryItems}
@@ -8099,6 +8130,22 @@ export default function App() {
                   }
                 : undefined
             }
+          />
+        )}
+
+        {activeTab === "activity" && canAccessTab("activity") && (
+          <ActivityPanel
+            events={detailedActivity.items}
+            users={appData.users.filter((user) => user.active)}
+            filters={activityFilters}
+            loading={detailedActivity.loading}
+            loadingMore={detailedActivity.loadingMore}
+            error={detailedActivity.error}
+            hasMore={detailedActivity.hasMore}
+            remote={backendConfigured && BACKEND_FEATURE_FLAGS.activityFeed}
+            onApplyFilters={setActivityFilters}
+            onRefresh={() => void detailedActivity.reload()}
+            onLoadMore={() => void detailedActivity.loadMore()}
           />
         )}
 

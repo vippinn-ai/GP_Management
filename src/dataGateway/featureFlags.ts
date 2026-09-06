@@ -13,6 +13,7 @@ export interface BackendFeatureFlags {
   rpcOperationalWrites: boolean;
   rpcFinancialWrites: boolean;
   financialRpcV2: boolean;
+  activityFeed: boolean;
 }
 
 export const DEFAULT_BACKEND_FEATURE_FLAGS: BackendFeatureFlags = Object.freeze({
@@ -29,7 +30,8 @@ export const DEFAULT_BACKEND_FEATURE_FLAGS: BackendFeatureFlags = Object.freeze(
   normalizedRealtime: false,
   rpcOperationalWrites: false,
   rpcFinancialWrites: false,
-  financialRpcV2: false
+  financialRpcV2: false,
+  activityFeed: false
 });
 
 type BackendFeatureFlagKey = keyof BackendFeatureFlags;
@@ -48,7 +50,8 @@ const ENV_FLAG_NAMES: Record<BackendFeatureFlagKey, keyof ImportMetaEnv> = {
   normalizedRealtime: "VITE_BACKEND_NORMALIZED_REALTIME",
   rpcOperationalWrites: "VITE_BACKEND_RPC_OPERATIONAL_WRITES",
   rpcFinancialWrites: "VITE_BACKEND_RPC_FINANCIAL_WRITES",
-  financialRpcV2: "VITE_BACKEND_FINANCIAL_RPC_V2"
+  financialRpcV2: "VITE_BACKEND_FINANCIAL_RPC_V2",
+  activityFeed: "VITE_BACKEND_ACTIVITY_FEED"
 };
 
 function parseBooleanFlag(value: string | undefined): boolean {
@@ -103,7 +106,8 @@ export function hasNormalizedGatewayFlag(flags: BackendFeatureFlags): boolean {
     flags.analyticsSummaryReads ||
     flags.inventoryReportReads ||
     flags.normalizedBillHistoryReads ||
-    flags.normalizedRealtime
+    flags.normalizedRealtime ||
+    flags.activityFeed
   );
 }
 

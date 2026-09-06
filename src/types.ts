@@ -434,7 +434,7 @@ export interface DraftBillLine {
   comboId?: string;
 }
 
-export type TabId = "dashboard" | "sale" | "inventory" | "bills" | "reports" | "customers" | "settings" | "users";
+export type TabId = "dashboard" | "sale" | "inventory" | "bills" | "reports" | "customers" | "activity" | "settings" | "users";
 export type NumericInputMode = "integer" | "decimal";
 export type ReportPreset = "today" | "yesterday" | "last_7_days" | "this_month" | "last_month" | "this_year" | "custom";
 export type InventoryReportPreset = "today" | "yesterday" | "last_7_days" | "last_30_days" | "custom";

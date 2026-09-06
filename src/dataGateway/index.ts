@@ -44,6 +44,19 @@ export {
 } from "./normalizedCustomerSearch";
 export { clearCachedNormalizedOrganizationId } from "./normalizedOrganization";
 export {
+  buildLocalActivityEvents,
+  inferActivityCategory,
+  loadActivityFeedPage,
+  mapActivityEvent,
+  mapActivityFeedPage,
+  queryLocalActivityFeed,
+  type ActivityCategory,
+  type ActivityEvent,
+  type ActivityFeedCursor,
+  type ActivityFeedFilters,
+  type ActivityFeedPage
+} from "./activityFeed";
+export {
   loadNormalizedFinancialDelta,
   type NormalizedFinancialDelta,
   type NormalizedFinancialDeltaQuery

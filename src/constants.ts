@@ -24,6 +24,7 @@ export const tabsByRole: Record<Role, Array<{ id: TabId; label: string }>> = {
     { id: "bills", label: "Bill Register" },
     { id: "reports", label: "Analytics" },
     { id: "customers", label: "Customer Profiles" },
+    { id: "activity", label: "Activity" },
     { id: "settings", label: "Settings" },
     { id: "users", label: "Users" }
   ],
@@ -33,12 +34,14 @@ export const tabsByRole: Record<Role, Array<{ id: TabId; label: string }>> = {
     { id: "inventory", label: "Inventory" },
     { id: "bills", label: "Bill Register" },
     { id: "reports", label: "Analytics" },
+    { id: "activity", label: "Activity" },
     { id: "settings", label: "Settings" }
   ],
   receptionist: [
     { id: "dashboard", label: "Live Dashboard" },
     { id: "sale", label: "Consumables Tab" },
-    { id: "bills", label: "Bill Register" }
+    { id: "bills", label: "Bill Register" },
+    { id: "activity", label: "Activity" }
   ]
 };
 
@@ -50,6 +53,7 @@ export const ALL_TABS: Array<{ id: TabId; label: string }> = [
   { id: "bills", label: "Bill Register" },
   { id: "reports", label: "Analytics" },
   { id: "customers", label: "Customer Profiles" },
+  { id: "activity", label: "Activity" },
   { id: "settings", label: "Settings" },
   { id: "users", label: "Users" }
 ];
