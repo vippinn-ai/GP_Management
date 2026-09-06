@@ -8,7 +8,7 @@
 
 ## Database
 
-- [x] Add append-only activity schema, indexes, triggers, grants, and backfill.
+- [x] Add client-immutable activity schema, indexes, triggers, grants, backfill, and source-keyed upgrade reconciliation.
 - [x] Add authenticated cursor-paginated filter RPC.
 - [x] Add read-only verification, rollback, and SQL contract tests.
 - [ ] Prove authenticated actor/time canonicalization and spoof resistance.

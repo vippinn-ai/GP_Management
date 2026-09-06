@@ -173,9 +173,16 @@ for (const [name, stage] of Object.entries(stages)) {
     if (name === "open") {
       checkIntegrity(sameKeys(event?.metadata, ["audit_log_id", "customer_id", "customer_tab_id", "mutation_id", "mutation_kind"]) && event?.metadata?.customer_tab_id === result.entity_id && event?.metadata?.customer_id === (result.changed_rows?.customers?.[0] ?? null) && event?.metadata?.audit_log_id === (result.changed_rows?.audit_logs?.[0] ?? null), "open event customer/tab/audit metadata is not exact.");
     } else if (name === "add") {
-      checkIntegrity(sameKeys(event?.metadata, ["audit_log_id", "line_id", "mutation_id", "mutation_kind"]) && event?.metadata?.line_id === result.changed_rows?.customer_tab_items?.[0] && event?.metadata?.audit_log_id === (result.changed_rows?.audit_logs?.[0] ?? null), "add event line/audit metadata is not exact.");
+      const detail = event?.metadata?.activity_detail;
+      const addedQuantity = Number(command(stage).line?.quantity);
+      checkIntegrity(sameKeys(event?.metadata, ["activity_detail", "audit_log_id", "line_id", "mutation_id", "mutation_kind"]) && event?.metadata?.line_id === result.changed_rows?.customer_tab_items?.[0] && event?.metadata?.audit_log_id === (result.changed_rows?.audit_logs?.[0] ?? null), "add event line/audit metadata is not exact.");
+      checkIntegrity(sameKeys(detail, ["item_name", "quantity", "resulting_quantity", "total", "unit_price"]) && detail?.item_name === itemName && Number(detail?.quantity) === addedQuantity && Number(detail?.resulting_quantity) === addedQuantity && money(detail?.unit_price) === 50 && money(detail?.total) === money(addedQuantity * 50), "add event activity detail is not exact.");
     } else {
-      checkIntegrity(sameKeys(event?.metadata, ["line_id", "mutation_id", "mutation_kind", "quantity"]) && event?.metadata?.line_id === result.changed_rows?.customer_tab_items?.[0] && Number(event?.metadata?.quantity) === Number(command(stage).quantity), "update event line/quantity metadata is not exact.");
+      const detail = event?.metadata?.activity_detail;
+      const previousQuantity = Number(command(stages.add).line?.quantity);
+      const updatedQuantity = Number(command(stage).quantity);
+      checkIntegrity(sameKeys(event?.metadata, ["activity_detail", "line_id", "mutation_id", "mutation_kind", "quantity"]) && event?.metadata?.line_id === result.changed_rows?.customer_tab_items?.[0] && Number(event?.metadata?.quantity) === updatedQuantity, "update event line/quantity metadata is not exact.");
+      checkIntegrity(sameKeys(detail, ["item_name", "previous_quantity", "previous_total", "quantity", "total", "unit_price"]) && detail?.item_name === itemName && Number(detail?.previous_quantity) === previousQuantity && Number(detail?.quantity) === updatedQuantity && money(detail?.unit_price) === 50 && money(detail?.previous_total) === money(previousQuantity * 50) && money(detail?.total) === money(updatedQuantity * 50), "update event activity detail is not exact.");
     }
   }
   const requestedAudits = auditCommands(stage);

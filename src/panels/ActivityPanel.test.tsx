@@ -47,6 +47,8 @@ describe("ActivityPanel", () => {
     expect(screen.getAllByText(/IST/).length).toBeGreaterThan(0);
     expect(screen.getByText("Server activity")).toBeInTheDocument();
     expect(screen.getByText("Client-reported context")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("View record details"));
+    expect(screen.getByText(/"actor_user_id": "user-1"/)).toBeInTheDocument();
   });
 
   it("keeps search focused while typing and applies filters only on submit", () => {

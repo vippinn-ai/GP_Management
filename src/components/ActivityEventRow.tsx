@@ -31,6 +31,7 @@ export function ActivityEventRow({ event, compact = false }: { event: ActivityEv
     .filter(Boolean)
     .join(" · ");
   const technicalDetails = {
+    actor_user_id: event.actorUserId,
     action: event.action,
     entity_type: event.entityType,
     entity_id: event.entityId,

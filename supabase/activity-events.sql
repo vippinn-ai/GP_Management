@@ -593,6 +593,7 @@ begin
     jsonb_strip_nulls(jsonb_build_object(
       'audit_id', new.id,
       'source', 'audit_log',
+      'actor_identity_provenance', case when v_actor is null then 'unavailable' else 'server_authenticated' end,
       'context_provenance', case
         when new.raw_data->>'activityEvidenceProvenance' = 'server_canonical' then 'server_canonical'
         else 'client_reported'
@@ -677,6 +678,7 @@ begin
     jsonb_strip_nulls(jsonb_build_object(
       'event_id', new.id,
       'source', 'operational_event',
+      'actor_identity_provenance', case when v_actor is null then 'unavailable' else 'server_authenticated' end,
       'context_provenance', 'server_operation',
       'entity_version', new.entity_version
     ) || v_detail),
@@ -741,7 +743,8 @@ insert into public.activity_events (
 select
   audit.organization_id,
   coalesce(audit.audit_at, audit.created_at),
-  profile.id,
+  case when audit.user_id ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+    then audit.user_id::uuid end,
   profile.name,
   profile.username,
   coalesce(member.role::text, profile.role::text),
@@ -754,6 +757,7 @@ select
   jsonb_build_object(
     'audit_id', audit.id,
     'source', 'audit_log',
+    'actor_identity_provenance', 'source_recorded',
     'context_provenance', case
       when audit.raw_data->>'activityEvidenceProvenance' = 'server_canonical' then 'server_canonical'
       else 'source_recorded_client_context'
@@ -780,7 +784,8 @@ insert into public.activity_events (
 select
   event.organization_id,
   event.created_at,
-  profile.id,
+  case when event.created_by ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+    then event.created_by::uuid end,
   profile.name,
   profile.username,
   coalesce(member.role::text, profile.role::text),
@@ -793,6 +798,7 @@ select
   jsonb_strip_nulls(jsonb_build_object(
     'event_id', event.id,
     'source', 'operational_event',
+    'actor_identity_provenance', 'source_recorded',
     'context_provenance', 'server_operation',
     'entity_version', event.entity_version,
     'legacy_identity_provenance', 'current_membership_profile_lookup',
@@ -821,6 +827,53 @@ set audit_reference_ids = excluded.audit_reference_ids,
     details = excluded.details,
     mutation_id = excluded.mutation_id
 where public.activity_events.legacy;
+
+-- Safely reconcile rows created by earlier trigger revisions. Source identity
+-- and provenance are derived from the retained source key; actor labels,
+-- timestamps, actions, and summaries are not rewritten here.
+update public.activity_events activity
+set
+  actor_user_id = case
+    when audit.user_id ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+      then audit.user_id::uuid
+    else null
+  end,
+  details = activity.details || jsonb_build_object(
+    'actor_identity_provenance', case
+      when coalesce(audit.user_id, '') !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$' then 'unavailable'
+      when activity.legacy then 'source_recorded'
+      else 'server_authenticated'
+    end,
+    'context_provenance', case
+      when audit.raw_data->>'activityEvidenceProvenance' = 'server_canonical' then 'server_canonical'
+      when activity.legacy then 'source_recorded_client_context'
+      else 'client_reported'
+    end
+  )
+from public.audit_logs audit
+where activity.organization_id = audit.organization_id
+  and activity.source_kind = 'audit_log'
+  and activity.source_id = audit.id;
+
+update public.activity_events activity
+set
+  actor_user_id = case
+    when event.created_by ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+      then event.created_by::uuid
+    else null
+  end,
+  details = activity.details || jsonb_build_object(
+    'actor_identity_provenance', case
+      when coalesce(event.created_by, '') !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$' then 'unavailable'
+      when activity.legacy then 'source_recorded'
+      else 'server_authenticated'
+    end,
+    'context_provenance', 'server_operation'
+  )
+from public.operational_events event
+where activity.organization_id = event.organization_id
+  and activity.source_kind = 'operational_event'
+  and activity.source_id = event.id;
 
 -- Application clients may read compatibility rows, but all writes must go through
 -- authenticated SECURITY DEFINER business RPCs.

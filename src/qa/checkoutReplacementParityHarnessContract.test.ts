@@ -80,6 +80,10 @@ describe("checkout replacement/downstream parity staging harness", () => {
     expect(source).toContain("row.bill_id === financial.primary_bill.id");
     expect(source).toContain("event id/type/entity/actor");
     expect(source).toContain("audit changed_rows differ from command");
+    expect(source).toContain('sameKeys(event?.metadata, ["activity_detail", "audit_log_id", "line_id", "mutation_id", "mutation_kind"])');
+    expect(source).toContain('sameKeys(event?.metadata, ["activity_detail", "line_id", "mutation_id", "mutation_kind", "quantity"])');
+    expect(source).toContain("add event activity detail is not exact");
+    expect(source).toContain("update event activity detail is not exact");
     expect(source).toContain("safeForIdentityBoundCleanup");
     expect(source).toContain("deterministicFinancialRejections");
     expect(source).toContain("deterministic rejection unexpectedly has a canonical mutation result");

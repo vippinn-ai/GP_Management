@@ -11,6 +11,10 @@ Active admin, manager, and receptionist organization members SHALL be able to re
 - **WHEN** an actor is inactive or no longer present in the current staff list but has retained activity snapshots
 - **THEN** that actor remains available in the server-provided actor filter and can be selected by immutable actor ID
 
+#### Scenario: Deleted historical profile
+- **WHEN** a source row contains a valid actor UUID whose profile no longer exists
+- **THEN** the activity record and technical details retain that UUID while the display name safely falls back to Unknown user
+
 ### Requirement: Activity filters and pagination are server-side
 The reader SHALL support bounded keyset pagination plus search, actor, category, action, entity type/ID, date, ISO timestamp, and IST time-of-day filters.
 

@@ -44,6 +44,11 @@ describe("activity ledger SQL contract", () => {
     expect(sql).toContain("unique (organization_id, source_kind, source_id)");
     expect(sql).toMatch(/'audit_log',\s+audit\.id,\s+true\s+from public\.audit_logs audit[\s\S]*?on conflict \(organization_id, source_kind, source_id\) do nothing/i);
     expect(sql).toContain("Every source is retained as");
+    expect(sql).toContain("then audit.user_id::uuid end");
+    expect(sql).toContain("then event.created_by::uuid end");
+    expect(sql).toContain("Safely reconcile rows created by earlier trigger revisions");
+    expect(verificationSql).toContain("source_actor_mismatch_rows");
+    expect(verificationSql).toContain("provenance_mismatch_rows");
   });
 
   it("retains every operational source and extracts every deployed audit-reference shape", () => {

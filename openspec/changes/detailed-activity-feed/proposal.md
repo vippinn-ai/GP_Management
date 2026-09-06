@@ -8,7 +8,7 @@ The dashboard currently renders only the first 20 in-memory audit messages. It d
 
 - Admin, manager, and receptionist receive a read-only Activity tab.
 - The dashboard uses the same source for a compact recent feed and a Show All action.
-- Every committed business mutation produces an immutable, idempotent activity record with server time and authenticated actor.
+- Every committed business mutation produces one source-keyed activity record; new records use server time and authenticated actor, and clients cannot rewrite evidence.
 - Historic audit/event data remains visible as explicitly labelled legacy evidence; missing detail is never invented.
 - Activity reads are organization-scoped, cursor-paginated, filterable, realtime-aware, and do not expand application bootstrap.
 

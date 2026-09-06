@@ -30,6 +30,36 @@ with expected_sources as (
     and source_kind = 'operational_event'
     and action in ('financial_checkout_committed_v2', 'financial_adjustment_committed_v2')
     and coalesce(details->>'projection_complete', 'false') <> 'true'
+), source_actor_mismatches as (
+  select activity.id
+  from public.activity_events activity
+  join public.audit_logs audit
+    on audit.organization_id = activity.organization_id and audit.id = activity.source_id
+  where activity.source_kind = 'audit_log'
+    and audit.user_id ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+    and activity.actor_user_id is distinct from audit.user_id::uuid
+  union all
+  select activity.id
+  from public.activity_events activity
+  join public.operational_events event
+    on event.organization_id = activity.organization_id and event.id = activity.source_id
+  where activity.source_kind = 'operational_event'
+    and event.created_by ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+    and activity.actor_user_id is distinct from event.created_by::uuid
+), provenance_mismatches as (
+  select activity.id
+  from public.activity_events activity
+  left join public.audit_logs audit
+    on audit.organization_id = activity.organization_id
+   and activity.source_kind = 'audit_log'
+   and audit.id = activity.source_id
+  where (activity.source_kind = 'operational_event' and activity.details->>'context_provenance' is distinct from 'server_operation')
+     or (activity.source_kind = 'audit_log' and activity.details->>'context_provenance' is distinct from case
+       when audit.raw_data->>'activityEvidenceProvenance' = 'server_canonical' then 'server_canonical'
+       when activity.legacy then 'source_recorded_client_context'
+       else 'client_reported'
+     end)
+     or activity.details->>'actor_identity_provenance' is null
 ), reference_mismatches as (
   select activity.id
   from public.activity_events activity
@@ -153,6 +183,8 @@ select jsonb_build_object(
     and public.extract_activity_audit_reference_ids('{"audit_log_id":7,"audit_log_ids":{},"changed_rows":{"audit_logs":"bad"}}'::jsonb) = array['7'],
   'unsafe_detail_key_rows', (select count(*) from unsafe_detail_keys),
   'incomplete_nonlegacy_financial_rows', (select count(*) from incomplete_nonlegacy_financial),
+  'source_actor_mismatch_rows', (select count(*) from source_actor_mismatches),
+  'provenance_mismatch_rows', (select count(*) from provenance_mismatches),
   'authenticated_can_select_activity', has_table_privilege('authenticated', 'public.activity_events', 'select'),
   'authenticated_can_insert_activity', has_table_privilege('authenticated', 'public.activity_events', 'insert'),
   'authenticated_can_mutate_audit',

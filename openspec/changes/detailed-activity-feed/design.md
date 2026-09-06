@@ -2,7 +2,7 @@
 
 ## Source of truth
 
-`public.activity_events` is an append-only evidence projection. Existing `audit_logs` and `operational_events` remain the compatibility sources.
+`public.activity_events` is a source-retaining evidence projection. Existing `audit_logs` and `operational_events` remain the compatibility sources. Application clients cannot mutate projection or source rows; an idempotent installer may repair only derived projection fields from the retained source key when upgrading an earlier trigger revision.
 
 - An `audit_logs` trigger canonicalizes authenticated actor and server time, then appends one activity row per audit action.
 - An `operational_events` trigger canonicalizes actor/time and appends every operational event. Its action and entity come from the server-authored business RPC rather than client audit text.
@@ -16,7 +16,7 @@ Authenticated clients receive SELECT only. INSERT/UPDATE/DELETE are revoked on a
 
 Each record contains server `occurred_at`, actor ID and immutable name/username/organization-role snapshots, action, category, entity type/ID/label, safe summary, allowlisted details, mutation ID, source kind/ID, audit-reference IDs, and `legacy`.
 
-Capture triggers are installed before backfill so a concurrent insert cannot fall between the snapshot and trigger installation. Every historic audit and operational source row is then backfilled and marked legacy. Existing actor/timestamp values are retained. Because old rows did not store immutable staff and entity labels, legacy lookup labels are explicitly identified in `details` and in the UI as current-record lookups rather than historical fact.
+Capture triggers are installed before backfill so a concurrent insert cannot fall between the snapshot and trigger installation. Every historic audit and operational source row is then backfilled and marked legacy. Valid source UUIDs are retained even when their profile was deleted; profile/member joins supply labels only. Existing actor/timestamp values are retained. Because old rows did not store immutable staff and entity labels, legacy lookup labels are explicitly identified in `details` and in the UI as current-record lookups rather than historical fact.
 
 Financial v2 projections derive their semantic action and display evidence from the committed normalized bill and payment rows plus the server-authored mutation kind. Checkout, deferred issue, replacement, settlement, write-off, void, and refund therefore remain distinguishable without trusting client audit messages. A grouped adjustment is not marked complete, so its server-authored per-bill audit actions remain visible with each bill's amount and due balance. Item projections are complete only when the committed RPC supplies the server-persisted item, quantity, and price; older incomplete operational rows leave their correlated historical audit presentation visible.
 
