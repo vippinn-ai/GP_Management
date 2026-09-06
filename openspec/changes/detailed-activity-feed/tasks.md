@@ -24,9 +24,9 @@
 
 ## Verification and rollout
 
-- [x] Pass focused unit/contract/component tests (10/10).
-- [x] Pass complete existing test suite (557/557), TypeScript build, and lint without new warnings (four pre-existing warnings remain).
-- [ ] Install additive SQL and deploy flag-enabled frontend to staging only.
+- [x] Pass focused unit/contract/component tests (18/18).
+- [x] Pass complete existing test suite (566/566), TypeScript build, and lint without new warnings (four pre-existing warnings remain).
+- [x] Install additive SQL and deploy flag-enabled frontend to staging only.
 - [ ] Run reusable zero-retry Playwright role/filter/realtime/action coverage.
 - [ ] Obtain independent tester GO for the pinned commit and staging fingerprints.
 - [ ] Obtain independent code/security auditor GO for the same identity.

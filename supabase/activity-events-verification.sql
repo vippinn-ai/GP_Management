@@ -23,6 +23,13 @@ with expected_sources as (
   select id
   from public.activity_events
   where details ?| array['password', 'token', 'authorization', 'auth_email', 'apikey', 'secret']
+), incomplete_nonlegacy_financial as (
+  select id
+  from public.activity_events
+  where not legacy
+    and source_kind = 'operational_event'
+    and action in ('financial_checkout_committed_v2', 'financial_adjustment_committed_v2')
+    and coalesce(details->>'projection_complete', 'false') <> 'true'
 ), reference_mismatches as (
   select activity.id
   from public.activity_events activity
@@ -31,6 +38,24 @@ with expected_sources as (
    and event.id = activity.source_id
   where activity.source_kind = 'operational_event'
     and activity.audit_reference_ids <> public.extract_activity_audit_reference_ids(event.metadata)
+), all_correlated_audits as (
+  select distinct audit.id
+  from public.activity_events audit
+  join public.activity_events operational
+    on operational.organization_id = audit.organization_id
+   and operational.source_kind = 'operational_event'
+   and operational.audit_reference_ids @> array[audit.source_id]
+  where audit.source_kind = 'audit_log'
+    and (
+      (audit.legacy and operational.legacy)
+      or (
+        not audit.legacy
+        and not operational.legacy
+        and audit.actor_user_id is not null
+        and operational.actor_user_id = audit.actor_user_id
+        and operational.occurred_at = audit.occurred_at
+      )
+    )
 ), correlated_audits as (
   select distinct audit.id
   from public.activity_events audit
@@ -38,6 +63,7 @@ with expected_sources as (
     on operational.organization_id = audit.organization_id
    and operational.source_kind = 'operational_event'
    and operational.audit_reference_ids @> array[audit.source_id]
+   and public.operational_activity_covers_audit(operational.action, operational.details, audit.action)
   where audit.source_kind = 'audit_log'
     and (
       (audit.legacy and operational.legacy)
@@ -60,10 +86,12 @@ with expected_sources as (
       where operational.organization_id = event.organization_id
         and operational.source_kind = 'operational_event'
         and operational.audit_reference_ids @> array[event.source_id]
+        and public.operational_activity_covers_audit(operational.action, operational.details, event.action)
         and (
           (event.legacy and operational.legacy)
           or (
-            not operational.legacy
+            not event.legacy
+            and not operational.legacy
             and event.actor_user_id is not null
             and operational.actor_user_id = event.actor_user_id
             and operational.occurred_at = event.occurred_at
@@ -108,7 +136,10 @@ select jsonb_build_object(
   ),
   'activity_rows', (select count(*) from public.activity_events),
   'presented_activity_rows', (select count(*) from presented_sources),
+  'correlated_audit_rows', (select count(*) from all_correlated_audits),
   'suppressed_correlated_audit_rows', (select count(*) from correlated_audits),
+  'preserved_uncovered_correlated_audit_rows',
+    (select count(*) from all_correlated_audits) - (select count(*) from correlated_audits),
   'expected_source_rows', (select count(*) from expected_sources),
   'missing_source_rows', (select count(*) from missing_sources),
   'duplicate_source_rows', (select count(*) from duplicate_sources),
@@ -121,6 +152,7 @@ select jsonb_build_object(
     and public.extract_activity_audit_reference_ids('{"changed_rows":{"audit_logs":["audit-c"]}}'::jsonb) = array['audit-c']
     and public.extract_activity_audit_reference_ids('{"audit_log_id":7,"audit_log_ids":{},"changed_rows":{"audit_logs":"bad"}}'::jsonb) = array['7'],
   'unsafe_detail_key_rows', (select count(*) from unsafe_detail_keys),
+  'incomplete_nonlegacy_financial_rows', (select count(*) from incomplete_nonlegacy_financial),
   'authenticated_can_select_activity', has_table_privilege('authenticated', 'public.activity_events', 'select'),
   'authenticated_can_insert_activity', has_table_privilege('authenticated', 'public.activity_events', 'insert'),
   'authenticated_can_mutate_audit',

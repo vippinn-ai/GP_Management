@@ -236,6 +236,9 @@ function isLocalTimeInRange(isoValue: string, from?: string, to?: string): boole
     hour12: false
   }).formatToParts(new Date(isoValue));
   const time = `${parts.find((part) => part.type === "hour")?.value ?? "00"}:${parts.find((part) => part.type === "minute")?.value ?? "00"}`;
+  if (from && to && from > to) {
+    return time >= from || time <= to;
+  }
   return (!from || time >= from) && (!to || time <= to);
 }
 
@@ -270,7 +273,15 @@ export function queryLocalActivityFeed(
   const cursorIndex = query.cursor
     ? filtered.findIndex((entry) => entry.id === query.cursor?.id && entry.occurredAt === query.cursor.occurredAt)
     : -1;
-  const start = cursorIndex >= 0 ? cursorIndex + 1 : 0;
+  if (query.cursor && cursorIndex < 0) {
+    return {
+      items: [],
+      actors: [],
+      hasMore: false,
+      nextCursor: null
+    };
+  }
+  const start = cursorIndex + 1;
   const limit = Math.min(Math.max(query.limit ?? 50, 1), 100);
   const items = filtered.slice(start, start + limit);
   const hasMore = start + limit < filtered.length;

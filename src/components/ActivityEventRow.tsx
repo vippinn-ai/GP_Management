@@ -53,7 +53,7 @@ export function ActivityEventRow({ event, compact = false }: { event: ActivityEv
           {event.legacy && (
             <span
               className="activity-legacy-badge"
-              title="Imported evidence. Staff and entity labels use the current records because historical labels were not stored."
+              title="Imported evidence. Actor and time are preserved from the source record; staff and entity labels use current records because historical snapshots were not stored."
             >
               Historical
             </span>

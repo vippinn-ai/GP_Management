@@ -7,7 +7,7 @@
 - An `audit_logs` trigger canonicalizes authenticated actor and server time, then appends one activity row per audit action.
 - An `operational_events` trigger canonicalizes actor/time and appends every operational event. Its action and entity come from the server-authored business RPC rather than client audit text.
 - One extractor recognizes all deployed correlation shapes: `audit_log_id`, `audit_log_ids`, and `changed_rows.audit_logs`.
-- The reader keeps both source records as evidence but suppresses the audit presentation when a correlated operational event is available. New correlations additionally require the exact same authenticated actor and transaction timestamp, so a reused client audit ID cannot hide the operational truth.
+- The reader keeps both source records as evidence. It suppresses an audit presentation only when the correlated operational projection is explicitly complete and covers that same semantic audit action. A generic multi-audit operational event never hides the distinct audit actions it references. New correlations additionally require the exact same authenticated actor and transaction timestamp, so a reused client audit ID cannot hide the operational truth.
 - Unique `(organization_id, source_kind, source_id)` prevents duplicate source effects.
 
 Authenticated clients receive SELECT only. INSERT/UPDATE/DELETE are revoked on all three evidence tables; SECURITY DEFINER mutation RPCs continue writing as their owner. Actor identity is derived from `auth.uid()` in triggers and cannot be changed by payload fields.
@@ -17,6 +17,8 @@ Authenticated clients receive SELECT only. INSERT/UPDATE/DELETE are revoked on a
 Each record contains server `occurred_at`, actor ID and immutable name/username/organization-role snapshots, action, category, entity type/ID/label, safe summary, allowlisted details, mutation ID, source kind/ID, audit-reference IDs, and `legacy`.
 
 Capture triggers are installed before backfill so a concurrent insert cannot fall between the snapshot and trigger installation. Every historic audit and operational source row is then backfilled and marked legacy. Existing actor/timestamp values are retained. Because old rows did not store immutable staff and entity labels, legacy lookup labels are explicitly identified in `details` and in the UI as current-record lookups rather than historical fact.
+
+Financial v2 projections derive their semantic action and display evidence from the committed normalized bill and payment rows plus the server-authored mutation kind. Checkout, deferred issue, replacement, settlement, write-off, void, and refund therefore remain distinguishable without trusting client audit messages. Item projections are complete only when the committed RPC supplies the server-persisted item, quantity, and price; older incomplete operational rows leave their correlated historical audit presentation visible.
 
 ## Reader contract
 
@@ -34,7 +36,7 @@ The feature flag is `VITE_BACKEND_ACTIVITY_FEED`, default false. When enabled wi
 - Every realtime operational event carries its source event ID through the normalized snapshot and invalidates the compact/full feed, including fallback-only events that do not change `app_state` or `auditLogs`; rows are keyed and deduplicated by ID.
 - Errors remain local to the activity panel and expose Retry.
 
-Local-browser fallback continues to show existing local `auditLogs`, resolving actors from local users and labelling each row as a local record, not as historical server evidence.
+Local-browser fallback continues to show existing local `auditLogs`, resolving actors from local users and labelling each row as a local record, not as historical server evidence. It mirrors IST cross-midnight filtering and fails closed on a missing pagination cursor instead of restarting at page one.
 
 ## Presentation
 
@@ -43,3 +45,7 @@ The visual direction is an industrial operations ledger: high information densit
 ## Rollback
 
 The frontend flag can be disabled without deleting rows. Emergency disable removes capture/immutability triggers, revokes the reader, and restores the prior authenticated operational-event insert grant needed by the legacy full-state publisher. All captured activity and business data remain intact.
+
+## Installation order
+
+For an upgrade, install `activity-events.sql` before the updated phase 4 item RPCs and phase 10 financial RPCs, then deploy the frontend. This ensures the complete trigger-time projection is active before any newly enriched operational event can commit. The postflight must report zero `incomplete_nonlegacy_financial_rows`; any nonzero result stops rollout and is reconciled before enabling the UI.

@@ -88,4 +88,28 @@ describe("activity feed data gateway", () => {
     expect(second.hasMore).toBe(false);
     expect(second.actors.map((actor) => actor.userId)).toEqual(["u2", "u1"]);
   });
+
+  it("supports cross-midnight time filters in local fallback mode", () => {
+    const local = buildLocalActivityEvents([
+      { id: "late", action: "session_started", entityType: "session", entityId: "s1", message: "Late", createdAt: "2026-09-06T18:00:00Z", userId: "u1" },
+      { id: "early", action: "session_ended", entityType: "session", entityId: "s2", message: "Early", createdAt: "2026-09-06T23:30:00Z", userId: "u1" },
+      { id: "day", action: "session_paused", entityType: "session", entityId: "s3", message: "Day", createdAt: "2026-09-06T07:00:00Z", userId: "u1" }
+    ], [{ id: "u1", name: "Vipin", username: "vipin", role: "admin", active: true }]);
+
+    const page = queryLocalActivityFeed(local, { timeFrom: "22:00", timeTo: "06:00" });
+
+    expect(page.items.map((entry) => entry.id)).toEqual(["early", "late"]);
+  });
+
+  it("fails closed instead of restarting when a local cursor is missing", () => {
+    const local = buildLocalActivityEvents([
+      { id: "a1", action: "bill_issued", entityType: "bill", entityId: "b1", message: "Issued bill", createdAt: "2026-09-06T12:00:00Z", userId: "u1" }
+    ], [{ id: "u1", name: "Vipin", username: "vipin", role: "admin", active: true }]);
+
+    const page = queryLocalActivityFeed(local, {
+      cursor: { occurredAt: "2026-09-06T11:00:00Z", id: "missing" }
+    });
+
+    expect(page).toEqual({ items: [], actors: [], hasMore: false, nextCursor: null });
+  });
 });

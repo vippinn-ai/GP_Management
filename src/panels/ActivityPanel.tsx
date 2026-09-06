@@ -66,7 +66,7 @@ export function ActivityPanel(props: {
           <h2>Detailed Activity</h2>
           <p>
             {props.remote
-              ? "See who performed each recorded business action and its exact server time. All times are shown in IST."
+              ? "New actions use the authenticated staff identity and server time. Imported history retains its source-recorded identity and time. All times are shown in IST."
               : "See the actions recorded in this browser and their local recorded time. All times are shown in IST."}
           </p>
         </div>

@@ -23,9 +23,8 @@ The reader SHALL support bounded keyset pagination plus search, actor, category,
 - **THEN** the reader interprets it as an IST range crossing midnight
 
 ### Requirement: Historical limitations are explicit
-Legacy actor timestamps SHALL be preserved, while mutable current staff/entity lookup labels SHALL be identified as lookup provenance rather than historical fact.
+Legacy actor identity and timestamps SHALL be preserved from their source records without being represented as server-canonical, while mutable current staff/entity lookup labels SHALL be identified as lookup provenance rather than historical fact.
 
 #### Scenario: Legacy row rendering
 - **WHEN** a backfilled row is displayed
-- **THEN** the UI marks it Historical and explains that current labels were used where immutable historical labels did not exist
-
+- **THEN** the UI marks it Historical and explains both the source-recorded actor/time limitation and the use of current labels where immutable historical labels did not exist

@@ -113,6 +113,7 @@ declare
   v_quantity text := nullif(p_detail->>'quantity', '');
   v_previous_quantity text := nullif(p_detail->>'previous_quantity', '');
   v_unit_price text := nullif(p_detail->>'unit_price', '');
+  v_bill_label text := coalesce(nullif(p_detail->>'bill_numbers_label', ''), nullif(p_detail->>'bill_number', ''), 'bill');
 begin
   if p_event_type in ('add_session_item', 'add_customer_tab_item') and v_item_name is not null then
     return format(
@@ -133,8 +134,240 @@ begin
       coalesce(v_quantity, '?')
     );
   end if;
+  if p_event_type = 'bill_replaced' then
+    return format(
+      'Issued replacement %s for Rs %s%s.',
+      v_bill_label,
+      coalesce(nullif(p_detail->>'total', ''), '0'),
+      case when nullif(p_detail->>'original_bill_number', '') is null then ''
+        else format(' replacing %s', p_detail->>'original_bill_number') end
+    );
+  end if;
+  if p_event_type = 'bill_pending' then
+    return format('Deferred %s. Remaining due: Rs %s.', v_bill_label, coalesce(nullif(p_detail->>'amount_due', ''), '0'));
+  end if;
+  if p_event_type = 'bill_issued' then
+    return format(
+      'Issued %s for Rs %s%s.',
+      v_bill_label,
+      coalesce(nullif(p_detail->>'total', ''), '0'),
+      case when nullif(p_detail->>'payment_mode', '') is null then ''
+        else format(' via %s', upper(p_detail->>'payment_mode')) end
+    );
+  end if;
+  if p_event_type = 'bill_settled' then
+    return format(
+      'Settled Rs %s on %s. Remaining due: Rs %s.',
+      coalesce(nullif(p_detail->>'settled_amount', ''), '0'),
+      v_bill_label,
+      coalesce(nullif(p_detail->>'remaining_due', ''), '0')
+    );
+  end if;
+  if p_event_type = 'bill_voided_bad_debt' then
+    return format('Wrote off pending %s. Recorded due: Rs %s.', v_bill_label, coalesce(nullif(p_detail->>'remaining_due', ''), '0'));
+  end if;
+  if p_event_type = 'bill_voided' then
+    return format('Voided %s for Rs %s.', v_bill_label, coalesce(nullif(p_detail->>'total', ''), '0'));
+  end if;
+  if p_event_type = 'bill_refunded' then
+    return format('Refunded %s for Rs %s.', v_bill_label, coalesce(nullif(p_detail->>'total', ''), '0'));
+  end if;
   return public.activity_humanize(p_event_type);
 end;
+$$;
+
+create or replace function public.resolve_operational_activity_action(
+  p_event_type text,
+  p_detail jsonb
+)
+returns text
+language sql
+immutable
+as $$
+  select case
+    when p_event_type in ('financial_checkout_committed_v2', 'financial_adjustment_committed_v2')
+      then coalesce(nullif(p_detail->>'operation_kind', ''), p_event_type)
+    else p_event_type
+  end;
+$$;
+
+create or replace function public.resolve_operational_activity_detail(
+  p_organization_id text,
+  p_event_type text,
+  p_entity_type text,
+  p_entity_id text,
+  p_metadata jsonb,
+  p_allow_current_snapshot boolean
+)
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = public
+as $$
+declare
+  v_detail jsonb := case when jsonb_typeof(p_metadata->'activity_detail') = 'object'
+    then p_metadata->'activity_detail' else '{}'::jsonb end;
+  v_derived jsonb;
+  v_mutation_kind text := nullif(p_metadata->>'mutation_kind', '');
+  v_operation_kind text;
+  v_bill_count integer;
+  v_bill_numbers_label text;
+  v_total numeric;
+  v_remaining_due numeric;
+  v_settled_amount numeric;
+  v_payment_modes text;
+  v_reason text;
+begin
+  if not p_allow_current_snapshot then
+    return v_detail - 'projection_complete';
+  end if;
+
+  if p_event_type = 'financial_checkout_committed_v2' then
+    select jsonb_strip_nulls(jsonb_build_object(
+      'operation_kind', case
+        when bill.replacement_of_bill_id is not null or p_metadata->>'checkout_mode' = 'bill_replacement' then 'bill_replaced'
+        when bill.status = 'pending' then 'bill_pending'
+        else 'bill_issued'
+      end,
+      'checkout_mode', nullif(p_metadata->>'checkout_mode', ''),
+      'bill_id', bill.id,
+      'bill_number', bill.bill_number,
+      'bill_status', bill.status,
+      'customer_name', bill.customer_name,
+      'total', bill.total,
+      'amount_paid', bill.amount_paid,
+      'amount_due', bill.amount_due,
+      'payment_mode', bill.payment_mode,
+      'original_bill_id', bill.replacement_of_bill_id,
+      'original_bill_number', original.bill_number
+    ))
+    into v_derived
+    from public.bills bill
+    left join public.bills original
+      on original.organization_id = bill.organization_id
+     and original.id = bill.replacement_of_bill_id
+    where bill.organization_id = p_organization_id
+      and bill.id = coalesce(nullif(p_metadata->>'bill_id', ''), case when p_entity_type = 'bill' then p_entity_id end)
+    limit 1;
+
+    if v_derived is not null then
+      return v_detail || v_derived || jsonb_build_object('projection_complete', true);
+    end if;
+    return v_detail || jsonb_strip_nulls(jsonb_build_object(
+      'operation_kind', case when p_metadata->>'checkout_mode' = 'bill_replacement' then 'bill_replaced' else 'bill_issued' end,
+      'checkout_mode', nullif(p_metadata->>'checkout_mode', ''),
+      'bill_id', nullif(p_metadata->>'bill_id', ''),
+      'bill_number', nullif(p_metadata->>'bill_number', '')
+    ));
+  end if;
+
+  if p_event_type = 'financial_adjustment_committed_v2' then
+    v_operation_kind := case v_mutation_kind
+      when 'settlePendingBills' then 'bill_settled'
+      when 'writeOffPendingBills' then 'bill_voided_bad_debt'
+      when 'voidBill' then 'bill_voided'
+      when 'refundBill' then 'bill_refunded'
+      else 'financial_adjustment_committed_v2'
+    end;
+
+    select
+      count(*)::integer,
+      string_agg(bill.bill_number, ', ' order by bill.bill_number),
+      coalesce(sum(bill.total), 0),
+      coalesce(sum(bill.amount_due), 0),
+      nullif(string_agg(distinct nullif(btrim(bill.void_reason), ''), '; '), '')
+    into v_bill_count, v_bill_numbers_label, v_total, v_remaining_due, v_reason
+    from public.bills bill
+    where bill.organization_id = p_organization_id
+      and bill.id in (
+        select value
+        from jsonb_array_elements_text(case
+          when jsonb_typeof(p_metadata #> '{changed_rows,bills}') = 'array'
+            then p_metadata #> '{changed_rows,bills}'
+          else '[]'::jsonb
+        end) as bill_ids(value)
+      );
+
+    select coalesce(sum(payment.amount), 0), string_agg(distinct upper(payment.mode), ', ' order by upper(payment.mode))
+    into v_settled_amount, v_payment_modes
+    from public.payments payment
+    where payment.organization_id = p_organization_id
+      and payment.id in (
+        select value
+        from jsonb_array_elements_text(case
+          when jsonb_typeof(p_metadata #> '{changed_rows,payments}') = 'array'
+            then p_metadata #> '{changed_rows,payments}'
+          else '[]'::jsonb
+        end) as payment_ids(value)
+      );
+
+    v_derived := jsonb_strip_nulls(jsonb_build_object(
+      'operation_kind', v_operation_kind,
+      'mutation_kind', v_mutation_kind,
+      'bill_count', v_bill_count,
+      'bill_numbers_label', v_bill_numbers_label,
+      'total', v_total,
+      'remaining_due', v_remaining_due,
+      'settled_amount', v_settled_amount,
+      'payment_modes', v_payment_modes,
+      'reason', v_reason
+    ));
+    return v_detail || v_derived || jsonb_build_object('projection_complete', v_bill_count > 0);
+  end if;
+
+  if p_event_type in (
+    'add_session_item', 'remove_session_item',
+    'add_customer_tab_item', 'remove_customer_tab_item',
+    'update_customer_tab_item_quantity'
+  ) and nullif(v_detail->>'item_name', '') is not null then
+    return v_detail || jsonb_build_object('projection_complete', true);
+  end if;
+  return v_detail;
+end;
+$$;
+
+revoke all on function public.resolve_operational_activity_detail(text, text, text, text, jsonb, boolean)
+  from public, anon, authenticated;
+
+create or replace function public.resolve_operational_activity_detail(
+  p_organization_id text,
+  p_event_type text,
+  p_entity_type text,
+  p_entity_id text,
+  p_metadata jsonb
+)
+returns jsonb
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select public.resolve_operational_activity_detail(
+    p_organization_id, p_event_type, p_entity_type, p_entity_id, p_metadata, true
+  );
+$$;
+
+revoke all on function public.resolve_operational_activity_detail(text, text, text, text, jsonb)
+  from public, anon, authenticated;
+
+create or replace function public.operational_activity_covers_audit(
+  p_operational_action text,
+  p_operational_details jsonb,
+  p_audit_action text
+)
+returns boolean
+language sql
+immutable
+as $$
+  select coalesce(p_operational_details->>'projection_complete', 'false') = 'true'
+    and (
+      p_operational_action = p_audit_action
+      or (p_operational_action = 'add_session_item' and p_audit_action = 'session_item_added')
+      or (p_operational_action = 'remove_session_item' and p_audit_action = 'session_item_removed')
+      or (p_operational_action = 'add_customer_tab_item' and p_audit_action = 'customer_tab_item_added')
+      or (p_operational_action = 'remove_customer_tab_item' and p_audit_action = 'customer_tab_item_removed')
+    );
 $$;
 
 create or replace function public.extract_activity_audit_reference_ids(p_metadata jsonb)
@@ -381,8 +614,14 @@ declare
   v_username text;
   v_role text;
   v_audit_reference_ids text[];
+  v_detail jsonb;
+  v_action text;
 begin
   v_audit_reference_ids := public.extract_activity_audit_reference_ids(new.metadata);
+  v_detail := public.resolve_operational_activity_detail(
+    new.organization_id, new.event_type, new.entity_type, new.entity_id, new.metadata
+  );
+  v_action := public.resolve_operational_activity_action(new.event_type, v_detail);
 
   if new.created_by ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$' then
     v_actor := new.created_by::uuid;
@@ -423,17 +662,17 @@ begin
     v_name,
     v_username,
     v_role,
-    new.event_type,
-    public.activity_category(new.event_type, new.entity_type),
+    v_action,
+    public.activity_category(v_action, new.entity_type),
     new.entity_type,
     new.entity_id,
     public.resolve_activity_entity_label(new.organization_id, new.entity_type, new.entity_id),
-    public.resolve_activity_summary(new.event_type, coalesce(new.metadata->'activity_detail', '{}'::jsonb)),
+    public.resolve_activity_summary(v_action, v_detail),
     jsonb_strip_nulls(jsonb_build_object(
       'event_id', new.id,
       'source', 'operational_event',
       'entity_version', new.entity_version
-    ) || coalesce(new.metadata->'activity_detail', '{}'::jsonb)),
+    ) || v_detail),
     nullif(new.metadata->>'mutation_id', ''),
     v_audit_reference_ids,
     'operational_event',
@@ -534,34 +773,42 @@ select
   profile.name,
   profile.username,
   coalesce(member.role::text, profile.role::text),
-  event.event_type,
-  public.activity_category(event.event_type, event.entity_type),
+  public.resolve_operational_activity_action(event.event_type, activity_detail.value),
+  public.activity_category(public.resolve_operational_activity_action(event.event_type, activity_detail.value), event.entity_type),
   event.entity_type,
   event.entity_id,
   public.resolve_activity_entity_label(event.organization_id, event.entity_type, event.entity_id),
-  public.resolve_activity_summary(event.event_type, coalesce(event.metadata->'activity_detail', '{}'::jsonb)),
+  public.resolve_activity_summary(public.resolve_operational_activity_action(event.event_type, activity_detail.value), activity_detail.value),
   jsonb_strip_nulls(jsonb_build_object(
     'event_id', event.id,
     'source', 'operational_event',
     'entity_version', event.entity_version,
     'legacy_identity_provenance', 'current_membership_profile_lookup',
     'legacy_entity_label_provenance', 'current_entity_lookup'
-  ) || coalesce(event.metadata->'activity_detail', '{}'::jsonb)),
+  ) || activity_detail.value),
   nullif(event.metadata->>'mutation_id', ''),
   public.extract_activity_audit_reference_ids(event.metadata),
   'operational_event',
   event.id,
   true
 from public.operational_events event
+cross join lateral (
+  select public.resolve_operational_activity_detail(
+    event.organization_id, event.event_type, event.entity_type, event.entity_id, event.metadata, false
+  ) as value
+) activity_detail
 left join public.profiles profile
   on profile.id::text = event.created_by
 left join public.organization_members member
   on member.organization_id = event.organization_id and member.user_id = profile.id
 on conflict (organization_id, source_kind, source_id) do update
 set audit_reference_ids = excluded.audit_reference_ids,
+    action = excluded.action,
+    category = excluded.category,
     summary = excluded.summary,
     details = excluded.details,
-    mutation_id = excluded.mutation_id;
+    mutation_id = excluded.mutation_id
+where public.activity_events.legacy;
 
 -- Application clients may read compatibility rows, but all writes must go through
 -- authenticated SECURITY DEFINER business RPCs.
@@ -661,10 +908,12 @@ begin
           where operational.organization_id = event.organization_id
             and operational.source_kind = 'operational_event'
             and operational.audit_reference_ids @> array[event.source_id]
+            and public.operational_activity_covers_audit(operational.action, operational.details, event.action)
             and (
               (event.legacy and operational.legacy)
               or (
-                not operational.legacy
+                not event.legacy
+                and not operational.legacy
                 and event.actor_user_id is not null
                 and operational.actor_user_id = event.actor_user_id
                 and operational.occurred_at = event.occurred_at

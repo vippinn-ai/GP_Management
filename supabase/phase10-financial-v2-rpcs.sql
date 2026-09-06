@@ -3,6 +3,8 @@
 -- This migration is additive. The v1 RPCs remain installed for rollback.
 -- Neither v2 RPC reads, locks, expands, patches, or updates public.app_state.
 
+begin;
+
 create table if not exists public.financial_mutations (
   organization_id text not null,
   mutation_id text not null,
@@ -1844,7 +1846,18 @@ begin
     v_organization_id, 'financial_checkout_committed_v2', v_entity_type, v_entity_id, v_actor_user_id::text,
     jsonb_build_object(
       'mutation_id', v_mutation_id, 'mutation_kind', v_mutation_kind,
+      'checkout_mode', v_mode,
       'bill_id', v_bill_id, 'bill_number', v_bill_number,
+      'activity_detail', jsonb_build_object(
+        'operation_kind', case
+          when v_mode = 'bill_replacement' then 'bill_replaced'
+          when v_bill->>'status' = 'pending' then 'bill_pending'
+          else 'bill_issued'
+        end,
+        'checkout_mode', v_mode,
+        'bill_id', v_bill_id,
+        'bill_number', v_bill_number
+      ),
       'client_created_at', v_client_created_at, 'core_duration_ms', v_server_duration_ms,
       'changed_rows', v_changed_rows
     )
@@ -2308,6 +2321,15 @@ begin
     v_organization_id, 'financial_adjustment_committed_v2', v_entity_type, v_entity_id, v_actor_user_id::text,
     jsonb_build_object(
       'mutation_id', v_mutation_id, 'mutation_kind', v_mutation_kind,
+      'activity_detail', jsonb_build_object(
+        'operation_kind', case v_mutation_kind
+          when 'settlePendingBills' then 'bill_settled'
+          when 'writeOffPendingBills' then 'bill_voided_bad_debt'
+          when 'voidBill' then 'bill_voided'
+          when 'refundBill' then 'bill_refunded'
+        end,
+        'mutation_kind', v_mutation_kind
+      ),
       'core_duration_ms', v_server_duration_ms, 'changed_rows', v_changed_rows
     )
   ) returning id into v_event_id;
@@ -2340,3 +2362,5 @@ $$;
 
 revoke all on function public.commit_financial_adjustment_v2(jsonb) from public, anon;
 grant execute on function public.commit_financial_adjustment_v2(jsonb) to authenticated;
+
+commit;

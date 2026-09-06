@@ -8,6 +8,7 @@ const appSource = readFileSync(resolve(process.cwd(), "src/App.tsx"), "utf8");
 const normalizedGatewaySource = readFileSync(resolve(process.cwd(), "src/dataGateway/normalizedGateway.ts"), "utf8");
 const sessionItemRpcSql = readFileSync(resolve(process.cwd(), "supabase/phase4-session-item-rpcs.sql"), "utf8");
 const customerTabRpcSql = readFileSync(resolve(process.cwd(), "supabase/phase4-customer-tab-rpcs.sql"), "utf8");
+const financialV2RpcSql = readFileSync(resolve(process.cwd(), "supabase/phase10-financial-v2-rpcs.sql"), "utf8");
 
 describe("activity ledger SQL contract", () => {
   it("is additive, tenant-scoped, indexed, and read-only to app clients", () => {
@@ -48,17 +49,21 @@ describe("activity ledger SQL contract", () => {
     expect(verificationSql).toContain("reference_mismatch_rows");
   });
 
-  it("prefers a correlated server-defined operational action without deleting source evidence", () => {
+  it("suppresses only a correlated audit action covered by a complete server projection", () => {
     for (const source of [sql, verificationSql]) {
       expect(source).toContain("operational.audit_reference_ids @> array[event.source_id]");
+      expect(source).toContain("public.operational_activity_covers_audit(operational.action, operational.details, event.action)");
       expect(source).toContain("operational.actor_user_id = event.actor_user_id");
       expect(source).toContain("operational.occurred_at = event.occurred_at");
     }
+    expect(sql).toContain("coalesce(p_operational_details->>'projection_complete', 'false') = 'true'");
+    expect(sql).toContain("p_operational_action = p_audit_action");
+    expect(sql).toContain("p_operational_action = 'add_session_item' and p_audit_action = 'session_item_added'");
   });
 
   it("server-persists exact item, quantity, and price context for item activity", () => {
     expect(sql).toContain("create or replace function public.resolve_activity_summary");
-    expect(sql).toContain("new.metadata->'activity_detail'");
+    expect(sql).toContain("p_metadata->'activity_detail'");
     for (const source of [sessionItemRpcSql, customerTabRpcSql]) {
       expect(source).toContain("'activity_detail', jsonb_build_object(");
       expect(source).toContain("'item_name'");
@@ -67,6 +72,26 @@ describe("activity ledger SQL contract", () => {
       expect(source).toContain("'total'");
     }
     expect(customerTabRpcSql).toContain("'previous_quantity'");
+  });
+
+  it("projects trusted financial checkout and adjustment semantics with bill evidence", () => {
+    expect(sql).toContain("create or replace function public.resolve_operational_activity_detail");
+    expect(sql).toContain("p_event_type = 'financial_checkout_committed_v2'");
+    expect(sql).toContain("p_event_type = 'financial_adjustment_committed_v2'");
+    expect(sql).toContain("from public.bills bill");
+    expect(sql).toContain("from public.payments payment");
+    for (const action of ["bill_issued", "bill_pending", "bill_replaced", "bill_settled", "bill_voided_bad_debt", "bill_voided", "bill_refunded"]) {
+      expect(sql).toContain(`'${action}'`);
+    }
+    expect(financialV2RpcSql).toContain("'checkout_mode', v_mode");
+    expect(financialV2RpcSql).toContain("'activity_detail', jsonb_build_object(");
+    expect(financialV2RpcSql).toContain("when 'settlePendingBills' then 'bill_settled'");
+    expect(financialV2RpcSql).toContain("when 'refundBill' then 'bill_refunded'");
+    expect(sql).toContain("p_allow_current_snapshot boolean");
+    expect(sql).toContain("return v_detail - 'projection_complete'");
+    expect(sql).toMatch(/event\.metadata, false\s*\) as value/);
+    expect(sql).toContain("where public.activity_events.legacy");
+    expect(verificationSql).toContain("incomplete_nonlegacy_financial_rows");
   });
 
   it("installs capture triggers before historical backfill and refreshes on every realtime event", () => {

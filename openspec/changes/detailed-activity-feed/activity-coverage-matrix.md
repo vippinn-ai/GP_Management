@@ -13,4 +13,4 @@
 | Users | admin APIs plus admin audit commit | created, updated, activated/deactivated, password reset/change without password value |
 | Maintenance | `edit_pause_log`, `delete_pause_log`, `record_session_audit` | pause edited/deleted, maintenance disposition recorded |
 
-Every row receives a static SQL/source contract and at least one transaction or Playwright assertion. Every audit and operational source is retained. When both describe one transaction, the read projection shows the correlated server-authored operational action once while retaining the audit evidence row underneath.
+Every row receives a static SQL/source contract and at least one transaction or Playwright assertion. Every audit and operational source is retained. The read projection suppresses an audit only when a complete server-authored projection covers that same action; generic operational events cannot hide distinct correlated audit actions.

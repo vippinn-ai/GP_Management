@@ -11,12 +11,20 @@ The system SHALL retain exactly one activity evidence row for every organization
 - **WHEN** a source row is committed while installation is in progress
 - **THEN** the row is captured by a trigger installed before the backfill snapshot or by the subsequent backfill, and cannot fall between the two mechanisms
 
-### Requirement: Server-authored activity wins presentation
-The system SHALL retain both sources but present the server-authored operational action once when an audit row and operational event are securely correlated.
+### Requirement: Complete server-authored activity wins duplicate presentation
+The system SHALL retain both sources and suppress an audit presentation only when a securely correlated, complete server-authored operational projection covers the same semantic action.
 
 #### Scenario: Current correlated sources
 - **WHEN** an operational event references an audit ID and both rows have the same authenticated actor, organization, and transaction timestamp
-- **THEN** the Activity UI presents the operational action and suppresses only the duplicate audit presentation
+- **THEN** the Activity UI suppresses the audit only if the operational projection is explicitly complete and maps to the same semantic action
+
+#### Scenario: Generic multi-action correlation
+- **WHEN** one generic operational event references multiple audit rows with distinct actions
+- **THEN** each distinct audit action remains visible and the generic event cannot erase their detail
+
+#### Scenario: Incomplete historical item projection
+- **WHEN** a legacy item operational event lacks trusted item, quantity, or price detail
+- **THEN** its correlated historical audit presentation remains visible with legacy provenance
 
 #### Scenario: Reused historical audit ID
 - **WHEN** a new operational event references an older audit ID
@@ -32,4 +40,3 @@ The system SHALL derive actor and timestamp for new activity from `auth.uid()` a
 #### Scenario: Spoofed actor and time
 - **WHEN** an authenticated mutation submits another actor or a client timestamp
 - **THEN** the activity row records the authenticated member and server transaction time
-
