@@ -1,6 +1,8 @@
 -- Detailed activity ledger.
 -- Additive: this script does not alter business rows or app_state.
 
+begin;
+
 create extension if not exists pgcrypto;
 create extension if not exists pg_trgm;
 
@@ -550,3 +552,5 @@ $$;
 
 revoke all on function public.list_activity_events(jsonb) from public, anon;
 grant execute on function public.list_activity_events(jsonb) to authenticated;
+
+commit;
