@@ -33,6 +33,13 @@ describe("activity ledger SQL contract", () => {
     expect(sql).toContain("return old");
   });
 
+  it("distinguishes authoritative server operations from client-reported audit wording", () => {
+    expect(sql).toContain("'context_provenance', 'server_operation'");
+    expect(sql).toContain("else 'client_reported'");
+    expect(sql).toContain("else 'source_recorded_client_context'");
+    expect(financialV2RpcSql).toContain("'activityEvidenceProvenance', 'server_canonical'");
+  });
+
   it("deduplicates source records and labels historical imports without inventing data", () => {
     expect(sql).toContain("unique (organization_id, source_kind, source_id)");
     expect(sql).toMatch(/'audit_log',\s+audit\.id,\s+true\s+from public\.audit_logs audit[\s\S]*?on conflict \(organization_id, source_kind, source_id\) do nothing/i);
@@ -89,6 +96,7 @@ describe("activity ledger SQL contract", () => {
     expect(financialV2RpcSql).toContain("when 'refundBill' then 'bill_refunded'");
     expect(sql).toContain("p_allow_current_snapshot boolean");
     expect(sql).toContain("return v_detail - 'projection_complete'");
+    expect(sql).toContain("jsonb_build_object('projection_complete', v_bill_count = 1)");
     expect(sql).toMatch(/event\.metadata, false\s*\) as value/);
     expect(sql).toContain("where public.activity_events.legacy");
     expect(verificationSql).toContain("incomplete_nonlegacy_financial_rows");

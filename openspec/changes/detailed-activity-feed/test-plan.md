@@ -8,6 +8,7 @@ The testing agent uses a separate clean worktree at the approved commit. Browser
 - Admin, manager, and receptionist can read identical organization activity.
 - Authenticated roles cannot insert, update, or delete activity/audit/operational rows directly.
 - Client actor and timestamp spoofing are overwritten by `auth.uid()` and server time.
+- A hostile phase 4/6 audit action/entity/message cannot masquerade as server truth: the actual server operation remains visible and injected wording is labelled client-reported.
 - Replayed mutation/source IDs produce no duplicate activity.
 - Backfill counts reconcile to eligible audit rows plus event fallbacks.
 - Generic multi-audit events preserve every distinct correlated audit action; only complete same-action projections suppress duplicates.

@@ -10,7 +10,7 @@
 - The reader keeps both source records as evidence. It suppresses an audit presentation only when the correlated operational projection is explicitly complete and covers that same semantic audit action. A generic multi-audit operational event never hides the distinct audit actions it references. New correlations additionally require the exact same authenticated actor and transaction timestamp, so a reused client audit ID cannot hide the operational truth.
 - Unique `(organization_id, source_kind, source_id)` prevents duplicate source effects.
 
-Authenticated clients receive SELECT only. INSERT/UPDATE/DELETE are revoked on all three evidence tables; SECURITY DEFINER mutation RPCs continue writing as their owner. Actor identity is derived from `auth.uid()` in triggers and cannot be changed by payload fields.
+Authenticated clients receive SELECT only. INSERT/UPDATE/DELETE are revoked on all three evidence tables; SECURITY DEFINER mutation RPCs continue writing as their owner. Actor identity is derived from `auth.uid()` in triggers and cannot be changed by payload fields. Operational rows are labelled as authoritative server operations. Audit wording accepted by compatibility RPCs is explicitly labelled client-reported context; phase 10 financial audit wording is marked server-canonical only after the RPC validates the action/entity and constructs the message from committed rows.
 
 ## Activity record
 
@@ -18,7 +18,7 @@ Each record contains server `occurred_at`, actor ID and immutable name/username/
 
 Capture triggers are installed before backfill so a concurrent insert cannot fall between the snapshot and trigger installation. Every historic audit and operational source row is then backfilled and marked legacy. Existing actor/timestamp values are retained. Because old rows did not store immutable staff and entity labels, legacy lookup labels are explicitly identified in `details` and in the UI as current-record lookups rather than historical fact.
 
-Financial v2 projections derive their semantic action and display evidence from the committed normalized bill and payment rows plus the server-authored mutation kind. Checkout, deferred issue, replacement, settlement, write-off, void, and refund therefore remain distinguishable without trusting client audit messages. Item projections are complete only when the committed RPC supplies the server-persisted item, quantity, and price; older incomplete operational rows leave their correlated historical audit presentation visible.
+Financial v2 projections derive their semantic action and display evidence from the committed normalized bill and payment rows plus the server-authored mutation kind. Checkout, deferred issue, replacement, settlement, write-off, void, and refund therefore remain distinguishable without trusting client audit messages. A grouped adjustment is not marked complete, so its server-authored per-bill audit actions remain visible with each bill's amount and due balance. Item projections are complete only when the committed RPC supplies the server-persisted item, quantity, and price; older incomplete operational rows leave their correlated historical audit presentation visible.
 
 ## Reader contract
 

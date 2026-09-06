@@ -25,6 +25,8 @@ function formatActivityTimestamp(value: string): string {
 
 export function ActivityEventRow({ event, compact = false }: { event: ActivityEvent; compact?: boolean }) {
   const localRecord = event.details.source === "local_audit_log";
+  const clientReportedContext = event.details.context_provenance === "client_reported"
+    || event.details.context_provenance === "source_recorded_client_context";
   const actorMeta = [event.actorRole?.toUpperCase(), event.actorUsername ? `@${event.actorUsername}` : ""]
     .filter(Boolean)
     .join(" · ");
@@ -59,6 +61,14 @@ export function ActivityEventRow({ event, compact = false }: { event: ActivityEv
             </span>
           )}
           {localRecord && <span className="activity-legacy-badge" title="Recorded in this local browser">Local record</span>}
+          {clientReportedContext && (
+            <span
+              className="activity-legacy-badge"
+              title="Supporting audit wording supplied by the application client. The paired server operation is authoritative for what committed."
+            >
+              Client-reported context
+            </span>
+          )}
         </div>
         {!compact && (
           <details className="activity-technical-details">

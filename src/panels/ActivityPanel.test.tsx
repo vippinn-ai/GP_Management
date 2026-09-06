@@ -15,7 +15,7 @@ const event = {
   entityId: "session-1",
   entityLabel: "Playstation · Vansh Jalam",
   summary: "Added Herbal Flavour worth Rs 200.",
-  details: { audit_id: "audit-1" },
+  details: { audit_id: "audit-1", context_provenance: "client_reported" },
   sourceKind: "audit_log" as const,
   legacy: false
 };
@@ -46,6 +46,7 @@ describe("ActivityPanel", () => {
     expect(screen.getByText(/Playstation · Vansh Jalam/)).toBeInTheDocument();
     expect(screen.getAllByText(/IST/).length).toBeGreaterThan(0);
     expect(screen.getByText("Server activity")).toBeInTheDocument();
+    expect(screen.getByText("Client-reported context")).toBeInTheDocument();
   });
 
   it("keeps search focused while typing and applies filters only on submit", () => {

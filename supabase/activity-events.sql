@@ -313,7 +313,9 @@ begin
       'payment_modes', v_payment_modes,
       'reason', v_reason
     ));
-    return v_detail || v_derived || jsonb_build_object('projection_complete', v_bill_count > 0);
+    -- One aggregate event cannot replace multiple per-bill audit actions without
+    -- losing each bill's settled/write-off amount and remaining due.
+    return v_detail || v_derived || jsonb_build_object('projection_complete', v_bill_count = 1);
   end if;
 
   if p_event_type in (
@@ -590,7 +592,11 @@ begin
     coalesce(nullif(new.message, ''), public.activity_humanize(new.action)),
     jsonb_strip_nulls(jsonb_build_object(
       'audit_id', new.id,
-      'source', 'audit_log'
+      'source', 'audit_log',
+      'context_provenance', case
+        when new.raw_data->>'activityEvidenceProvenance' = 'server_canonical' then 'server_canonical'
+        else 'client_reported'
+      end
     )),
     'audit_log',
     new.id,
@@ -671,6 +677,7 @@ begin
     jsonb_strip_nulls(jsonb_build_object(
       'event_id', new.id,
       'source', 'operational_event',
+      'context_provenance', 'server_operation',
       'entity_version', new.entity_version
     ) || v_detail),
     nullif(new.metadata->>'mutation_id', ''),
@@ -747,6 +754,10 @@ select
   jsonb_build_object(
     'audit_id', audit.id,
     'source', 'audit_log',
+    'context_provenance', case
+      when audit.raw_data->>'activityEvidenceProvenance' = 'server_canonical' then 'server_canonical'
+      else 'source_recorded_client_context'
+    end,
     'legacy_identity_provenance', 'current_membership_profile_lookup',
     'legacy_entity_label_provenance', 'current_entity_lookup'
   ),
@@ -782,6 +793,7 @@ select
   jsonb_strip_nulls(jsonb_build_object(
     'event_id', event.id,
     'source', 'operational_event',
+    'context_provenance', 'server_operation',
     'entity_version', event.entity_version,
     'legacy_identity_provenance', 'current_membership_profile_lookup',
     'legacy_entity_label_provenance', 'current_entity_lookup'

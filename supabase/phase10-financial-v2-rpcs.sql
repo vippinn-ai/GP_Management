@@ -303,7 +303,8 @@ begin
     nullif(audit->>'entityType', ''), nullif(audit->>'entityId', ''),
     canonical.message, p_transaction_at,
     p_actor_user_id::text, audit || jsonb_build_object(
-      'message', canonical.message, 'createdAt', p_transaction_at, 'userId', p_actor_user_id::text
+      'message', canonical.message, 'createdAt', p_transaction_at, 'userId', p_actor_user_id::text,
+      'activityEvidenceProvenance', 'server_canonical'
     )
   from jsonb_array_elements(p_audit_logs) as source(audit)
   cross join lateral (

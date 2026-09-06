@@ -40,3 +40,14 @@ The system SHALL derive actor and timestamp for new activity from `auth.uid()` a
 #### Scenario: Spoofed actor and time
 - **WHEN** an authenticated mutation submits another actor or a client timestamp
 - **THEN** the activity row records the authenticated member and server transaction time
+
+### Requirement: Action provenance is explicit
+The system SHALL present committed operational events as server-authoritative and SHALL label compatibility audit wording as client-reported unless the database mutation RPC validates and constructs that wording.
+
+#### Scenario: Hostile compatibility audit wording
+- **WHEN** a caller performs a session operation but supplies audit wording that claims an unrelated billing action
+- **THEN** the server session operation remains visible as authoritative and the conflicting audit wording is visibly labelled Client-reported context
+
+#### Scenario: Canonical financial audit wording
+- **WHEN** phase 10 validates an allowed financial action and constructs its per-bill message from committed rows
+- **THEN** that audit context is marked server-canonical and is not labelled client-reported
