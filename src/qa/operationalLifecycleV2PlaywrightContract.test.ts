@@ -373,8 +373,13 @@ describe("operational lifecycle v2 Playwright and performance contract", () => {
     const verifier = read("scripts/verify-operational-v2-proof-postrollback.mjs");
     expect(sql).toContain("repeatable read read only");
     expect(sql).toContain("__PROOF_RUN_ID__");
+    expect(sql).toContain("identity_nonce='__IDENTITY_NONCE__'::uuid");
+    expect(sql).toContain("'identity_nonce','__IDENTITY_NONCE__'");
     expect(builder).toContain("rollbackOnly !== true");
+    expect(builder).toContain("proofManifest.target?.identityNonce");
+    expect(builder).toContain('.replaceAll("__IDENTITY_NONCE__", identityNonce)');
     expect(verifier).toContain("Transactional proof rollback left ${name} rows.");
+    expect(verifier).toContain("observed.identity_nonce !== identityNonce");
     expect(verifier).toContain("appStateRestored: true");
   });
 

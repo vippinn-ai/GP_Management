@@ -5,13 +5,14 @@ do $$
 begin
   if current_database() <> 'postgres' or (select system_identifier::text from pg_control_system()) <> '7623125441096521075'
     then raise exception 'physical database is not the approved staging cluster'; end if;
-  if not exists(select 1 from public.deployment_environment_identity where environment='staging' and project_ref='tkbdyzxwwbhkpztgjjxh')
+  if not exists(select 1 from public.deployment_environment_identity where environment='staging' and project_ref='tkbdyzxwwbhkpztgjjxh' and identity_nonce='__IDENTITY_NONCE__'::uuid)
     then raise exception 'database staging identity failed'; end if;
 end $$;
 
 select jsonb_build_object(
   'proof_run_id','__PROOF_RUN_ID__',
   'project_ref','tkbdyzxwwbhkpztgjjxh',
+  'identity_nonce','__IDENTITY_NONCE__',
   'transaction_read_only',current_setting('transaction_read_only')::boolean,
   'captured_at_utc',timezone('utc',clock_timestamp()),
   'app_state',(select jsonb_build_object('version',version,'bytes',octet_length(data::text),'md5',md5(data::text),'updated_at',updated_at,'updated_by',updated_by) from public.app_state where id='primary'),

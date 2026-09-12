@@ -15,9 +15,11 @@ const expectedProofManifestSha = argument("proof-manifest-sha256").toLowerCase()
 const proofManifestText = fs.readFileSync(proofManifestPath, "utf8");
 if (sha256(proofManifestText) !== expectedProofManifestSha) throw new Error("Proof manifest SHA-256 does not match.");
 const proofManifest = JSON.parse(proofManifestText);
+const identityNonce = proofManifest.target?.identityNonce;
 if (
   !/^normops-\d{8}-\d{4}-db-proof-[a-z0-9-]+$/.test(proofManifest.runId ?? "")
   || proofManifest.target?.projectRef !== "tkbdyzxwwbhkpztgjjxh"
+  || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(identityNonce ?? "")
   || proofManifest.rollbackOnly !== true
   || !/^[0-9a-f]{64}$/.test(proofManifest.installManifest?.sha256 ?? "")
   || !/^[0-9a-f]{64}$/.test(proofManifest.postflightVerification?.sha256 ?? "")
@@ -28,8 +30,10 @@ for (const [label, record] of [["install manifest", proofManifest.installManifes
 }
 const sourcePath = path.join(root, "supabase", "operational-v2-proof-postrollback-readonly.sql");
 const source = fs.readFileSync(sourcePath, "utf8");
-const generated = source.replaceAll("__PROOF_RUN_ID__", proofManifest.runId);
-if (generated.includes("__PROOF_RUN_ID__") || !generated.includes("repeatable read read only") || !generated.trimEnd().endsWith("rollback;")) {
+const generated = source
+  .replaceAll("__PROOF_RUN_ID__", proofManifest.runId)
+  .replaceAll("__IDENTITY_NONCE__", identityNonce);
+if (generated.includes("__PROOF_RUN_ID__") || generated.includes("__IDENTITY_NONCE__") || !generated.includes("repeatable read read only") || !generated.trimEnd().endsWith("rollback;")) {
   throw new Error("Proof post-rollback source lost its read-only contract.");
 }
 const outputDirectory = path.dirname(proofManifestPath);

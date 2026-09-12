@@ -153,4 +153,48 @@ describe("operational lifecycle staging installer", () => {
     const proofManifest = JSON.parse(fs.readFileSync(proofManifestPath, "utf8"));
     expect(proofManifest.target.identityNonce).toBe(identityNonce);
   });
+
+  it("binds generated proof post-rollback SQL to the exact staging identity nonce", () => {
+    const root = process.cwd();
+    const fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), "normops-proof-postrollback-"));
+    cleanupPaths.push(fixtureDir);
+    const identityNonce = "12345678-1234-4123-8123-123456789abc";
+    const proofRunId = `normops-20260912-2202-db-proof-${crypto.randomBytes(4).toString("hex")}`;
+    const installLineagePath = path.join(fixtureDir, "install-manifest.json");
+    const verificationLineagePath = path.join(fixtureDir, "postflight-verification.json");
+    const installLineageText = JSON.stringify({ runId: "install-fixture" });
+    const verificationLineageText = JSON.stringify({ runId: "verification-fixture" });
+    fs.writeFileSync(installLineagePath, installLineageText);
+    fs.writeFileSync(verificationLineagePath, verificationLineageText);
+    const proofManifestPath = path.join(fixtureDir, "proof-manifest.json");
+    const proofManifestText = JSON.stringify({
+      runId: proofRunId,
+      target: { environment: "staging", projectRef: "tkbdyzxwwbhkpztgjjxh", organizationId: "org-primary", identityNonce },
+      rollbackOnly: true,
+      installManifest: {
+        path: installLineagePath,
+        sha256: crypto.createHash("sha256").update(installLineageText).digest("hex")
+      },
+      postflightVerification: {
+        path: verificationLineagePath,
+        sha256: crypto.createHash("sha256").update(verificationLineageText).digest("hex")
+      }
+    });
+    fs.writeFileSync(proofManifestPath, proofManifestText);
+    const proofManifestSha = crypto.createHash("sha256").update(proofManifestText).digest("hex");
+
+    const result = spawnSync(process.execPath, [
+      path.join(root, "scripts", "build-operational-v2-proof-postrollback.mjs"),
+      `--proof-manifest=${proofManifestPath}`,
+      `--proof-manifest-sha256=${proofManifestSha}`
+    ], { cwd: root, encoding: "utf8" });
+
+    expect(result.status, result.stderr).toBe(0);
+    const generatedSql = fs.readFileSync(path.join(fixtureDir, "proof-postrollback-readonly.sql"), "utf8");
+    expect(generatedSql).toContain(`identity_nonce='${identityNonce}'::uuid`);
+    expect(generatedSql).toContain(`'identity_nonce','${identityNonce}'`);
+    expect(generatedSql).not.toContain("__IDENTITY_NONCE__");
+    const generatedManifest = JSON.parse(fs.readFileSync(path.join(fixtureDir, "proof-postrollback-manifest.json"), "utf8"));
+    expect(generatedManifest.target.identityNonce).toBe(identityNonce);
+  });
 });

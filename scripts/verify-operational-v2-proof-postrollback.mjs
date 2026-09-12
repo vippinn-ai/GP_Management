@@ -25,9 +25,12 @@ const result = readBound("result", "Proof post-rollback result");
 const proofResult = readBound("proof-result", "Transactional proof result");
 const observed = unwrap(result.value);
 const proof = unwrap(proofResult.value);
+const identityNonce = manifest.value.target?.identityNonce;
 if (
   manifest.value.target?.projectRef !== "tkbdyzxwwbhkpztgjjxh"
+  || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(identityNonce ?? "")
   || observed.project_ref !== "tkbdyzxwwbhkpztgjjxh"
+  || observed.identity_nonce !== identityNonce
   || observed.transaction_read_only !== true
   || observed.proof_run_id !== manifest.value.proofRunId
   || proof.run_id !== manifest.value.proofRunId
@@ -43,6 +46,7 @@ if (!isDeepStrictEqual(observed.app_state, installVerification.appState)) throw 
 const verification = {
   proofRunId: manifest.value.proofRunId,
   projectRef: observed.project_ref,
+  identityNonce: observed.identity_nonce,
   status: "passed",
   rollbackProven: true,
   residuals: observed.residuals,
