@@ -11,12 +11,13 @@ Record branch, commit SHA, clean status, build asset names/hashes, SQL file hash
 ## Fail-closed preflight
 
 1. Confirm the staging host, project, organization, and authenticated QA roles.
-2. If the identity anchor is not installed, run `operational-v2-staging-environment-identity.sql` once. It must refuse execution unless the database-owned `app.settings.api_url` contains the approved staging project ref; never edit that guard.
-3. Confirm no non-QA active session/tab and no unresolved prior QA mutation.
-4. Run `operational-lifecycle-v2-staging-preflight-readonly.sql` in the staging SQL editor and save its single JSON value without editing it. The preflight independently validates both the database API URL and the locked identity nonce.
-5. Build with `npm run build:db:staging:operational-v2 -- --run-id=normops-YYYYMMDD-HHMM-install --preflight=<saved-json>`.
-6. Verify the immutable manifest binds the preflight, source files, install, and rollback by SHA-256 before execution.
-7. Stop on wrong environment, unknown or drifted deployed-function definition/owner/configuration/ACL, any open session/tab, any unconsumed recoverable hopped session, dirty mutation floor, missing rollback artifact, or incomplete role access.
+2. If `current_setting('app.settings.api_url', true)` is absent, verify the visible SQL Editor URL is exactly `https://supabase.com/dashboard/project/tkbdyzxwwbhkpztgjjxh/sql/new`, run `operational-v2-staging-api-url-anchor.sql` once, and save its result. This staging-only bootstrap persists the approved project URL as a database-specific setting, refuses a conflicting existing URL or environment identity, and changes no application/domain rows. Never run it from a production tab and never edit its project reference.
+3. If the identity table is not installed, run `operational-v2-staging-environment-identity.sql` once in the same positively identified staging tab. It must refuse execution unless the database-owned `app.settings.api_url` contains the approved staging project ref; never edit that guard.
+4. Confirm no non-QA active session/tab and no unresolved prior QA mutation.
+5. Run `operational-lifecycle-v2-staging-preflight-readonly.sql` in the staging SQL editor and save its single JSON value without editing it. The preflight independently validates both the database API URL and the locked identity nonce.
+6. Build with `npm run build:db:staging:operational-v2 -- --run-id=normops-YYYYMMDD-HHMM-install --preflight=<saved-json>`.
+7. Verify the immutable manifest binds the preflight, source files, install, and rollback by SHA-256 before execution.
+8. Stop on wrong environment, unknown or drifted deployed-function definition/owner/configuration/ACL, any open session/tab, any unconsumed recoverable hopped session, dirty mutation floor, missing rollback artifact, or incomplete role access.
 
 ## Additive install
 

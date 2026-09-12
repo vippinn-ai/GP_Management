@@ -9,6 +9,7 @@ const startSessionSource = readFileSync(path.join(process.cwd(), "supabase/phase
 const linkContinuationSource = readFileSync(path.join(process.cwd(), "supabase/phase4-link-customer-tab-continuation-rpc.sql"), "utf8");
 const preflight = readFileSync(path.join(process.cwd(), "supabase/operational-lifecycle-v2-staging-preflight-readonly.sql"), "utf8");
 const postflight = readFileSync(path.join(process.cwd(), "supabase/operational-lifecycle-v2-staging-postflight-readonly.sql"), "utf8");
+const stagingApiUrlAnchor = readFileSync(path.join(process.cwd(), "supabase/operational-v2-staging-api-url-anchor.sql"), "utf8");
 const installer = readFileSync(path.join(process.cwd(), "scripts/build-operational-lifecycle-v2-staging-install.mjs"), "utf8");
 const postflightVerifier = readFileSync(path.join(process.cwd(), "scripts/verify-operational-lifecycle-v2-staging-postflight.mjs"), "utf8");
 const transactionalProof = readFileSync(path.join(process.cwd(), "supabase/operational-lifecycle-v2-transactional-proof.sql"), "utf8");
@@ -96,6 +97,16 @@ describe("normalized lifecycle v2 SQL contract", () => {
       expect(probe).toMatch(/md5\(data::text\)/i);
       expect(probe).not.toMatch(/\b(?:insert\s+into|update|delete\s+from|alter\s+table|drop\s+table|create\s+table)\s+public\./i);
     }
+  });
+
+  it("bootstraps the missing hosted staging API URL with explicit conflict guards and no domain-row writes", () => {
+    expect(stagingApiUrlAnchor).toContain("https://supabase.com/dashboard/project/tkbdyzxwwbhkpztgjjxh/sql/new");
+    expect(stagingApiUrlAnchor).toContain("alter database postgres set \"app.settings.api_url\" to 'https://tkbdyzxwwbhkpztgjjxh.supabase.co'");
+    expect(stagingApiUrlAnchor).toContain("database already carries a different API URL identity");
+    expect(stagingApiUrlAnchor).toContain("database already carries a different environment identity");
+    expect(stagingApiUrlAnchor).toMatch(/organizations where id='org-primary' and active is true/i);
+    expect(stagingApiUrlAnchor).not.toContain("rrdwbxvuwrbxefarxnse");
+    expect(stagingApiUrlAnchor).not.toMatch(/\b(?:insert\s+into|update|delete\s+from|alter\s+table|drop\s+table|create\s+table)\s+public\./i);
   });
 
   it("binds continuation-chain actors to the authenticated principal", () => {
