@@ -18,7 +18,7 @@ Move `jspdf` and `xlsx` behind analyzable user-triggered dynamic imports. Preser
 
 ### D. Bootstrap/sync gap
 
-Subscribe and buffer compact events before critical snapshot restore, capture an event high-water mark, then replay/deduplicate buffered events before enabling writes. Split critical operational bootstrap from screen-gated history/report/customer/audit data and parallelize independent reads after organization resolution. The app remains read-only until critical data and catch-up are complete. This unit is required before claiming stale-sync elimination, but is independently reversible from A-C.
+Wait for a confirmed `SUBSCRIBED` realtime status, then buffer compact events before critical snapshot restore and replay/deduplicate them before enabling writes. This subscription-ready barrier removes the snapshot/subscription gap without relying on a best-effort timer. Split critical operational bootstrap from screen-gated history/report/customer/audit data and parallelize independent reads after organization resolution. The app remains read-only until critical data and buffered catch-up are complete. This unit is required before claiming stale-sync elimination, but is independently reversible from A-C.
 
 ## Trust boundary
 
@@ -40,8 +40,9 @@ Independent entities share no global lock. A failure rolls back every write.
 
 ## Lifecycle rules
 
-- Hop requires an open session, canonical start, and valid effective end. It closes any open pause at that end, sets `closed/hopped`, forces bill/reason null, and preserves other canonical fields and continuation IDs.
-- Reject requires an open session/tab, trimmed reason, and valid close time. It closes an open session pause, sets `closed/rejected`, clears bill and continuation IDs, and preserves items/combos for audit.
+- Hop requires an open, unbilled session, canonical start, valid effective end, and agreement between session status and open-pause rows. It closes exactly one canonical open pause only when the session is paused, sets `closed/hopped`, forces bill/reason null, and preserves other canonical fields and continuation IDs.
+- Reject requires an open, unbilled session/tab, trimmed reason, valid close time, and a valid pause invariant. It closes an open session pause, sets `closed/rejected`, clears bill and continuation IDs, and preserves items/combos for audit.
+- A continuation source must be closed/hopped/unbilled/unconsumed and match the target customer identity. Same-ID replay is accepted only when the stored request fingerprint matches the complete intent; entity and audit ID collisions fail atomically.
 - The server constructs audit message/time/actor. No bill, payment, stock, or inventory row changes.
 - `raw_data` is patched minimally from locked canonical raw JSON; a client entity snapshot is never stored.
 
@@ -52,4 +53,3 @@ Events contain changed normalized IDs, mutation identity, duration, and released
 ## Rollback
 
 Disable the operational-v2 flag to return new target commands to retained v1 functions while normalized reads remain enabled. Keep v2 functions/table installed so evidence remains. A full compatibility-read rollback requires separately verified normalized-to-`app_state` reconstruction. Bundle and bootstrap units have independent frontend rollback commits/flags.
-

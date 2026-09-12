@@ -246,14 +246,16 @@ export function ReportsPanel(props: {
             <button
               className="secondary-button"
               type="button"
-              onClick={() => exportRowsToXlsx(reportRows, `report-${reportFromDate}-${reportToDate}.xlsx`)}
+              onClick={() => void Promise.resolve(exportRowsToXlsx(reportRows, `report-${reportFromDate}-${reportToDate}.xlsx`))
+                .catch(() => window.alert("Unable to load the spreadsheet exporter. Check your connection and try again."))}
             >
               Export Excel
             </button>
             <button
               className="secondary-button"
               type="button"
-              onClick={() => exportRowsToPdf(reportRows, `report-${reportFromDate}-${reportToDate}.pdf`, businessProfile.name)}
+              onClick={() => void Promise.resolve(exportRowsToPdf(reportRows, `report-${reportFromDate}-${reportToDate}.pdf`, businessProfile.name))
+                .catch(() => window.alert("Unable to load the PDF exporter. Check your connection and try again."))}
             >
               Export PDF
             </button>

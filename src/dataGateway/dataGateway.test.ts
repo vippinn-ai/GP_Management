@@ -970,7 +970,10 @@ describe("app_state data gateway", () => {
     const unsubscribe = vi.fn();
     const channel = {
       on: vi.fn().mockReturnThis(),
-      subscribe: vi.fn().mockReturnThis()
+      subscribe: vi.fn((onStatus?: (status: string) => void) => {
+        onStatus?.("SUBSCRIBED");
+        return channel;
+      })
     };
     const client = {
       channel: vi.fn(() => channel),
@@ -1016,7 +1019,10 @@ describe("app_state data gateway", () => {
         realtimeHandler = handler;
         return channel;
       }),
-      subscribe: vi.fn().mockReturnThis()
+      subscribe: vi.fn((onStatus?: (status: string) => void) => {
+        onStatus?.("SUBSCRIBED");
+        return channel;
+      })
     };
     const client = {
       channel: vi.fn(() => channel),
@@ -1067,6 +1073,34 @@ describe("app_state data gateway", () => {
     );
   });
 
+  it("waits for confirmed realtime subscription before starting the bootstrap snapshot", async () => {
+    let realtimeStatus: ((status: string) => void) | undefined;
+    const channel = {
+      on: vi.fn().mockReturnThis(),
+      subscribe: vi.fn((onStatus?: (status: string) => void) => {
+        realtimeStatus = onStatus;
+        return channel;
+      })
+    };
+    const client = { channel: vi.fn(() => channel), removeChannel: vi.fn() };
+    backendMocks.getSupabaseClient.mockReturnValue(client);
+    backendMocks.loadRemoteAppDataSnapshot.mockResolvedValue(createSnapshot(20));
+    normalizedReadMocks.loadNormalizedAppDataOverlay.mockResolvedValueOnce({ appData: {}, organizationId: "org-primary" });
+    const gateway = createRemoteDataGateway({
+      ...DEFAULT_BACKEND_FEATURE_FLAGS,
+      normalizedRealtime: true
+    });
+
+    const loading = gateway.loadAppDataSnapshot();
+    await Promise.resolve();
+    expect(channel.subscribe).toHaveBeenCalledTimes(1);
+    expect(backendMocks.loadRemoteAppDataSnapshot).not.toHaveBeenCalled();
+
+    realtimeStatus?.("SUBSCRIBED");
+    await expect(loading).resolves.toMatchObject({ version: 20 });
+    expect(backendMocks.loadRemoteAppDataSnapshot).toHaveBeenCalledTimes(1);
+  });
+
   it("buffers compact events received during bootstrap and folds them into the returned snapshot", async () => {
     let resolveBase!: (snapshot: RemoteAppDataSnapshot) => void;
     const basePromise = new Promise<RemoteAppDataSnapshot>((resolve) => {
@@ -1078,7 +1112,10 @@ describe("app_state data gateway", () => {
         realtimeHandler = handler;
         return channel;
       }),
-      subscribe: vi.fn().mockReturnThis()
+      subscribe: vi.fn((onStatus?: (status: string) => void) => {
+        onStatus?.("SUBSCRIBED");
+        return channel;
+      })
     };
     const client = { channel: vi.fn(() => channel), removeChannel: vi.fn() };
     backendMocks.getSupabaseClient.mockReturnValue(client);
@@ -1120,25 +1157,26 @@ describe("app_state data gateway", () => {
     expect(backendMocks.loadRemoteAppDataSnapshot).toHaveBeenCalledTimes(1);
   });
 
-  it("carries the event identity through a realtime full refresh", async () => {
+  it("does not fall back to app_state for a realtime full-refresh event", async () => {
     const baseSnapshot = createSnapshot(20);
-    const refreshedSnapshot = createSnapshot(20);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     let realtimeHandler: ((payload: { new: unknown }) => void) | undefined;
     const channel = {
       on: vi.fn((_kind, _config, handler) => {
         realtimeHandler = handler;
         return channel;
       }),
-      subscribe: vi.fn().mockReturnThis()
+      subscribe: vi.fn((onStatus?: (status: string) => void) => {
+        onStatus?.("SUBSCRIBED");
+        return channel;
+      })
     };
     const client = {
       channel: vi.fn(() => channel),
       removeChannel: vi.fn()
     };
     backendMocks.getSupabaseClient.mockReturnValue(client);
-    backendMocks.loadRemoteAppDataSnapshot
-      .mockResolvedValueOnce(baseSnapshot)
-      .mockResolvedValueOnce(refreshedSnapshot);
+    backendMocks.loadRemoteAppDataSnapshot.mockResolvedValueOnce(baseSnapshot);
     normalizedReadMocks.loadNormalizedAppDataOverlay.mockResolvedValue({ appData: {}, organizationId: "org-primary" });
     const gateway = createRemoteDataGateway({
       ...DEFAULT_BACKEND_FEATURE_FLAGS,
@@ -1160,13 +1198,13 @@ describe("app_state data gateway", () => {
       }
     });
 
-    await vi.waitFor(() => expect(onChange).toHaveBeenCalledTimes(1));
-    expect(onChange.mock.calls[0][0]).toMatchObject({
-      version: 20,
-      sourceEventId: "event-full-refresh",
-      refreshedSlices: ["full_app_state"]
-    });
-    expect(backendMocks.loadRemoteAppDataSnapshot).toHaveBeenCalledTimes(2);
+    await vi.waitFor(() => expect(warn).toHaveBeenCalledWith(
+      "Unable to apply compact realtime event.",
+      expect.objectContaining({ message: "A full-refresh event requires an explicit normalized restore." })
+    ));
+    expect(onChange).not.toHaveBeenCalled();
+    expect(backendMocks.loadRemoteAppDataSnapshot).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
   });
 
   it("marks compact financial realtime snapshots so screen-specific bill readers refetch", async () => {
@@ -1177,7 +1215,10 @@ describe("app_state data gateway", () => {
         realtimeHandler = handler;
         return channel;
       }),
-      subscribe: vi.fn().mockReturnThis()
+      subscribe: vi.fn((onStatus?: (status: string) => void) => {
+        onStatus?.("SUBSCRIBED");
+        return channel;
+      })
     };
     const client = {
       channel: vi.fn(() => channel),
@@ -1256,7 +1297,10 @@ describe("app_state data gateway", () => {
         realtimeHandler = handler;
         return channel;
       }),
-      subscribe: vi.fn().mockReturnThis()
+      subscribe: vi.fn((onStatus?: (status: string) => void) => {
+        onStatus?.("SUBSCRIBED");
+        return channel;
+      })
     };
     const client = {
       channel: vi.fn(() => channel),

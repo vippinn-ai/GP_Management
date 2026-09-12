@@ -684,7 +684,8 @@ export function BillRegisterPanel(props: {
               <button
                 className="secondary-button"
                 type="button"
-                onClick={() => downloadReceiptPdf(props.businessProfile, selected, props.allBills, props.allPayments)}
+                onClick={() => void Promise.resolve(downloadReceiptPdf(props.businessProfile, selected, props.allBills, props.allPayments))
+                  .catch(() => window.alert("Unable to load the receipt PDF exporter. Check your connection and try again."))}
               >
                 Download PDF
               </button>

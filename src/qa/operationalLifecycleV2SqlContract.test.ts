@@ -4,8 +4,12 @@ import { describe, expect, it } from "vitest";
 
 const source = readFileSync(path.join(process.cwd(), "supabase/operational-lifecycle-v2.sql"), "utf8");
 const customerTabSource = readFileSync(path.join(process.cwd(), "supabase/phase4-customer-tab-rpcs.sql"), "utf8");
+const startSessionSource = readFileSync(path.join(process.cwd(), "supabase/phase4-start-session-rpc.sql"), "utf8");
+const linkContinuationSource = readFileSync(path.join(process.cwd(), "supabase/phase4-link-customer-tab-continuation-rpc.sql"), "utf8");
 const preflight = readFileSync(path.join(process.cwd(), "supabase/operational-lifecycle-v2-staging-preflight-readonly.sql"), "utf8");
 const postflight = readFileSync(path.join(process.cwd(), "supabase/operational-lifecycle-v2-staging-postflight-readonly.sql"), "utf8");
+const installer = readFileSync(path.join(process.cwd(), "scripts/build-operational-lifecycle-v2-staging-install.mjs"), "utf8");
+const postflightVerifier = readFileSync(path.join(process.cwd(), "scripts/verify-operational-lifecycle-v2-staging-postflight.mjs"), "utf8");
 
 function body(name: string) {
   const match = source.match(new RegExp(`create or replace function public\\.${name}\\(payload jsonb\\)[\\s\\S]*?as \\$\\$([\\s\\S]*?)\\$\\$;`, "i"));
@@ -42,6 +46,15 @@ describe("normalized lifecycle v2 SQL contract", () => {
     expect(source).toMatch(/'operational_events',\s*jsonb_build_array\(/i);
   });
 
+  it("rejects billed targets and inconsistent pause state before terminal updates", () => {
+    expect(body("hop_session_v2")).toMatch(/session_already_billed/i);
+    expect(body("hop_session_v2")).toMatch(/status\s*=\s*'paused'[\s\S]*?open_pause_count\s*<>\s*1/i);
+    expect(body("hop_session_v2")).toMatch(/paused_at\s*>\s*v_effective_end/i);
+    expect(body("reject_session_v2")).toMatch(/session_already_billed/i);
+    expect(body("reject_session_v2")).toMatch(/invalid_pause_state/i);
+    expect(body("reject_customer_tab_v2")).toMatch(/customer_tab_already_billed/i);
+  });
+
   it("locks and validates every hopped source before opening a continuation tab", () => {
     const match = customerTabSource.match(/create or replace function public\.open_customer_tab\(payload jsonb\)[\s\S]*?as \$\$([\s\S]*?)\$\$;/i);
     expect(match).not.toBeNull();
@@ -52,6 +65,9 @@ describe("normalized lifecycle v2 SQL contract", () => {
     expect(functionBody).toMatch(/for update/i);
     expect(functionBody).toMatch(/hopped_session_unavailable/i);
     expect(functionBody).toMatch(/hopped_session_already_continued/i);
+    expect(functionBody).toMatch(/hopped_session_customer_mismatch/i);
+    expect(functionBody).toMatch(/request_fingerprint/i);
+    expect(functionBody).toMatch(/audit_id_conflict/i);
     expect(functionBody).toMatch(/closed_bill_id\s+is\s+null/i);
   });
 
@@ -62,5 +78,24 @@ describe("normalized lifecycle v2 SQL contract", () => {
       expect(probe).toMatch(/md5\(data::text\)/i);
       expect(probe).not.toMatch(/\b(?:insert\s+into|update|delete\s+from|alter\s+table|drop\s+table|create\s+table)\s+public\./i);
     }
+  });
+
+  it("binds continuation-chain actors to the authenticated principal", () => {
+    for (const functionSource of [startSessionSource, customerTabSource, linkContinuationSource]) {
+      expect(functionSource).toMatch(/auth\.uid\(\)/i);
+      expect(functionSource).toMatch(/v_user_id\s+is\s+distinct\s+from\s+v_actor::text/i);
+      expect(functionSource).toMatch(/created_by[\s\S]*?v_actor::text/i);
+    }
+  });
+
+  it("builds immutable preflight-bound install and rollback evidence", () => {
+    expect(installer).toMatch(/argument\("preflight"\)/i);
+    expect(installer).toMatch(/deployed definition drift/i);
+    expect(installer).toMatch(/staging-rollback\.sql/i);
+    expect(installer).toMatch(/flag:\s*"wx"/i);
+    expect(installer).toMatch(/install changed compatibility app_state/i);
+    expect(postflight).toMatch(/operational_mutations_rls/i);
+    expect(postflightVerifier).toMatch(/appStateUnchanged:\s*true/i);
+    expect(postflightVerifier).toMatch(/Compatibility app_state .* changed/i);
   });
 });

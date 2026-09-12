@@ -12,19 +12,19 @@ Record branch, commit SHA, clean status, build asset names/hashes, SQL file hash
 
 1. Confirm the staging host, project, organization, and authenticated QA roles.
 2. Confirm no non-QA active session/tab and no unresolved prior QA mutation.
-3. Export `pg_get_functiondef`, owner, ACL, volatility, security mode, and `proconfig` for every function changed by the install.
-4. Record table/policy/index/grant state for `operational_mutations`.
-5. Record normalized row counts and exact `app_state` data SHA-256-equivalent digest, version, byte size, `updated_at`, and `updated_by`.
-6. Render and hash rollback SQL before applying anything.
-7. Stop on wrong environment, unknown deployed-function hash, open non-QA work, dirty QA floor, missing rollback artifact, or incomplete role access.
+3. Run `operational-lifecycle-v2-staging-preflight-readonly.sql` in the staging SQL editor and save its single JSON value without editing it.
+4. Build with `npm run build:db:staging:operational-v2 -- --run-id=normops-YYYYMMDD-HHMM-install --preflight=<saved-json>`.
+5. Verify the immutable manifest binds the preflight, source files, install, and rollback by SHA-256 before execution.
+6. Stop on wrong environment, unknown deployed-function hash, any open session/tab, dirty mutation floor, missing rollback artifact, or incomplete role access.
 
 ## Additive install
 
-1. Execute only the reviewed `operational-lifecycle-v2.sql` and the exact extracted `open_customer_tab` replacement in one transaction.
+1. Execute only the generated manifest-bound install. It installs lifecycle v2 and the exact reviewed `start_session`, `open_customer_tab`, and `link_customer_tab_continuation` actor-safe definitions in one transaction.
 2. Read definitions and grants back from the database.
 3. Prove all three lifecycle v2 bodies have no `app_state` reference and that legacy functions remain executable.
-4. Confirm install changed no domain rows or compatibility values.
-5. Deploy the exact staging build with operational v2 enabled only after SQL verification succeeds.
+4. Run the read-only postflight, save its JSON, and run `npm run verify:db:staging:operational-v2 -- --preflight=<saved-preflight> --postflight=<saved-postflight> --manifest=<manifest>`.
+5. Confirm install changed no domain rows or compatibility values.
+6. Deploy the exact staging build with operational v2 enabled only after SQL verification succeeds.
 
 ## Test execution
 
@@ -33,11 +33,10 @@ Follow `test-plan.md` in its declared order: transactional rollback proof, seria
 ## Rollback
 
 - Frontend: redeploy the exact prior staging build or set `VITE_BACKEND_OPERATIONAL_RPC_V2=false`; keep normalized bootstrap/realtime enabled.
-- SQL: v2 functions/table may remain installed while flag-off. If a function replacement must be restored, apply the preflight-captured exact definition/ACL/config in one transaction.
+- SQL: v2 functions/table may remain installed while flag-off. If a function replacement must be restored, apply the immutable generated rollback, which restores the preflight-captured definition, owner, and execution ACL in one transaction.
 - Data: do not delete `operational_mutations` or committed evidence during rollback. Clean only exact QA identities after reconciliation.
 - Compatibility: do not switch to stale `app_state` reads. Any full legacy rollback requires separately verified reconstruction.
 
 ## Completion
 
 Staging completes only when exact-ID cleanup is clean, compatibility invariance is proven, performance budgets pass, and both independent agents bind GO decisions to the tested commit, deployed assets/functions, and evidence hashes.
-

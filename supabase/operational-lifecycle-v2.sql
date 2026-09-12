@@ -65,7 +65,7 @@ begin
   exception when others then
     perform public.raise_operational_rpc_error('invalid_session_timing', 'The session end time is invalid.', '{}'::jsonb);
   end;
-  if v_effective_end is null or v_effective_end > clock_timestamp() + interval '5 minutes' then
+  if v_effective_end is null or v_effective_end > clock_timestamp() then
     perform public.raise_operational_rpc_error('invalid_session_timing', 'The session end time is invalid.', '{}'::jsonb);
   end if;
 
@@ -111,6 +111,9 @@ begin
   if not found or v_session.status = 'closed' then
     perform public.raise_operational_rpc_error('session_not_open', 'The session is no longer open.', jsonb_build_object('session_id', v_entity_id));
   end if;
+  if v_session.closed_bill_id is not null then
+    perform public.raise_operational_rpc_error('session_already_billed', 'The session is already linked to a bill.', jsonb_build_object('session_id', v_entity_id, 'bill_id', v_session.closed_bill_id));
+  end if;
   if v_session.started_at is null or v_effective_end < v_session.started_at then
     perform public.raise_operational_rpc_error('invalid_session_timing', 'The session end time precedes its canonical start.', jsonb_build_object('session_id', v_entity_id));
   end if;
@@ -123,6 +126,17 @@ begin
   where organization_id = v_organization_id and session_id = v_entity_id and resumed_at is null;
   if v_open_pause_count > 1 then
     perform public.raise_operational_rpc_error('invalid_pause_state', 'The session has multiple open pauses.', jsonb_build_object('session_id', v_entity_id));
+  end if;
+  if (v_session.status = 'paused' and v_open_pause_count <> 1)
+    or (v_session.status <> 'paused' and v_open_pause_count <> 0)
+  then
+    perform public.raise_operational_rpc_error('invalid_pause_state', 'The session status and open pause do not agree.', jsonb_build_object('session_id', v_entity_id, 'status', v_session.status, 'open_pause_count', v_open_pause_count));
+  end if;
+  if v_pause_id is not null and exists (
+    select 1 from public.session_pause_logs
+    where organization_id = v_organization_id and id = v_pause_id and paused_at > v_effective_end
+  ) then
+    perform public.raise_operational_rpc_error('invalid_pause_state', 'The session end time precedes its open pause.', jsonb_build_object('session_id', v_entity_id, 'pause_id', v_pause_id));
   end if;
 
   update public.sessions set
@@ -221,7 +235,7 @@ begin
   then perform public.raise_operational_rpc_error('invalid_payload', 'The normalized session rejection payload is invalid.', '{}'::jsonb); end if;
   begin v_effective_end := nullif(payload #>> '{payload,effective_ended_at}', '')::timestamptz;
   exception when others then perform public.raise_operational_rpc_error('invalid_session_timing', 'The rejection time is invalid.', '{}'::jsonb); end;
-  if v_effective_end is null or v_effective_end > clock_timestamp() + interval '5 minutes' then
+  if v_effective_end is null or v_effective_end > clock_timestamp() then
     perform public.raise_operational_rpc_error('invalid_session_timing', 'The rejection time is invalid.', '{}'::jsonb); end if;
 
   v_actor_role := public.current_user_org_role(v_organization_id);
@@ -240,11 +254,14 @@ begin
 
   select * into v_session from public.sessions where organization_id=v_organization_id and id=v_entity_id for update;
   if not found or v_session.status='closed' then perform public.raise_operational_rpc_error('session_not_open', 'The session is no longer open.', jsonb_build_object('session_id', v_entity_id)); end if;
+  if v_session.closed_bill_id is not null then perform public.raise_operational_rpc_error('session_already_billed','The session is already linked to a bill.',jsonb_build_object('session_id',v_entity_id,'bill_id',v_session.closed_bill_id)); end if;
   if v_session.started_at is null or v_effective_end < v_session.started_at then perform public.raise_operational_rpc_error('invalid_session_timing', 'The rejection time precedes the canonical start.', jsonb_build_object('session_id', v_entity_id)); end if;
   v_released := case when jsonb_typeof(coalesce(v_session.continued_from_session_ids, '[]'::jsonb))='array' then coalesce(v_session.continued_from_session_ids, '[]'::jsonb) else '[]'::jsonb end;
   perform 1 from public.session_pause_logs where organization_id=v_organization_id and session_id=v_entity_id and resumed_at is null order by paused_at,id for update;
   select count(*), min(id) into v_pause_count,v_pause_id from public.session_pause_logs where organization_id=v_organization_id and session_id=v_entity_id and resumed_at is null;
   if v_pause_count>1 then perform public.raise_operational_rpc_error('invalid_pause_state','The session has multiple open pauses.',jsonb_build_object('session_id',v_entity_id)); end if;
+  if (v_session.status='paused' and v_pause_count<>1) or (v_session.status<>'paused' and v_pause_count<>0) then perform public.raise_operational_rpc_error('invalid_pause_state','The session status and open pause do not agree.',jsonb_build_object('session_id',v_entity_id,'status',v_session.status,'open_pause_count',v_pause_count)); end if;
+  if v_pause_id is not null and exists(select 1 from public.session_pause_logs where organization_id=v_organization_id and id=v_pause_id and paused_at>v_effective_end) then perform public.raise_operational_rpc_error('invalid_pause_state','The rejection time precedes the open pause.',jsonb_build_object('session_id',v_entity_id,'pause_id',v_pause_id)); end if;
 
   update public.sessions set ended_at=v_effective_end,status='closed',closed_bill_id=null,close_disposition='rejected',close_reason=v_reason,continued_from_session_ids='[]'::jsonb,
     raw_data=jsonb_set(jsonb_set(jsonb_set(jsonb_set(jsonb_set(jsonb_set(coalesce(v_session.raw_data,'{}'::jsonb),'{endedAt}',to_jsonb(v_effective_end),true),'{status}','"closed"'::jsonb,true),'{closedBillId}','null'::jsonb,true),'{closeDisposition}','"rejected"'::jsonb,true),'{closeReason}',to_jsonb(v_reason),true),'{continuedFromSessionIds}','[]'::jsonb,true),
@@ -279,7 +296,7 @@ declare
 begin
   if jsonb_typeof(payload)<>'object' or v_org is null or v_mid is null or v_kind<>'rejectCustomerTab' or v_type<>'customer_tab' or v_eid is null or v_reason is null or v_audit_id is null or payload?'user_id' or payload?'base_app_state_version' then perform public.raise_operational_rpc_error('invalid_payload','The normalized tab rejection payload is invalid.','{}'::jsonb); end if;
   begin v_closed_at:=nullif(payload#>>'{payload,effective_closed_at}','')::timestamptz; exception when others then perform public.raise_operational_rpc_error('invalid_tab_timing','The tab rejection time is invalid.','{}'::jsonb); end;
-  if v_closed_at is null or v_closed_at>clock_timestamp()+interval '5 minutes' then perform public.raise_operational_rpc_error('invalid_tab_timing','The tab rejection time is invalid.','{}'::jsonb); end if;
+  if v_closed_at is null or v_closed_at>clock_timestamp() then perform public.raise_operational_rpc_error('invalid_tab_timing','The tab rejection time is invalid.','{}'::jsonb); end if;
   v_role:=public.current_user_org_role(v_org);
   if v_actor is null or not public.current_user_has_org_access(v_org) or v_role not in('admin'::public.app_role,'manager'::public.app_role,'receptionist'::public.app_role) then perform public.raise_operational_rpc_error('organization_access_denied','You do not have access to this organization.',jsonb_build_object('organization_id',v_org)); end if;
   v_fp:=md5(jsonb_build_object('kind',v_kind,'entity_type',v_type,'entity_id',v_eid,'effective_closed_at',v_closed_at,'reason',v_reason,'audit_log_id',v_audit_id)::text);
@@ -290,6 +307,7 @@ begin
   if v_existing.status='committed' and v_existing.canonical_result is not null then return v_existing.canonical_result||jsonb_build_object('idempotent',true); end if;
   select * into v_tab from public.customer_tabs where organization_id=v_org and id=v_eid for update;
   if not found or v_tab.status<>'open' then perform public.raise_operational_rpc_error('customer_tab_not_open','The customer tab is no longer open.',jsonb_build_object('customer_tab_id',v_eid)); end if;
+  if v_tab.closed_bill_id is not null then perform public.raise_operational_rpc_error('customer_tab_already_billed','The customer tab is already linked to a bill.',jsonb_build_object('customer_tab_id',v_eid,'bill_id',v_tab.closed_bill_id)); end if;
   if v_tab.opened_at is not null and v_closed_at<v_tab.opened_at then perform public.raise_operational_rpc_error('invalid_tab_timing','The rejection time precedes the canonical opening time.',jsonb_build_object('customer_tab_id',v_eid)); end if;
   v_released:=case when jsonb_typeof(coalesce(v_tab.continued_from_session_ids,'[]'::jsonb))='array' then coalesce(v_tab.continued_from_session_ids,'[]'::jsonb) else '[]'::jsonb end;
   update public.customer_tabs set status='closed',closed_at=v_closed_at,closed_bill_id=null,close_disposition='rejected',close_reason=v_reason,continued_from_session_ids='[]'::jsonb,
@@ -315,4 +333,3 @@ revoke execute on function public.reject_customer_tab_v2(jsonb) from anon;
 grant execute on function public.hop_session_v2(jsonb) to authenticated;
 grant execute on function public.reject_session_v2(jsonb) to authenticated;
 grant execute on function public.reject_customer_tab_v2(jsonb) to authenticated;
-

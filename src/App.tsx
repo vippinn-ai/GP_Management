@@ -4443,13 +4443,28 @@ export default function App() {
     }
     const customerName = draftValue.customerName.trim();
     const customerPhone = draftValue.customerPhone.trim();
-    const tabId = createId("customer-tab");
+    const continuationIds = Array.from(new Set(options?.continuedFromSessionIds?.filter(Boolean) ?? [])).sort();
+    const retryMutation = continuationIds.length > 0
+      ? pendingOperationalMutationsRef.current.find((entry) => {
+          const retryPayload = entry.payload as {
+            tab?: { customerId?: string; customerName?: string; customerPhone?: string; continuedFromSessionIds?: string[] };
+          };
+          return entry.kind === "openCustomerTab"
+            && entry.retryPolicy === "manual"
+            && entry.status === "failed"
+            && retryPayload.tab?.customerName?.trim() === customerName
+            && (retryPayload.tab?.customerPhone?.trim() ?? "") === customerPhone
+            && (retryPayload.tab?.customerId ?? draftValue.customerId) === draftValue.customerId
+            && JSON.stringify([...(retryPayload.tab?.continuedFromSessionIds ?? [])].sort()) === JSON.stringify(continuationIds);
+        })
+      : undefined;
+    const tabId = retryMutation?.entityId ?? createId("customer-tab");
     let resolvedCustomerId = draftValue.customerId;
     const createdAt = new Date().toISOString();
     const continuedFromSession = options?.continuedFromSessionIds?.[0]
       ? appData.sessions.find((session) => session.id === options.continuedFromSessionIds![0])
       : undefined;
-    const mutation = createOperationalMutation(
+    const mutation = retryMutation ?? createOperationalMutation(
       "openCustomerTab",
       "Opening customer tab",
       "customer_tab",
@@ -4462,8 +4477,8 @@ export default function App() {
           status: "open",
           createdAt,
           items: [],
-          continuedFromSessionIds: options?.continuedFromSessionIds?.length
-            ? Array.from(new Set(options.continuedFromSessionIds))
+          continuedFromSessionIds: continuationIds.length
+            ? continuationIds
             : undefined
         },
         customer: customerName || customerPhone
@@ -4502,7 +4517,8 @@ export default function App() {
     if (options?.continuedFromSessionIds?.length) {
       const outcome = await commitCriticalOperationalChange(
         mutation,
-        `hop-new-tab-continuation:${options.continuedFromSessionIds.join(":")}`
+        `hop-new-tab-continuation:${continuationIds.join(":")}`,
+        { existingMutation: Boolean(retryMutation) }
       );
       if (outcome.status !== "synced") {
         window.alert(outcome.status === "conflict"
@@ -6196,7 +6212,8 @@ export default function App() {
     setReplacementItemForm({ sellableOptionId: "", quantity: 1 });
     setLastHoppedSessionId(null);
     openReceiptWindow(nextAppData.businessProfile, confirmedReceiptBill, confirmedReceiptBills, confirmedReceiptPayments);
-    downloadReceiptPdf(nextAppData.businessProfile, confirmedReceiptBill, confirmedReceiptBills, confirmedReceiptPayments);
+    void Promise.resolve(downloadReceiptPdf(nextAppData.businessProfile, confirmedReceiptBill, confirmedReceiptBills, confirmedReceiptPayments))
+      .catch(() => window.alert("The bill was issued, but the receipt PDF could not load. Use Bill Register to download it again."));
     recordCheckoutTelemetrySample({
       stage: "checkout_total",
       mode: checkoutTelemetryMode,

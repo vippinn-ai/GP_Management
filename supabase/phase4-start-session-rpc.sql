@@ -40,6 +40,8 @@ declare
   v_mutation_id text := nullif(payload->>'mutation_id', '');
   v_mutation_kind text := nullif(payload->>'mutation_kind', '');
   v_user_id text := nullif(payload->>'user_id', '');
+  v_actor uuid := auth.uid();
+  v_actor_role public.app_role;
   v_session jsonb := coalesce(payload #> '{payload,session}', '{}'::jsonb);
   v_customer jsonb := payload #> '{payload,customer}';
   v_stock_movements jsonb := coalesce(payload #> '{payload,stockMovements}', '[]'::jsonb);
@@ -103,7 +105,13 @@ begin
     );
   end if;
 
-  if not (select public.current_user_has_org_access(v_organization_id)) then
+  v_actor_role := public.current_user_org_role(v_organization_id);
+  if v_actor is null
+    or not (select public.current_user_has_org_access(v_organization_id))
+    or v_user_id is distinct from v_actor::text
+    or v_actor_role is null
+    or v_actor_role not in ('admin'::public.app_role, 'manager'::public.app_role, 'receptionist'::public.app_role)
+  then
     perform public.raise_operational_rpc_error(
       'organization_access_denied',
       'You do not have access to this organization.',
@@ -645,9 +653,9 @@ begin
     coalesce(nullif(movement->>'quantity', '')::numeric, 0),
     nullif(movement->>'reason', ''),
     nullif(movement->>'createdAt', '')::timestamptz,
-    nullif(movement->>'userId', ''),
+    v_actor::text,
     nullif(movement->>'relatedBillId', ''),
-    movement
+    jsonb_set(movement, '{userId}', to_jsonb(v_actor::text), true)
   from jsonb_array_elements(v_stock_movements) as movement
   where movement ? 'id'
   on conflict (organization_id, id) do nothing;
@@ -676,8 +684,8 @@ begin
     nullif(audit->>'entityId', ''),
     nullif(audit->>'message', ''),
     nullif(audit->>'createdAt', '')::timestamptz,
-    nullif(audit->>'userId', ''),
-    audit
+    v_actor::text,
+    jsonb_set(audit, '{userId}', to_jsonb(v_actor::text), true)
   from jsonb_array_elements(v_audit_logs) as audit
   where audit ? 'id'
   on conflict (organization_id, id) do nothing;
@@ -700,7 +708,7 @@ begin
     'start_session',
     'session',
     v_session_id,
-    v_user_id,
+    v_actor::text,
     jsonb_build_object(
       'mutation_id', v_mutation_id,
       'mutation_kind', v_mutation_kind,

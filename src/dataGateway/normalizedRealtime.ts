@@ -275,7 +275,8 @@ export async function loadNormalizedRealtimeOverlay(
 
 export function subscribeToOperationalEvents(
   client: SupabaseClient,
-  onEvent: (event: OperationalEventRow) => void | Promise<void>
+  onEvent: (event: OperationalEventRow) => void | Promise<void>,
+  onStatus?: (status: string) => void
 ): () => void {
   const channel = client
     .channel("operational-events-sync")
@@ -290,7 +291,7 @@ export function subscribeToOperationalEvents(
         void onEvent(payload.new as OperationalEventRow);
       }
     )
-    .subscribe();
+    .subscribe((status) => onStatus?.(status));
 
   return () => {
     void client.removeChannel(channel);

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { exportRowsToCsv, exportRowsToPdf, exportRowsToXlsx } from "../exporters";
 import { ReportsPanel } from "./ReportsPanel";
@@ -58,7 +58,7 @@ describe("ReportsPanel normalized reads", () => {
     expect(onRefresh).toHaveBeenCalledTimes(1);
   });
 
-  it("exports the active normalized report range in CSV, Excel, and PDF formats", () => {
+  it("exports the active normalized report range and reports a lazy-chunk failure visibly", async () => {
     const reportRows = [{
       billNumber: "BILL-20260820-006",
       date: "20/08/2026, 3:10 pm",
@@ -130,5 +130,13 @@ describe("ReportsPanel normalized reads", () => {
     expect(exportRowsToCsv).toHaveBeenCalledWith(reportRows, "report-2026-08-20-2026-08-20.csv");
     expect(exportRowsToXlsx).toHaveBeenCalledWith(reportRows, "report-2026-08-20-2026-08-20.xlsx");
     expect(exportRowsToPdf).toHaveBeenCalledWith(reportRows, "report-2026-08-20-2026-08-20.pdf", "BreakPerfect");
+
+    const alert = vi.spyOn(window, "alert").mockImplementation(() => undefined);
+    vi.mocked(exportRowsToXlsx).mockRejectedValueOnce(new Error("lazy chunk unavailable"));
+    fireEvent.click(screen.getByRole("button", { name: "Export Excel" }));
+    await waitFor(() => expect(alert).toHaveBeenCalledWith(
+      "Unable to load the spreadsheet exporter. Check your connection and try again."
+    ));
+    alert.mockRestore();
   });
 });

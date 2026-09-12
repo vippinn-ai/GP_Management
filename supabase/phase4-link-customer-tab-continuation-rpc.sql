@@ -13,6 +13,8 @@ declare
   v_mutation_id text := nullif(payload->>'mutation_id', '');
   v_mutation_kind text := nullif(payload->>'mutation_kind', '');
   v_user_id text := nullif(payload->>'user_id', '');
+  v_actor uuid := auth.uid();
+  v_actor_role public.app_role;
   v_customer_tab_id text := nullif(payload #>> '{payload,customerTabId}', '');
   v_session_ids_payload jsonb := coalesce(payload #> '{payload,continuedFromSessionIds}', '[]'::jsonb);
   v_audit_logs jsonb := coalesce(payload #> '{payload,auditLogs}', '[]'::jsonb);
@@ -31,7 +33,13 @@ begin
     perform public.raise_operational_rpc_error('invalid_payload', 'The operational change is missing an organization.', '{}'::jsonb);
   end if;
 
-  if not (select public.current_user_has_org_access(v_organization_id)) then
+  v_actor_role := public.current_user_org_role(v_organization_id);
+  if v_actor is null
+    or not (select public.current_user_has_org_access(v_organization_id))
+    or v_user_id is distinct from v_actor::text
+    or v_actor_role is null
+    or v_actor_role not in ('admin'::public.app_role, 'manager'::public.app_role, 'receptionist'::public.app_role)
+  then
     perform public.raise_operational_rpc_error(
       'organization_access_denied',
       'You do not have access to this organization.',
@@ -268,8 +276,8 @@ begin
       nullif(audit_log->>'entityId', ''),
       nullif(audit_log->>'message', ''),
       nullif(audit_log->>'createdAt', '')::timestamptz,
-      nullif(audit_log->>'userId', ''),
-      audit_log
+      v_actor::text,
+      jsonb_set(audit_log, '{userId}', to_jsonb(v_actor::text), true)
     from jsonb_array_elements(v_audit_logs) as audit_values(audit_log)
     where nullif(audit_log->>'id', '') is not null
     on conflict (organization_id, id) do nothing;
@@ -300,7 +308,7 @@ begin
     'link_customer_tab_continuation',
     'customer_tab',
     v_customer_tab_id,
-    v_user_id,
+    v_actor::text,
     jsonb_build_object(
       'mutation_id', v_mutation_id,
       'mutation_kind', v_mutation_kind,
