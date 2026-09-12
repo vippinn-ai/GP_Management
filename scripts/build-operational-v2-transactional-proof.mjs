@@ -12,6 +12,57 @@ function argument(name) {
 function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
 }
+function assertBalancedStatementParentheses(sql) {
+  let balance = 0;
+  let line = 1;
+  let inSingleQuote = false;
+  let inDoubleQuote = false;
+  let inLineComment = false;
+  let inBlockComment = false;
+  for (let index = 0; index < sql.length; index += 1) {
+    const character = sql[index];
+    const next = sql[index + 1];
+    if (character === "\n") {
+      line += 1;
+      inLineComment = false;
+      continue;
+    }
+    if (inLineComment) continue;
+    if (inBlockComment) {
+      if (character === "*" && next === "/") {
+        inBlockComment = false;
+        index += 1;
+      }
+      continue;
+    }
+    if (inSingleQuote) {
+      if (character === "'" && next === "'") index += 1;
+      else if (character === "'") inSingleQuote = false;
+      continue;
+    }
+    if (inDoubleQuote) {
+      if (character === '"' && next === '"') index += 1;
+      else if (character === '"') inDoubleQuote = false;
+      continue;
+    }
+    if (character === "-" && next === "-") {
+      inLineComment = true;
+      index += 1;
+    } else if (character === "/" && next === "*") {
+      inBlockComment = true;
+      index += 1;
+    } else if (character === "'") inSingleQuote = true;
+    else if (character === '"') inDoubleQuote = true;
+    else if (character === "(") balance += 1;
+    else if (character === ")") {
+      balance -= 1;
+      if (balance < 0) throw new Error(`Transactional proof has an unmatched closing parenthesis at line ${line}.`);
+    } else if (character === ";" && balance !== 0) {
+      throw new Error(`Transactional proof has ${balance} unclosed parentheses at statement end on line ${line}.`);
+    }
+  }
+  if (balance !== 0) throw new Error(`Transactional proof ended with ${balance} unclosed parentheses.`);
+}
 const runId = argument("run-id");
 if (!runId || !/^normops-\d{8}-\d{4}-db-proof-[a-z0-9-]+$/.test(runId)) {
   throw new Error("Use --run-id=normops-YYYYMMDD-HHMM-db-proof-<unique-suffix>.");
@@ -112,6 +163,7 @@ if (generated.includes("__RUN_ID__") || generated.includes("__IDENTITY_NONCE__")
 if (!generated.includes("do $$\ndeclare function_name") || !generated.includes("end $$;")) {
   throw new Error("Transactional proof function-definition guard lost its dollar delimiters.");
 }
+assertBalancedStatementParentheses(generated);
 const outputDirectory = path.join(root, "test-artifacts", "sql");
 fs.mkdirSync(outputDirectory, { recursive: true });
 const outputPath = path.join(outputDirectory, `${runId}-operational-v2-transactional-proof.sql`);

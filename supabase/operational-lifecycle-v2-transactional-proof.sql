@@ -216,7 +216,7 @@ begin
     perform public.hop_session_v2(jsonb_build_object(
       'organization_id', c.organization_id, 'mutation_id', '__RUN_ID__-mutation-hop',
       'mutation_kind', 'hopSession', 'entity_type', 'session', 'entity_id', c.hop_session_id,
-      'payload', jsonb_build_object('effective_ended_at', timezone('utc', now()) - interval '2 minutes', 'audit_log_id', '__RUN_ID__-audit-hop'));
+      'payload', jsonb_build_object('effective_ended_at', timezone('utc', now()) - interval '2 minutes', 'audit_log_id', '__RUN_ID__-audit-hop')));
   exception when others then failed := true; end;
   perform pg_temp.qa_assert(failed, 'Same mutation ID with different intent did not fail.');
 
@@ -225,7 +225,7 @@ begin
     perform public.reject_customer_tab_v2(jsonb_build_object(
       'organization_id', c.organization_id, 'mutation_id', '__RUN_ID__-mutation-tab',
       'mutation_kind', 'rejectCustomerTab', 'entity_type', 'customer_tab', 'entity_id', c.reject_tab_id,
-      'payload', jsonb_build_object('effective_closed_at', timezone('utc', now()) - interval '2 minutes', 'reason', 'Changed intent', 'audit_log_id', '__RUN_ID__-audit-tab'));
+      'payload', jsonb_build_object('effective_closed_at', timezone('utc', now()) - interval '2 minutes', 'reason', 'Changed intent', 'audit_log_id', '__RUN_ID__-audit-tab')));
   exception when others then failed := true; end;
   perform pg_temp.qa_assert(failed, 'Same tab mutation ID with different intent did not fail.');
 
@@ -250,7 +250,7 @@ begin
     perform public.hop_session_v2(jsonb_build_object(
       'organization_id', c.organization_id, 'mutation_id', '__RUN_ID__-mutation-wrong-kind',
       'mutation_kind', 'rejectSession', 'entity_type', 'customer_tab', 'entity_id', c.collision_session_id,
-      'payload', jsonb_build_object('effective_ended_at', timezone('utc', now()) - interval '1 minute', 'audit_log_id', '__RUN_ID__-audit-wrong-kind'));
+      'payload', jsonb_build_object('effective_ended_at', timezone('utc', now()) - interval '1 minute', 'audit_log_id', '__RUN_ID__-audit-wrong-kind')));
   exception when others then failed := true; end;
   perform pg_temp.qa_assert(failed, 'Wrong mutation/entity target did not fail.');
 
@@ -259,7 +259,7 @@ begin
     perform public.hop_session_v2(jsonb_build_object(
       'organization_id', c.organization_id, 'mutation_id', '__RUN_ID__-mutation-future',
       'mutation_kind', 'hopSession', 'entity_type', 'session', 'entity_id', c.collision_session_id,
-      'payload', jsonb_build_object('effective_ended_at', timezone('utc', now()) + interval '1 minute', 'audit_log_id', '__RUN_ID__-audit-future'));
+      'payload', jsonb_build_object('effective_ended_at', timezone('utc', now()) + interval '1 minute', 'audit_log_id', '__RUN_ID__-audit-future')));
   exception when others then failed := true; end;
   perform pg_temp.qa_assert(failed, 'Future session end did not fail.');
 
@@ -268,7 +268,7 @@ begin
     perform public.hop_session_v2(jsonb_build_object(
       'organization_id', c.organization_id, 'mutation_id', '__RUN_ID__-mutation-before-start',
       'mutation_kind', 'hopSession', 'entity_type', 'session', 'entity_id', c.collision_session_id,
-      'payload', jsonb_build_object('effective_ended_at', timezone('utc', now()) - interval '30 minutes', 'audit_log_id', '__RUN_ID__-audit-before-start'));
+      'payload', jsonb_build_object('effective_ended_at', timezone('utc', now()) - interval '30 minutes', 'audit_log_id', '__RUN_ID__-audit-before-start')));
   exception when others then failed := true; end;
   perform pg_temp.qa_assert(failed, 'Session end before canonical start did not fail.');
 
@@ -277,7 +277,7 @@ begin
     perform public.hop_session_v2(jsonb_build_object(
       'organization_id', c.organization_id, 'mutation_id', '__RUN_ID__-mutation-closed-target',
       'mutation_kind', 'hopSession', 'entity_type', 'session', 'entity_id', c.hop_session_id,
-      'payload', jsonb_build_object('effective_ended_at', c.proof_end_at, 'audit_log_id', '__RUN_ID__-audit-closed-target'));
+      'payload', jsonb_build_object('effective_ended_at', c.proof_end_at, 'audit_log_id', '__RUN_ID__-audit-closed-target')));
   exception when others then failed := true; end;
   perform pg_temp.qa_assert(failed, 'Closed session target did not fail.');
 
@@ -287,7 +287,7 @@ begin
       'organization_id', c.organization_id, 'mutation_id', '__RUN_ID__-mutation-spoof',
       'mutation_kind', 'hopSession', 'entity_type', 'session', 'entity_id', c.collision_session_id,
       'user_id', gen_random_uuid()::text,
-      'payload', jsonb_build_object('effective_ended_at', timezone('utc', now()) - interval '1 minute', 'audit_log_id', '__RUN_ID__-audit-spoof'));
+      'payload', jsonb_build_object('effective_ended_at', timezone('utc', now()) - interval '1 minute', 'audit_log_id', '__RUN_ID__-audit-spoof')));
   exception when others then failed := true; end;
   perform pg_temp.qa_assert(failed, 'Client actor spoof field did not fail.');
 
@@ -296,7 +296,7 @@ begin
     perform public.reject_session_v2(jsonb_build_object(
       'organization_id', c.organization_id, 'mutation_id', '__RUN_ID__-mutation-collision',
       'mutation_kind', 'rejectSession', 'entity_type', 'session', 'entity_id', c.collision_session_id,
-      'payload', jsonb_build_object('effective_ended_at', timezone('utc', now()) - interval '1 minute', 'reason', 'QA collision', 'audit_log_id', '__RUN_ID__-audit-collision'));
+      'payload', jsonb_build_object('effective_ended_at', timezone('utc', now()) - interval '1 minute', 'reason', 'QA collision', 'audit_log_id', '__RUN_ID__-audit-collision')));
   exception when others then failed := true; end;
   perform pg_temp.qa_assert(failed, 'Late audit collision did not fail.');
   perform pg_temp.qa_assert(exists(select 1 from public.sessions where organization_id=c.organization_id and id=c.collision_session_id and status='active'), 'Late collision did not roll back session change.');
@@ -308,7 +308,7 @@ begin
     perform public.reject_session_v2(jsonb_build_object(
       'organization_id', c.organization_id, 'mutation_id', '__RUN_ID__-mutation-inactive',
       'mutation_kind', 'rejectSession', 'entity_type', 'session', 'entity_id', c.collision_session_id,
-      'payload', jsonb_build_object('effective_ended_at', timezone('utc', now()) - interval '1 minute', 'reason', 'QA inactive', 'audit_log_id', '__RUN_ID__-audit-inactive'));
+      'payload', jsonb_build_object('effective_ended_at', timezone('utc', now()) - interval '1 minute', 'reason', 'QA inactive', 'audit_log_id', '__RUN_ID__-audit-inactive')));
   exception when others then failed := true; end;
   perform pg_temp.qa_assert(failed, 'Inactive actor did not fail.');
 
@@ -319,7 +319,7 @@ begin
     perform public.reject_customer_tab_v2(jsonb_build_object(
       'organization_id', c.organization_id, 'mutation_id', '__RUN_ID__-mutation-anon',
       'mutation_kind', 'rejectCustomerTab', 'entity_type', 'customer_tab', 'entity_id', c.reject_tab_id,
-      'payload', jsonb_build_object('effective_closed_at', timezone('utc', now()) - interval '1 minute', 'reason', 'QA anon', 'audit_log_id', '__RUN_ID__-audit-anon'));
+      'payload', jsonb_build_object('effective_closed_at', timezone('utc', now()) - interval '1 minute', 'reason', 'QA anon', 'audit_log_id', '__RUN_ID__-audit-anon')));
   exception when others then failed := true; end;
   perform pg_temp.qa_assert(failed, 'Anonymous actor did not fail.');
   perform set_config('request.jwt.claim.sub', c.actor_id::text, true);
@@ -330,7 +330,7 @@ begin
     perform public.reject_customer_tab_v2(jsonb_build_object(
       'organization_id', '__RUN_ID__-wrong-org', 'mutation_id', '__RUN_ID__-mutation-wrong-org',
       'mutation_kind', 'rejectCustomerTab', 'entity_type', 'customer_tab', 'entity_id', c.reject_tab_id,
-      'payload', jsonb_build_object('effective_closed_at', timezone('utc', now()) - interval '1 minute', 'reason', 'QA wrong org', 'audit_log_id', '__RUN_ID__-audit-wrong-org'));
+      'payload', jsonb_build_object('effective_closed_at', timezone('utc', now()) - interval '1 minute', 'reason', 'QA wrong org', 'audit_log_id', '__RUN_ID__-audit-wrong-org')));
   exception when others then failed := true; end;
   perform pg_temp.qa_assert(failed, 'Wrong organization did not fail.');
 end $$;

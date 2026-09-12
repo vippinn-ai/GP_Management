@@ -378,6 +378,7 @@ describe("operational lifecycle v2 Playwright and performance contract", () => {
     expect(builder).toContain("rollbackOnly !== true");
     expect(builder).toContain("proofManifest.target?.identityNonce");
     expect(builder).toContain('.replaceAll("__IDENTITY_NONCE__", identityNonce)');
+    expect(read("scripts/build-operational-v2-transactional-proof.mjs")).toContain("assertBalancedStatementParentheses(generated)");
     expect(verifier).toContain("Transactional proof rollback left ${name} rows.");
     expect(verifier).toContain("observed.identity_nonce !== identityNonce");
     expect(verifier).toContain("appStateRestored: true");

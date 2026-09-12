@@ -150,6 +150,7 @@ describe("operational lifecycle staging installer", () => {
     expect(proof).not.toContain("__INSTALLED_FUNCTION_GUARDS__");
     expect(proof).not.toContain("__IDENTITY_NONCE__");
     expect(proof.trimEnd().endsWith("rollback;")).toBe(true);
+    expect(proof).toContain(`'audit_log_id', '${proofRunId}-audit-hop')));`);
     const proofManifest = JSON.parse(fs.readFileSync(proofManifestPath, "utf8"));
     expect(proofManifest.target.identityNonce).toBe(identityNonce);
   });
