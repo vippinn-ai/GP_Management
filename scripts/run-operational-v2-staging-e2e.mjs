@@ -47,6 +47,8 @@ for (const evidencePath of [outputDir, summaryPath, evidenceManifestPath]) {
 
 let databaseManifest;
 let databaseManifestPath;
+let postflightVerification;
+let postflightVerificationPath;
 if (!discoveryOnly) {
   if (!/^[a-f0-9]{64}$/i.test(env.E2E_EXPECTED_BUNDLE_SHA256 || "")) {
     throw new Error("Live staging E2E requires E2E_EXPECTED_BUNDLE_SHA256 from the approved candidate deployment.");
@@ -60,6 +62,20 @@ if (!discoveryOnly) {
   if (actualManifestSha !== env.E2E_DB_MANIFEST_SHA256.toLowerCase()) throw new Error("Database manifest SHA-256 does not match the approved value.");
   databaseManifest = JSON.parse(databaseManifestText);
   if (databaseManifest.target?.projectRef !== STAGING_PROJECT_REF) throw new Error("Database manifest is not for staging.");
+  if (!env.E2E_DB_POSTFLIGHT_VERIFICATION_PATH || !env.E2E_DB_POSTFLIGHT_VERIFICATION_SHA256) {
+    throw new Error("Live staging E2E requires the immutable database postflight verification path and SHA-256.");
+  }
+  postflightVerificationPath = path.resolve(root, env.E2E_DB_POSTFLIGHT_VERIFICATION_PATH);
+  const postflightText = fs.readFileSync(postflightVerificationPath, "utf8");
+  const postflightSha = createHash("sha256").update(postflightText).digest("hex");
+  if (postflightSha !== env.E2E_DB_POSTFLIGHT_VERIFICATION_SHA256.toLowerCase()) throw new Error("Database postflight verification SHA-256 does not match.");
+  postflightVerification = JSON.parse(postflightText);
+  if (
+    postflightVerification.projectRef !== STAGING_PROJECT_REF
+    || postflightVerification.runId !== databaseManifest.runId
+    || postflightVerification.appStateUnchanged !== true
+    || postflightVerification.incompleteMutations !== 0
+  ) throw new Error("Database postflight verification is not the approved unchanged staging installation.");
 }
 
 let deployedArtifact;
@@ -87,6 +103,7 @@ console.log(JSON.stringify({
   discoveryOnly,
   deployedArtifact,
   databaseManifest: databaseManifest ? { path: path.relative(root, databaseManifestPath), runId: databaseManifest.runId, sha256: env.E2E_DB_MANIFEST_SHA256 } : undefined,
+  postflightVerification: postflightVerification ? { path: path.relative(root, postflightVerificationPath), sha256: env.E2E_DB_POSTFLIGHT_VERIFICATION_SHA256 } : undefined,
   credentials: discoveryOnly ? "not-required" : "loaded-from-ignored-environment",
   productionAllowed: false,
   retries: 0
@@ -117,6 +134,7 @@ if (!discoveryOnly) {
     exitCode: result.status ?? 1,
     deployedArtifact,
     databaseManifest: { path: path.relative(root, databaseManifestPath), sha256: env.E2E_DB_MANIFEST_SHA256 },
+    postflightVerification: { path: path.relative(root, postflightVerificationPath), sha256: env.E2E_DB_POSTFLIGHT_VERIFICATION_SHA256 },
     files
   }, null, 2) + "\n", { encoding: "utf8", flag: "wx" });
 }

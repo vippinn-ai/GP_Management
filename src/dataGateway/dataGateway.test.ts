@@ -64,6 +64,7 @@ import {
   resolveBackendFeatureFlags
 } from ".";
 import {
+  buildRetainedNoncriticalDataOverlay,
   loadDeferredNormalizedDashboardContext,
   loadNormalizedBillPages,
   loadNormalizedBootstrapStockMovements,
@@ -100,6 +101,32 @@ function createAppData(): AppData {
 }
 
 describe("normalized overlay collection merging", () => {
+  it("never lets retained client rows overwrite a slice refreshed from realtime", () => {
+    const current = createAppData();
+    current.bills = [{ id: "bill-1", billNumber: "OLD" } as never];
+    current.payments = [{ id: "payment-1", amount: 10 } as never];
+    current.customers = [{ id: "customer-1", name: "Old", createdAt: "2026-01-01T00:00:00.000Z", lastVisitAt: "2026-01-01T00:00:00.000Z" }];
+    current.auditLogs = [{ id: "audit-1", action: "old", entityType: "bill", entityId: "bill-1", message: "old", createdAt: "2026-01-01T00:00:00.000Z", userId: "user-1" }];
+
+    const canonical = createAppData();
+    canonical.bills = [{ id: "bill-1", billNumber: "CANONICAL" } as never];
+    canonical.payments = [{ id: "payment-1", amount: 20 } as never];
+    canonical.customers = [{ ...current.customers[0], name: "Canonical" }];
+    canonical.auditLogs = [{ ...current.auditLogs[0], action: "canonical", message: "canonical" }];
+
+    const retained = buildRetainedNoncriticalDataOverlay(current, ["bills", "customers", "audit_logs"]);
+    const merged = mergeNormalizedAppDataOverlay(canonical, retained);
+
+    expect(retained).not.toHaveProperty("bills");
+    expect(retained).not.toHaveProperty("payments");
+    expect(retained).not.toHaveProperty("customers");
+    expect(retained).not.toHaveProperty("auditLogs");
+    expect(merged.bills[0].billNumber).toBe("CANONICAL");
+    expect(merged.payments[0].amount).toBe(20);
+    expect(merged.customers[0].name).toBe("Canonical");
+    expect(merged.auditLogs[0].action).toBe("canonical");
+  });
+
   it("merges changed customers, stock movements, and audits by ID without collapsing history", () => {
     const base = createAppData();
     base.customers = [

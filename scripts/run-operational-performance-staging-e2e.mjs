@@ -30,6 +30,42 @@ env.E2E_PERFORMANCE_SAMPLES = "30";
 if (!discoveryOnly && (!env.E2E_USER_A?.trim() || !env.E2E_PASSWORD_A?.trim())) {
   throw new Error("Performance E2E requires the staging-only browser A credentials.");
 }
+if (!discoveryOnly && !env.E2E_PERFORMANCE_PROFILE_ID?.trim()) {
+  throw new Error("Performance E2E requires a stable E2E_PERFORMANCE_PROFILE_ID describing the host and network window.");
+}
+
+function readBoundJson(pathValue, shaValue, label) {
+  if (!pathValue || !/^[a-f0-9]{64}$/i.test(shaValue || "")) throw new Error(`${label} path and SHA-256 are required.`);
+  const absolutePath = path.resolve(root, pathValue);
+  const textValue = fs.readFileSync(absolutePath, "utf8");
+  const actualSha = createHash("sha256").update(textValue).digest("hex");
+  if (actualSha !== shaValue.toLowerCase()) throw new Error(`${label} SHA-256 does not match.`);
+  return { absolutePath, sha256: actualSha, value: JSON.parse(textValue) };
+}
+
+let datasetManifest;
+let postflightVerification;
+if (!discoveryOnly) {
+  datasetManifest = readBoundJson(
+    env.E2E_PERFORMANCE_DATASET_MANIFEST_PATH,
+    env.E2E_PERFORMANCE_DATASET_MANIFEST_SHA256,
+    "Performance dataset manifest"
+  );
+  const dataset = datasetManifest.value.evidence ?? datasetManifest.value;
+  if (dataset.expected_project_ref !== STAGING_PROJECT_REF && dataset.target?.projectRef !== STAGING_PROJECT_REF) {
+    throw new Error("Performance dataset manifest is not for staging.");
+  }
+  if (mode === "candidate") {
+    postflightVerification = readBoundJson(
+      env.E2E_DB_POSTFLIGHT_VERIFICATION_PATH,
+      env.E2E_DB_POSTFLIGHT_VERIFICATION_SHA256,
+      "Candidate database postflight verification"
+    );
+    if (postflightVerification.value.projectRef !== STAGING_PROJECT_REF || postflightVerification.value.appStateUnchanged !== true) {
+      throw new Error("Candidate database postflight verification is not an unchanged staging installation.");
+    }
+  }
+}
 
 const artifactRoot = path.join(root, "test-artifacts", "playwright");
 const outputDir = path.join(artifactRoot, `operational-performance-${env.E2E_RUN_ID}`);
@@ -52,10 +88,11 @@ if (!discoveryOnly) {
   const bundle = await bundleResponse.text();
   if (!bundle.includes(STAGING_PROJECT_REF) || bundle.includes(PRODUCTION_PROJECT_REF)) throw new Error("Performance target is not the staging bundle.");
   deployedArtifact = { bundle: bundleUrl.pathname, sha256: createHash("sha256").update(bundle).digest("hex") };
+  const expectedBundleSha = mode === "baseline" ? env.E2E_EXPECTED_BASELINE_BUNDLE_SHA256 : env.E2E_EXPECTED_BUNDLE_SHA256;
+  if (!/^[a-f0-9]{64}$/i.test(expectedBundleSha || "") || deployedArtifact.sha256 !== expectedBundleSha.toLowerCase()) {
+    throw new Error(`${mode} performance target does not match the approved bundle SHA-256.`);
+  }
   if (mode === "candidate") {
-    if (!/^[a-f0-9]{64}$/i.test(env.E2E_EXPECTED_BUNDLE_SHA256 || "") || deployedArtifact.sha256 !== env.E2E_EXPECTED_BUNDLE_SHA256.toLowerCase()) {
-      throw new Error("Candidate performance target does not match the approved bundle SHA-256.");
-    }
     if (!env.E2E_PERFORMANCE_BASELINE_PATH || !/^[a-f0-9]{64}$/i.test(env.E2E_PERFORMANCE_BASELINE_SHA256 || "")) {
       throw new Error("Candidate performance run requires the immutable baseline artifact and SHA-256.");
     }
@@ -68,8 +105,11 @@ console.log(JSON.stringify({
   runId: env.E2E_RUN_ID,
   mode: env.E2E_PERFORMANCE_MODE,
   sampleCount: 30,
+  profileId: env.E2E_PERFORMANCE_PROFILE_ID,
   discoveryOnly,
   deployedArtifact,
+  datasetManifest: datasetManifest ? { path: path.relative(root, datasetManifest.absolutePath), sha256: datasetManifest.sha256 } : undefined,
+  postflightVerification: postflightVerification ? { path: path.relative(root, postflightVerification.absolutePath), sha256: postflightVerification.sha256 } : undefined,
   productionAllowed: false,
   writesAllowed: false,
   workers: 1,
@@ -105,6 +145,9 @@ if (!discoveryOnly) {
     createdAt: new Date().toISOString(),
     exitCode: result.status ?? 1,
     deployedArtifact,
+    profileId: env.E2E_PERFORMANCE_PROFILE_ID,
+    datasetManifest: { path: path.relative(root, datasetManifest.absolutePath), sha256: datasetManifest.sha256 },
+    postflightVerification: postflightVerification ? { path: path.relative(root, postflightVerification.absolutePath), sha256: postflightVerification.sha256 } : undefined,
     baseline: mode === "candidate" ? {
       path: env.E2E_PERFORMANCE_BASELINE_PATH,
       sha256: env.E2E_PERFORMANCE_BASELINE_SHA256

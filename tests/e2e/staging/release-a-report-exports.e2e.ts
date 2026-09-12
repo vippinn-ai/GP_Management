@@ -98,42 +98,48 @@ test("normalized reports export complete CSV, Excel, and PDF files", async ({ pa
   }
 });
 
-test("a failed spreadsheet chunk is visible and succeeds after an explicit reload", async ({ page }, testInfo) => {
-  const errors = capturePageErrors(page);
-  const alertPromise = new Promise<string>((resolve) => {
-    page.once("dialog", async (dialog) => {
-      resolve(dialog.message());
-      await dialog.accept();
+for (const exporter of [
+  { name: "spreadsheet", route: "**/assets/xlsx-*.js", button: "Export Excel", error: "Unable to load the spreadsheet exporter" },
+  { name: "PDF", route: "**/assets/jspdf-*.js", button: "Export PDF", error: "Unable to load the PDF exporter" }
+] as const) {
+  test(`a failed ${exporter.name} chunk is visible and succeeds after an explicit reload`, async ({ page }, testInfo) => {
+    const errors = capturePageErrors(page);
+    const alertPromise = new Promise<string>((resolve) => {
+      page.once("dialog", async (dialog) => {
+        resolve(dialog.message());
+        await dialog.accept();
+      });
     });
-  });
-  try {
-    await signIn(page, credentials("A"));
-    await page.getByRole("button", { name: "Analytics", exact: true }).click();
-    await expect(page.getByRole("heading", { name: "Operational Reports", exact: true })).toBeVisible();
-    await expect(page.getByText("Report range is loaded from backend report data.", { exact: true })).toBeVisible();
-    await page.route("**/assets/xlsx-*.js", (route) => route.abort("failed"));
-    await page.getByRole("button", { name: "Export Excel", exact: true }).click();
-    const alertMessage = await alertPromise;
-    expect(alertMessage).toContain("Unable to load the spreadsheet exporter");
+    try {
+      await signIn(page, credentials("A"));
+      await page.getByRole("button", { name: "Analytics", exact: true }).click();
+      await expect(page.getByRole("heading", { name: "Operational Reports", exact: true })).toBeVisible();
+      await expect(page.getByText("Report range is loaded from backend report data.", { exact: true })).toBeVisible();
+      await page.route(exporter.route, (route) => route.abort("failed"));
+      await page.getByRole("button", { name: exporter.button, exact: true }).click();
+      const alertMessage = await alertPromise;
+      expect(alertMessage).toContain(exporter.error);
 
-    await page.unroute("**/assets/xlsx-*.js");
-    await page.reload({ waitUntil: "domcontentloaded" });
-    await page.getByRole("button", { name: "Analytics", exact: true }).click();
-    await expect(page.getByText("Report range is loaded from backend report data.", { exact: true })).toBeVisible();
-    const [download] = await Promise.all([
-      page.waitForEvent("download"),
-      page.getByRole("button", { name: "Export Excel", exact: true }).click()
-    ]);
-    const bytes = await readDownload(download);
-    expect(bytes.byteLength).toBeGreaterThan(500);
-    await attachJson(testInfo, "release-a-export-recovery-evidence", {
-      alertMessage,
-      recoveredFilename: download.suggestedFilename(),
-      recoveredBytes: bytes.byteLength
-    });
-    assertNoPageErrors(errors);
-  } finally {
-    await page.unroute("**/assets/xlsx-*.js").catch(() => undefined);
-    await attachFailureScreenshot(testInfo, page, "report-export-recovery-failure");
-  }
-});
+      await page.unroute(exporter.route);
+      await page.reload({ waitUntil: "domcontentloaded" });
+      await page.getByRole("button", { name: "Analytics", exact: true }).click();
+      await expect(page.getByText("Report range is loaded from backend report data.", { exact: true })).toBeVisible();
+      const [download] = await Promise.all([
+        page.waitForEvent("download"),
+        page.getByRole("button", { name: exporter.button, exact: true }).click()
+      ]);
+      const bytes = await readDownload(download);
+      expect(bytes.byteLength).toBeGreaterThan(500);
+      await attachJson(testInfo, `release-a-${exporter.name.toLowerCase()}-export-recovery-evidence`, {
+        exporter: exporter.name,
+        alertMessage,
+        recoveredFilename: download.suggestedFilename(),
+        recoveredBytes: bytes.byteLength
+      });
+      assertNoPageErrors(errors);
+    } finally {
+      await page.unroute(exporter.route).catch(() => undefined);
+      await attachFailureScreenshot(testInfo, page, `report-${exporter.name.toLowerCase()}-export-recovery-failure`);
+    }
+  });
+}

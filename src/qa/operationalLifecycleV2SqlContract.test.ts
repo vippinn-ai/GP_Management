@@ -10,6 +10,8 @@ const preflight = readFileSync(path.join(process.cwd(), "supabase/operational-li
 const postflight = readFileSync(path.join(process.cwd(), "supabase/operational-lifecycle-v2-staging-postflight-readonly.sql"), "utf8");
 const installer = readFileSync(path.join(process.cwd(), "scripts/build-operational-lifecycle-v2-staging-install.mjs"), "utf8");
 const postflightVerifier = readFileSync(path.join(process.cwd(), "scripts/verify-operational-lifecycle-v2-staging-postflight.mjs"), "utf8");
+const transactionalProof = readFileSync(path.join(process.cwd(), "supabase/operational-lifecycle-v2-transactional-proof.sql"), "utf8");
+const transactionalProofBuilder = readFileSync(path.join(process.cwd(), "scripts/build-operational-v2-transactional-proof.mjs"), "utf8");
 
 function body(name: string) {
   const match = source.match(new RegExp(`create or replace function public\\.${name}\\(payload jsonb\\)[\\s\\S]*?as \\$\\$([\\s\\S]*?)\\$\\$;`, "i"));
@@ -111,11 +113,35 @@ describe("normalized lifecycle v2 SQL contract", () => {
     expect(installer).toMatch(/actual_config/i);
     expect(installer).toMatch(/actual_acl/i);
     expect(preflight).toContain("app.settings.api_url");
+    expect(postflight).toContain("app.settings.api_url");
     expect(installer).toMatch(/staging-rollback\.sql/i);
     expect(installer).toMatch(/flag:\s*"wx"/i);
     expect(installer).toMatch(/install changed compatibility app_state/i);
     expect(postflight).toMatch(/operational_mutations_rls/i);
     expect(postflightVerifier).toMatch(/appStateUnchanged:\s*true/i);
     expect(postflightVerifier).toMatch(/Compatibility app_state .* changed/i);
+    expect(postflightVerifier).toContain("database-owned staging API URL identity drift");
+  });
+
+  it("provides an immutable rollback-only transactional proof for all lifecycle v2 functions", () => {
+    expect(transactionalProof).toContain("OPERATIONAL_LIFECYCLE_V2_TRANSACTIONAL_PROOF");
+    for (const functionName of ["hop_session_v2", "reject_session_v2", "reject_customer_tab_v2"]) {
+      expect(transactionalProof).toContain(`public.${functionName}`);
+    }
+    for (const proofCase of [
+      "Same mutation ID with different intent",
+      "Malformed hop payload",
+      "Future session end",
+      "Client actor spoof field",
+      "Late audit collision",
+      "Inactive actor",
+      "Anonymous actor",
+      "Wrong organization"
+    ]) expect(transactionalProof).toContain(proofCase);
+    expect(transactionalProof).toContain("Operational v2 changed app_state");
+    expect(transactionalProof).toMatch(/rollback;\s*$/i);
+    expect(transactionalProof).not.toMatch(/\bcommit\s*;/i);
+    expect(transactionalProofBuilder).toContain('flag: "wx"');
+    expect(transactionalProofBuilder).toContain("rollbackOnly: true");
   });
 });

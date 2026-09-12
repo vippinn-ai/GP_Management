@@ -25,11 +25,13 @@ Record branch, commit SHA, clean status, build asset names/hashes, SQL file hash
 3. Prove all three lifecycle v2 bodies have no `app_state` reference and that legacy functions remain executable.
 4. Run the read-only postflight, save its JSON, and run `npm run verify:db:staging:operational-v2 -- --preflight=<saved-preflight> --postflight=<saved-postflight> --manifest=<manifest>`.
 5. Confirm install changed no domain rows or compatibility values.
-6. Deploy the exact staging build with operational v2 enabled only after SQL verification succeeds.
+6. Deploy the exact staging build with operational v2 and `VITE_PERFORMANCE_EVIDENCE=true` enabled only after SQL verification succeeds. This profiler flag is staging-evidence-only and must remain false/absent in production.
 
 ## Test execution
 
 Follow `test-plan.md` in its declared order: transactional rollback proof, serial functional cases, negative/security, same-ID recovery, concurrency, realtime ordering, continuation consumption, scale/performance, export lazy-load, bootstrap overlap, parity, cleanup, postflight. A failed or ambiguous case stops the run for reconciliation; it is never automatically retried.
+
+For the performance comparison, bind the frozen baseline and candidate to their expected deployed bundle SHA-256, the same exact dataset/restore manifest SHA-256, a stable host/network profile ID, Chromium version, `1440x900` viewport, cold context/cache policy, and a fixed quiet test window. Candidate evidence must also bind the verified database postflight SHA-256. The baseline uses the rendered Live Dashboard as its readiness point because it predates candidate-only performance marks; candidate mode requires all ordered `bp-*` marks and the staging-only React profiler evidence.
 
 ## Rollback
 

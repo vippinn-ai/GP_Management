@@ -50,6 +50,7 @@ import {
   defaultRemoteDataGateway,
   adminDataChangePatchHasChanges,
   adminDataChangePatchHasUnsupportedChanges,
+  buildRetainedNoncriticalDataOverlay,
   buildAdminDataChangePatch,
   buildFinancialAdjustmentPatch,
   buildFinancialCheckoutPatch,
@@ -883,16 +884,10 @@ export default function App() {
       (mutation) => mutation.status !== "conflict" && mutation.id !== snapshot.sourceMutationId
     );
     const snapshotWithRetainedNoncriticalData = BACKEND_FEATURE_FLAGS.normalizedBootstrap
-      ? mergeNormalizedAppDataOverlay(snapshot.appData, {
-          bills: appDataRef.current.bills,
-          payments: appDataRef.current.payments,
-          customers: appDataRef.current.customers,
-          stockMovements: appDataRef.current.stockMovements,
-          auditLogs: appDataRef.current.auditLogs,
-          expenses: appDataRef.current.expenses,
-          expenseTemplates: appDataRef.current.expenseTemplates,
-          expenseTemplateOverrides: appDataRef.current.expenseTemplateOverrides
-        })
+      ? mergeNormalizedAppDataOverlay(
+          snapshot.appData,
+          buildRetainedNoncriticalDataOverlay(appDataRef.current, snapshot.refreshedSlices)
+        )
       : snapshot.appData;
     const normalizedRemoteData = normalizeAppDataCustomers(snapshotWithRetainedNoncriticalData);
     const rebased = rebasePendingMutations(normalizedRemoteData, activePending);
@@ -4772,24 +4767,9 @@ export default function App() {
       const previousPhone = customer.phone;
       customer.name = nextName;
       customer.phone = nextPhone || undefined;
-      for (const session of draft.sessions) {
-        if (session.customerId === customer.id) {
-          session.customerName = nextName;
-          session.customerPhone = nextPhone || undefined;
-        }
-      }
-      for (const tab of draft.customerTabs) {
-        if (tab.customerId === customer.id) {
-          tab.customerName = nextName;
-          tab.customerPhone = nextPhone || undefined;
-        }
-      }
-      for (const bill of draft.bills) {
-        if (bill.customerId === customer.id) {
-          bill.customerName = nextName;
-          bill.customerPhone = nextPhone || undefined;
-        }
-      }
+      // Session, tab, and bill names are transaction-time snapshots. Updating the
+      // reusable customer directory must not rewrite historical or live records.
+      // A session/tab can still be corrected explicitly from its own edit flow.
       addAuditLog(
         draft,
         activeUser.id,

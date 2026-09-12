@@ -17,6 +17,7 @@ export {
 } from "./featureFlags";
 export { appStateRemoteDataGateway } from "./appStateGateway";
 export {
+  buildRetainedNoncriticalDataOverlay,
   loadDeferredNormalizedDashboardContext,
   loadDeferredNormalizedExpenseAdminData,
   loadDeferredNormalizedInventoryHistory,

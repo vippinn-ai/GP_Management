@@ -157,6 +157,26 @@ export function mergeNormalizedAppDataOverlay(baseAppData: AppData, overlayAppDa
   return merged;
 }
 
+export function buildRetainedNoncriticalDataOverlay(
+  currentAppData: AppData,
+  refreshedSlices: string[] = []
+): Partial<AppData> {
+  const refreshed = new Set(refreshedSlices);
+  return {
+    ...(!refreshed.has("bills")
+      ? { bills: currentAppData.bills, payments: currentAppData.payments }
+      : {}),
+    ...(!refreshed.has("customers") ? { customers: currentAppData.customers } : {}),
+    ...(!refreshed.has("stock_movements") ? { stockMovements: currentAppData.stockMovements } : {}),
+    ...(!refreshed.has("audit_logs") ? { auditLogs: currentAppData.auditLogs } : {}),
+    ...(!refreshed.has("expenses") ? { expenses: currentAppData.expenses } : {}),
+    ...(!refreshed.has("expense_templates") ? { expenseTemplates: currentAppData.expenseTemplates } : {}),
+    ...(!refreshed.has("expense_template_overrides")
+      ? { expenseTemplateOverrides: currentAppData.expenseTemplateOverrides }
+      : {})
+  };
+}
+
 export async function loadNormalizedBillPages(
   query: NormalizedBillRegisterQuery,
   client: ReturnType<typeof getSupabaseClient>,

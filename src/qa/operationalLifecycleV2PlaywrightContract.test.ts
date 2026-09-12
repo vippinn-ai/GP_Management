@@ -47,7 +47,16 @@ describe("operational lifecycle v2 Playwright and performance contract", () => {
     expect(spec).toContain("bp-safe-interactive");
     expect(spec).toContain("requestedFullAppStateData");
     expect(spec).toContain("requestedHistoryBeforeSafeInteractive");
-    expect(spec).toContain("bootstrapDependencyDepth: 3");
+    expect(spec).toContain("measureBootstrapDependencyDepth");
+    expect(spec).not.toContain("bootstrapDependencyDepth: 3");
+    expect(spec).toContain("criticalApiBytesP95");
+    expect(spec).toContain("coldShellBytesP95");
+    expect(spec).toContain("lcpP75");
+    expect(spec).toContain("clsMax");
+    expect(spec).toContain("activePanelCommitP95Ms");
+    expect(runner).toContain("E2E_EXPECTED_BASELINE_BUNDLE_SHA256");
+    expect(runner).toContain("E2E_PERFORMANCE_DATASET_MANIFEST_SHA256");
+    expect(runner).toContain("E2E_DB_POSTFLIGHT_VERIFICATION_SHA256");
     expect(spec).toContain("summary.p95");
     expect(spec).toContain("3_500");
   });

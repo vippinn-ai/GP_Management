@@ -55,6 +55,9 @@ for (const [sourcePath, expectedSha] of Object.entries(manifest.sources ?? {})) 
 const installPath = verifyFile(manifest.artifacts.install, "Install artifact");
 const rollbackPath = verifyFile(manifest.artifacts.rollback, "Rollback artifact");
 if (preflight.expected_project_ref !== manifest.target.projectRef || postflight.expected_project_ref !== manifest.target.projectRef) throw new Error("Project identity changed.");
+for (const observed of [preflight.api_url_setting ?? preflight.database_api_url, postflight.database_api_url]) {
+  if (typeof observed !== "string" || !observed.includes(manifest.target.projectRef)) throw new Error("Database-owned API URL is not staging.");
+}
 for (const observed of [preflight.environment_identity, postflight.environment_identity]) {
   if (JSON.stringify(observed) !== JSON.stringify(manifest.environmentIdentity)) throw new Error("Database-derived environment identity changed.");
 }
@@ -81,7 +84,7 @@ const definitionGuards = [...installedEntries.entries()].map(([name, entry]) =>
   `  select md5(pg_get_functiondef(p.oid)) into actual_hash from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and p.proname='${name}' and pg_get_function_identity_arguments(p.oid)='payload jsonb';\n  if actual_hash is distinct from '${entry.definition_md5}' then raise exception 'installed definition drift for ${name}'; end if;`
 ).join("\n");
 const rollbackText = fs.readFileSync(rollbackPath, "utf8");
-const verifiedRollback = rollbackText.replace("begin;", `begin;\n\ndo $$\ndeclare actual_hash text;\nbegin\n  if not exists(select 1 from public.deployment_environment_identity where environment='staging' and project_ref='${manifest.target.projectRef}' and identity_nonce='${manifest.environmentIdentity.identity_nonce}'::uuid) then raise exception 'database-derived staging identity drift'; end if;\n${definitionGuards}\nend $$;`);
+const verifiedRollback = rollbackText.replace("begin;", `begin;\n\ndo $$\ndeclare actual_hash text;\nbegin\n  if coalesce(current_setting('app.settings.api_url', true), '') not like '%${manifest.target.projectRef}%' then raise exception 'database-owned staging API URL identity drift'; end if;\n  if not exists(select 1 from public.deployment_environment_identity where environment='staging' and project_ref='${manifest.target.projectRef}' and identity_nonce='${manifest.environmentIdentity.identity_nonce}'::uuid) then raise exception 'database-derived staging identity drift'; end if;\n${definitionGuards}\nend $$;`);
 const verifiedRollbackPath = path.join(path.dirname(manifestPath), "staging-rollback-verified.sql");
 fs.writeFileSync(verifiedRollbackPath, verifiedRollback, { encoding: "utf8", flag: "wx" });
 

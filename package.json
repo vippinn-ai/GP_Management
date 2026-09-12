@@ -187,6 +187,7 @@
     "test:db:staging:reject-install:build": "node scripts/build-reject-rpc-staging-install.mjs",
     "build:db:staging:operational-v2": "node scripts/build-operational-lifecycle-v2-staging-install.mjs",
     "verify:db:staging:operational-v2": "node scripts/verify-operational-lifecycle-v2-staging-postflight.mjs",
+    "build:db:staging:operational-v2:proof": "node scripts/build-operational-v2-transactional-proof.mjs",
     "lint": "eslint src --ext ts,tsx"
   },
   "dependencies": {

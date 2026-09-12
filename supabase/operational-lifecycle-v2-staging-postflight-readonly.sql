@@ -4,6 +4,8 @@ begin isolation level repeatable read read only;
 do $$
 declare function_name text; function_body text; incomplete_operational integer;
 begin
+  if coalesce(current_setting('app.settings.api_url', true), '') not like '%tkbdyzxwwbhkpztgjjxh%'
+  then raise exception 'database-owned staging API URL identity failed'; end if;
   if not exists(select 1 from public.organizations where id='org-primary') then raise exception 'staging organization identity failed'; end if;
   if to_regclass('public.deployment_environment_identity') is null
     or not exists(select 1 from public.deployment_environment_identity where environment='staging' and project_ref='tkbdyzxwwbhkpztgjjxh')
@@ -42,6 +44,7 @@ with target_functions as (
 )
 select jsonb_build_object(
   'expected_project_ref','tkbdyzxwwbhkpztgjjxh',
+  'database_api_url',current_setting('app.settings.api_url', true),
   'environment_identity',(select jsonb_build_object('environment',environment,'project_ref',project_ref,'identity_nonce',identity_nonce) from public.deployment_environment_identity where environment='staging'),
   'captured_at_utc',timezone('utc',clock_timestamp()),
   'organization_id','org-primary',
