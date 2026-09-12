@@ -18,7 +18,7 @@ begin
   if not exists(select 1 from public.organizations where id='org-primary' and active is true) then
     raise exception 'staging organization identity failed';
   end if;
-  if existing_api_url is not null and position('tkbdyzxwwbhkpztgjjxh' in existing_api_url) = 0 then
+  if existing_api_url is not null and existing_api_url <> 'https://tkbdyzxwwbhkpztgjjxh.supabase.co' then
     raise exception 'database already carries a different API URL identity';
   end if;
   if to_regclass('public.deployment_environment_identity') is not null
@@ -32,6 +32,9 @@ end $$;
 -- ALTER DATABASE ... SET cannot run inside a transaction block. PostgreSQL
 -- applies it only to new sessions; set_config also anchors this SQL-editor
 -- session so the immediately following identity installation can verify it.
+-- If execution is interrupted after ALTER DATABASE, rerun this exact file:
+-- the exact-match guard makes that recovery idempotent and no domain row has
+-- been changed.
 alter database postgres set "app.settings.api_url" to 'https://tkbdyzxwwbhkpztgjjxh.supabase.co';
 select set_config('app.settings.api_url', 'https://tkbdyzxwwbhkpztgjjxh.supabase.co', false);
 

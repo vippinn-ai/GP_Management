@@ -103,10 +103,13 @@ describe("normalized lifecycle v2 SQL contract", () => {
     expect(stagingApiUrlAnchor).toContain("https://supabase.com/dashboard/project/tkbdyzxwwbhkpztgjjxh/sql/new");
     expect(stagingApiUrlAnchor).toContain("alter database postgres set \"app.settings.api_url\" to 'https://tkbdyzxwwbhkpztgjjxh.supabase.co'");
     expect(stagingApiUrlAnchor).toContain("database already carries a different API URL identity");
+    expect(stagingApiUrlAnchor).toContain("existing_api_url <> 'https://tkbdyzxwwbhkpztgjjxh.supabase.co'");
     expect(stagingApiUrlAnchor).toContain("database already carries a different environment identity");
     expect(stagingApiUrlAnchor).toMatch(/organizations where id='org-primary' and active is true/i);
     expect(stagingApiUrlAnchor).not.toContain("rrdwbxvuwrbxefarxnse");
     expect(stagingApiUrlAnchor).not.toMatch(/\b(?:insert\s+into|update|delete\s+from|alter\s+table|drop\s+table|create\s+table)\s+public\./i);
+    expect(stagingApiUrlAnchor.indexOf("alter database postgres set")).toBeLessThan(stagingApiUrlAnchor.indexOf("select set_config"));
+    expect(stagingApiUrlAnchor).not.toMatch(/begin;[\s\S]*alter database postgres set/i);
   });
 
   it("binds continuation-chain actors to the authenticated principal", () => {
