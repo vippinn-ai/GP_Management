@@ -7,6 +7,8 @@
 - Never rerun ambiguity with a new ID; reconcile, then replay only the same ID where specified.
 - Persist request body/response/database/timing/console/network/cleanup evidence as immutable JSON with SHA-256. Never persist authorization, API-key, cookie, password, or other credential headers in evidence.
 - Capture old deployed definitions, ACLs, proconfig, flags, publication, compatibility hash/version/bytes, and rollback SQL before install.
+- Run `npm run test:e2e:staging:operational-v2:static` to lint and no-emit type-check every Playwright spec selected by `playwright.operational-v2.staging.config.ts`; focused checks of only newly edited specs are insufficient.
+- Cleanup must preserve the primary assertion or runtime failure. No selected spec may throw from a `finally` block or otherwise replace the original failure with a cleanup failure.
 
 ## Functional and parity matrix
 

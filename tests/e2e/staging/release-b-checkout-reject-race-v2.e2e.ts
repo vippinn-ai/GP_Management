@@ -384,7 +384,6 @@ test.describe.serial("Release B checkout versus rejection concurrency", () => {
         }
       } catch (error) {
         primaryError = error;
-        throw error;
       } finally {
         page.off("dialog", dismissOriginDialog);
         checkoutCommand?.cancel();
@@ -432,8 +431,9 @@ test.describe.serial("Release B checkout versus rejection concurrency", () => {
         await attachFailureScreenshot(testInfo, page, `checkout-reject-${ordering}-origin-failure`);
         await attachFailureScreenshot(testInfo, observer.page, `checkout-reject-${ordering}-observer-failure`);
         await observer.context.close();
-        if (!primaryError && cleanupError) throw new Error(cleanupError);
       }
+      if (primaryError) throw primaryError;
+      if (cleanupError) throw new Error(cleanupError);
     });
   }
 });

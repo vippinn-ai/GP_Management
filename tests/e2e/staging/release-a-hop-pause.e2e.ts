@@ -41,7 +41,7 @@ test.describe.serial("Release A staging two-browser operational maintenance", ()
       sessionStarted = true;
       await expect(stationCard(observer.page, pauseStation)).toContainText(customerName);
 
-      let modal = await openManagedSession(page, pauseStation);
+      const modal = await openManagedSession(page, pauseStation);
       await modal.getByRole("button", { name: "Edit Customer Details", exact: true }).click();
       const earlierStart = await browserDateTimeLocal(page, -10);
       await modal.getByLabel("Session Start Time", { exact: true }).fill(earlierStart);
@@ -107,9 +107,9 @@ test.describe.serial("Release A staging two-browser operational maintenance", ()
       await attachFailureScreenshot(testInfo, page, "origin-failure");
       await attachFailureScreenshot(testInfo, observer.page, "observer-failure");
       await observer.context.close();
-      if (cleanupError || (sessionStarted && !cleanupRejected)) {
-        throw new Error(`Pause test cleanup was not confirmed. ${cleanupError ?? "Session remained open."}`);
-      }
+    }
+    if (cleanupError || (sessionStarted && !cleanupRejected)) {
+      throw new Error(`Pause test cleanup was not confirmed. ${cleanupError ?? "Session remained open."}`);
     }
   });
 
@@ -159,7 +159,7 @@ test.describe.serial("Release A staging two-browser operational maintenance", ()
       sessionStarted = true;
       await expect(stationCard(observer.page, hopStation)).toContainText(customerName);
 
-      let modal = await openManagedSession(page, hopStation);
+      const modal = await openManagedSession(page, hopStation);
       await modal.getByRole("button", { name: "Edit Customer Details", exact: true }).click();
       await modal.getByLabel("Session Start Time", { exact: true }).fill(await browserDateTimeLocal(page, -10));
       await modal.getByRole("button", { name: "Save Session Details", exact: true }).click();
@@ -225,9 +225,9 @@ test.describe.serial("Release A staging two-browser operational maintenance", ()
       await attachFailureScreenshot(testInfo, page, "origin-failure");
       await attachFailureScreenshot(testInfo, observer.page, "observer-failure");
       await observer.context.close();
-      if (cleanupError || (sessionStarted && !cleanupBilled && !cleanupRejected)) {
-        throw new Error(`Hop test cleanup was not confirmed. ${cleanupError ?? "Session remained unresolved."}`);
-      }
+    }
+    if (cleanupError || (sessionStarted && !cleanupBilled && !cleanupRejected)) {
+      throw new Error(`Hop test cleanup was not confirmed. ${cleanupError ?? "Session remained unresolved."}`);
     }
   });
 });

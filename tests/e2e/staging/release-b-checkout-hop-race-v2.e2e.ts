@@ -441,7 +441,6 @@ test.describe.serial("Release B admin checkout versus game-hop concurrency", () 
         expect(observerErrors).toEqual({ consoleErrors: [], pageErrors: [] });
       } catch (error) {
         primaryError = error;
-        throw error;
       } finally {
         observer.page.off("dialog", dismissObserverDialog);
         checkoutCommand?.cancel();
@@ -489,8 +488,9 @@ test.describe.serial("Release B admin checkout versus game-hop concurrency", () 
         await attachFailureScreenshot(testInfo, page, `checkout-hop-${ordering}-origin-failure`);
         await attachFailureScreenshot(testInfo, observer.page, `checkout-hop-${ordering}-observer-failure`);
         await observer.context.close();
-        if (!primaryError && cleanupError) throw new Error(cleanupError);
       }
+      if (primaryError) throw primaryError;
+      if (cleanupError) throw new Error(cleanupError);
     });
   }
 });

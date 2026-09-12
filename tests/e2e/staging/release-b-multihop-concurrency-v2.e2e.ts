@@ -113,7 +113,7 @@ test.describe.serial("Release B admin multi-hop checkout concurrency", () => {
     let raceResolved = false;
     let primaryError: unknown;
     let cleanupError: string | undefined;
-    let pendingOperationalMutations: unknown = [];
+    let pendingOperationalMutations: unknown;
     let raceEvidence: Record<string, unknown> | undefined;
     let originCommand: Awaited<ReturnType<typeof interceptSingleRpcCommand>> | undefined;
     let observerCommand: Awaited<ReturnType<typeof interceptSingleRpcCommand>> | undefined;
@@ -593,7 +593,6 @@ test.describe.serial("Release B admin multi-hop checkout concurrency", () => {
       expect(errorCaptures[loserIndex].pageErrors[0]).toMatch(/The primary session is no longer billable\.?/i);
     } catch (error) {
       primaryError = error;
-      throw error;
     } finally {
       page.off("dialog", dismissDialog);
       observer.page.off("dialog", dismissDialog);
@@ -661,8 +660,9 @@ test.describe.serial("Release B admin multi-hop checkout concurrency", () => {
       await attachFailureScreenshot(testInfo, page, "multihop-race-origin-failure");
       await attachFailureScreenshot(testInfo, observer.page, "multihop-race-observer-failure");
       await observer.context.close();
-      if (!primaryError && cleanupError) throw new Error(cleanupError);
     }
+    if (primaryError) throw primaryError;
+    if (cleanupError) throw new Error(cleanupError);
   });
 
   test("guardedly bills one exact abandoned hopped QA session", async ({ page }, testInfo) => {
@@ -939,7 +939,6 @@ test.describe.serial("Release B admin multi-hop checkout concurrency", () => {
       expect(pageErrors).toEqual({ consoleErrors: [], pageErrors: [] });
     } catch (error) {
       primaryError = error;
-      throw error;
     } finally {
       command?.cancel();
       await page.unroute("**/rest/v1/rpc/commit_checkout_bill_v2").catch(() => undefined);
@@ -961,7 +960,8 @@ test.describe.serial("Release B admin multi-hop checkout concurrency", () => {
         rpcEvidence
       });
       await attachFailureScreenshot(testInfo, page, "guarded-hopped-cleanup-failure");
-      if (!primaryError && cleanupError) throw new Error(cleanupError);
     }
+    if (primaryError) throw primaryError;
+    if (cleanupError) throw new Error(cleanupError);
   });
 });

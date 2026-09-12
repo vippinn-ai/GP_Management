@@ -25,6 +25,7 @@
     "test:e2e:staging": "node scripts/run-staging-e2e.mjs",
     "test:e2e:staging:list": "node scripts/run-staging-e2e.mjs --list",
     "test:e2e:staging:operational-v2": "node scripts/run-operational-v2-staging-e2e.mjs",
+    "test:e2e:staging:operational-v2:static": "node scripts/check-operational-v2-staging-static.mjs",
     "test:e2e:staging:operational-performance": "node scripts/run-operational-performance-staging-e2e.mjs",
     "test:e2e:staging:operational-v2:list": "node scripts/run-operational-v2-staging-e2e.mjs --list",
     "test:e2e:staging:v2": "node scripts/run-financial-v2-staging-e2e.mjs",

@@ -212,7 +212,6 @@ test.describe.serial("Release A staging inventory matrix", () => {
       });
     } catch (error) {
       primaryError = error;
-      throw error;
     } finally {
       tabOpened = tabOpened || rpcEvidence.some((entry) => entry.rpc.startsWith("open_customer_tab") && entry.status < 300);
       if (tabOpened && !cleanupAttempted) {
@@ -233,9 +232,10 @@ test.describe.serial("Release A staging inventory matrix", () => {
       await attachFailureScreenshot(testInfo, page, "inventory-origin-failure");
       await attachFailureScreenshot(testInfo, observer.page, "inventory-observer-failure");
       await observer.context.close();
-      if (!primaryError && (cleanupError || (tabOpened && !cleanupConfirmed))) {
-        throw new Error(`Inventory test cleanup was not confirmed. ${cleanupError ?? "Customer tab remained open."}`);
-      }
+    }
+    if (primaryError) throw primaryError;
+    if (cleanupError || (tabOpened && !cleanupConfirmed)) {
+      throw new Error(`Inventory test cleanup was not confirmed. ${cleanupError ?? "Customer tab remained open."}`);
     }
   });
 });

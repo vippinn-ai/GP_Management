@@ -153,8 +153,8 @@ test.describe("Operational lifecycle v2 staging gate", () => {
       await attachFailureScreenshot(testInfo, page, "operational-v2-hop-origin-failure");
       await attachFailureScreenshot(testInfo, observer.page, "operational-v2-hop-observer-failure");
       await observer.context.close();
-      if (!primaryError && hopCommitted && !cleanupBillId) throw new Error("Committed hop cleanup bill was not confirmed; no retry was issued.");
     }
+    if (!primaryError && hopCommitted && !cleanupBillId) throw new Error("Committed hop cleanup bill was not confirmed; no retry was issued.");
   });
 
   test("paused-session rejection closes the canonical pause and remains stable after refresh", async ({ browser, page }, testInfo) => {
@@ -242,8 +242,8 @@ test.describe("Operational lifecycle v2 staging gate", () => {
       await attachFailureScreenshot(testInfo, page, "operational-v2-reject-origin-failure");
       await attachFailureScreenshot(testInfo, observer.page, "operational-v2-reject-observer-failure");
       await observer.context.close();
-      if (!rejected) throw new Error("The paused QA session was not confirmed rejected; reconcile before another run.");
     }
+    if (!rejected) throw new Error("The paused QA session was not confirmed rejected; reconcile before another run.");
   });
 });
 

@@ -153,7 +153,6 @@ test.describe.serial("Release B hopped-session checkout concurrency", () => {
       await expect(stationCard(observer.page, station)).toContainText("Available");
     } catch (error) {
       primaryError = error;
-      throw error;
     } finally {
       if (sessionStarted && !hopConfirmed) {
         try {
@@ -183,7 +182,8 @@ test.describe.serial("Release B hopped-session checkout concurrency", () => {
       await attachFailureScreenshot(testInfo, page, "hopped-race-origin-failure");
       await attachFailureScreenshot(testInfo, observer.page, "hopped-race-observer-failure");
       await observer.context.close();
-      if (!primaryError && cleanupError) throw new Error(cleanupError);
     }
+    if (primaryError) throw primaryError;
+    if (cleanupError) throw new Error(cleanupError);
   });
 });

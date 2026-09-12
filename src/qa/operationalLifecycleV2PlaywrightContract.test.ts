@@ -1,6 +1,24 @@
 import fs from "node:fs";
 import path from "node:path";
+import { createSourceFile, forEachChild, ScriptKind, ScriptTarget, SyntaxKind } from "typescript";
 import { describe, expect, it } from "vitest";
+
+const SELECTED_OPERATIONAL_SPECS = [
+  "operational-lifecycle-v2.e2e.ts",
+  "operational-lifecycle-v2-concurrency.e2e.ts",
+  "operational-lifecycle-v2-continuations.e2e.ts",
+  "operational-lifecycle-v2-recovery-realtime.e2e.ts",
+  "operational-lifecycle-v2-downstream-parity.e2e.ts",
+  "operational-lifecycle-v2-hop-mutation-races.e2e.ts",
+  "release-a-hop-pause.e2e.ts",
+  "release-a-inventory-matrix.e2e.ts",
+  "release-a-report-exports.e2e.ts",
+  "release-b-checkout-reject-race-v2.e2e.ts",
+  "release-b-checkout-hop-race-v2.e2e.ts",
+  "release-b-hopped-concurrency-v2.e2e.ts",
+  "release-b-multihop-concurrency-v2.e2e.ts",
+  "release-b-role-checkout-hop-timing-v2.e2e.ts"
+] as const;
 
 function read(relativePath: string) {
   return fs.readFileSync(path.join(process.cwd(), relativePath), "utf8");
@@ -52,6 +70,45 @@ describe("operational lifecycle v2 Playwright and performance contract", () => {
       "release-b-multihop-concurrency-v2.e2e.ts",
       "release-b-role-checkout-hop-timing-v2.e2e.ts"
     ]) expect(config).toContain(regressionSpec);
+  });
+
+  it("keeps every selected staging spec free of failure-masking finally throws", () => {
+    const config = read("playwright.operational-v2.staging.config.ts");
+    const staticGate = read("scripts/check-operational-v2-staging-static.mjs");
+    const unsafeThrows: string[] = [];
+    const configuredSpecs = [...config.matchAll(/"([^"]+\.e2e\.ts)"/g)].map((match) => match[1]);
+
+    expect(configuredSpecs).toEqual([...SELECTED_OPERATIONAL_SPECS]);
+
+    for (const specName of SELECTED_OPERATIONAL_SPECS) {
+      expect(config).toContain(`"${specName}"`);
+      expect(staticGate).toContain(`"${specName}"`);
+      const relativePath = `tests/e2e/staging/${specName}`;
+      const sourceText = read(relativePath);
+      const sourceFile = createSourceFile(relativePath, sourceText, ScriptTarget.Latest, true, ScriptKind.TS);
+
+      const collectThrows = (node: import("typescript").Node) => {
+        if (node.kind === SyntaxKind.ThrowStatement) {
+          const line = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1;
+          unsafeThrows.push(`${relativePath}:${line}`);
+        }
+        forEachChild(node, collectThrows);
+      };
+
+      const inspect = (node: import("typescript").Node) => {
+        if (node.kind === SyntaxKind.TryStatement) {
+          const finallyBlock = (node as import("typescript").TryStatement).finallyBlock;
+          if (finallyBlock) collectThrows(finallyBlock);
+        }
+        forEachChild(node, inspect);
+      };
+
+      inspect(sourceFile);
+    }
+
+    expect(unsafeThrows).toEqual([]);
+    expect(staticGate).toContain('"--target", "ES2023"');
+    expect(staticGate).toContain('"--types", "node,@playwright/test,vite/client"');
   });
 
   it("provides a reusable immutable 30-load performance gate", () => {

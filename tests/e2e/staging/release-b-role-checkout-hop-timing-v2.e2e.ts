@@ -580,7 +580,6 @@ test.describe.serial("Release B receptionist and manager checkout-hop timing", (
         if (!checkoutCommitted) expect(hopDialogs).not.toContain(refreshedConflictDialog);
       } catch (error) {
         primaryError = error;
-        throw error;
       } finally {
         hopPage.off("dialog", dismissHopDialog);
         checkoutCommand?.cancel();
@@ -599,7 +598,7 @@ test.describe.serial("Release B receptionist and manager checkout-hop timing", (
               `Playwright role-matrix pre-race cleanup ${runId}`
             );
             if (!cleanupConfirmed) {
-              throw new Error("Pre-race cleanup did not positively confirm rejection of the exact QA session.");
+              cleanupError = "Pre-race cleanup did not positively confirm rejection of the exact QA session.";
             }
           } catch (error) {
             cleanupError = error instanceof Error ? error.message : "Unknown role-matrix pre-race cleanup failure";
@@ -626,8 +625,9 @@ test.describe.serial("Release B receptionist and manager checkout-hop timing", (
         await attachFailureScreenshot(testInfo, pageA, `${scenario.id}-a-failure`);
         await attachFailureScreenshot(testInfo, pageB, `${scenario.id}-b-failure`);
         await observer.context.close();
-        if (!primaryError && cleanupError) throw new Error(cleanupError);
       }
+      if (primaryError) throw primaryError;
+      if (cleanupError) throw new Error(cleanupError);
     });
   }
 });
