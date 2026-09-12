@@ -63,6 +63,8 @@ for (const name of REPLACED_FUNCTIONS) {
     throw new Error(`Preflight definition hash mismatch for ${name}.`);
   }
   if (!Array.isArray(entry.acl_detail) || entry.acl_detail.some((grant) => !grant.grantee || grant.privilege_type !== "EXECUTE")) throw new Error(`Preflight ACL detail is incomplete for ${name}.`);
+  const ownerName = entry.owner.replaceAll('"', "");
+  if (entry.acl_detail.some((grant) => grant.grantor !== ownerName)) throw new Error(`Unsupported non-owner ACL grantor on ${name}; rollback would not be exact.`);
 }
 
 const lifecyclePath = path.join(root, "supabase", "operational-lifecycle-v2.sql");
@@ -148,7 +150,7 @@ begin
   if has_function_privilege('anon','public.hop_session_v2(jsonb)','execute')
     or has_function_privilege('anon','public.reject_session_v2(jsonb)','execute')
     or has_function_privilege('anon','public.reject_customer_tab_v2(jsonb)','execute') then raise exception 'anonymous lifecycle v2 execution is forbidden'; end if;
-  if exists(
+  if (select count(*) from public.app_state where id='primary') <> 1 or exists(
     select 1 from public.app_state a cross join operational_v2_install_baseline b
     where a.id='primary' and (a.version,a.updated_at,a.updated_by,md5(a.data::text),octet_length(a.data::text))
       is distinct from (b.version,b.updated_at,b.updated_by,b.data_md5,b.data_bytes)

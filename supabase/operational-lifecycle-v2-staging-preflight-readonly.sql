@@ -17,6 +17,7 @@ begin
     execute 'select count(*) from public.operational_mutations where status<>''committed''' into incomplete_operational;
     if incomplete_operational <> 0 then raise exception 'staging has incomplete operational mutations'; end if;
   end if;
+  perform set_config('normops.processing_operational_mutations', incomplete_operational::text, true);
 end $$;
 
 with target_functions as (
@@ -72,7 +73,7 @@ select jsonb_build_object(
   'open_sessions', (select count(*) from public.sessions where status<>'closed'),
   'open_customer_tabs', (select count(*) from public.customer_tabs where status='open'),
   'processing_financial_mutations', (select count(*) from public.financial_mutations where status<>'committed'),
-  'processing_operational_mutations', 0,
+  'processing_operational_mutations', current_setting('normops.processing_operational_mutations')::integer,
   'operational_mutations_table_exists', to_regclass('public.operational_mutations') is not null,
   'app_state', (select value from app_state_evidence),
   'functions', (select value from function_evidence)
