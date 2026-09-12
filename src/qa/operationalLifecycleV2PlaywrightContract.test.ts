@@ -174,8 +174,10 @@ describe("operational lifecycle v2 Playwright and performance contract", () => {
     expect(spec).toContain("latency.serverP95Ms");
     expect(spec).toContain("latency.clientP95Ms");
     expect(spec).toContain("latency.browserCompletionMaxMs");
-    expect(spec).toContain("overlapRatioP95");
-    expect(spec).toContain("independent-target overlap ratio");
+    expect(spec).toContain("ten calibrated unrelated pairs");
+    expect(spec).toContain("Concurrent wall time must beat isolated sequential calibration");
+    expect(spec).toContain("Concurrent calibration submissions must begin together");
+    expect(spec).toContain("directRpcEvidence");
     expect(spec).toContain("full two-browser convergence");
     expect(spec).toContain("twenty browser-observed samples per lifecycle target class");
     expect(spec).toContain("operational-v2-20x3-lifecycle-latency");
@@ -192,7 +194,15 @@ describe("operational lifecycle v2 Playwright and performance contract", () => {
       "activeConsumers",
       "billRecoverableSource",
       "hopped_session_unavailable",
-      "Continuation races require distinct actors"
+      "Continuation races require distinct actors",
+      "itemsAfterStart.map(canonicalItem)",
+      "inventoryAfterHop).toEqual(inventoryAfterStart)",
+      "billedItems).toEqual(itemsAfterStart.map(canonicalItem))",
+      "directRpcEvidence",
+      "event cardinality",
+      "audit cardinality",
+      "unresolvedSourceIds",
+      "consoleErrors: [], pageErrors: []"
     ]) expect(spec).toContain(marker);
   });
 
@@ -202,11 +212,13 @@ describe("operational lifecycle v2 Playwright and performance contract", () => {
       "No automatic resend may occur before manual recovery",
       "Retry Game Hop",
       "Exactly one manual same-ID replay is allowed",
+      "configured 20-second boundary",
       "observerSawRealtimeBeforeOriginResponse",
       "responseBeforeRealtime",
       "observerOfflineGapRecovered",
       "duplicateSameIdWasIdempotent",
-      "originPanelUnmountedBeforeReconnect"
+      "duplicateRealtimeFrameDelivered",
+      "observerPanelUnmountedDuringDuplicate"
     ]) expect(spec).toContain(marker);
   });
 
@@ -234,7 +246,17 @@ describe("operational lifecycle v2 Playwright and performance contract", () => {
       "add_session_item",
       "remove_session_item",
       "legal serialized outcome",
-      "Bill Hopped Session"
+      "Bill Hopped Session",
+      "Hop mutation races require distinct authenticated actors",
+      "session_not_open",
+      "close_disposition: \"hopped\"",
+      "must not leave an open pause",
+      "mutation event cardinality",
+      "mutation audit cardinality",
+      "itemsAfterBill",
+      "billLines",
+      "unresolvedSourceIds",
+      "consoleErrors: [], pageErrors: []"
     ]) expect(spec).toContain(marker);
   });
 

@@ -494,10 +494,87 @@ test.describe.serial("Operational lifecycle v2 real two-client concurrency", () 
       expect(await readPendingOperationalMutations(observer.page)).toEqual([]);
       expect(pageErrors).toEqual({ consoleErrors: [], pageErrors: [] });
       expect(observerErrors).toEqual({ consoleErrors: [], pageErrors: [] });
-      await attachJson(testInfo, "operational-v2-20x3-lifecycle-latency", { runId, summary, samples });
+      await attachJson(testInfo, "operational-v2-20x3-lifecycle-latency", { runId, summary, samples, directRpcEvidence });
     } finally {
       await attachFailureScreenshot(testInfo, page, "operational-v2-latency-origin-failure");
       await attachFailureScreenshot(testInfo, observer.page, "operational-v2-latency-observer-failure");
+      await observer.context.close();
+    }
+  });
+
+  test("ten calibrated unrelated pairs overlap instead of using one global queue", async ({ browser, page }, testInfo) => {
+    test.setTimeout(8 * 60_000);
+    const observer = await createObserver(browser);
+    const originRequests: CapturedRpcRequest[] = [];
+    const observerRequests: CapturedRpcRequest[] = [];
+    const directRpcEvidence: DirectRpcEvidence[] = [];
+    captureAuthenticatedRestRequests(page, originRequests);
+    captureAuthenticatedRestRequests(observer.page, observerRequests);
+    const samples: Array<Record<string, unknown>> = [];
+    try {
+      await Promise.all([signIn(page, credentials("A")), signIn(observer.page, credentials("B"))]);
+      const origin = identityFrom(originRequests);
+      const second = identityFrom(observerRequests);
+      expect(second.actorId, "Calibrated overlap requires distinct actors.").not.toBe(origin.actorId);
+      const stations = await readRestRows<StationRow>(page, origin.restBase, origin.headers, "stations", {
+        organization_id: `eq.${organizationId}`, active: "eq.true", mode: "eq.timed", select: "id,name,mode", order: "id.asc"
+      });
+      expect(stations.length, "Calibrated overlap requires two timed stations.").toBeGreaterThanOrEqual(2);
+      const appStateBefore = await appStateSnapshot(page, origin);
+
+      for (let iteration = 1; iteration <= 10; iteration += 1) {
+        const concurrentTargets = await Promise.all([
+          createSession(page.request, origin, stations[0], `cal-${iteration}-con-a`, 1, directRpcEvidence, "origin"),
+          createSession(observer.page.request, second, stations[1], `cal-${iteration}-con-b`, 1, directRpcEvidence, "observer")
+        ]);
+        const concurrentCommands = concurrentTargets.map((target, index) => closeCommand(target, `cal-${iteration}-con-${index}`, "reject"));
+        const concurrentStarted = performance.now();
+        const concurrentResults = await Promise.all([
+          postRpc(page.request, origin, concurrentCommands[0].rpc, concurrentCommands[0].payload, directRpcEvidence, "origin"),
+          postRpc(observer.page.request, second, concurrentCommands[1].rpc, concurrentCommands[1].payload, directRpcEvidence, "observer")
+        ]);
+        const concurrentWallMs = performance.now() - concurrentStarted;
+        concurrentResults.forEach((result) => expect(result.response.status()).toBe(200));
+        const concurrentMutationIds = concurrentCommands.map((command) => command.payload.mutation_id);
+        const concurrentEvidence = directRpcEvidence.filter((entry) => concurrentMutationIds.includes(entry.mutationId ?? ""));
+        expect(concurrentEvidence).toHaveLength(2);
+        const submissionStartSkewMs = Math.abs(Date.parse(concurrentEvidence[0].startedAt) - Date.parse(concurrentEvidence[1].startedAt));
+        expect(submissionStartSkewMs, "Concurrent calibration submissions must begin together.").toBeLessThan(100);
+
+        const sequentialTargets = await Promise.all([
+          createSession(page.request, origin, stations[0], `cal-${iteration}-seq-a`, 1, directRpcEvidence, "origin"),
+          createSession(observer.page.request, second, stations[1], `cal-${iteration}-seq-b`, 1, directRpcEvidence, "observer")
+        ]);
+        const sequentialCommands = sequentialTargets.map((target, index) => closeCommand(target, `cal-${iteration}-seq-${index}`, "reject"));
+        const sequentialStarted = performance.now();
+        const sequentialFirst = await postRpc(page.request, origin, sequentialCommands[0].rpc, sequentialCommands[0].payload, directRpcEvidence, "origin");
+        const sequentialSecond = await postRpc(observer.page.request, second, sequentialCommands[1].rpc, sequentialCommands[1].payload, directRpcEvidence, "observer");
+        const sequentialWallMs = performance.now() - sequentialStarted;
+        expect(sequentialFirst.response.status()).toBe(200);
+        expect(sequentialSecond.response.status()).toBe(200);
+        samples.push({
+          iteration,
+          concurrentWallMs,
+          sequentialWallMs,
+          wallRatio: concurrentWallMs / sequentialWallMs,
+          submissionStartSkewMs,
+          concurrentMutationIds,
+          sequentialMutationIds: sequentialCommands.map((command) => command.payload.mutation_id)
+        });
+      }
+
+      const wallRatios = samples.map((entry) => Number(entry.wallRatio));
+      expect(percentile(wallRatios, 0.95), "Concurrent wall time must beat isolated sequential calibration.").toBeLessThan(0.85);
+      expect(await appStateSnapshot(page, origin)).toEqual(appStateBefore);
+      await attachJson(testInfo, "operational-v2-calibrated-overlap", {
+        runId,
+        samples,
+        wallRatioP95: percentile(wallRatios, 0.95),
+        directRpcEvidence
+      });
+    } finally {
+      await attachFailureScreenshot(testInfo, page, "calibrated-overlap-origin-failure");
+      await attachFailureScreenshot(testInfo, observer.page, "calibrated-overlap-observer-failure");
       await observer.context.close();
     }
   });
@@ -579,9 +656,6 @@ test.describe.serial("Operational lifecycle v2 real two-client concurrency", () 
         expect(events).toHaveLength(2);
         const mutationEvidence = directRpcEvidence.filter((entry) => mutationIds.includes(entry.mutationId ?? ""));
         expect(mutationEvidence).toHaveLength(2);
-        const sequentialEquivalentMs = mutationEvidence.reduce((total, entry) => total + entry.elapsedMs, 0);
-        const overlapRatio = rpcPairMs / sequentialEquivalentMs;
-        expect(overlapRatio, `${label} independent-target overlap ratio`).toBeLessThan(0.85);
         cases.push({
           iteration,
           matrixType,
@@ -590,7 +664,6 @@ test.describe.serial("Operational lifecycle v2 real two-client concurrency", () 
           rpcPairMs,
           rpcAndReloadMs,
           browserCompletionMs,
-          overlapRatio,
           clientDurationsMs: mutationEvidence.map((entry) => entry.elapsedMs),
           serverDurationsMs: [
             Number((firstResult.body as { server_duration_ms: number }).server_duration_ms),
@@ -604,7 +677,6 @@ test.describe.serial("Operational lifecycle v2 real two-client concurrency", () 
       const serverDurations = cases.flatMap((entry) => entry.serverDurationsMs as number[]);
       const rpcAndReloadDurations = cases.map((entry) => Number(entry.rpcAndReloadMs));
       const browserCompletionDurations = cases.map((entry) => Number(entry.browserCompletionMs));
-      const overlapRatios = cases.map((entry) => Number(entry.overlapRatio));
       const latency = {
         clientP95Ms: percentile(clientDurations, 0.95),
         clientMaxMs: Math.max(...clientDurations),
@@ -613,16 +685,13 @@ test.describe.serial("Operational lifecycle v2 real two-client concurrency", () 
         rpcAndReloadP95Ms: percentile(rpcAndReloadDurations, 0.95),
         rpcAndReloadMaxMs: Math.max(...rpcAndReloadDurations),
         browserCompletionP95Ms: percentile(browserCompletionDurations, 0.95),
-        browserCompletionMaxMs: Math.max(...browserCompletionDurations),
-        overlapRatioP95: percentile(overlapRatios, 0.95),
-        overlapRatioMax: Math.max(...overlapRatios)
+        browserCompletionMaxMs: Math.max(...browserCompletionDurations)
       };
       expect(latency.serverP95Ms, "Unrelated concurrent operations DB p95").toBeLessThan(500);
       expect(latency.serverMaxMs, "Unrelated concurrent operations DB max").toBeLessThan(2_000);
       expect(latency.clientP95Ms, "Unrelated concurrent operations HTTP acknowledgement p95").toBeLessThan(2_000);
       expect(latency.clientMaxMs, "Unrelated concurrent operations HTTP acknowledgement max").toBeLessThan(5_000);
       expect(latency.browserCompletionMaxMs, "Unrelated concurrent operations full browser completion max").toBeLessThan(7_000);
-      expect(latency.overlapRatioP95, "Unrelated targets must overlap instead of globally serializing").toBeLessThan(0.85);
       expect(await appStateSnapshot(page, origin)).toEqual(appStateBefore);
       await Promise.all([page.reload({ waitUntil: "domcontentloaded" }), observer.page.reload({ waitUntil: "domcontentloaded" })]);
       await Promise.all([waitForSynced(page), waitForSynced(observer.page)]);
@@ -650,9 +719,7 @@ test.describe.serial("Operational lifecycle v2 real two-client concurrency", () 
           rpcAndReloadP95Ms: percentile(cases.map((entry) => Number(entry.rpcAndReloadMs)), 0.95),
           rpcAndReloadMaxMs: Math.max(...cases.map((entry) => Number(entry.rpcAndReloadMs))),
           browserCompletionP95Ms: percentile(cases.map((entry) => Number(entry.browserCompletionMs)), 0.95),
-          browserCompletionMaxMs: Math.max(...cases.map((entry) => Number(entry.browserCompletionMs))),
-          overlapRatioP95: percentile(cases.map((entry) => Number(entry.overlapRatio)), 0.95),
-          overlapRatioMax: Math.max(...cases.map((entry) => Number(entry.overlapRatio)))
+          browserCompletionMaxMs: Math.max(...cases.map((entry) => Number(entry.browserCompletionMs)))
         } : null,
         cases,
         directRpcEvidence

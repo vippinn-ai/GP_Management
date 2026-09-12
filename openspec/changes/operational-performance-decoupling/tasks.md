@@ -36,7 +36,7 @@ Each completed item records commit SHA, command, timestamp, artifact path, and S
 ## 5. Gates
 
 - [x] Add reusable zero-retry suites for exact 20-by-3 target sampling, 50-pair overlap proof, unit-sale/continuation consumers, lost-response/realtime recovery, five hop mutation races, and downstream receipt/mobile/logout parity. Evidence pending live staging execution.
-- [x] Replacement-candidate local gate: no-emit Playwright TypeScript, lint (0 errors, 4 pre-existing warnings), 62-file/610-test Vitest, production/staging builds, 33-case operational Playwright discovery across 14 files, and separate 30-load performance discovery. Evidence pending immutable candidate commit.
+- [x] Replacement-candidate local gate: no-emit Playwright TypeScript, lint (0 errors, 4 pre-existing warnings), 62-file/610-test Vitest, production/staging builds, 34-case operational Playwright discovery across 14 files, and separate 30-load performance discovery. Evidence pending immutable candidate commit.
 - [ ] Reviewer approves exact candidate SHA.
 - [ ] Fail-closed staging preflight and flag-off SQL install pass.
 - [ ] Functional, edge, security, idempotency, race, recovery, realtime, parity, and performance suites pass.

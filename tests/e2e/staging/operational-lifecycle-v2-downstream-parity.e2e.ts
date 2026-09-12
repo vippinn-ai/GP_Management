@@ -60,6 +60,7 @@ test("bill, receipt, mobile, hard-refresh, and logout-login consumers retain exa
   const customerName = `QA Downstream ${runId}`;
   let billId: string | undefined;
   let billNumber: string | undefined;
+  let primaryError: unknown;
   const dialogs: string[] = [];
   page.on("dialog", (dialog) => {
     dialogs.push(dialog.message());
@@ -143,8 +144,11 @@ test("bill, receipt, mobile, hard-refresh, and logout-login consumers retain exa
       dialogs,
       rpcEvidence
     });
+  } catch (error) {
+    primaryError = error;
   } finally {
     await attachFailureScreenshot(testInfo, page, "downstream-parity-failure");
-    if (!billId) throw new Error("Downstream parity bill was not confirmed; reconcile the active session before another run.");
   }
+  if (primaryError) throw primaryError;
+  if (!billId) throw new Error("Downstream parity bill was not confirmed; reconcile the active session before another run.");
 });

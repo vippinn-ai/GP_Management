@@ -67,6 +67,9 @@ test.describe.serial("Operational v2 lost-response and realtime convergence", ()
     let firstServerResolved!: () => void;
     const firstServerCommitted = new Promise<void>((resolve) => { firstServerResolved = resolve; });
     let billId: string | undefined;
+    let primaryError: unknown;
+    let waiterStartedAt: number;
+    let waiterFailureElapsedMs: number;
     const dialogs: string[] = [];
 
     const handler = async (route: Route) => {
@@ -80,11 +83,16 @@ test.describe.serial("Operational v2 lost-response and realtime convergence", ()
       const serverResponse = await route.fetch({ timeout: 30_000 });
       firstServerBody = await readApiResponseBody(serverResponse);
       firstServerResolved();
-      await new Promise((resolve) => setTimeout(resolve, 16_000));
+      await new Promise((resolve) => setTimeout(resolve, 21_000));
       await route.abort("timedout").catch(() => undefined);
     };
 
     try {
+      await page.addInitScript(() => {
+        const nativeSetTimeout = window.setTimeout.bind(window);
+        window.setTimeout = ((handler: TimerHandler, timeout?: number, ...args: unknown[]) =>
+          nativeSetTimeout(handler, timeout === 15_000 ? 60_000 : timeout, ...args)) as typeof window.setTimeout;
+      });
       page.on("dialog", (dialog) => {
         dialogs.push(dialog.message());
         void dialog.dismiss();
@@ -98,12 +106,16 @@ test.describe.serial("Operational v2 lost-response and realtime convergence", ()
       await close.getByLabel("Session End Time", { exact: true }).fill(await browserDateTimeLocal(page, -1));
       await close.getByLabel(/Game hop - close station without billing/).check();
       await page.route(pattern, handler);
+      waiterStartedAt = Date.now();
       await close.getByRole("button", { name: "Confirm Game Hop", exact: true }).click();
 
       await firstServerCommitted;
       expect(captureCount, "No automatic resend may occur before manual recovery.").toBe(1);
       await expect(stationCard(observer.page, station)).toContainText("Available");
       await expect(close.getByRole("button", { name: "Retry Game Hop", exact: true })).toBeVisible({ timeout: 30_000 });
+      waiterFailureElapsedMs = Date.now() - waiterStartedAt;
+      expect(waiterFailureElapsedMs, "The live critical acknowledgement waiter must expire at its configured 20-second boundary.").toBeGreaterThanOrEqual(20_000);
+      await expect.poll(() => dialogs.some((message) => message.includes("server did not confirm this action in time"))).toBe(true);
       const pending = await readPendingOperationalMutations(page) as Array<{ id?: string; status?: string }>;
       const envelope = capturedRequest!.body as { payload: { mutation_id: string; payload: { audit_log_id: string } } };
       expect(pending).toEqual(expect.arrayContaining([expect.objectContaining({ id: envelope.payload.mutation_id, status: "failed" })]));
@@ -151,19 +163,23 @@ test.describe.serial("Operational v2 lost-response and realtime convergence", ()
         replayBody,
         observerSawRealtimeBeforeOriginResponse: true,
         pendingBeforeReplay: pending,
+        waiterFailureElapsedMs,
         dialogs,
         events,
         audits,
         billId,
         rpcEvidence
       });
+    } catch (error) {
+      primaryError = error;
     } finally {
       await page.unroute(pattern, handler).catch(() => undefined);
       await attachFailureScreenshot(testInfo, page, "lost-response-origin-failure");
       await attachFailureScreenshot(testInfo, observer.page, "lost-response-observer-failure");
       await observer.context.close();
-      if (capturedRequest && !billId) throw new Error("Lost-response hop was not terminally billed; reconcile before another run.");
     }
+    if (primaryError) throw primaryError;
+    if (capturedRequest && !billId) throw new Error("Lost-response hop was not terminally billed; reconcile before another run.");
   });
 
   test("response-first, offline gap, duplicate delivery, and panel unmount converge after reconnect", async ({ browser, page }, testInfo) => {
@@ -171,8 +187,30 @@ test.describe.serial("Operational v2 lost-response and realtime convergence", ()
     const requests: CapturedRpcRequest[] = [];
     captureAuthenticatedRestRequests(page, requests);
     const customerName = `QA Reconnect Reject ${runId}`;
+    const duplicateCustomerName = `QA Duplicate Event ${runId}`;
     let capturedReject: CapturedRpcRequest | undefined;
     try {
+      await observer.page.addInitScript(() => {
+        const NativeWebSocket = window.WebSocket;
+        const control = { armed: false, duplicates: 0 };
+        Object.defineProperty(window, "__bpRealtimeDuplicateControl", { value: control, configurable: true });
+        class DuplicatingWebSocket extends NativeWebSocket {
+          constructor(url: string | URL, protocols?: string | string[]) {
+            super(url, protocols);
+            this.addEventListener("message", (event) => {
+              if (!control.armed || typeof event.data !== "string" || !event.data.includes("postgres_changes")) return;
+              control.armed = false;
+              control.duplicates += 1;
+              queueMicrotask(() => this.dispatchEvent(new MessageEvent("message", {
+                data: event.data,
+                origin: event.origin,
+                lastEventId: event.lastEventId
+              })));
+            });
+          }
+        }
+        Object.defineProperty(window, "WebSocket", { value: DuplicatingWebSocket, configurable: true });
+      });
       await Promise.all([signIn(page, credentials("A")), signIn(observer.page, credentials("B"))]);
       await startSession(page, station, customerName);
       await expect(stationCard(observer.page, station)).toContainText(customerName);
@@ -186,10 +224,13 @@ test.describe.serial("Operational v2 lost-response and realtime convergence", ()
       const request = await requestPromise;
       capturedReject = { url: request.url(), headers: request.headers(), body: request.postDataJSON() };
       expect((await responsePromise).status()).toBe(200);
+      const responseCompletedAt = new Date().toISOString();
       await expect(stationCard(page, station)).toContainText("Available");
 
       await page.getByRole("button", { name: "Bill Register", exact: true }).click();
       await expect(page.getByRole("heading", { name: "Bill Register", exact: true })).toBeVisible();
+      const reconnectStartedAt = new Date().toISOString();
+      expect(Date.parse(reconnectStartedAt)).toBeGreaterThanOrEqual(Date.parse(responseCompletedAt));
       await observer.context.setOffline(false);
       await observer.page.reload({ waitUntil: "domcontentloaded" });
       await waitForSynced(observer.page);
@@ -211,16 +252,50 @@ test.describe.serial("Operational v2 lost-response and realtime convergence", ()
       expect(events).toHaveLength(1);
 
       await page.getByRole("button", { name: "Live Dashboard", exact: true }).click();
-      await page.reload({ waitUntil: "domcontentloaded" });
-      await waitForSynced(page);
-      await expect(stationCard(page, station)).toContainText("Available");
+      await startSession(page, station, duplicateCustomerName);
+      await expect(stationCard(observer.page, station)).toContainText(duplicateCustomerName);
+      await observer.page.getByRole("button", { name: "Bill Register", exact: true }).click();
+      await expect(observer.page.getByRole("heading", { name: "Bill Register", exact: true })).toBeVisible();
+      await observer.page.evaluate(() => {
+        const control = (window as unknown as { __bpRealtimeDuplicateControl?: { armed: boolean } }).__bpRealtimeDuplicateControl;
+        if (!control) throw new Error("Realtime duplicate control was not installed.");
+        control.armed = true;
+      });
+      const duplicateManaged = await openManagedSession(page, station);
+      page.once("dialog", (dialog) => dialog.accept(`QA duplicate-event rejection ${runId}`));
+      const duplicateRequestPromise = page.waitForRequest((request) => request.url().includes("/rpc/reject_session_v2"));
+      const duplicateResponsePromise = page.waitForResponse((response) => response.url().includes("/rpc/reject_session_v2"));
+      await duplicateManaged.getByRole("button", { name: "Reject Session", exact: true }).click();
+      const duplicateRequest = await duplicateRequestPromise;
+      expect((await duplicateResponsePromise).status()).toBe(200);
+      const duplicateEnvelope = duplicateRequest.postDataJSON() as { payload: { mutation_id: string } };
+      await expect.poll(() => observer.page.evaluate(() =>
+        (window as unknown as { __bpRealtimeDuplicateControl?: { duplicates: number } }).__bpRealtimeDuplicateControl?.duplicates ?? 0
+      )).toBe(1);
+      await observer.page.getByRole("button", { name: "Live Dashboard", exact: true }).click();
+      await expect(stationCard(observer.page, station)).toContainText("Available");
+      await expect(observer.page.getByText(duplicateCustomerName, { exact: true })).toHaveCount(0);
+      await observer.page.reload({ waitUntil: "domcontentloaded" });
+      await waitForSynced(observer.page);
+      await expect(stationCard(observer.page, station)).toContainText("Available");
+      const duplicateEvents = await readRestRows<{ id: string }>(page, identity.restBase, identity.headers, "operational_events", {
+        organization_id: `eq.${organizationId}`,
+        "metadata->>mutation_id": `eq.${duplicateEnvelope.payload.mutation_id}`,
+        select: "id"
+      });
+      expect(duplicateEvents).toHaveLength(1);
       await attachJson(testInfo, "operational-v2-realtime-gap-reconnect", {
         runId,
         mutationId: envelope.payload.mutation_id,
+        responseCompletedAt,
+        reconnectStartedAt,
         responseBeforeRealtime: true,
         observerOfflineGapRecovered: true,
         duplicateSameIdWasIdempotent: true,
-        originPanelUnmountedBeforeReconnect: true,
+        duplicateRealtimeFrameDelivered: true,
+        duplicateRealtimeMutationId: duplicateEnvelope.payload.mutation_id,
+        duplicateRealtimeEventCount: duplicateEvents.length,
+        observerPanelUnmountedDuringDuplicate: true,
         eventCount: events.length
       });
     } finally {
