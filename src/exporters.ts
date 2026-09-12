@@ -1,5 +1,4 @@
-import { jsPDF } from "jspdf";
-import * as XLSX from "xlsx";
+import type { jsPDF as JsPdfDocument } from "jspdf";
 import brandLogo from "../Branding/Logo.png";
 import type { Bill, BusinessProfile, Payment } from "./types";
 import { currency, downloadBlob, escapeHtml, formatDateTime } from "./utils";
@@ -64,7 +63,8 @@ export function exportRowsToCsv(rows: ReportRow[], filename: string): void {
   downloadBlob(new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" }), filename);
 }
 
-export function exportRowsToXlsx(rows: ReportRow[], filename: string): void {
+export async function exportRowsToXlsx(rows: ReportRow[], filename: string): Promise<void> {
+  const XLSX = await import("xlsx");
   const sheet = XLSX.utils.json_to_sheet(rows);
   const workbook = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(workbook, sheet, "Daily Report");
@@ -77,7 +77,8 @@ export function exportRowsToXlsx(rows: ReportRow[], filename: string): void {
   );
 }
 
-export function exportRowsToPdf(rows: ReportRow[], filename: string, businessName: string): void {
+export async function exportRowsToPdf(rows: ReportRow[], filename: string, businessName: string): Promise<void> {
+  const { jsPDF } = await import("jspdf");
   const pdf = new jsPDF({ unit: "pt", format: "a4" });
   let y = 48;
 
@@ -104,6 +105,7 @@ export function exportRowsToPdf(rows: ReportRow[], filename: string, businessNam
 }
 
 export async function downloadReceiptPdf(business: BusinessProfile, bill: Bill, allBills?: Bill[], allPayments?: Payment[]): Promise<void> {
+  const { jsPDF } = await import("jspdf");
   const receipt = buildReceiptPreviewModel(business, bill, allBills, allPayments);
   const pageWidth = 226.77;
   const horizontalPadding = 16;
@@ -455,14 +457,14 @@ export function pdfSafeText(value: string): string {
   return value.replaceAll("₹", "Rs ");
 }
 
-function drawDivider(pdf: jsPDF, x: number, y: number, pageWidth: number) {
+function drawDivider(pdf: JsPdfDocument, x: number, y: number, pageWidth: number) {
   pdf.setDrawColor(201, 208, 203);
   pdf.setLineDashPattern([2, 2], 0);
   pdf.line(x, y, pageWidth - x, y);
   pdf.setLineDashPattern([], 0);
 }
 
-function drawTotalRow(pdf: jsPDF, label: string, value: string, x: number, pageWidth: number, y: number) {
+function drawTotalRow(pdf: JsPdfDocument, label: string, value: string, x: number, pageWidth: number, y: number) {
   pdf.setFont("helvetica", "normal");
   pdf.setFontSize(9);
   pdf.text(label, x, y);
