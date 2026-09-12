@@ -1,0 +1,52 @@
+# Independent staging test plan
+
+## Execution rules
+
+- Clean worktree, approved SHA, reusable Playwright/direct-DB scripts, and `retries: 0`.
+- Unique `normops-YYYYMMDD-HHMM-<case>-<n>` IDs for every run/entity/mutation/audit/customer.
+- Never rerun ambiguity with a new ID; reconcile, then replay only the same ID where specified.
+- Persist request/response/database/timing/console/network/cleanup evidence as immutable JSON with SHA-256.
+- Capture old deployed definitions, ACLs, proconfig, flags, publication, compatibility hash/version/bytes, and rollback SQL before install.
+
+## Functional and parity matrix
+
+- Active timed/unit-sale hop; edited start; stale client start cannot overwrite canonical start.
+- Active and paused/open-pause session reject; tab reject with items, variants, cigarettes, combos intact.
+- Game-to-game multi-hop, game-to-new-tab, game-to-existing-tab, final checkout, receipt, and single consumption.
+- Reject continuation consumer, release source hops, recover later exactly once.
+- Dashboard availability, continuation banner, activity, bills, receipts, customers, analytics, inventory, hard refresh, logout/login, and mobile viewport.
+- No bill/payment/stock/inventory effect from hop or reject.
+
+## Negative, security, idempotency
+
+- Missing/wrong organization/kind/type/entity/audit; outer-inner mismatch; malformed JSON/arrays; empty reason.
+- Future/end-before-start/malformed timestamp; missing canonical start; missing/foreign/multiple open pause; audit collision.
+- Missing/closed/billed/rejected/wrong-organization target.
+- Anonymous, inactive, wrong organization, unsupported role, actor spoof, and forbidden compatibility-version authority.
+- Same ID/same intent returns one canonical result; same ID/different intent fails `mutation_identity_mismatch`.
+- Mutation, audit, and event actor equals authenticated JWT subject.
+- Forced late failure rolls back all domain/mutation writes and leaves `app_state` unchanged.
+
+## Race, realtime, recovery
+
+- hop/hop, reject/reject, hop/reject, checkout/hop, checkout/reject, hop/timing/pause/resume/item mutation.
+- continuation start/link/new-tab double consumption; reject consumer versus new consumer.
+- unrelated session/session, session/tab, and tab/tab pairs both succeed without global serialization.
+- realtime-before-response, response-before-realtime, reversed hydration completion, reconnect/gap/duplicate/unmount.
+- lost response and waiter timeout recover with same mutation ID, exactly one effect, no automatic resend.
+- 50 two-client reload-versus-mutation overlaps end with database parity before writes become enabled.
+
+## Performance gates
+
+Use guarded disposable production-logical-size staging state with exact restore artifact/hash.
+
+- At least 20 single-send samples per target class plus ten unrelated-operation pairs; zero 57014, deadlock, timeout, retry, duplicate, or browser error.
+- Target RPC DB p95 under 500 ms and max under 2 s; HTTP/UI acknowledgement p95 under 2 s and max under 5 s; outer browser ceiling 7 s.
+- Candidate p95 at least 50% faster than frozen same-scale v1; large-versus-small difference <=20% or 250 ms.
+- Initial JS <=1,000 KB minified and <=300 KB gzip; cold shell <=450 KB; no jsPDF/XLSX in entry; first export <=2 s.
+- Critical bootstrap waterfall depth <=3, payload <=750 KB and >=60% smaller than baseline; no full `app_state.data` read.
+- 30 cold authenticated loads: safe-interactive p95 <=3.5 s, max <=5 s, and >=40% faster than baseline. Login LCP p75 <=2.5 s, CLS <=0.1.
+- No root commits attributable to the one-second clock after the runtime unit; active-panel commit p95 <16 ms and max <50 ms.
+
+Every case is passed, failed, blocked, or not run. Any required blocked/not-run case is NO-GO unless the approved spec explicitly narrows it with recorded risk acceptance.
+
