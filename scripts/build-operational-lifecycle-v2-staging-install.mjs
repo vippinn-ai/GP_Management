@@ -176,7 +176,7 @@ const install = [
 select version, md5(data::text) as data_md5, octet_length(data::text) as data_bytes, updated_at, updated_by
 from public.app_state where id='primary';`,
   `do $$
-declare actual_hash text; actual_owner text; actual_security_definer boolean; actual_volatility "char"; actual_config jsonb; actual_acl jsonb;
+declare actual_hash text; actual_owner text; actual_security_definer boolean; actual_volatility "char"; actual_config jsonb; actual_acl jsonb; incomplete_operational integer := 0;
 begin
   if current_database()<>'postgres' or (select system_identifier::text from pg_control_system())<>${sqlLiteral(EXPECTED_STAGING_SYSTEM_IDENTIFIER)} then raise exception 'physical database is not the approved staging cluster'; end if;
   if not exists(select 1 from public.deployment_environment_identity where environment='staging' and project_ref=${sqlLiteral(EXPECTED_STAGING_PROJECT_REF)} and identity_nonce=${sqlLiteral(preflight.environment_identity.identity_nonce)}::uuid) then raise exception 'database-derived staging identity drift'; end if;
@@ -190,7 +190,10 @@ begin
       and not exists(select 1 from public.customer_tabs consumer where consumer.organization_id=source.organization_id and consumer.continued_from_session_ids @> jsonb_build_array(source.id) and not (consumer.status='closed' and consumer.close_disposition='rejected' and consumer.closed_bill_id is null))
   ) then raise exception 'staging has a recoverable unconsumed hopped session'; end if;
   if (select count(*) from public.financial_mutations where status<>'committed') <> 0 then raise exception 'staging has incomplete financial mutations'; end if;
-  if to_regclass('public.operational_mutations') is not null and (select count(*) from public.operational_mutations where status<>'committed') <> 0 then raise exception 'staging has incomplete operational mutations'; end if;
+  if to_regclass('public.operational_mutations') is not null then
+    execute 'select count(*) from public.operational_mutations where status<>''committed''' into incomplete_operational;
+    if incomplete_operational <> 0 then raise exception 'staging has incomplete operational mutations'; end if;
+  end if;
   if (select version from operational_v2_install_baseline) is distinct from ${Number(preflight.app_state.version)}
     or (select data_md5 from operational_v2_install_baseline) is distinct from ${sqlLiteral(preflight.app_state.md5)} then raise exception 'app_state changed after approved preflight'; end if;
   ${oldDefinitionGuards}

@@ -67,6 +67,10 @@ describe("operational lifecycle staging installer", () => {
     expect(fs.existsSync(path.join(outputDir, "staging-install.sql"))).toBe(true);
     expect(fs.existsSync(path.join(outputDir, "staging-rollback.sql"))).toBe(true);
     expect(fs.existsSync(path.join(outputDir, "manifest.json"))).toBe(true);
+    const install = fs.readFileSync(path.join(outputDir, "staging-install.sql"), "utf8");
+    expect(install).toContain("if to_regclass('public.operational_mutations') is not null then");
+    expect(install).toContain("execute 'select count(*) from public.operational_mutations where status<>''committed''' into incomplete_operational");
+    expect(install).not.toMatch(/to_regclass\('public\.operational_mutations'\) is not null and \(select count\(\*\) from public\.operational_mutations/i);
     const rollback = fs.readFileSync(path.join(outputDir, "staging-rollback.sql"), "utf8");
     expect(rollback).toContain("physical database identity drift");
     expect(rollback).toContain("database-derived staging identity drift");
