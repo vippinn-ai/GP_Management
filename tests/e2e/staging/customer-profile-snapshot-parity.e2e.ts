@@ -32,6 +32,7 @@ test("customer directory edits converge without rewriting live transaction snaps
   let sessionStarted = false;
   let operationalCleanupConfirmed = false;
   let customerCleanupConfirmed = false;
+  let explicitSessionCustomerId: string | undefined;
 
   const captureForbiddenAppState = (request: import("@playwright/test").Request) => {
     const url = new URL(request.url());
@@ -94,6 +95,12 @@ test("customer directory edits converge without rewriting live transaction snaps
     await managed.getByRole("button", { name: "Save Session Details", exact: true }).click();
     await waitForSynced(page);
     await expect(stationCard(observer.page, station)).toContainText(sessionName);
+    const sessionMutationRequest = [...authenticatedRequests].reverse().find((entry) => new URL(entry.url).pathname.endsWith("/rpc/save_live_session_details"));
+    const sessionMutationEnvelope = (sessionMutationRequest?.body as { payload?: { payload?: { customer?: { id?: string } } } } | undefined)?.payload;
+    explicitSessionCustomerId = sessionMutationEnvelope?.payload?.customer?.id;
+    if (!sessionMutationRequest || !explicitSessionCustomerId || explicitSessionCustomerId === customerId) {
+      throw new Error("Explicit session edit did not expose a distinct exact customer cleanup identity.");
+    }
 
     await openCustomerDirectory(page, directoryName);
     await page.getByRole("button", { name: "Live Dashboard", exact: true }).click();
@@ -113,14 +120,28 @@ test("customer directory edits converge without rewriting live transaction snaps
           user_id: identity.actorId,
           client_created_at: new Date().toISOString(),
           base_app_state_version: appState[0].version,
-          payload: { customers: [], customerIdsToDelete: [customerId], auditLogs: [] }
+          payload: { customers: [], customerIdsToDelete: [customerId, explicitSessionCustomerId], auditLogs: [] }
         }
       }
     });
     expect(cleanupResponse.status()).toBe(200);
-    expect(await readRestRows(page, identity.restBase, identity.headers, "customers", { id: `eq.${customerId}`, select: "id" })).toEqual([]);
+    expect(await readRestRows(page, identity.restBase, identity.headers, "customers", {
+      id: `in.(${customerId},${explicitSessionCustomerId})`, select: "id"
+    })).toEqual([]);
     customerCleanupConfirmed = true;
     await expect(stationCard(observer.page, station)).toContainText("Available");
+    await observer.page.getByRole("button", { name: "Customers", exact: true }).click();
+    const observerSearch = observer.page.getByPlaceholder("Search by name or phone", { exact: true });
+    for (const deletedName of [directoryName, sessionName]) {
+      await observerSearch.fill(deletedName);
+      await expect(observer.page.locator("button.tab-chip").filter({ hasText: deletedName })).toHaveCount(0);
+    }
+    await observer.page.reload({ waitUntil: "domcontentloaded" });
+    await expect(observer.page.getByRole("heading", { name: "Customer Analytics", exact: true })).toBeVisible();
+    for (const deletedName of [directoryName, sessionName]) {
+      await observerSearch.fill(deletedName);
+      await expect(observer.page.locator("button.tab-chip").filter({ hasText: deletedName })).toHaveCount(0);
+    }
     expect(forbiddenAppStateRequests).toEqual([]);
     assertNoPageErrors(...errors);
     await attachJson(testInfo, "customer-profile-snapshot-parity-evidence", {
@@ -131,7 +152,8 @@ test("customer directory edits converge without rewriting live transaction snaps
       forbiddenAppStateRequests,
       operationalCleanupConfirmed,
       customerCleanupConfirmed,
-      customerId
+      customerIds: [customerId, explicitSessionCustomerId],
+      observerDeletionConvergedAndSurvivedReload: true
     });
   } finally {
     if (sessionStarted && !operationalCleanupConfirmed) {

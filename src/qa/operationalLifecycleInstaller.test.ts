@@ -71,6 +71,8 @@ describe("operational lifecycle staging installer", () => {
     expect(rollback).toContain("database-owned staging API URL identity drift");
     expect(rollback).toContain("database-derived staging identity drift");
     expect(rollback).toContain("rollback refused unexpected definition drift");
+    expect(rollback).toContain("aclexplode(coalesce(p.proacl,acldefault('f',p.proowner)))");
+    expect(rollback).toContain("revoke all privileges on function public.start_session(jsonb)");
 
     const second = spawnSync(process.execPath, command, { cwd: root, encoding: "utf8" });
     expect(second.status).not.toBe(0);

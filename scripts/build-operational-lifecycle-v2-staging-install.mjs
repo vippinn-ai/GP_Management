@@ -29,8 +29,22 @@ function readEvidence(filePath) {
 function restoreExecutionAcl(name, entry) {
   const quoteRole = (role) => role === "PUBLIC" ? "public" : `"${String(role).replaceAll('"', '""')}"`;
   const acl = entry.acl_detail ?? [];
-  const grantees = new Set(["PUBLIC", "anon", "authenticated", "service_role", ...acl.map((grant) => grant.grantee)]);
-  const statements = [...grantees].map((role) => `revoke all on function public.${name}(jsonb) from ${quoteRole(role)};`);
+  const statements = [`do $acl$
+declare current_grantee text;
+begin
+  for current_grantee in
+    select distinct case when acl_items.grantee=0 then 'PUBLIC' else pg_get_userbyid(acl_items.grantee) end
+    from pg_proc p join pg_namespace n on n.oid=p.pronamespace
+    cross join lateral aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) acl_items
+    where n.nspname='public' and p.proname=${sqlLiteral(name)} and pg_get_function_identity_arguments(p.oid)='payload jsonb'
+  loop
+    if current_grantee='PUBLIC' then
+      execute 'revoke all privileges on function public.${name}(jsonb) from public';
+    else
+      execute format('revoke all privileges on function public.${name}(jsonb) from %I',current_grantee);
+    end if;
+  end loop;
+end $acl$;`];
   for (const grant of acl) {
     if (grant.privilege_type !== "EXECUTE") throw new Error(`Unsupported privilege ${grant.privilege_type} on ${name}.`);
     statements.push(`grant execute on function public.${name}(jsonb) to ${quoteRole(grant.grantee)}${grant.is_grantable ? " with grant option" : ""};`);

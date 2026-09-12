@@ -17,6 +17,14 @@
 - Dashboard availability, continuation banner, activity, bills, receipts, customers, analytics, inventory, hard refresh, logout/login, and mobile viewport.
 - No bill/payment/stock/inventory effect from hop or reject.
 
+Reusable suite ownership:
+
+- `operational-lifecycle-v2-continuations.e2e.ts`: unit-sale hop; new/existing consumables-tab continuation; three-consumer exclusivity; reject-and-recover.
+- `operational-lifecycle-v2-recovery-realtime.e2e.ts`: committed/lost response; 15-second waiter expiry; manual same-ID replay; realtime-first/response-first; offline gap; duplicate; panel unmount/reconnect.
+- `operational-lifecycle-v2-hop-mutation-races.e2e.ts`: hop versus timing, pause, resume, add-item, and remove-item writes.
+- `operational-lifecycle-v2-concurrency.e2e.ts`: same-target races, exact 20-by-3 latency sampling, and 50 unrelated-target overlap/reload pairs.
+- `operational-lifecycle-v2-downstream-parity.e2e.ts`: canonical bill/line/payment, Bill Register/receipt, hard refresh, mobile viewport, and logout/login parity.
+
 ## Negative, security, idempotency
 
 - Missing/wrong organization/kind/type/entity/audit; outer-inner mismatch; malformed JSON/arrays; empty reason.
@@ -45,7 +53,8 @@ Use guarded disposable production-logical-size staging state with exact restore 
 
 The full-table fingerprint helper is staging-only test instrumentation and is not part of the production lifecycle migration.
 
-- At least 20 single-send samples per target class plus ten unrelated-operation pairs; zero 57014, deadlock, timeout, retry, duplicate, or browser error.
+- Exactly 20 single-send browser-observed samples per target class plus 50 unrelated-operation pairs; zero 57014, deadlock, timeout, automatic retry, duplicate, or unexpected browser error.
+- Every unrelated pair records `rpcPairMs / (clientA + clientB)` and the p95 ratio must remain below `0.85`, proving material overlap rather than a fast but globally serialized queue.
 - Target RPC DB p95 under 500 ms and max under 2 s; HTTP/UI acknowledgement p95 under 2 s and max under 5 s; outer browser ceiling 7 s.
 - Candidate p95 at least 50% faster than frozen same-scale v1; large-versus-small difference <=20% or 250 ms.
 - Initial JS <=1,000 KB minified and <=300 KB gzip; cold shell <=450 KB; no jsPDF/XLSX in entry; first export <=2 s.

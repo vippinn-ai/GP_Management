@@ -45,6 +45,18 @@ const evidenceRoot = path.join(root, "test-artifacts", "playwright");
 const outputDir = path.join(evidenceRoot, `operational-v2-run-${env.E2E_RUN_ID}`);
 const summaryPath = path.join(evidenceRoot, `summary-${env.E2E_RUN_ID}.json`);
 const evidenceManifestPath = path.join(evidenceRoot, `evidence-manifest-${env.E2E_RUN_ID}.json`);
+const REQUIRED_NEGATIVE_CASES = [
+  "actor-spoof", "anonymous-actor", "audit-collision", "billed-session-target", "billed-tab-target",
+  "closed-tab-target", "compatibility-version-authority", "empty-reason", "end-before-open-pause",
+  "foreign-open-pause", "future-session-time", "inactive-actor", "malformed-session-time",
+  "malformed-tab-time", "missing-audit", "missing-canonical-start", "missing-entity",
+  "missing-entity-type", "missing-mutation-id", "missing-mutation-kind", "missing-open-pause",
+  "missing-organization", "missing-session-target", "missing-tab-target", "multiple-open-pauses",
+  "nested-array", "outer-inner-mismatch", "rejected-session-target", "root-array",
+  "same-id-different-audit", "same-id-different-entity", "same-id-different-intent",
+  "same-id-different-kind", "session-end-before-start", "tab-before-open", "unsupported-role",
+  "wrong-entity-type", "wrong-kind", "wrong-organization"
+].sort();
 for (const evidencePath of [outputDir, summaryPath, evidenceManifestPath]) {
   if (fs.existsSync(evidencePath)) throw new Error(`Run id ${env.E2E_RUN_ID} already has evidence; choose a fresh run id.`);
 }
@@ -115,7 +127,7 @@ if (!discoveryOnly) {
       && proofComparison[name]?.v2_at_least_50_percent_faster === true
       && proofComparison[name]?.large_small_within_budget === true
   );
-  const negativeMatrixPassed = Object.keys(proofNegativeCases).length >= 30
+  const negativeMatrixPassed = JSON.stringify(Object.keys(proofNegativeCases).sort()) === JSON.stringify(REQUIRED_NEGATIVE_CASES)
     && Object.values(proofNegativeCases).every((entry) => entry?.expected_code === entry?.observed_code);
   if (
     transactionalProofManifest.value.target?.projectRef !== STAGING_PROJECT_REF

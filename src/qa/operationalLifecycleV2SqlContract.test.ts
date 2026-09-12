@@ -132,12 +132,15 @@ describe("normalized lifecycle v2 SQL contract", () => {
     expect(preflight).toContain("recoverable_hopped_sessions");
     expect(postflight).toContain("app.settings.api_url");
     expect(installer).toMatch(/staging-rollback\.sql/i);
+    expect(installer).toContain("aclexplode(coalesce(p.proacl,acldefault('f',p.proowner)))");
     expect(installer).toMatch(/flag:\s*"wx"/i);
     expect(installer).toMatch(/install changed compatibility app_state/i);
     expect(postflight).toMatch(/operational_mutations_rls/i);
     expect(postflightVerifier).toMatch(/appStateUnchanged:\s*true/i);
     expect(postflightVerifier).toMatch(/Compatibility app_state .* changed/i);
     expect(postflightVerifier).toContain("database-owned staging API URL identity drift");
+    expect(postflightVerifier).toContain("installed definition, owner, configuration, or ACL drift");
+    expect(postflight).toContain("acl_detail");
   });
 
   it("provides an immutable rollback-only transactional proof for all lifecycle v2 functions", () => {
@@ -153,7 +156,13 @@ describe("normalized lifecycle v2 SQL contract", () => {
       "Late audit collision",
       "Inactive actor",
       "Anonymous actor",
-      "Wrong organization"
+      "Wrong organization",
+      "missing-mutation-id",
+      "missing-mutation-kind",
+      "missing-entity-type",
+      "same-id-different-kind",
+      "same-id-different-entity",
+      "same-id-different-audit"
     ]) expect(transactionalProof).toContain(proofCase);
     expect(transactionalProof).toContain("Operational v2 changed app_state");
     expect(transactionalProof).toMatch(/rollback;\s*$/i);

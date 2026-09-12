@@ -10,6 +10,10 @@ export default defineConfig({
   testMatch: [
     "operational-lifecycle-v2.e2e.ts",
     "operational-lifecycle-v2-concurrency.e2e.ts",
+    "operational-lifecycle-v2-continuations.e2e.ts",
+    "operational-lifecycle-v2-recovery-realtime.e2e.ts",
+    "operational-lifecycle-v2-downstream-parity.e2e.ts",
+    "operational-lifecycle-v2-hop-mutation-races.e2e.ts",
     "release-a-hop-pause.e2e.ts",
     "release-a-inventory-matrix.e2e.ts",
     "release-a-report-exports.e2e.ts",

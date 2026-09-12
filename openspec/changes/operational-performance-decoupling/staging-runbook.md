@@ -29,7 +29,7 @@ Record branch, commit SHA, clean status, build asset names/hashes, SQL file hash
 
 ## Test execution
 
-Execute the gates in this evidence-preserving order: transactional rollback proof and independent post-rollback verification; immutable dataset snapshot; frozen baseline performance; candidate deployment and immediate candidate performance on the unchanged dataset; then serial functional, negative/security, same-ID recovery, concurrency, realtime ordering, continuation, export lazy-load, bootstrap/parity, cleanup, and postflight. A failed or ambiguous case stops the run for reconciliation; it is never automatically retried.
+Execute the gates in this evidence-preserving order: transactional rollback proof and independent post-rollback verification; immutable dataset snapshot; frozen baseline performance; candidate deployment and immediate candidate performance on the unchanged dataset; then serial functional and unit-sale lifecycle, exact negative/security matrix, same-ID lost-response recovery, realtime ordering/reconnect/unmount, continuation consumers, hop-versus-five-mutation races, exact 20-by-3 lifecycle latency sampling, 50 unrelated overlap/reload pairs, Bill Register/receipt/mobile/logout parity, export lazy-load, cleanup, and postflight. A failed or ambiguous case stops the run for reconciliation; it is never automatically retried.
 
 After the zero-retry browser suite succeeds, build the run-bound read-only reconciliation with `npm run build:db:staging:operational-v2:posttest`, execute only its generated SQL in staging, save the JSON result unchanged, and run `npm run verify:db:staging:operational-v2:posttest`. Completion requires the same browser run ID, a zero global open/incomplete floor, zero run-specific live sessions/tabs/reservations, exact installed function hashes, and an unchanged compatibility `app_state`; terminal QA rows remain counted as evidence rather than being silently deleted.
 
@@ -48,7 +48,7 @@ Immediately afterward, build and execute `operational-v2-proof-postrollback-read
 ## Rollback
 
 - Frontend: redeploy the exact prior staging build or set `VITE_BACKEND_OPERATIONAL_RPC_V2=false`; keep normalized bootstrap/realtime enabled.
-- SQL: v2 functions/table may remain installed while flag-off. If a function replacement must be restored, apply the immutable generated rollback, which restores the preflight-captured definition, owner, and execution ACL in one transaction.
+- SQL: v2 functions/table may remain installed while flag-off. If a function replacement must be restored, apply only the immutable postflight-verified rollback. It refuses definition/owner/security-definer/volatility/configuration/ACL drift, dynamically revokes every current grantee, then restores the exact preflight definition, owner, and execution ACL in one transaction.
 - Data: do not delete `operational_mutations` or committed evidence during rollback. Clean only exact QA identities after reconciliation.
 - Compatibility: do not switch to stale `app_state` reads. Any full legacy rollback requires separately verified reconstruction.
 

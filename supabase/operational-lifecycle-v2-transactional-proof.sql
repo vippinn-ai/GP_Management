@@ -344,6 +344,15 @@ begin
   perform pg_temp.qa_expect_rpc_error('missing-organization','hop_session_v2',jsonb_build_object(
     'mutation_id',c.run_id||'-neg-missing-org','mutation_kind','hopSession','entity_type','session','entity_id',c.collision_session_id,
     'payload',jsonb_build_object('effective_ended_at',ended,'audit_log_id',c.run_id||'-audit-neg-missing-org')),'invalid_payload');
+  perform pg_temp.qa_expect_rpc_error('missing-mutation-id','hop_session_v2',jsonb_build_object(
+    'organization_id',c.organization_id,'mutation_kind','hopSession','entity_type','session','entity_id',c.collision_session_id,
+    'payload',jsonb_build_object('effective_ended_at',ended,'audit_log_id',c.run_id||'-audit-neg-missing-mutation')),'invalid_payload');
+  perform pg_temp.qa_expect_rpc_error('missing-mutation-kind','hop_session_v2',jsonb_build_object(
+    'organization_id',c.organization_id,'mutation_id',c.run_id||'-neg-missing-kind','entity_type','session','entity_id',c.collision_session_id,
+    'payload',jsonb_build_object('effective_ended_at',ended,'audit_log_id',c.run_id||'-audit-neg-missing-kind')),'invalid_payload');
+  perform pg_temp.qa_expect_rpc_error('missing-entity-type','hop_session_v2',jsonb_build_object(
+    'organization_id',c.organization_id,'mutation_id',c.run_id||'-neg-missing-type','mutation_kind','hopSession','entity_id',c.collision_session_id,
+    'payload',jsonb_build_object('effective_ended_at',ended,'audit_log_id',c.run_id||'-audit-neg-missing-type')),'invalid_payload');
   perform pg_temp.qa_expect_rpc_error('wrong-kind','hop_session_v2',jsonb_build_object(
     'organization_id',c.organization_id,'mutation_id',c.run_id||'-neg-kind','mutation_kind','rejectSession','entity_type','session','entity_id',c.collision_session_id,
     'payload',jsonb_build_object('effective_ended_at',ended,'audit_log_id',c.run_id||'-audit-neg-kind')),'invalid_payload');
@@ -425,6 +434,15 @@ begin
   perform pg_temp.qa_expect_rpc_error('same-id-different-intent','hop_session_v2',jsonb_build_object(
     'organization_id',c.organization_id,'mutation_id',c.run_id||'-mutation-hop','mutation_kind','hopSession','entity_type','session','entity_id',c.hop_session_id,
     'payload',jsonb_build_object('effective_ended_at',c.proof_end_at-interval '1 minute','audit_log_id',c.run_id||'-audit-hop')),'mutation_identity_mismatch');
+  perform pg_temp.qa_expect_rpc_error('same-id-different-kind','reject_session_v2',jsonb_build_object(
+    'organization_id',c.organization_id,'mutation_id',c.run_id||'-mutation-hop','mutation_kind','rejectSession','entity_type','session','entity_id',c.hop_session_id,
+    'payload',jsonb_build_object('effective_ended_at',c.proof_end_at,'reason','QA mismatched kind','audit_log_id',c.run_id||'-audit-hop')),'mutation_identity_mismatch');
+  perform pg_temp.qa_expect_rpc_error('same-id-different-entity','hop_session_v2',jsonb_build_object(
+    'organization_id',c.organization_id,'mutation_id',c.run_id||'-mutation-hop','mutation_kind','hopSession','entity_type','session','entity_id',c.collision_session_id,
+    'payload',jsonb_build_object('effective_ended_at',c.proof_end_at,'audit_log_id',c.run_id||'-audit-hop')),'mutation_identity_mismatch');
+  perform pg_temp.qa_expect_rpc_error('same-id-different-audit','hop_session_v2',jsonb_build_object(
+    'organization_id',c.organization_id,'mutation_id',c.run_id||'-mutation-hop','mutation_kind','hopSession','entity_type','session','entity_id',c.hop_session_id,
+    'payload',jsonb_build_object('effective_ended_at',c.proof_end_at,'audit_log_id',c.run_id||'-audit-hop-different')),'mutation_identity_mismatch');
   perform pg_temp.qa_expect_rpc_error('audit-collision','reject_session_v2',jsonb_build_object(
     'organization_id',c.organization_id,'mutation_id',c.run_id||'-neg-audit-collision-exact','mutation_kind','rejectSession','entity_type','session','entity_id',c.collision_session_id,
     'payload',jsonb_build_object('effective_ended_at',ended,'reason','QA collision','audit_log_id',c.run_id||'-audit-collision')),'audit_id_conflict');
@@ -446,6 +464,20 @@ begin
   perform pg_temp.qa_assert((select array_agg(enumlabel::text order by enumsortorder)=array['admin','manager','receptionist']::text[] from pg_enum join pg_type on pg_type.oid=pg_enum.enumtypid where pg_type.typname='app_role'), 'Unsupported role became representable in app_role.');
   insert into qa_negative_results values('unsupported-role','schema-excludes-value','schema-excludes-value');
 end $$;
+
+select pg_temp.qa_assert(
+  (select array_agg(case_name order by case_name) from qa_negative_results) = array[
+    'actor-spoof','anonymous-actor','audit-collision','billed-session-target','billed-tab-target','closed-tab-target',
+    'compatibility-version-authority','empty-reason','end-before-open-pause','foreign-open-pause','future-session-time',
+    'inactive-actor','malformed-session-time','malformed-tab-time','missing-audit','missing-canonical-start','missing-entity',
+    'missing-entity-type','missing-mutation-id','missing-mutation-kind','missing-open-pause','missing-organization',
+    'missing-session-target','missing-tab-target','multiple-open-pauses','nested-array','outer-inner-mismatch',
+    'rejected-session-target','root-array','same-id-different-audit','same-id-different-entity',
+    'same-id-different-intent','same-id-different-kind','session-end-before-start','tab-before-open','unsupported-role',
+    'wrong-entity-type','wrong-kind','wrong-organization'
+  ]::text[],
+  'Exact negative-case matrix drifted.'
+);
 
 -- Rollback-only latency samples use unique fixtures and the same authenticated
 -- SQL transaction. They measure database execution without browser/network

@@ -18,6 +18,10 @@ function sha256(value) {
   return crypto.createHash("sha256").update(value).digest("hex");
 }
 
+function sqlLiteral(value) {
+  return `'${String(value).replaceAll("'", "''")}'`;
+}
+
 const preflightPath = argument("preflight");
 const postflightPath = argument("postflight");
 const manifestPath = argument("manifest");
@@ -77,14 +81,37 @@ for (const name of ["hop_session_v2", "reject_session_v2", "reject_customer_tab_
   if (crypto.createHash("md5").update(entry.definition).digest("hex") !== entry.definition_md5) throw new Error(`${name} postflight definition hash is inconsistent.`);
   if (entry.security_definer !== true || !(entry.config ?? []).includes("search_path=public")) throw new Error(`${name} lost its security-definer search path guard.`);
   if (entry.anon_execute !== false || entry.authenticated_execute !== true) throw new Error(`${name} has incorrect execution grants.`);
+  const owner = String(entry.owner ?? "").replaceAll('"', "");
+  if (!owner || typeof entry.volatility !== "string" || !Array.isArray(entry.acl_detail)
+    || entry.acl_detail.some((grant) => grant.privilege_type !== "EXECUTE" || grant.grantor !== owner || ![owner, "authenticated", "service_role"].includes(grant.grantee))) {
+    throw new Error(`${name} has an unexpected owner, volatility, grantor, or execution grantee.`);
+  }
   if (sha256(functionBody(entry.definition, name)) !== manifest.expectedFunctionBodies?.[name]?.sha256) throw new Error(`${name} installed body differs from the reviewed source.`);
 }
 
-const definitionGuards = [...installedEntries.entries()].map(([name, entry]) =>
-  `  select md5(pg_get_functiondef(p.oid)) into actual_hash from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and p.proname='${name}' and pg_get_function_identity_arguments(p.oid)='payload jsonb';\n  if actual_hash is distinct from '${entry.definition_md5}' then raise exception 'installed definition drift for ${name}'; end if;`
-).join("\n");
+const definitionGuards = [...installedEntries.entries()].map(([name, entry]) => {
+  const expectedConfig = JSON.stringify(entry.config ?? null);
+  const expectedAcl = JSON.stringify(entry.acl_detail);
+  return `  select md5(pg_get_functiondef(p.oid)),quote_ident(pg_get_userbyid(p.proowner)),p.prosecdef,p.provolatile,to_jsonb(p.proconfig),
+    (select jsonb_agg(jsonb_build_object(
+      'grantor',case when acl_items.grantor=0 then 'PUBLIC' else pg_get_userbyid(acl_items.grantor) end,
+      'grantee',case when acl_items.grantee=0 then 'PUBLIC' else pg_get_userbyid(acl_items.grantee) end,
+      'privilege_type',acl_items.privilege_type,'is_grantable',acl_items.is_grantable
+    ) order by acl_items.grantee,acl_items.privilege_type)
+    from aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) acl_items)
+  into actual_hash,actual_owner,actual_security_definer,actual_volatility,actual_config,actual_acl
+  from pg_proc p join pg_namespace n on n.oid=p.pronamespace
+  where n.nspname='public' and p.proname=${sqlLiteral(name)} and pg_get_function_identity_arguments(p.oid)='payload jsonb';
+  if actual_hash is distinct from ${sqlLiteral(entry.definition_md5)}
+    or actual_owner is distinct from ${sqlLiteral(entry.owner)}
+    or actual_security_definer is distinct from ${entry.security_definer === true ? "true" : "false"}
+    or actual_volatility is distinct from ${sqlLiteral(entry.volatility)}
+    or actual_config is distinct from ${sqlLiteral(expectedConfig)}::jsonb
+    or actual_acl is distinct from ${sqlLiteral(expectedAcl)}::jsonb
+  then raise exception 'installed definition, owner, configuration, or ACL drift for ${name}'; end if;`;
+}).join("\n");
 const rollbackText = fs.readFileSync(rollbackPath, "utf8");
-const verifiedRollback = rollbackText.replace("begin;", `begin;\n\ndo $$\ndeclare actual_hash text;\nbegin\n  if coalesce(current_setting('app.settings.api_url', true), '') not like '%${manifest.target.projectRef}%' then raise exception 'database-owned staging API URL identity drift'; end if;\n  if not exists(select 1 from public.deployment_environment_identity where environment='staging' and project_ref='${manifest.target.projectRef}' and identity_nonce='${manifest.environmentIdentity.identity_nonce}'::uuid) then raise exception 'database-derived staging identity drift'; end if;\n${definitionGuards}\nend $$;`);
+const verifiedRollback = rollbackText.replace("begin;", `begin;\n\ndo $$\ndeclare actual_hash text; actual_owner text; actual_security_definer boolean; actual_volatility "char"; actual_config jsonb; actual_acl jsonb;\nbegin\n  if coalesce(current_setting('app.settings.api_url', true), '') not like '%${manifest.target.projectRef}%' then raise exception 'database-owned staging API URL identity drift'; end if;\n  if not exists(select 1 from public.deployment_environment_identity where environment='staging' and project_ref='${manifest.target.projectRef}' and identity_nonce='${manifest.environmentIdentity.identity_nonce}'::uuid) then raise exception 'database-derived staging identity drift'; end if;\n${definitionGuards}\nend $$;`);
 const verifiedRollbackPath = path.join(path.dirname(manifestPath), "staging-rollback-verified.sql");
 fs.writeFileSync(verifiedRollbackPath, verifiedRollback, { encoding: "utf8", flag: "wx" });
 

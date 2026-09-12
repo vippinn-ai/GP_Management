@@ -305,6 +305,7 @@ test.describe.serial("Operational lifecycle v2 real two-client concurrency", () 
       await Promise.all([signIn(page, credentials("A")), signIn(observer.page, credentials("B"))]);
       const origin = identityFrom(originRequests);
       const second = identityFrom(observerRequests);
+      expect(second.actorId, "Two-client attribution requires distinct authenticated actors.").not.toBe(origin.actorId);
       const stations = await readRestRows<StationRow>(page, origin.restBase, origin.headers, "stations", {
         organization_id: `eq.${organizationId}`,
         active: "eq.true",
@@ -387,6 +388,120 @@ test.describe.serial("Operational lifecycle v2 real two-client concurrency", () 
     }
   });
 
+  test("twenty browser-observed samples per lifecycle target class meet HTTP and UI budgets", async ({ browser, page }, testInfo) => {
+    test.setTimeout(25 * 60_000);
+    const observer = await createObserver(browser);
+    const originRequests: CapturedRpcRequest[] = [];
+    const observerRequests: CapturedRpcRequest[] = [];
+    const directRpcEvidence: DirectRpcEvidence[] = [];
+    captureAuthenticatedRestRequests(page, originRequests);
+    captureAuthenticatedRestRequests(observer.page, observerRequests);
+    const pageErrors = capturePageErrors(page);
+    const observerErrors = capturePageErrors(observer.page);
+    const samples: Array<{
+      targetClass: "hop_session_v2" | "reject_session_v2" | "reject_customer_tab_v2";
+      iteration: number;
+      targetId: string;
+      mutationId: string;
+      serverDurationMs: number;
+      httpAcknowledgementMs: number;
+      browserCompletionMs: number;
+    }> = [];
+
+    try {
+      await Promise.all([signIn(page, credentials("A")), signIn(observer.page, credentials("B"))]);
+      const origin = identityFrom(originRequests);
+      const second = identityFrom(observerRequests);
+      expect(second.actorId, "Lifecycle sampling requires distinct observer credentials.").not.toBe(origin.actorId);
+      const stations = await readRestRows<StationRow>(page, origin.restBase, origin.headers, "stations", {
+        organization_id: `eq.${organizationId}`,
+        active: "eq.true",
+        mode: "eq.timed",
+        select: "id,name,mode",
+        order: "id.asc"
+      });
+      expect(stations.length, "Lifecycle sampling requires one active timed station.").toBeGreaterThanOrEqual(1);
+      const appStateBefore = await appStateSnapshot(page, origin);
+
+      for (const targetClass of ["hop_session_v2", "reject_session_v2", "reject_customer_tab_v2"] as const) {
+        for (let iteration = 1; iteration <= 20; iteration += 1) {
+          const suffix = `sample-${targetClass.replace("_v2", "")}-${String(iteration).padStart(2, "0")}`;
+          const target = targetClass === "reject_customer_tab_v2"
+            ? await createCustomerTab(page.request, origin, suffix, directRpcEvidence, "origin")
+            : await createSession(page.request, origin, stations[0], suffix, 1, directRpcEvidence, "origin");
+          await Promise.all([
+            expectTargetsVisible(page, [target]),
+            expectTargetsVisible(observer.page, [target])
+          ]);
+
+          const operation = targetClass === "hop_session_v2" ? "hop" : "reject";
+          const command = closeCommand(target, suffix, operation);
+          expect(command.rpc).toBe(targetClass);
+          const started = performance.now();
+          const result = await postRpc(page.request, origin, command.rpc, command.payload, directRpcEvidence, "origin");
+          const httpAcknowledgementMs = Math.round((performance.now() - started) * 100) / 100;
+          expect(result.response.status(), `${targetClass} sample ${iteration}`).toBe(200);
+          await Promise.all([
+            expectTargetsAbsent(page, [target]),
+            expectTargetsAbsent(observer.page, [target])
+          ]);
+          const browserCompletionMs = Math.round((performance.now() - started) * 100) / 100;
+          const serverDurationMs = Number((result.body as { server_duration_ms?: unknown }).server_duration_ms);
+          expect(serverDurationMs).toBeLessThan(2_000);
+          expect(httpAcknowledgementMs).toBeLessThan(5_000);
+          expect(browserCompletionMs).toBeLessThan(7_000);
+          samples.push({
+            targetClass,
+            iteration,
+            targetId: target.id,
+            mutationId: String(command.payload.mutation_id),
+            serverDurationMs,
+            httpAcknowledgementMs,
+            browserCompletionMs
+          });
+
+          if (targetClass === "hop_session_v2") {
+            await billRecoverableHop(page, target.id);
+          }
+        }
+      }
+
+      const summary = Object.fromEntries((["hop_session_v2", "reject_session_v2", "reject_customer_tab_v2"] as const).map((targetClass) => {
+        const targetSamples = samples.filter((entry) => entry.targetClass === targetClass);
+        expect(targetSamples).toHaveLength(20);
+        const server = targetSamples.map((entry) => entry.serverDurationMs);
+        const http = targetSamples.map((entry) => entry.httpAcknowledgementMs);
+        const browserCompletion = targetSamples.map((entry) => entry.browserCompletionMs);
+        const targetSummary = {
+          samples: targetSamples.length,
+          serverP95Ms: percentile(server, 0.95),
+          serverMaxMs: Math.max(...server),
+          httpP95Ms: percentile(http, 0.95),
+          httpMaxMs: Math.max(...http),
+          browserCompletionP95Ms: percentile(browserCompletion, 0.95),
+          browserCompletionMaxMs: Math.max(...browserCompletion)
+        };
+        expect(targetSummary.serverP95Ms, `${targetClass} DB p95`).toBeLessThan(500);
+        expect(targetSummary.serverMaxMs, `${targetClass} DB max`).toBeLessThan(2_000);
+        expect(targetSummary.httpP95Ms, `${targetClass} HTTP p95`).toBeLessThan(2_000);
+        expect(targetSummary.httpMaxMs, `${targetClass} HTTP max`).toBeLessThan(5_000);
+        expect(targetSummary.browserCompletionMaxMs, `${targetClass} UI completion max`).toBeLessThan(7_000);
+        return [targetClass, targetSummary];
+      }));
+
+      expect(await appStateSnapshot(page, origin)).toEqual(appStateBefore);
+      expect(await readPendingOperationalMutations(page)).toEqual([]);
+      expect(await readPendingOperationalMutations(observer.page)).toEqual([]);
+      expect(pageErrors).toEqual({ consoleErrors: [], pageErrors: [] });
+      expect(observerErrors).toEqual({ consoleErrors: [], pageErrors: [] });
+      await attachJson(testInfo, "operational-v2-20x3-lifecycle-latency", { runId, summary, samples });
+    } finally {
+      await attachFailureScreenshot(testInfo, page, "operational-v2-latency-origin-failure");
+      await attachFailureScreenshot(testInfo, observer.page, "operational-v2-latency-observer-failure");
+      await observer.context.close();
+    }
+  });
+
   test("50 reload-versus-unrelated-mutation pairs preserve parity and write availability", async ({ browser, page }, testInfo) => {
     test.setTimeout(15 * 60_000);
     const observer = await createObserver(browser);
@@ -403,6 +518,7 @@ test.describe.serial("Operational lifecycle v2 real two-client concurrency", () 
       await Promise.all([signIn(page, credentials("A")), signIn(observer.page, credentials("B"))]);
       const origin = identityFrom(originRequests);
       const second = identityFrom(observerRequests);
+      expect(second.actorId, "Two-client concurrency requires distinct authenticated actors.").not.toBe(origin.actorId);
       const stations = await readRestRows<StationRow>(page, origin.restBase, origin.headers, "stations", {
         organization_id: `eq.${organizationId}`,
         active: "eq.true",
@@ -433,12 +549,14 @@ test.describe.serial("Operational lifecycle v2 real two-client concurrency", () 
         ]);
 
         const pairStarted = performance.now();
+        const reloadPromise = observer.page.reload({ waitUntil: "domcontentloaded" });
         const [firstResult, secondResult] = await Promise.all([
           postRpc(page.request, origin, first.rpc, first.payload, directRpcEvidence, "origin"),
-          postRpc(observer.page.request, second, secondCommand.rpc, secondCommand.payload, directRpcEvidence, "observer"),
-          observer.page.reload({ waitUntil: "domcontentloaded" })
+          postRpc(observer.page.request, second, secondCommand.rpc, secondCommand.payload, directRpcEvidence, "observer")
         ]);
-        const pairWallMs = Math.round((performance.now() - pairStarted) * 100) / 100;
+        const rpcPairMs = Math.round((performance.now() - pairStarted) * 100) / 100;
+        await reloadPromise;
+        const rpcAndReloadMs = Math.round((performance.now() - pairStarted) * 100) / 100;
         expect(firstResult.response.status(), `${label} first mutation`).toBe(200);
         expect(secondResult.response.status(), `${label} second mutation`).toBe(200);
         expect(Number((firstResult.body as { server_duration_ms?: unknown }).server_duration_ms), `${label} first server duration`).toBeLessThan(2_000);
@@ -449,6 +567,8 @@ test.describe.serial("Operational lifecycle v2 real two-client concurrency", () 
           expectTargetsAbsent(page, [firstTarget, secondTarget]),
           expectTargetsAbsent(observer.page, [firstTarget, secondTarget])
         ]);
+        const browserCompletionMs = Math.round((performance.now() - pairStarted) * 100) / 100;
+        expect(browserCompletionMs, `${label} full two-browser convergence`).toBeLessThan(7_000);
 
         const mutationIds = [String(first.payload.mutation_id), String(secondCommand.payload.mutation_id)];
         const events = await readRestRows<{ id: string; metadata: { mutation_id?: string } }>(page, origin.restBase, origin.headers, "operational_events", {
@@ -459,12 +579,18 @@ test.describe.serial("Operational lifecycle v2 real two-client concurrency", () 
         expect(events).toHaveLength(2);
         const mutationEvidence = directRpcEvidence.filter((entry) => mutationIds.includes(entry.mutationId ?? ""));
         expect(mutationEvidence).toHaveLength(2);
+        const sequentialEquivalentMs = mutationEvidence.reduce((total, entry) => total + entry.elapsedMs, 0);
+        const overlapRatio = rpcPairMs / sequentialEquivalentMs;
+        expect(overlapRatio, `${label} independent-target overlap ratio`).toBeLessThan(0.85);
         cases.push({
           iteration,
           matrixType,
           targets: [firstTarget, secondTarget],
           mutationIds,
-          pairWallMs,
+          rpcPairMs,
+          rpcAndReloadMs,
+          browserCompletionMs,
+          overlapRatio,
           clientDurationsMs: mutationEvidence.map((entry) => entry.elapsedMs),
           serverDurationsMs: [
             Number((firstResult.body as { server_duration_ms: number }).server_duration_ms),
@@ -476,19 +602,27 @@ test.describe.serial("Operational lifecycle v2 real two-client concurrency", () 
 
       const clientDurations = cases.flatMap((entry) => entry.clientDurationsMs as number[]);
       const serverDurations = cases.flatMap((entry) => entry.serverDurationsMs as number[]);
-      const pairWalls = cases.map((entry) => Number(entry.pairWallMs));
+      const rpcAndReloadDurations = cases.map((entry) => Number(entry.rpcAndReloadMs));
+      const browserCompletionDurations = cases.map((entry) => Number(entry.browserCompletionMs));
+      const overlapRatios = cases.map((entry) => Number(entry.overlapRatio));
       const latency = {
         clientP95Ms: percentile(clientDurations, 0.95),
         clientMaxMs: Math.max(...clientDurations),
         serverP95Ms: percentile(serverDurations, 0.95),
         serverMaxMs: Math.max(...serverDurations),
-        pairWallP95Ms: percentile(pairWalls, 0.95),
-        pairWallMaxMs: Math.max(...pairWalls)
+        rpcAndReloadP95Ms: percentile(rpcAndReloadDurations, 0.95),
+        rpcAndReloadMaxMs: Math.max(...rpcAndReloadDurations),
+        browserCompletionP95Ms: percentile(browserCompletionDurations, 0.95),
+        browserCompletionMaxMs: Math.max(...browserCompletionDurations),
+        overlapRatioP95: percentile(overlapRatios, 0.95),
+        overlapRatioMax: Math.max(...overlapRatios)
       };
       expect(latency.serverP95Ms, "Unrelated concurrent operations DB p95").toBeLessThan(500);
       expect(latency.serverMaxMs, "Unrelated concurrent operations DB max").toBeLessThan(2_000);
       expect(latency.clientP95Ms, "Unrelated concurrent operations HTTP acknowledgement p95").toBeLessThan(2_000);
       expect(latency.clientMaxMs, "Unrelated concurrent operations HTTP acknowledgement max").toBeLessThan(5_000);
+      expect(latency.browserCompletionMaxMs, "Unrelated concurrent operations full browser completion max").toBeLessThan(7_000);
+      expect(latency.overlapRatioP95, "Unrelated targets must overlap instead of globally serializing").toBeLessThan(0.85);
       expect(await appStateSnapshot(page, origin)).toEqual(appStateBefore);
       await Promise.all([page.reload({ waitUntil: "domcontentloaded" }), observer.page.reload({ waitUntil: "domcontentloaded" })]);
       await Promise.all([waitForSynced(page), waitForSynced(observer.page)]);
@@ -513,8 +647,12 @@ test.describe.serial("Operational lifecycle v2 real two-client concurrency", () 
           clientMaxMs: Math.max(...completeClientDurations),
           serverP95Ms: percentile(cases.flatMap((entry) => entry.serverDurationsMs as number[]), 0.95),
           serverMaxMs: Math.max(...cases.flatMap((entry) => entry.serverDurationsMs as number[])),
-          pairWallP95Ms: percentile(cases.map((entry) => Number(entry.pairWallMs)), 0.95),
-          pairWallMaxMs: Math.max(...cases.map((entry) => Number(entry.pairWallMs)))
+          rpcAndReloadP95Ms: percentile(cases.map((entry) => Number(entry.rpcAndReloadMs)), 0.95),
+          rpcAndReloadMaxMs: Math.max(...cases.map((entry) => Number(entry.rpcAndReloadMs))),
+          browserCompletionP95Ms: percentile(cases.map((entry) => Number(entry.browserCompletionMs)), 0.95),
+          browserCompletionMaxMs: Math.max(...cases.map((entry) => Number(entry.browserCompletionMs))),
+          overlapRatioP95: percentile(cases.map((entry) => Number(entry.overlapRatio)), 0.95),
+          overlapRatioMax: Math.max(...cases.map((entry) => Number(entry.overlapRatio)))
         } : null,
         cases,
         directRpcEvidence

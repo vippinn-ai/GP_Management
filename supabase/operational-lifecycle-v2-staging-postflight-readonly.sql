@@ -59,7 +59,14 @@ select jsonb_build_object(
   'operational_mutations_rls',(select relrowsecurity from pg_class where oid='public.operational_mutations'::regclass),
   'functions',(select jsonb_agg(jsonb_build_object(
     'name',proname,'definition',pg_get_functiondef(oid),'definition_md5',md5(pg_get_functiondef(oid)),
-    'owner',quote_ident(pg_get_userbyid(proowner)),'security_definer',prosecdef,'config',proconfig,'acl',proacl,
+    'owner',quote_ident(pg_get_userbyid(proowner)),'security_definer',prosecdef,'volatility',provolatile,'config',proconfig,'acl',proacl,
+    'acl_detail',(select jsonb_agg(jsonb_build_object(
+      'grantor',case when acl_items.grantor=0 then 'PUBLIC' else pg_get_userbyid(acl_items.grantor) end,
+      'grantee',case when acl_items.grantee=0 then 'PUBLIC' else pg_get_userbyid(acl_items.grantee) end,
+      'privilege_type',acl_items.privilege_type,
+      'is_grantable',acl_items.is_grantable
+    ) order by acl_items.grantee,acl_items.privilege_type)
+    from aclexplode(coalesce(proacl,acldefault('f',proowner))) acl_items),
     'anon_execute',has_function_privilege('anon',oid,'execute'),
     'authenticated_execute',has_function_privilege('authenticated',oid,'execute')
   ) order by proname) from target_functions)

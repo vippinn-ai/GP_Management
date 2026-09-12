@@ -19,6 +19,16 @@ describe("operational lifecycle v2 Playwright and performance contract", () => {
     expect(runner).toContain("E2E_DB_PROOF_RESULT_SHA256");
     expect(runner).toContain("E2E_DB_PROOF_ROLLBACK_VERIFICATION_SHA256");
     expect(runner).toContain("rollbackProven");
+    expect(runner).toContain("REQUIRED_NEGATIVE_CASES");
+    expect(runner).toContain("Object.keys(proofNegativeCases).sort()");
+    for (const negativeCase of [
+      "missing-mutation-id",
+      "missing-mutation-kind",
+      "missing-entity-type",
+      "same-id-different-kind",
+      "same-id-different-entity",
+      "same-id-different-audit"
+    ]) expect(runner).toContain(negativeCase);
     expect(runner).toContain("postflightVerification.manifestSha256 !== actualManifestSha");
     expect(runner).toContain("evidence-manifest-");
     expect(runner).toContain('productionAllowed: false');
@@ -28,6 +38,10 @@ describe("operational lifecycle v2 Playwright and performance contract", () => {
     expect(config).toMatch(/fullyParallel:\s*false/);
     expect(config).toContain("operational-lifecycle-v2.e2e.ts");
     expect(config).toContain("operational-lifecycle-v2-concurrency.e2e.ts");
+    expect(config).toContain("operational-lifecycle-v2-continuations.e2e.ts");
+    expect(config).toContain("operational-lifecycle-v2-recovery-realtime.e2e.ts");
+    expect(config).toContain("operational-lifecycle-v2-downstream-parity.e2e.ts");
+    expect(config).toContain("operational-lifecycle-v2-hop-mutation-races.e2e.ts");
     for (const regressionSpec of [
       "release-a-hop-pause.e2e.ts",
       "release-a-inventory-matrix.e2e.ts",
@@ -156,8 +170,72 @@ describe("operational lifecycle v2 Playwright and performance contract", () => {
     expect(spec).toContain("expectTargetsVisible");
     expect(spec).toContain("expectTargetsAbsent");
     expect(spec).toContain("winnerActorId");
+    expect(spec).toContain("requires distinct authenticated actors");
     expect(spec).toContain("latency.serverP95Ms");
     expect(spec).toContain("latency.clientP95Ms");
+    expect(spec).toContain("latency.browserCompletionMaxMs");
+    expect(spec).toContain("overlapRatioP95");
+    expect(spec).toContain("independent-target overlap ratio");
+    expect(spec).toContain("full two-browser convergence");
+    expect(spec).toContain("twenty browser-observed samples per lifecycle target class");
+    expect(spec).toContain("operational-v2-20x3-lifecycle-latency");
+    expect(spec).toContain("targetSummary.httpP95Ms");
+  });
+
+  it("covers unit-sale and every continuation consumer topology with terminal cleanup", () => {
+    const spec = read("tests/e2e/staging/operational-lifecycle-v2-continuations.e2e.ts");
+    for (const marker of [
+      "unit-sale session can hop",
+      '"new-tab", "existing-tab"',
+      "triple-consumer",
+      "reject-vs-consumer",
+      "activeConsumers",
+      "billRecoverableSource",
+      "hopped_session_unavailable",
+      "Continuation races require distinct actors"
+    ]) expect(spec).toContain(marker);
+  });
+
+  it("proves same-ID lost-response recovery and both realtime ordering directions", () => {
+    const spec = read("tests/e2e/staging/operational-lifecycle-v2-recovery-realtime.e2e.ts");
+    for (const marker of [
+      "No automatic resend may occur before manual recovery",
+      "Retry Game Hop",
+      "Exactly one manual same-ID replay is allowed",
+      "observerSawRealtimeBeforeOriginResponse",
+      "responseBeforeRealtime",
+      "observerOfflineGapRecovered",
+      "duplicateSameIdWasIdempotent",
+      "originPanelUnmountedBeforeReconnect"
+    ]) expect(spec).toContain(marker);
+  });
+
+  it("reconstructs the same bill and receipt after refresh, mobile resize, and logout-login", () => {
+    const spec = read("tests/e2e/staging/operational-lifecycle-v2-downstream-parity.e2e.ts");
+    for (const marker of [
+      "Bill Register",
+      "thermal-receipt-preview",
+      "width: 390, height: 844",
+      "Sign Out",
+      "afterRefresh.receiptText",
+      "afterLogin.receiptText",
+      "bill_lines",
+      "payments"
+    ]) expect(spec).toContain(marker);
+  });
+
+  it("serializes hop against all five live session mutation classes", () => {
+    const spec = read("tests/e2e/staging/operational-lifecycle-v2-hop-mutation-races.e2e.ts");
+    for (const marker of [
+      '"timing", "pause", "resume", "add-item", "remove-item"',
+      "save_live_session_details",
+      "pause_session",
+      "resume_session",
+      "add_session_item",
+      "remove_session_item",
+      "legal serialized outcome",
+      "Bill Hopped Session"
+    ]) expect(spec).toContain(marker);
   });
 
   it("keeps heavy exports demand-loaded and removes the one-second App render cadence", () => {
@@ -212,9 +290,12 @@ describe("operational lifecycle v2 Playwright and performance contract", () => {
     const sql = read("supabase/operational-v2-customer-profile-posttest-readonly.sql");
     const builder = read("scripts/build-operational-v2-customer-profile-posttest.mjs");
     const verifier = read("scripts/verify-operational-v2-customer-profile-posttest.mjs");
+    const spec = read("tests/e2e/staging/customer-profile-snapshot-parity.e2e.ts");
     expect(sql).toContain("database-owned staging API URL identity failed");
     expect(sql).toContain("compatibility_customers");
     expect(builder).toContain("expectedAppStateBefore");
     expect(verifier).toContain("customerCleanupProven");
+    expect(spec).toContain("explicitSessionCustomerId");
+    expect(spec).toContain("observerDeletionConvergedAndSurvivedReload");
   });
 });
