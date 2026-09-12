@@ -1,4 +1,5 @@
 import { expect, test, type APIResponse } from "@playwright/test";
+import { createFailurePreservingCleanup } from "../../../src/qa/failurePreservingCleanup";
 import {
   attachFailureScreenshot,
   attachJson,
@@ -58,6 +59,7 @@ test.describe.serial("Release B checkout versus rejection concurrency", () => {
       : "rejection commits before checkout and prevents every financial result";
 
     test(title, async ({ browser, page }, testInfo) => {
+      const finalization = createFailurePreservingCleanup();
       const observer = await createObserver(browser);
       const rpcEvidence: RpcEvidence[] = [];
       const originErrors = capturePageErrors(page);
@@ -385,11 +387,11 @@ test.describe.serial("Release B checkout versus rejection concurrency", () => {
       } catch (error) {
         primaryError = error;
       } finally {
-        page.off("dialog", dismissOriginDialog);
-        checkoutCommand?.cancel();
-        rejectCommand?.cancel();
-        await page.unroute("**/rest/v1/rpc/commit_checkout_bill_v2").catch(() => undefined);
-        await observer.page.unroute("**/rest/v1/rpc/reject_session*").catch(() => undefined);
+        await finalization.run("origin dialog cleanup", () => page.off("dialog", dismissOriginDialog));
+        await finalization.run("checkout command cancellation", () => checkoutCommand?.cancel());
+        await finalization.run("reject command cancellation", () => rejectCommand?.cancel());
+        await finalization.run("checkout route cleanup", () => page.unroute("**/rest/v1/rpc/commit_checkout_bill_v2"));
+        await finalization.run("reject route cleanup", () => observer.page.unroute("**/rest/v1/rpc/reject_session*"));
         sessionStarted = sessionStarted || rpcEvidence.some(
           (entry) => entry.rpc === "start_session" && entry.status < 300
         );
@@ -412,7 +414,7 @@ test.describe.serial("Release B checkout versus rejection concurrency", () => {
         } else if (raceStarted && !raceResolved) {
           cleanupError = "Checkout/reject commands were sent; reconcile their mutation IDs before any cleanup or retry.";
         }
-        await attachJson(testInfo, `release-b-checkout-reject-${ordering}-evidence`, {
+        await finalization.run("final evidence", () => attachJson(testInfo, `release-b-checkout-reject-${ordering}-evidence`, {
           runId,
           ordering,
           station,
@@ -427,12 +429,13 @@ test.describe.serial("Release B checkout versus rejection concurrency", () => {
           observerErrors,
           raceEvidence,
           rpcEvidence
-        });
-        await attachFailureScreenshot(testInfo, page, `checkout-reject-${ordering}-origin-failure`);
-        await attachFailureScreenshot(testInfo, observer.page, `checkout-reject-${ordering}-observer-failure`);
-        await observer.context.close();
+        }));
+        await finalization.run("origin failure screenshot", () => attachFailureScreenshot(testInfo, page, `checkout-reject-${ordering}-origin-failure`));
+        await finalization.run("observer failure screenshot", () => attachFailureScreenshot(testInfo, observer.page, `checkout-reject-${ordering}-observer-failure`));
+        await finalization.run("observer context close", () => observer.context.close());
       }
       if (primaryError) throw primaryError;
+      finalization.throwIfFailed();
       if (cleanupError) throw new Error(cleanupError);
     });
   }

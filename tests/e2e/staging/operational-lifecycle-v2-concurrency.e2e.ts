@@ -1,4 +1,5 @@
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
+import { createFailurePreservingCleanup } from "../../../src/qa/failurePreservingCleanup";
 import {
   attachFailureScreenshot,
   attachJson,
@@ -287,6 +288,7 @@ async function billRecoverableHop(page: Page, targetId: string) {
 
 test.describe.serial("Operational lifecycle v2 real two-client concurrency", () => {
   test("same-target hop/hop, reject/reject, and hop/reject races commit exactly one winner", async ({ browser, page }, testInfo) => {
+    const finalization = createFailurePreservingCleanup();
     test.setTimeout(10 * 60_000);
     const observer = await createObserver(browser);
     const originRequests: CapturedRpcRequest[] = [];
@@ -381,14 +383,16 @@ test.describe.serial("Operational lifecycle v2 real two-client concurrency", () 
       expect(pageErrors).toEqual({ consoleErrors: [], pageErrors: [] });
       expect(observerErrors).toEqual({ consoleErrors: [], pageErrors: [] });
     } finally {
-      await attachJson(testInfo, "operational-v2-same-target-races", { runId, cases: results, rpcEvidence, directRpcEvidence });
-      await attachFailureScreenshot(testInfo, page, "operational-v2-same-target-origin-failure");
-      await attachFailureScreenshot(testInfo, observer.page, "operational-v2-same-target-observer-failure");
-      await observer.context.close();
+      await finalization.run("final evidence", () => attachJson(testInfo, "operational-v2-same-target-races", { runId, cases: results, rpcEvidence, directRpcEvidence }));
+      await finalization.run("origin failure screenshot", () => attachFailureScreenshot(testInfo, page, "operational-v2-same-target-origin-failure"));
+      await finalization.run("observer failure screenshot", () => attachFailureScreenshot(testInfo, observer.page, "operational-v2-same-target-observer-failure"));
+      await finalization.run("observer context close", () => observer.context.close());
     }
+    finalization.throwIfFailed();
   });
 
   test("twenty browser-observed samples per lifecycle target class meet HTTP and UI budgets", async ({ browser, page }, testInfo) => {
+    const finalization = createFailurePreservingCleanup();
     test.setTimeout(25 * 60_000);
     const observer = await createObserver(browser);
     const originRequests: CapturedRpcRequest[] = [];
@@ -496,13 +500,15 @@ test.describe.serial("Operational lifecycle v2 real two-client concurrency", () 
       expect(observerErrors).toEqual({ consoleErrors: [], pageErrors: [] });
       await attachJson(testInfo, "operational-v2-20x3-lifecycle-latency", { runId, summary, samples, directRpcEvidence });
     } finally {
-      await attachFailureScreenshot(testInfo, page, "operational-v2-latency-origin-failure");
-      await attachFailureScreenshot(testInfo, observer.page, "operational-v2-latency-observer-failure");
-      await observer.context.close();
+      await finalization.run("origin failure screenshot", () => attachFailureScreenshot(testInfo, page, "operational-v2-latency-origin-failure"));
+      await finalization.run("observer failure screenshot", () => attachFailureScreenshot(testInfo, observer.page, "operational-v2-latency-observer-failure"));
+      await finalization.run("observer context close", () => observer.context.close());
     }
+    finalization.throwIfFailed();
   });
 
   test("ten calibrated unrelated pairs overlap instead of using one global queue", async ({ browser, page }, testInfo) => {
+    const finalization = createFailurePreservingCleanup();
     test.setTimeout(8 * 60_000);
     const observer = await createObserver(browser);
     const originRequests: CapturedRpcRequest[] = [];
@@ -573,13 +579,15 @@ test.describe.serial("Operational lifecycle v2 real two-client concurrency", () 
         directRpcEvidence
       });
     } finally {
-      await attachFailureScreenshot(testInfo, page, "calibrated-overlap-origin-failure");
-      await attachFailureScreenshot(testInfo, observer.page, "calibrated-overlap-observer-failure");
-      await observer.context.close();
+      await finalization.run("origin failure screenshot", () => attachFailureScreenshot(testInfo, page, "calibrated-overlap-origin-failure"));
+      await finalization.run("observer failure screenshot", () => attachFailureScreenshot(testInfo, observer.page, "calibrated-overlap-observer-failure"));
+      await finalization.run("observer context close", () => observer.context.close());
     }
+    finalization.throwIfFailed();
   });
 
   test("50 reload-versus-unrelated-mutation pairs preserve parity and write availability", async ({ browser, page }, testInfo) => {
+    const finalization = createFailurePreservingCleanup();
     test.setTimeout(15 * 60_000);
     const observer = await createObserver(browser);
     const originRequests: CapturedRpcRequest[] = [];
@@ -703,7 +711,7 @@ test.describe.serial("Operational lifecycle v2 real two-client concurrency", () 
       const completeClientDurations = directRpcEvidence
         .filter((entry) => /-(?:a|b)-reject$/.test(entry.mutationId ?? ""))
         .map((entry) => entry.elapsedMs);
-      await attachJson(testInfo, "operational-v2-50-unrelated-reload-races", {
+      await finalization.run("final evidence", () => attachJson(testInfo, "operational-v2-50-unrelated-reload-races", {
         runId,
         samples: cases.length,
         matrix: {
@@ -723,10 +731,11 @@ test.describe.serial("Operational lifecycle v2 real two-client concurrency", () 
         } : null,
         cases,
         directRpcEvidence
-      });
-      await attachFailureScreenshot(testInfo, page, "operational-v2-50-pairs-origin-failure");
-      await attachFailureScreenshot(testInfo, observer.page, "operational-v2-50-pairs-observer-failure");
-      await observer.context.close();
+      }));
+      await finalization.run("origin failure screenshot", () => attachFailureScreenshot(testInfo, page, "operational-v2-50-pairs-origin-failure"));
+      await finalization.run("observer failure screenshot", () => attachFailureScreenshot(testInfo, observer.page, "operational-v2-50-pairs-observer-failure"));
+      await finalization.run("observer context close", () => observer.context.close());
     }
+    finalization.throwIfFailed();
   });
 });

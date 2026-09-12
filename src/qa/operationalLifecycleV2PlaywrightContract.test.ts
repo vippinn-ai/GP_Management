@@ -72,10 +72,10 @@ describe("operational lifecycle v2 Playwright and performance contract", () => {
     ]) expect(config).toContain(regressionSpec);
   });
 
-  it("keeps every selected staging spec free of failure-masking finally throws", () => {
+  it("keeps every selected staging spec free of failure-masking finally control flow", () => {
     const config = read("playwright.operational-v2.staging.config.ts");
     const staticGate = read("scripts/check-operational-v2-staging-static.mjs");
-    const unsafeThrows: string[] = [];
+    const unsafeCleanupControlFlow: string[] = [];
     const configuredSpecs = [...config.matchAll(/"([^"]+\.e2e\.ts)"/g)].map((match) => match[1]);
 
     expect(configuredSpecs).toEqual([...SELECTED_OPERATIONAL_SPECS]);
@@ -87,18 +87,32 @@ describe("operational lifecycle v2 Playwright and performance contract", () => {
       const sourceText = read(relativePath);
       const sourceFile = createSourceFile(relativePath, sourceText, ScriptTarget.Latest, true, ScriptKind.TS);
 
-      const collectThrows = (node: import("typescript").Node) => {
+      const collectUnsafeCleanup = (node: import("typescript").Node, rejectionContained = false) => {
+        if (node.kind === SyntaxKind.AwaitExpression && /^await\s+finalization\.run\s*\(/.test(node.getText(sourceFile))) {
+          return;
+        }
         if (node.kind === SyntaxKind.ThrowStatement) {
           const line = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1;
-          unsafeThrows.push(`${relativePath}:${line}`);
+          unsafeCleanupControlFlow.push(`${relativePath}:${line}:throw`);
         }
-        forEachChild(node, collectThrows);
+        if (node.kind === SyntaxKind.AwaitExpression && !rejectionContained) {
+          const line = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1;
+          unsafeCleanupControlFlow.push(`${relativePath}:${line}:await`);
+        }
+        if (node.kind === SyntaxKind.TryStatement) {
+          const statement = node as import("typescript").TryStatement;
+          collectUnsafeCleanup(statement.tryBlock, rejectionContained || Boolean(statement.catchClause));
+          if (statement.catchClause) collectUnsafeCleanup(statement.catchClause, rejectionContained);
+          if (statement.finallyBlock) collectUnsafeCleanup(statement.finallyBlock, rejectionContained);
+          return;
+        }
+        forEachChild(node, (child) => collectUnsafeCleanup(child, rejectionContained));
       };
 
       const inspect = (node: import("typescript").Node) => {
         if (node.kind === SyntaxKind.TryStatement) {
           const finallyBlock = (node as import("typescript").TryStatement).finallyBlock;
-          if (finallyBlock) collectThrows(finallyBlock);
+          if (finallyBlock) collectUnsafeCleanup(finallyBlock);
         }
         forEachChild(node, inspect);
       };
@@ -106,7 +120,7 @@ describe("operational lifecycle v2 Playwright and performance contract", () => {
       inspect(sourceFile);
     }
 
-    expect(unsafeThrows).toEqual([]);
+    expect(unsafeCleanupControlFlow).toEqual([]);
     expect(staticGate).toContain('"--target", "ES2023"');
     expect(staticGate).toContain('"--types", "node,@playwright/test,vite/client"');
   });

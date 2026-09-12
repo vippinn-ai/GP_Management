@@ -21,4 +21,3 @@ Game and tab continuation creation SHALL lock and validate every hopped source a
 #### Scenario: Two consumers claim one hop
 - **WHEN** requests race
 - **THEN** exactly one commits and the other returns a stable conflict
-

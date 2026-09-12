@@ -1,4 +1,5 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
+import { createFailurePreservingCleanup } from "../../../src/qa/failurePreservingCleanup";
 import {
   attachFailureScreenshot,
   attachJson,
@@ -52,6 +53,7 @@ async function billCurrentRecoverableHop(page: Page) {
 
 test.describe.serial("Operational v2 lost-response and realtime convergence", () => {
   test("a committed-but-lost hop response is manually replayed with the same ID and no automatic resend", async ({ browser, page }, testInfo) => {
+    const finalization = createFailurePreservingCleanup();
     test.setTimeout(4 * 60_000);
     const observer = await createObserver(browser);
     const rpcEvidence: RpcEvidence[] = [];
@@ -173,16 +175,18 @@ test.describe.serial("Operational v2 lost-response and realtime convergence", ()
     } catch (error) {
       primaryError = error;
     } finally {
-      await page.unroute(pattern, handler).catch(() => undefined);
-      await attachFailureScreenshot(testInfo, page, "lost-response-origin-failure");
-      await attachFailureScreenshot(testInfo, observer.page, "lost-response-observer-failure");
-      await observer.context.close();
+      await finalization.run("RPC route cleanup", () => page.unroute(pattern, handler));
+      await finalization.run("origin failure screenshot", () => attachFailureScreenshot(testInfo, page, "lost-response-origin-failure"));
+      await finalization.run("observer failure screenshot", () => attachFailureScreenshot(testInfo, observer.page, "lost-response-observer-failure"));
+      await finalization.run("observer context close", () => observer.context.close());
     }
     if (primaryError) throw primaryError;
+    finalization.throwIfFailed();
     if (capturedRequest && !billId) throw new Error("Lost-response hop was not terminally billed; reconcile before another run.");
   });
 
   test("response-first, offline gap, duplicate delivery, and panel unmount converge after reconnect", async ({ browser, page }, testInfo) => {
+    const finalization = createFailurePreservingCleanup();
     const observer = await createObserver(browser);
     const requests: CapturedRpcRequest[] = [];
     captureAuthenticatedRestRequests(page, requests);
@@ -322,17 +326,18 @@ test.describe.serial("Operational v2 lost-response and realtime convergence", ()
     } catch (error) {
       primaryError = error;
     } finally {
-      await observer.context.setOffline(false).catch(() => undefined);
-      await attachJson(testInfo, "operational-v2-realtime-cleanup-ledger", {
+      await finalization.run("restore observer connectivity", () => observer.context.setOffline(false));
+      await finalization.run("cleanup ledger evidence", () => attachJson(testInfo, "operational-v2-realtime-cleanup-ledger", {
         runId,
         unresolvedSessionIds: [...unresolvedSessionIds],
         failed: Boolean(primaryError)
-      });
-      await attachFailureScreenshot(testInfo, page, "realtime-gap-origin-failure");
-      await attachFailureScreenshot(testInfo, observer.page, "realtime-gap-observer-failure");
-      await observer.context.close();
+      }));
+      await finalization.run("origin failure screenshot", () => attachFailureScreenshot(testInfo, page, "realtime-gap-origin-failure"));
+      await finalization.run("observer failure screenshot", () => attachFailureScreenshot(testInfo, observer.page, "realtime-gap-observer-failure"));
+      await finalization.run("observer context close", () => observer.context.close());
     }
     if (primaryError) throw primaryError;
+    finalization.throwIfFailed();
     if (unresolvedSessionIds.size) throw new Error("Realtime recovery left exact unresolved staging sessions; reconcile before another run.");
   });
 });

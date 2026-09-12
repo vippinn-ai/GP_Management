@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { createFailurePreservingCleanup } from "../../../src/qa/failurePreservingCleanup";
 import {
   assertNoPageErrors,
   attachFailureScreenshot,
@@ -24,6 +25,7 @@ const hopStation = process.env.E2E_HOP_STATION?.trim() || "Playstation";
 
 test.describe.serial("Release A staging two-browser operational maintenance", () => {
   test("pause edit propagates to an independent browser and survives refresh", async ({ browser, page }, testInfo) => {
+    const finalization = createFailurePreservingCleanup();
     const observer = await createObserver(browser);
     const rpcEvidence: RpcEvidence[] = [];
     const originErrors = capturePageErrors(page);
@@ -96,24 +98,26 @@ test.describe.serial("Release A staging two-browser operational maintenance", ()
           cleanupError = error instanceof Error ? error.message : "Unknown pause cleanup failure";
         }
       }
-      await attachJson(testInfo, "release-a-pause-edit-evidence", {
+      await finalization.run("final evidence", () => attachJson(testInfo, "release-a-pause-edit-evidence", {
         runId,
         customerName,
         station: pauseStation,
         cleanupRejected,
         cleanupError,
         rpcEvidence
-      });
-      await attachFailureScreenshot(testInfo, page, "origin-failure");
-      await attachFailureScreenshot(testInfo, observer.page, "observer-failure");
-      await observer.context.close();
+      }));
+      await finalization.run("origin failure screenshot", () => attachFailureScreenshot(testInfo, page, "origin-failure"));
+      await finalization.run("observer failure screenshot", () => attachFailureScreenshot(testInfo, observer.page, "observer-failure"));
+      await finalization.run("observer context close", () => observer.context.close());
     }
+    finalization.throwIfFailed();
     if (cleanupError || (sessionStarted && !cleanupRejected)) {
       throw new Error(`Pause test cleanup was not confirmed. ${cleanupError ?? "Session remained open."}`);
     }
   });
 
   test("hop and detach propagate, then the newest hopped session is billed for cleanup", async ({ browser, page }, testInfo) => {
+    const finalization = createFailurePreservingCleanup();
     const observer = await createObserver(browser);
     const rpcEvidence: RpcEvidence[] = [];
     const originErrors = capturePageErrors(page);
@@ -209,7 +213,7 @@ test.describe.serial("Release A staging two-browser operational maintenance", ()
       } catch (error) {
         cleanupError = error instanceof Error ? error.message : "Unknown hop cleanup failure";
       }
-      await attachJson(testInfo, "release-a-hop-detach-evidence", {
+      await finalization.run("final evidence", () => attachJson(testInfo, "release-a-hop-detach-evidence", {
         runId,
         customerName,
         station: hopStation,
@@ -221,11 +225,12 @@ test.describe.serial("Release A staging two-browser operational maintenance", ()
         cleanupBillId,
         cleanupError,
         rpcEvidence
-      });
-      await attachFailureScreenshot(testInfo, page, "origin-failure");
-      await attachFailureScreenshot(testInfo, observer.page, "observer-failure");
-      await observer.context.close();
+      }));
+      await finalization.run("origin failure screenshot", () => attachFailureScreenshot(testInfo, page, "origin-failure"));
+      await finalization.run("observer failure screenshot", () => attachFailureScreenshot(testInfo, observer.page, "observer-failure"));
+      await finalization.run("observer context close", () => observer.context.close());
     }
+    finalization.throwIfFailed();
     if (cleanupError || (sessionStarted && !cleanupBilled && !cleanupRejected)) {
       throw new Error(`Hop test cleanup was not confirmed. ${cleanupError ?? "Session remained unresolved."}`);
     }

@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { createFailurePreservingCleanup } from "../../../src/qa/failurePreservingCleanup";
 import {
   assertNoPageErrors,
   attachFailureScreenshot,
@@ -41,6 +42,7 @@ async function openQaTab(page: Parameters<typeof capturePageErrors>[0], customer
 
 test.describe.serial("Release A staging inventory matrix", () => {
   test("catalog exposes a combo, sale variant, and cigarette pack fixture", async ({ page }, testInfo) => {
+    const finalization = createFailurePreservingCleanup();
     const errors = capturePageErrors(page);
 
     try {
@@ -70,11 +72,13 @@ test.describe.serial("Release A staging inventory matrix", () => {
         saleCombos
       });
     } finally {
-      await attachFailureScreenshot(testInfo, page, "inventory-fixture-failure");
+      await finalization.run("failure screenshot", () => attachFailureScreenshot(testInfo, page, "inventory-fixture-failure"));
     }
+    finalization.throwIfFailed();
   });
 
   test("combo, variant, and cigarette reservations agree in two browsers and after refresh", async ({ browser, page }, testInfo) => {
+    const finalization = createFailurePreservingCleanup();
     const observer = await createObserver(browser);
     const rpcEvidence: RpcEvidence[] = [];
     const originErrors = capturePageErrors(page);
@@ -221,19 +225,20 @@ test.describe.serial("Release A staging inventory matrix", () => {
           cleanupError = error instanceof Error ? error.message : "Unknown inventory cleanup failure";
         }
       }
-      await attachJson(testInfo, "release-a-inventory-cleanup", {
+      await finalization.run("cleanup evidence", () => attachJson(testInfo, "release-a-inventory-cleanup", {
         runId,
         customerName,
         cleanupAttempted,
         cleanupConfirmed,
         cleanupError,
         rpcEvidence
-      });
-      await attachFailureScreenshot(testInfo, page, "inventory-origin-failure");
-      await attachFailureScreenshot(testInfo, observer.page, "inventory-observer-failure");
-      await observer.context.close();
+      }));
+      await finalization.run("origin failure screenshot", () => attachFailureScreenshot(testInfo, page, "inventory-origin-failure"));
+      await finalization.run("observer failure screenshot", () => attachFailureScreenshot(testInfo, observer.page, "inventory-observer-failure"));
+      await finalization.run("observer context close", () => observer.context.close());
     }
     if (primaryError) throw primaryError;
+    finalization.throwIfFailed();
     if (cleanupError || (tabOpened && !cleanupConfirmed)) {
       throw new Error(`Inventory test cleanup was not confirmed. ${cleanupError ?? "Customer tab remained open."}`);
     }

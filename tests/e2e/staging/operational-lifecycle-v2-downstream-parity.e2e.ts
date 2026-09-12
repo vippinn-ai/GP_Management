@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { createFailurePreservingCleanup } from "../../../src/qa/failurePreservingCleanup";
 import {
   attachFailureScreenshot,
   attachJson,
@@ -51,6 +52,7 @@ async function receiptSnapshot(page: Parameters<typeof waitForSynced>[0], billNu
 }
 
 test("bill, receipt, mobile, hard-refresh, and logout-login consumers retain exact normalized parity", async ({ page }, testInfo) => {
+  const finalization = createFailurePreservingCleanup();
   test.setTimeout(5 * 60_000);
   const requests: CapturedRpcRequest[] = [];
   const rpcEvidence: RpcEvidence[] = [];
@@ -147,8 +149,9 @@ test("bill, receipt, mobile, hard-refresh, and logout-login consumers retain exa
   } catch (error) {
     primaryError = error;
   } finally {
-    await attachFailureScreenshot(testInfo, page, "downstream-parity-failure");
+    await finalization.run("failure screenshot", () => attachFailureScreenshot(testInfo, page, "downstream-parity-failure"));
   }
   if (primaryError) throw primaryError;
+  finalization.throwIfFailed();
   if (!billId) throw new Error("Downstream parity bill was not confirmed; reconcile the active session before another run.");
 });

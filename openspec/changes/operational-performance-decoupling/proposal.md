@@ -47,4 +47,3 @@ Production is excluded until both approvals exist and the user gives fresh produ
 - No removal of legacy v1 RPCs.
 - No production deployment or mutation during staging implementation.
 - No broad component rewrite or visual redesign.
-

@@ -1,4 +1,5 @@
 import { expect, test, type APIResponse } from "@playwright/test";
+import { createFailurePreservingCleanup } from "../../../src/qa/failurePreservingCleanup";
 import {
   assertNoPageErrors,
   attachFailureScreenshot,
@@ -51,6 +52,7 @@ async function appStateSnapshot(page: Parameters<typeof readRestRows>[0], restBa
 
 test.describe("Operational lifecycle v2 staging gate", () => {
   test("hop is canonical, idempotent, actor-safe, realtime-visible, and app_state-invariant", async ({ browser, page }, testInfo) => {
+    const finalization = createFailurePreservingCleanup();
     const observer = await createObserver(browser);
     const rpcEvidence: RpcEvidence[] = [];
     const originErrors = capturePageErrors(page);
@@ -146,18 +148,20 @@ test.describe("Operational lifecycle v2 staging gate", () => {
       primaryError = error;
       throw error;
     } finally {
-      await commandCleanup(page);
-      await attachJson(testInfo, "operational-v2-hop-final-state", {
+      await finalization.run("command cleanup", () => commandCleanup(page));
+      await finalization.run("final evidence", () => attachJson(testInfo, "operational-v2-hop-final-state", {
         runId, customerName, hopCommitted, cleanupBillId, failed: Boolean(primaryError), rpcEvidence
-      });
-      await attachFailureScreenshot(testInfo, page, "operational-v2-hop-origin-failure");
-      await attachFailureScreenshot(testInfo, observer.page, "operational-v2-hop-observer-failure");
-      await observer.context.close();
+      }));
+      await finalization.run("origin failure screenshot", () => attachFailureScreenshot(testInfo, page, "operational-v2-hop-origin-failure"));
+      await finalization.run("observer failure screenshot", () => attachFailureScreenshot(testInfo, observer.page, "operational-v2-hop-observer-failure"));
+      await finalization.run("observer context close", () => observer.context.close());
     }
+    finalization.throwIfFailed();
     if (!primaryError && hopCommitted && !cleanupBillId) throw new Error("Committed hop cleanup bill was not confirmed; no retry was issued.");
   });
 
   test("paused-session rejection closes the canonical pause and remains stable after refresh", async ({ browser, page }, testInfo) => {
+    const finalization = createFailurePreservingCleanup();
     const observer = await createObserver(browser);
     const rpcEvidence: RpcEvidence[] = [];
     const originErrors = capturePageErrors(page);
@@ -234,15 +238,16 @@ test.describe("Operational lifecycle v2 staging gate", () => {
       assertNoPageErrors(originErrors, observerErrors);
       await attachJson(testInfo, "operational-v2-paused-reject-evidence", { runId, customerName, rejection, ...rejectionEvidence, rpcEvidence });
     } finally {
-      await commandCleanup(page);
-      await page.unroute("**/rest/v1/rpc/reject_session_v2").catch(() => undefined);
-      await attachJson(testInfo, "operational-v2-paused-reject-final-state", {
+      await finalization.run("command cleanup", () => commandCleanup(page));
+      await finalization.run("RPC route cleanup", () => page.unroute("**/rest/v1/rpc/reject_session_v2"));
+      await finalization.run("final evidence", () => attachJson(testInfo, "operational-v2-paused-reject-final-state", {
         runId, customerName, rejected, rejectionEvidence, rpcEvidence
-      });
-      await attachFailureScreenshot(testInfo, page, "operational-v2-reject-origin-failure");
-      await attachFailureScreenshot(testInfo, observer.page, "operational-v2-reject-observer-failure");
-      await observer.context.close();
+      }));
+      await finalization.run("origin failure screenshot", () => attachFailureScreenshot(testInfo, page, "operational-v2-reject-origin-failure"));
+      await finalization.run("observer failure screenshot", () => attachFailureScreenshot(testInfo, observer.page, "operational-v2-reject-observer-failure"));
+      await finalization.run("observer context close", () => observer.context.close());
     }
+    finalization.throwIfFailed();
     if (!rejected) throw new Error("The paused QA session was not confirmed rejected; reconcile before another run.");
   });
 });

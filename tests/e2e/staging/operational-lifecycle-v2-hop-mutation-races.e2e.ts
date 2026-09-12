@@ -1,4 +1,5 @@
 import { expect, test, type Locator } from "@playwright/test";
+import { createFailurePreservingCleanup } from "../../../src/qa/failurePreservingCleanup";
 import {
   attachFailureScreenshot,
   attachJson,
@@ -121,6 +122,7 @@ async function addFixtureItem(modal: Locator) {
 }
 
 test("hop serializes safely against timing, pause, resume, add-item, and remove-item mutations", async ({ browser, page }, testInfo) => {
+  const finalization = createFailurePreservingCleanup();
   test.setTimeout(15 * 60_000);
   const observer = await createObserver(browser);
   const originRequests: CapturedRpcRequest[] = [];
@@ -394,17 +396,18 @@ test("hop serializes safely against timing, pause, resume, add-item, and remove-
   } finally {
     activeHopCommand?.cancel();
     activeMutationCommand?.cancel();
-    await activeHopCommand?.dispose().catch(() => undefined);
-    await activeMutationCommand?.dispose().catch(() => undefined);
-    await attachJson(testInfo, "operational-v2-hop-mutation-cleanup-ledger", {
+    await finalization.run("hop command disposal", () => activeHopCommand?.dispose());
+    await finalization.run("mutation command disposal", () => activeMutationCommand?.dispose());
+    await finalization.run("cleanup ledger evidence", () => attachJson(testInfo, "operational-v2-hop-mutation-cleanup-ledger", {
       runId,
       unresolvedSourceIds: [...unresolvedSourceIds],
       failed: Boolean(primaryError)
-    });
-    await attachFailureScreenshot(testInfo, page, "hop-mutation-races-origin-failure");
-    await attachFailureScreenshot(testInfo, observer.page, "hop-mutation-races-observer-failure");
-    await observer.context.close();
+    }));
+    await finalization.run("origin failure screenshot", () => attachFailureScreenshot(testInfo, page, "hop-mutation-races-origin-failure"));
+    await finalization.run("observer failure screenshot", () => attachFailureScreenshot(testInfo, observer.page, "hop-mutation-races-observer-failure"));
+    await finalization.run("observer context close", () => observer.context.close());
   }
   if (primaryError) throw primaryError;
+  finalization.throwIfFailed();
   if (unresolvedSourceIds.size) throw new Error("Hop mutation races left exact unresolved staging sessions; reconcile before another run.");
 });

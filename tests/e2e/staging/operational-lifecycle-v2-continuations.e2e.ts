@@ -1,4 +1,5 @@
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
+import { createFailurePreservingCleanup } from "../../../src/qa/failurePreservingCleanup";
 import {
   attachFailureScreenshot,
   attachJson,
@@ -303,6 +304,7 @@ async function activeConsumers(page: Page, identity: Identity, sourceId: string)
 
 test.describe.serial("Operational v2 continuation and unit-sale matrix", () => {
   test("unit-sale session can hop and bill without losing its server-owned items", async ({ browser, page }, testInfo) => {
+    const finalization = createFailurePreservingCleanup();
     const observer = await createObserver(browser);
     const rpcEvidence: RpcEvidence[] = [];
     const originRequests: CapturedRpcRequest[] = [];
@@ -419,15 +421,17 @@ test.describe.serial("Operational v2 continuation and unit-sale matrix", () => {
     } catch (error) {
       primaryError = error;
     } finally {
-      await attachFailureScreenshot(testInfo, page, "unit-sale-hop-origin-failure");
-      await attachFailureScreenshot(testInfo, observer.page, "unit-sale-hop-observer-failure");
-      await observer.context.close();
+      await finalization.run("origin failure screenshot", () => attachFailureScreenshot(testInfo, page, "unit-sale-hop-origin-failure"));
+      await finalization.run("observer failure screenshot", () => attachFailureScreenshot(testInfo, observer.page, "unit-sale-hop-observer-failure"));
+      await finalization.run("observer context close", () => observer.context.close());
     }
     if (primaryError) throw primaryError;
+    finalization.throwIfFailed();
     if (sourceId && !billId) throw new Error("Unit-sale hop was not terminally billed; reconcile before another run.");
   });
 
   test("new-tab, existing-tab, double-consumer, and reject-versus-consumer flows consume each source at most once", async ({ browser, page }, testInfo) => {
+    const finalization = createFailurePreservingCleanup();
     test.setTimeout(12 * 60_000);
     const observer = await createObserver(browser);
     const originRequests: CapturedRpcRequest[] = [];
@@ -610,17 +614,18 @@ test.describe.serial("Operational v2 continuation and unit-sale matrix", () => {
     } catch (error) {
       primaryError = error;
     } finally {
-      await attachJson(testInfo, "operational-v2-continuation-cleanup-ledger", {
+      await finalization.run("cleanup ledger evidence", () => attachJson(testInfo, "operational-v2-continuation-cleanup-ledger", {
         runId,
         unresolvedSourceIds: [...unresolvedSourceIds],
         unresolvedConsumers: [...unresolvedConsumers.values()],
         failed: Boolean(primaryError)
-      });
-      await attachFailureScreenshot(testInfo, page, "continuation-matrix-origin-failure");
-      await attachFailureScreenshot(testInfo, observer.page, "continuation-matrix-observer-failure");
-      await observer.context.close();
+      }));
+      await finalization.run("origin failure screenshot", () => attachFailureScreenshot(testInfo, page, "continuation-matrix-origin-failure"));
+      await finalization.run("observer failure screenshot", () => attachFailureScreenshot(testInfo, observer.page, "continuation-matrix-observer-failure"));
+      await finalization.run("observer context close", () => observer.context.close());
     }
     if (primaryError) throw primaryError;
+    finalization.throwIfFailed();
     if (unresolvedSourceIds.size || unresolvedConsumers.size) {
       throw new Error("Continuation matrix left exact unresolved staging entities; reconcile before another run.");
     }

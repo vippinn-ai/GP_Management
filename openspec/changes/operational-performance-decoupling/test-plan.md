@@ -9,6 +9,7 @@
 - Capture old deployed definitions, ACLs, proconfig, flags, publication, compatibility hash/version/bytes, and rollback SQL before install.
 - Run `npm run test:e2e:staging:operational-v2:static` to lint and no-emit type-check every Playwright spec selected by `playwright.operational-v2.staging.config.ts`; focused checks of only newly edited specs are insufficient.
 - Cleanup must preserve the primary assertion or runtime failure. No selected spec may throw from a `finally` block or otherwise replace the original failure with a cleanup failure.
+- Every fallible finalization step must run through the shared settled cleanup guard. Independent steps continue after a cleanup failure; the primary failure is rethrown first, while one or more cleanup failures are reported only after a successful primary path.
 
 ## Functional and parity matrix
 

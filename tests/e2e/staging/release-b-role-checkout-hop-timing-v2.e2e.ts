@@ -1,5 +1,6 @@
 import { expect, test, type APIResponse, type Page } from "@playwright/test";
 import type { FinancialCheckoutV2RpcPayloadEnvelope } from "../../../src/dataGateway/financialRpcClient";
+import { createFailurePreservingCleanup } from "../../../src/qa/failurePreservingCleanup";
 import {
   assertAuthoritativeOrganizationIdentity,
   attachFailureScreenshot,
@@ -108,6 +109,7 @@ test.describe.serial("Release B receptionist and manager checkout-hop timing", (
   );
 
   test("preflight proves distinct active authoritative role identities before any write", async ({ browser, page }, testInfo) => {
+    const finalization = createFailurePreservingCleanup();
     const observer = await createObserver(browser);
     const requestsA: CapturedRpcRequest[] = [];
     const requestsB: CapturedRpcRequest[] = [];
@@ -130,12 +132,14 @@ test.describe.serial("Release B receptionist and manager checkout-hop timing", (
         writesAttempted: false
       });
     } finally {
-      await observer.context.close();
+      await finalization.run("observer context close", () => observer.context.close());
     }
+    finalization.throwIfFailed();
   });
 
   for (const scenario of selectedScenarios) {
     test(`${scenario.id} resolves with authorized timing and one terminal bill`, async ({ browser, page }, testInfo) => {
+      const finalization = createFailurePreservingCleanup();
       const observer = await createObserver(browser);
       const pageA = page;
       const pageB = observer.page;
@@ -581,13 +585,13 @@ test.describe.serial("Release B receptionist and manager checkout-hop timing", (
       } catch (error) {
         primaryError = error;
       } finally {
-        hopPage.off("dialog", dismissHopDialog);
-        checkoutCommand?.cancel();
-        hopCommand?.cancel();
-        cleanupCommand?.cancel();
-        if (checkoutCommand) await checkoutCommand.dispose().catch(() => undefined);
-        if (hopCommand) await hopCommand.dispose().catch(() => undefined);
-        if (cleanupCommand) await cleanupCommand.dispose().catch(() => undefined);
+        await finalization.run("hop dialog cleanup", () => hopPage.off("dialog", dismissHopDialog));
+        await finalization.run("checkout command cancellation", () => checkoutCommand?.cancel());
+        await finalization.run("hop command cancellation", () => hopCommand?.cancel());
+        await finalization.run("cleanup command cancellation", () => cleanupCommand?.cancel());
+        await finalization.run("checkout command disposal", () => checkoutCommand?.dispose());
+        await finalization.run("hop command disposal", () => hopCommand?.dispose());
+        await finalization.run("cleanup command disposal", () => cleanupCommand?.dispose());
         sessionStarted = sessionStarted || rpcEvidence.some((entry) => entry.rpc === "start_session" && entry.status < 300);
         if (sessionStarted && !commandsSent) {
           try {
@@ -621,12 +625,13 @@ test.describe.serial("Release B receptionist and manager checkout-hop timing", (
           errorsB,
           rpcEvidence
         };
-        await attachJson(testInfo, `release-b-role-checkout-hop-${scenario.id}-evidence`, evidence);
-        await attachFailureScreenshot(testInfo, pageA, `${scenario.id}-a-failure`);
-        await attachFailureScreenshot(testInfo, pageB, `${scenario.id}-b-failure`);
-        await observer.context.close();
+        await finalization.run("final evidence", () => attachJson(testInfo, `release-b-role-checkout-hop-${scenario.id}-evidence`, evidence));
+        await finalization.run("checkout failure screenshot", () => attachFailureScreenshot(testInfo, pageA, `${scenario.id}-a-failure`));
+        await finalization.run("hop failure screenshot", () => attachFailureScreenshot(testInfo, pageB, `${scenario.id}-b-failure`));
+        await finalization.run("observer context close", () => observer.context.close());
       }
       if (primaryError) throw primaryError;
+      finalization.throwIfFailed();
       if (cleanupError) throw new Error(cleanupError);
     });
   }

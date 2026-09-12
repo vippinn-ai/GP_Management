@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { expect, test, type Download } from "@playwright/test";
 import * as XLSX from "xlsx";
+import { createFailurePreservingCleanup } from "../../../src/qa/failurePreservingCleanup";
 import {
   assertNoPageErrors,
   attachFailureScreenshot,
@@ -19,6 +20,7 @@ async function readDownload(download: Download): Promise<Buffer> {
 }
 
 test("normalized reports export complete CSV, Excel, and PDF files", async ({ page }, testInfo) => {
+  const finalization = createFailurePreservingCleanup();
   const errors = capturePageErrors(page);
   const browserChunks: string[] = [];
   page.on("request", (request) => {
@@ -94,8 +96,9 @@ test("normalized reports export complete CSV, Excel, and PDF files", async ({ pa
       verifiedBillNumber: "BILL-20260820-006"
     });
   } finally {
-    await attachFailureScreenshot(testInfo, page, "report-export-failure");
+    await finalization.run("failure screenshot", () => attachFailureScreenshot(testInfo, page, "report-export-failure"));
   }
+  finalization.throwIfFailed();
 });
 
 for (const exporter of [
@@ -103,6 +106,7 @@ for (const exporter of [
   { name: "PDF", route: "**/assets/jspdf*.js", button: "Export PDF", error: "Unable to load the PDF exporter" }
 ] as const) {
   test(`a failed ${exporter.name} chunk is visible and succeeds after an explicit reload`, async ({ page }, testInfo) => {
+    const finalization = createFailurePreservingCleanup();
     const errors = capturePageErrors(page);
     const alertPromise = new Promise<string>((resolve) => {
       page.once("dialog", async (dialog) => {
@@ -138,8 +142,9 @@ for (const exporter of [
       });
       assertNoPageErrors(errors);
     } finally {
-      await page.unroute(exporter.route).catch(() => undefined);
-      await attachFailureScreenshot(testInfo, page, `report-${exporter.name.toLowerCase()}-export-recovery-failure`);
+      await finalization.run("export route cleanup", () => page.unroute(exporter.route));
+      await finalization.run("failure screenshot", () => attachFailureScreenshot(testInfo, page, `report-${exporter.name.toLowerCase()}-export-recovery-failure`));
     }
+    finalization.throwIfFailed();
   });
 }

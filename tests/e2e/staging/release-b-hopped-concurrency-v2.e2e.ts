@@ -1,4 +1,5 @@
 import { expect, test, type APIResponse } from "@playwright/test";
+import { createFailurePreservingCleanup } from "../../../src/qa/failurePreservingCleanup";
 import {
   attachFailureScreenshot,
   attachJson,
@@ -30,6 +31,7 @@ async function responseBody(response: APIResponse) {
 
 test.describe.serial("Release B hopped-session checkout concurrency", () => {
   test("one hopped session can enter only one bill", async ({ browser, page }, testInfo) => {
+    const finalization = createFailurePreservingCleanup();
     const observer = await createObserver(browser);
     const rpcEvidence: RpcEvidence[] = [];
     captureRpcEvidence(page, "origin", rpcEvidence);
@@ -166,7 +168,7 @@ test.describe.serial("Release B hopped-session checkout concurrency", () => {
           ? "The hopped checkout had an ambiguous outcome; no automatic retry was issued."
           : "The detached hopped session still requires a cleanup bill.";
       }
-      await attachJson(testInfo, "release-b-hopped-concurrency-v2-evidence", {
+      await finalization.run("final evidence", () => attachJson(testInfo, "release-b-hopped-concurrency-v2-evidence", {
         runId,
         station,
         customerName,
@@ -178,12 +180,13 @@ test.describe.serial("Release B hopped-session checkout concurrency", () => {
         cleanupError,
         raceEvidence,
         rpcEvidence
-      });
-      await attachFailureScreenshot(testInfo, page, "hopped-race-origin-failure");
-      await attachFailureScreenshot(testInfo, observer.page, "hopped-race-observer-failure");
-      await observer.context.close();
+      }));
+      await finalization.run("origin failure screenshot", () => attachFailureScreenshot(testInfo, page, "hopped-race-origin-failure"));
+      await finalization.run("observer failure screenshot", () => attachFailureScreenshot(testInfo, observer.page, "hopped-race-observer-failure"));
+      await finalization.run("observer context close", () => observer.context.close());
     }
     if (primaryError) throw primaryError;
+    finalization.throwIfFailed();
     if (cleanupError) throw new Error(cleanupError);
   });
 });
