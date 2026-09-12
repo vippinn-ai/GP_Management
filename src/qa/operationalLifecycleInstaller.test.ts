@@ -28,6 +28,10 @@ describe("operational lifecycle staging installer", () => {
         definition_md5: crypto.createHash("md5").update(definition).digest("hex"),
         owner: "postgres",
         acl: ["postgres=X/postgres", "authenticated=X/postgres"],
+        acl_detail: [
+          { grantor: "postgres", grantee: "postgres", privilege_type: "EXECUTE", is_grantable: true },
+          { grantor: "postgres", grantee: "authenticated", privilege_type: "EXECUTE", is_grantable: false }
+        ],
         public_execute: false,
         anon_execute: false,
         authenticated_execute: true,
@@ -37,6 +41,7 @@ describe("operational lifecycle staging installer", () => {
     const preflightPath = path.join(fixtureDir, "preflight.json");
     fs.writeFileSync(preflightPath, JSON.stringify({
       expected_project_ref: "tkbdyzxwwbhkpztgjjxh",
+      environment_identity: { environment: "staging", project_ref: "tkbdyzxwwbhkpztgjjxh", identity_nonce: "12345678-1234-4123-8123-123456789abc" },
       organization_id: "org-primary",
       organization_exists: true,
       open_sessions: 0,

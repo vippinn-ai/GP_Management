@@ -1,5 +1,5 @@
 import { type FormEvent } from "react";
-import brandLogo from "../../Branding/Logo.png";
+import brandLogo from "../../Branding/Logo.optimized.png";
 
 export function LoginScreen(props: {
   loginUsername: string;

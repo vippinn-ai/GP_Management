@@ -10,7 +10,6 @@ import {
   type NormalizedBillRegisterQuery
 } from "./normalizedBillRegister";
 import { loadNormalizedReportData } from "./normalizedReports";
-import { loadNormalizedCustomerDirectory } from "./normalizedCustomerSearch";
 import {
   emitGenericAppStateSaveEvent,
   loadNormalizedRealtimeOverlay,
@@ -24,6 +23,7 @@ import {
   loadNormalizedStockMovements
 } from "./normalizedReads";
 import { invokeOperationalMutationRpc } from "./rpcClient";
+import { resolveNormalizedOrganizationId } from "./normalizedOrganization";
 import type { RemoteDataGateway } from "./types";
 import {
   fetchProfiles,
@@ -33,7 +33,7 @@ import {
 } from "../backend";
 import { hydrateAppData } from "../storage";
 import { recordCompactRealtimeTelemetry, recordStartupBootstrapTelemetry } from "../syncTelemetry";
-import type { AppData, Bill, Customer, CustomerTab, Payment, Session, SessionPauseLog } from "../types";
+import type { AppData, Bill, Customer, CustomerTab, Expense, Payment, Session, SessionPauseLog } from "../types";
 import { addDays, toBusinessDayKey } from "../utils";
 
 const NORMALIZED_BOOTSTRAP_RECENT_BUSINESS_DAYS = 1;
@@ -199,7 +199,7 @@ function getBusinessDayRangeForTrailingDays(days: number): { fromDate: string; t
 async function loadNormalizedBootstrapHistory(
   organizationId: string,
   client: ReturnType<typeof getSupabaseClient>
-): Promise<{ bills: Bill[]; payments: Payment[] }> {
+): Promise<{ bills: Bill[]; payments: Payment[]; expenses: Expense[] }> {
   const { fromDate: recentFrom, toDate: currentBusinessDay } = getBusinessDayRangeForTrailingDays(
     NORMALIZED_BOOTSTRAP_RECENT_BUSINESS_DAYS
   );
@@ -226,7 +226,8 @@ async function loadNormalizedBootstrapHistory(
 
   return {
     bills: mergeRecordsById(mergeRecordsById(recent.bills, paymentDateActivity.bills), pendingBills),
-    payments: mergeRecordsById(recent.payments, paymentDateActivity.payments)
+    payments: mergeRecordsById(recent.payments, paymentDateActivity.payments),
+    expenses: paymentDateActivity.expenses
   };
 }
 
@@ -251,6 +252,18 @@ export async function loadNormalizedBootstrapStockMovements(
     );
   }
   return movements;
+}
+
+export async function loadDeferredNormalizedInventoryHistory() {
+  const client = getSupabaseClient();
+  const organizationId = await resolveNormalizedOrganizationId(client);
+  return loadNormalizedBootstrapStockMovements(organizationId, client);
+}
+
+export async function loadDeferredNormalizedExpenseAdminData() {
+  const client = getSupabaseClient();
+  const organizationId = await resolveNormalizedOrganizationId(client);
+  return loadNormalizedExpenseAdminData(organizationId, client);
 }
 
 function upsertStartupCustomer(
@@ -337,35 +350,28 @@ async function loadNormalizedBootstrapSnapshot(): Promise<RemoteAppDataSnapshot>
         client
       })
     ]);
-    const [history, expenses, stockMovements, auditLogs, customers] = overlay.organizationId
+    const [history, auditLogs] = overlay.organizationId
       ? await Promise.all([
           loadNormalizedBootstrapHistory(overlay.organizationId, client),
-          loadNormalizedExpenseAdminData(overlay.organizationId, client),
-          loadNormalizedBootstrapStockMovements(overlay.organizationId, client),
           loadNormalizedAuditLogs(
             overlay.organizationId,
             { limit: NORMALIZED_BOOTSTRAP_RECENT_AUDIT_LOGS },
             client
-          ),
-          loadNormalizedCustomerDirectory(overlay.organizationId, client)
+          )
         ])
       : [
-          { bills: [], payments: [] },
-          { expenses: [], expenseTemplates: [], expenseTemplateOverrides: [] },
-          [],
-          [],
+          { bills: [], payments: [], expenses: [] },
           []
         ];
     const startupAppData = {
       ...overlay.appData,
       ...history,
-      ...expenses,
-      stockMovements,
+      stockMovements: [],
       auditLogs
     };
     const appData = hydrateAppData({
       ...startupAppData,
-      customers: customers.length > 0 ? customers : deriveStartupCustomers(startupAppData),
+      customers: deriveStartupCustomers(startupAppData),
       users
     });
     recordStartupBootstrapTelemetry({
@@ -403,6 +409,7 @@ export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): 
   let realtimeReadyPromise: Promise<void> | null = null;
   let realtimeUnsubscribe: (() => void) | null = null;
   let realtimeSnapshotListener: ((snapshot: RemoteAppDataSnapshot) => void) | null = null;
+  let realtimeErrorListener: ((error: Error) => void) | null = null;
 
   const applyRealtimeEvent = async (event: OperationalEventRow, notify: boolean) => {
     if (processedRealtimeEventIds.has(event.id)) return;
@@ -471,11 +478,23 @@ export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): 
           }
           realtimeEventPipeline = realtimeEventPipeline
             .then(() => applyRealtimeEvent(event, true))
-            .catch((error) => console.warn("Unable to apply compact realtime event.", error));
+            .catch((error) => {
+              const normalizedError = error instanceof Error ? error : new Error("Unable to apply compact realtime event.");
+              console.warn("Unable to apply compact realtime event.", normalizedError);
+              realtimeErrorListener?.(normalizedError);
+            });
           return realtimeEventPipeline;
         },
         (status) => {
-          if (settled) return;
+          if (settled) {
+            if (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") {
+              realtimeUnsubscribe?.();
+              realtimeUnsubscribe = null;
+              realtimeReadyPromise = null;
+              realtimeErrorListener?.(new Error(`Normalized realtime disconnected (${status}); a fresh restore is required.`));
+            }
+            return;
+          }
           if (status === "SUBSCRIBED") {
             settled = true;
             globalThis.clearTimeout(timeoutId);
@@ -546,18 +565,24 @@ export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): 
       }
       return nextVersion;
     },
-    subscribeToAppData(onChange) {
+    subscribeToAppData(onChange, onError) {
       if (_flags.normalizedRealtime) {
         realtimeSnapshotListener = onChange;
-        void ensureRealtimeReady().catch((error) => console.warn("Unable to prepare normalized realtime.", error));
+        realtimeErrorListener = onError ?? null;
+        void ensureRealtimeReady().catch((error) => {
+          const normalizedError = error instanceof Error ? error : new Error("Unable to prepare normalized realtime.");
+          console.warn("Unable to prepare normalized realtime.", normalizedError);
+          realtimeErrorListener?.(normalizedError);
+        });
         return () => {
           if (realtimeSnapshotListener === onChange) realtimeSnapshotListener = null;
+          if (realtimeErrorListener === onError) realtimeErrorListener = null;
           realtimeUnsubscribe?.();
           realtimeUnsubscribe = null;
           realtimeReadyPromise = null;
         };
       }
-      return appStateRemoteDataGateway.subscribeToAppData(onChange);
+      return appStateRemoteDataGateway.subscribeToAppData(onChange, onError);
     }
   };
   if (_flags.rpcOperationalWrites) {

@@ -4,6 +4,7 @@ import { useRef, useState } from "react";
 import { useAppSync, type RemoteRestoreState } from "./useAppSync";
 import type { AppData } from "../types";
 import type { RemoteAppDataSnapshot, RemoteProfile, RemoteSessionProfileResult } from "../backend";
+import type { RemoteDataGateway } from "../dataGateway";
 
 const backendMocks = vi.hoisted(() => ({
   loadRemoteAppDataSnapshot: vi.fn(),
@@ -82,6 +83,7 @@ function Harness(props: {
   retryDelayMs?: number;
   applyRemoteSnapshot?: (snapshot: RemoteAppDataSnapshot) => void;
   allowFullAppDataPersist?: boolean;
+  dataGateway?: RemoteDataGateway;
 }) {
   const [appData, setAppData] = useState(() => props.initialAppData ?? createAppData("Cached"));
   const [activeUserId, setActiveUserId] = useState<string | null>(props.initialActiveUserId ?? null);
@@ -121,7 +123,8 @@ function Harness(props: {
     setRemoteRestoreState,
     setRestoreRetrySignal,
     setActiveTab: vi.fn(),
-    applyRemoteSnapshot: props.applyRemoteSnapshot
+    applyRemoteSnapshot: props.applyRemoteSnapshot,
+    dataGateway: props.dataGateway
   });
 
   return (
@@ -441,5 +444,29 @@ describe("useAppSync session restore", () => {
 
     await waitFor(() => expect(screen.getByTestId("restore-state")).toHaveTextContent("ready"));
     expect(screen.getByTestId("business-name")).toHaveTextContent("Realtime recovery");
+  });
+
+  it("keeps one realtime subscription while a disconnect moves the app to read-only recovery", async () => {
+    let reportRealtimeError: ((error: Error) => void) | undefined;
+    const unsubscribe = vi.fn();
+    const gateway: RemoteDataGateway = {
+      loadAppDataSnapshot: vi.fn().mockResolvedValue(snapshot("Normalized", 4)),
+      saveAppData: vi.fn().mockResolvedValue(5),
+      subscribeToAppData: vi.fn((_onChange, onError) => {
+        reportRealtimeError = onError;
+        return unsubscribe;
+      })
+    };
+    backendMocks.resolveRemoteSessionProfile.mockResolvedValue(activeSessionResult());
+
+    render(<Harness allowFullAppDataPersist={false} dataGateway={gateway} />);
+    await waitFor(() => expect(screen.getByTestId("restore-state")).toHaveTextContent("ready"));
+    await waitFor(() => expect(gateway.subscribeToAppData).toHaveBeenCalledTimes(1));
+
+    act(() => reportRealtimeError?.(new Error("Realtime disconnected.")));
+    await waitFor(() => expect(screen.getByTestId("restore-state")).toHaveTextContent("stale-cache"));
+    expect(screen.getByTestId("remote-error")).toHaveTextContent("read-only");
+    expect(gateway.subscribeToAppData).toHaveBeenCalledTimes(1);
+    expect(unsubscribe).not.toHaveBeenCalled();
   });
 });

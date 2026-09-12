@@ -11,9 +11,9 @@ describe("controlled normalized-read QA deployment contract", () => {
     const appSource = readRepositoryFile("src/App.tsx");
 
     expect(appSource.match(/runQaControlledNormalizedRead\("bill-history"/g)).toHaveLength(2);
-    expect(appSource.match(/runQaControlledNormalizedRead\("reports"/g)).toHaveLength(2);
+    expect(appSource.match(/runQaControlledNormalizedRead\("reports"/g)).toHaveLength(3);
     expect(appSource.match(/runQaControlledNormalizedRead\("customers"/g)).toHaveLength(1);
-    expect(appSource.match(/runQaControlledNormalizedRead\("inventory"/g)).toHaveLength(1);
+    expect(appSource.match(/runQaControlledNormalizedRead\("inventory"/g)).toHaveLength(2);
   });
 
   it("binds the QA build to staging, v2-off, artifact checks, and the isolated Worker", () => {

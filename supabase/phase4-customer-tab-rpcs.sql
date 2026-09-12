@@ -149,6 +149,7 @@ declare
   v_matching_tab_id text;
   v_event_id text;
   v_event_metadata jsonb := '{}'::jsonb;
+  v_event_actor text;
   v_audit_log_id text := nullif(v_audit_log->>'id', '');
   v_continuation_ids text[] := array[]::text[];
   v_unavailable_continuation_ids text[] := array[]::text[];
@@ -220,8 +221,8 @@ begin
     'audit_log_id', v_audit_log_id
   )::text);
 
-  select operational_events.id, operational_events.metadata
-  into v_event_id, v_event_metadata
+  select operational_events.id, operational_events.metadata, operational_events.created_by
+  into v_event_id, v_event_metadata, v_event_actor
   from public.operational_events
   where operational_events.organization_id = v_organization_id
     and operational_events.metadata->>'mutation_id' = v_mutation_id
@@ -229,6 +230,9 @@ begin
   limit 1;
 
   if v_event_id is not null then
+    if v_event_actor is distinct from v_actor::text then
+      perform public.raise_operational_rpc_error('mutation_actor_mismatch', 'This mutation ID belongs to another authenticated actor.', jsonb_build_object('mutation_id', v_mutation_id));
+    end if;
     if v_event_metadata->>'request_fingerprint' is distinct from v_request_fingerprint then
       perform public.raise_operational_rpc_error('mutation_identity_mismatch', 'This mutation ID belongs to different customer-tab intent.', jsonb_build_object('mutation_id', v_mutation_id));
     end if;
@@ -327,24 +331,11 @@ begin
     end if;
   end if;
 
-  if exists (
-    select 1
-    from public.customer_tabs
-    where customer_tabs.organization_id = v_organization_id
-      and customer_tabs.id = v_customer_tab_id
-  ) then
-    perform public.raise_operational_rpc_error(
-      'customer_tab_id_conflict',
-      'The requested customer tab id is already in use by a different mutation.',
-      jsonb_build_object('customer_tab_id', v_customer_tab_id, 'mutation_id', v_mutation_id)
-    );
-  end if;
-
   v_customer_lock_key := coalesce(v_customer_phone_key, v_customer_name_key, v_customer_id_hint, v_customer_tab_id);
   perform pg_advisory_xact_lock(hashtext(v_organization_id || ':customer-tab:' || v_customer_lock_key));
 
-  select operational_events.id, operational_events.metadata
-  into v_event_id, v_event_metadata
+  select operational_events.id, operational_events.metadata, operational_events.created_by
+  into v_event_id, v_event_metadata, v_event_actor
   from public.operational_events
   where operational_events.organization_id = v_organization_id
     and operational_events.metadata->>'mutation_id' = v_mutation_id
@@ -352,6 +343,9 @@ begin
   limit 1;
 
   if v_event_id is not null then
+    if v_event_actor is distinct from v_actor::text then
+      perform public.raise_operational_rpc_error('mutation_actor_mismatch', 'This mutation ID belongs to another authenticated actor.', jsonb_build_object('mutation_id', v_mutation_id));
+    end if;
     if v_event_metadata->>'request_fingerprint' is distinct from v_request_fingerprint then
       perform public.raise_operational_rpc_error('mutation_identity_mismatch', 'This mutation ID belongs to different customer-tab intent.', jsonb_build_object('mutation_id', v_mutation_id));
     end if;
@@ -375,6 +369,19 @@ begin
         end,
         'operational_events', jsonb_build_array(v_event_id)
       )
+    );
+  end if;
+
+  if exists (
+    select 1
+    from public.customer_tabs
+    where customer_tabs.organization_id = v_organization_id
+      and customer_tabs.id = v_customer_tab_id
+  ) then
+    perform public.raise_operational_rpc_error(
+      'customer_tab_id_conflict',
+      'The requested customer tab id is already in use by a different mutation.',
+      jsonb_build_object('customer_tab_id', v_customer_tab_id, 'mutation_id', v_mutation_id)
     );
   end if;
 

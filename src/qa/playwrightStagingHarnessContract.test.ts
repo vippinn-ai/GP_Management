@@ -87,8 +87,8 @@ describe("staging Playwright harness contract", () => {
     expect(support).toContain('await password.fill("")');
     expect(support).toContain('throw new Error("Staging sign-in was rejected.")');
     expect(scenario).toContain('entry.rpc === "edit_pause_log"');
-    expect(scenario).toContain('entry.rpc === "hop_session"');
-    expect(scenario).toContain('entry.rpc === "record_session_audit"');
+    expect(scenario).toContain('entry.rpc.startsWith("hop_session")');
+    expect(scenario).toContain("hopEvidence?.changedRows?.audit_logs");
     expect(scenario).toContain("rejectSessionIfOpen");
     expect(support).toContain("Cleanup refused because the station no longer belongs to the exact QA customer.");
     expect(support).toContain("Cleanup refused because the stored session customer no longer matches the exact QA customer.");
@@ -715,7 +715,7 @@ describe("staging Playwright harness contract", () => {
     expect(support).toContain("await route.fulfill({ response: serverResponse })");
     expect(support).toContain("command can only be submitted once");
     expect(scenario).toContain('for (const ordering of ["checkout-first", "hop-first", "concurrent"] as const)');
-    expect(scenario).toContain('interceptSingleRpcCommand(observer.page, "**/rest/v1/rpc/hop_session")');
+    expect(scenario).toContain('interceptSingleRpcCommand(observer.page, "**/rest/v1/rpc/hop_session*")');
     expect(scenario).toContain('fill(checkoutEndAt)');
     expect(scenario).toContain('fill(hopEndAt)');
     expect(scenario).toContain('role: "admin", active: true');

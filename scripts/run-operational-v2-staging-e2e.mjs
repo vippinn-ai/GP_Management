@@ -1,4 +1,5 @@
 import path from "node:path";
+import fs from "node:fs";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
@@ -31,7 +32,34 @@ for (const flag of [
 }
 env.E2E_BASE_URL = assertStagingBaseUrl(env.E2E_BASE_URL || STAGING_APP_URL);
 env.E2E_RUN_ID = sanitizeRunId(env.E2E_RUN_ID);
+env.E2E_ROLE_MATRIX = "release-b-receptionist-manager";
+env.E2E_ROLE_MATRIX_PHASE = "all";
 if (!discoveryOnly) assertLiveCredentials(env);
+
+const evidenceRoot = path.join(root, "test-artifacts", "playwright");
+const outputDir = path.join(evidenceRoot, `operational-v2-run-${env.E2E_RUN_ID}`);
+const summaryPath = path.join(evidenceRoot, `summary-${env.E2E_RUN_ID}.json`);
+const evidenceManifestPath = path.join(evidenceRoot, `evidence-manifest-${env.E2E_RUN_ID}.json`);
+for (const evidencePath of [outputDir, summaryPath, evidenceManifestPath]) {
+  if (fs.existsSync(evidencePath)) throw new Error(`Run id ${env.E2E_RUN_ID} already has evidence; choose a fresh run id.`);
+}
+
+let databaseManifest;
+let databaseManifestPath;
+if (!discoveryOnly) {
+  if (!/^[a-f0-9]{64}$/i.test(env.E2E_EXPECTED_BUNDLE_SHA256 || "")) {
+    throw new Error("Live staging E2E requires E2E_EXPECTED_BUNDLE_SHA256 from the approved candidate deployment.");
+  }
+  if (!env.E2E_DB_MANIFEST_PATH || !env.E2E_DB_MANIFEST_SHA256) {
+    throw new Error("Live staging E2E requires E2E_DB_MANIFEST_PATH and E2E_DB_MANIFEST_SHA256.");
+  }
+  databaseManifestPath = path.resolve(root, env.E2E_DB_MANIFEST_PATH);
+  const databaseManifestText = fs.readFileSync(databaseManifestPath, "utf8");
+  const actualManifestSha = createHash("sha256").update(databaseManifestText).digest("hex");
+  if (actualManifestSha !== env.E2E_DB_MANIFEST_SHA256.toLowerCase()) throw new Error("Database manifest SHA-256 does not match the approved value.");
+  databaseManifest = JSON.parse(databaseManifestText);
+  if (databaseManifest.target?.projectRef !== STAGING_PROJECT_REF) throw new Error("Database manifest is not for staging.");
+}
 
 let deployedArtifact;
 if (!discoveryOnly) {
@@ -46,6 +74,9 @@ if (!discoveryOnly) {
   const bundle = await bundleResponse.text();
   if (!bundle.includes(STAGING_PROJECT_REF) || bundle.includes(PRODUCTION_PROJECT_REF)) throw new Error("Deployed bundle failed the staging project guard.");
   deployedArtifact = { bundle: bundleUrl.pathname, sha256: createHash("sha256").update(bundle).digest("hex") };
+  if (deployedArtifact.sha256 !== env.E2E_EXPECTED_BUNDLE_SHA256.toLowerCase()) {
+    throw new Error("Deployed staging bundle SHA-256 is not the approved candidate.");
+  }
 }
 
 console.log(JSON.stringify({
@@ -54,6 +85,7 @@ console.log(JSON.stringify({
   runId: env.E2E_RUN_ID,
   discoveryOnly,
   deployedArtifact,
+  databaseManifest: databaseManifest ? { path: path.relative(root, databaseManifestPath), runId: databaseManifest.runId, sha256: env.E2E_DB_MANIFEST_SHA256 } : undefined,
   credentials: discoveryOnly ? "not-required" : "loaded-from-ignored-environment",
   productionAllowed: false,
   retries: 0
@@ -63,4 +95,28 @@ const cliPath = path.join(root, "node_modules", "@playwright", "test", "cli.js")
 const result = spawnSync(process.execPath, [cliPath, "test", "--config=playwright.operational-v2.staging.config.ts", ...args], {
   cwd: root, env, stdio: "inherit", shell: false
 });
+
+if (!discoveryOnly) {
+  const files = [];
+  const visit = (entryPath) => {
+    if (!fs.existsSync(entryPath)) return;
+    const stat = fs.statSync(entryPath);
+    if (stat.isDirectory()) {
+      for (const name of fs.readdirSync(entryPath).sort()) visit(path.join(entryPath, name));
+      return;
+    }
+    const bytes = fs.readFileSync(entryPath);
+    files.push({ path: path.relative(root, entryPath), bytes: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") });
+  };
+  visit(outputDir);
+  visit(summaryPath);
+  fs.writeFileSync(evidenceManifestPath, JSON.stringify({
+    runId: env.E2E_RUN_ID,
+    createdAt: new Date().toISOString(),
+    exitCode: result.status ?? 1,
+    deployedArtifact,
+    databaseManifest: { path: path.relative(root, databaseManifestPath), sha256: env.E2E_DB_MANIFEST_SHA256 },
+    files
+  }, null, 2) + "\n", { encoding: "utf8", flag: "wx" });
+}
 process.exit(result.status ?? 1);

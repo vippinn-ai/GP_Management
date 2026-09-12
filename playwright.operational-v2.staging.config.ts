@@ -7,7 +7,15 @@ const runId = sanitizeRunId(process.env.E2E_RUN_ID);
 
 export default defineConfig({
   testDir: "./tests/e2e/staging",
-  testMatch: "operational-lifecycle-v2.e2e.ts",
+  testMatch: [
+    "operational-lifecycle-v2.e2e.ts",
+    "release-a-hop-pause.e2e.ts",
+    "release-b-checkout-reject-race-v2.e2e.ts",
+    "release-b-checkout-hop-race-v2.e2e.ts",
+    "release-b-hopped-concurrency-v2.e2e.ts",
+    "release-b-multihop-concurrency-v2.e2e.ts",
+    "release-b-role-checkout-hop-timing-v2.e2e.ts"
+  ],
   outputDir: path.join("test-artifacts", "playwright", `operational-v2-run-${runId}`),
   fullyParallel: false,
   workers: 1,

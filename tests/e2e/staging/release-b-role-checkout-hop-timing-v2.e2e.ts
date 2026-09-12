@@ -244,7 +244,7 @@ test.describe.serial("Release B receptionist and manager checkout-hop timing", (
         await hopDialog.getByLabel(/Game hop - close station without billing/).check();
 
         checkoutCommand = await interceptSingleRpcCommand(checkoutPage, "**/rest/v1/rpc/commit_checkout_bill_v2");
-        hopCommand = await interceptSingleRpcCommand(hopPage, "**/rest/v1/rpc/hop_session");
+        hopCommand = await interceptSingleRpcCommand(hopPage, "**/rest/v1/rpc/hop_session*");
         hopPage.on("dialog", dismissHopDialog);
         await Promise.all([
           checkoutDialog.getByRole("button", { name: "Issue Bill", exact: true }).click(),

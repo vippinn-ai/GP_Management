@@ -6,6 +6,9 @@ do $$
 declare incomplete_operational integer := 0;
 begin
   if not exists(select 1 from public.organizations where id='org-primary') then raise exception 'staging organization identity failed'; end if;
+  if to_regclass('public.deployment_environment_identity') is null
+    or not exists(select 1 from public.deployment_environment_identity where environment='staging' and project_ref='tkbdyzxwwbhkpztgjjxh')
+  then raise exception 'database-derived staging identity failed'; end if;
   if not exists(select 1 from public.app_state where id='primary') then raise exception 'primary app_state is missing'; end if;
   if (select count(*) from public.sessions where status<>'closed') <> 0 then raise exception 'staging has open sessions'; end if;
   if (select count(*) from public.customer_tabs where status='open') <> 0 then raise exception 'staging has open customer tabs'; end if;
@@ -36,6 +39,13 @@ with target_functions as (
     'volatility', provolatile,
     'config', proconfig,
     'acl', proacl,
+    'acl_detail', (select jsonb_agg(jsonb_build_object(
+      'grantor',case when acl_items.grantor=0 then 'PUBLIC' else pg_get_userbyid(acl_items.grantor) end,
+      'grantee',case when acl_items.grantee=0 then 'PUBLIC' else pg_get_userbyid(acl_items.grantee) end,
+      'privilege_type',acl_items.privilege_type,
+      'is_grantable',acl_items.is_grantable
+    ) order by acl_items.grantee,acl_items.privilege_type)
+    from aclexplode(coalesce(proacl,acldefault('f',proowner))) acl_items),
     'public_execute', has_function_privilege('public', oid, 'execute'),
     'anon_execute', has_function_privilege('anon', oid, 'execute'),
     'authenticated_execute', has_function_privilege('authenticated', oid, 'execute'),
@@ -53,6 +63,7 @@ with target_functions as (
 )
 select jsonb_build_object(
   'expected_project_ref', 'tkbdyzxwwbhkpztgjjxh',
+  'environment_identity', (select jsonb_build_object('environment',environment,'project_ref',project_ref,'identity_nonce',identity_nonce) from public.deployment_environment_identity where environment='staging'),
   'api_url_setting', current_setting('app.settings.api_url', true),
   'database', current_database(),
   'captured_at_utc', timezone('utc', clock_timestamp()),

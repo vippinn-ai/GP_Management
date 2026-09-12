@@ -181,17 +181,17 @@ test.describe.serial("Release A staging two-browser operational maintenance", ()
       await expect(page.getByText(new RegExp(`Detached post-hop continuation.*${hopStation}`)).first()).toBeVisible();
       await expect(observer.page.getByText(new RegExp(`Detached post-hop continuation.*${hopStation}`)).first()).toBeVisible();
 
-      await expect.poll(() => rpcEvidence.findLast((entry) => entry.rpc === "hop_session" && entry.status < 300)?.entityId).toBeTruthy();
-      const hopEvidence = rpcEvidence.findLast((entry) => entry.rpc === "hop_session" && entry.status < 300);
+      await expect.poll(() => rpcEvidence.findLast((entry) => entry.rpc.startsWith("hop_session") && entry.status < 300)?.entityId).toBeTruthy();
+      const hopEvidence = rpcEvidence.findLast((entry) => entry.rpc.startsWith("hop_session") && entry.status < 300);
       hopSessionId = hopEvidence!.entityId;
-      expect(rpcEvidence.some((entry) => entry.rpc === "record_session_audit" && entry.status < 300)).toBe(true);
+      expect(hopEvidence?.changedRows?.audit_logs).toEqual(expect.any(Array));
       await billNewestHoppedSession();
       await observer.page.reload({ waitUntil: "domcontentloaded" });
       await expect(stationCard(observer.page, hopStation)).toContainText("Available");
       assertNoPageErrors(originErrors, observerErrors);
     } finally {
       sessionStarted = sessionStarted || rpcEvidence.some((entry) => entry.rpc === "start_session" && entry.status < 300);
-      hopSessionId ??= rpcEvidence.findLast((entry) => entry.rpc === "hop_session" && entry.status < 300)?.entityId;
+      hopSessionId ??= rpcEvidence.findLast((entry) => entry.rpc.startsWith("hop_session") && entry.status < 300)?.entityId;
       const committedCheckout = rpcEvidence.findLast((entry) => entry.rpc === "commit_checkout_bill" && entry.status < 300);
       if (hopSessionId && committedCheckout?.billId && changedRowIds(committedCheckout, "sessions").includes(hopSessionId)) {
         cleanupBillId = committedCheckout.billId;

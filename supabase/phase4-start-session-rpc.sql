@@ -96,6 +96,12 @@ declare
   v_tab_reserved numeric;
   v_available numeric;
   v_event_id text;
+  v_event_metadata jsonb := '{}'::jsonb;
+  v_event_actor text;
+  v_request_fingerprint text;
+  v_changed_rows jsonb;
+  v_inserted_stock_movement_count integer := 0;
+  v_inserted_audit_count integer := 0;
 begin
   if v_organization_id is null then
     perform public.raise_operational_rpc_error(
@@ -135,22 +141,38 @@ begin
     );
   end if;
 
+  if jsonb_typeof(v_session) <> 'object'
+    or (v_customer is not null and jsonb_typeof(v_customer) <> 'object')
+    or jsonb_typeof(v_stock_movements) <> 'array'
+    or jsonb_typeof(v_audit_logs) <> 'array'
+  then
+    perform public.raise_operational_rpc_error('invalid_payload', 'The start-session collections are invalid.', jsonb_build_object('session_id', v_session_id));
+  end if;
+  v_request_fingerprint := md5(jsonb_build_object(
+    'mutation_kind', v_mutation_kind,
+    'session', v_session,
+    'customer', coalesce(v_customer, 'null'::jsonb),
+    'stock_movements', v_stock_movements,
+    'audit_logs', v_audit_logs
+  )::text);
+
   perform pg_advisory_xact_lock(hashtext(v_organization_id || ':station:' || v_station_id));
 
-  select operational_events.id
-  into v_event_id
+  select operational_events.id, operational_events.metadata, operational_events.created_by
+  into v_event_id, v_event_metadata, v_event_actor
   from public.operational_events
   where operational_events.organization_id = v_organization_id
     and operational_events.metadata->>'mutation_id' = v_mutation_id
   order by operational_events.created_at desc
   limit 1;
 
-  if exists (
-    select 1
-    from public.sessions
-    where sessions.organization_id = v_organization_id
-      and sessions.id = v_session_id
-  ) then
+  if v_event_id is not null then
+    if v_event_actor is distinct from v_actor::text then
+      perform public.raise_operational_rpc_error('mutation_actor_mismatch', 'This mutation ID belongs to another authenticated actor.', jsonb_build_object('mutation_id', v_mutation_id));
+    end if;
+    if v_event_metadata->>'request_fingerprint' is distinct from v_request_fingerprint then
+      perform public.raise_operational_rpc_error('mutation_identity_mismatch', 'This mutation ID belongs to a different start-session intent.', jsonb_build_object('mutation_id', v_mutation_id));
+    end if;
     return jsonb_build_object(
       'mutation_id', v_mutation_id,
       'organization_id', v_organization_id,
@@ -159,16 +181,17 @@ begin
       'event_id', v_event_id,
       'server_time', timezone('utc', now()),
       'idempotent', true,
-      'changed_rows', jsonb_build_object(
-        'sessions', jsonb_build_array(v_session_id),
-        'customers', '[]'::jsonb,
-        'session_items', '[]'::jsonb,
-        'session_combo_applications', '[]'::jsonb,
-        'stock_movements', '[]'::jsonb,
-        'audit_logs', '[]'::jsonb,
-        'operational_events', case when v_event_id is null then '[]'::jsonb else jsonb_build_array(v_event_id) end
-      )
+      'changed_rows', coalesce(v_event_metadata->'changed_rows', jsonb_build_object('sessions', jsonb_build_array(v_session_id), 'operational_events', jsonb_build_array(v_event_id)))
     );
+  end if;
+
+  if exists (
+    select 1
+    from public.sessions
+    where sessions.organization_id = v_organization_id
+      and sessions.id = v_session_id
+  ) then
+    perform public.raise_operational_rpc_error('session_id_conflict', 'The requested session ID is already in use by a different mutation.', jsonb_build_object('session_id', v_session_id, 'mutation_id', v_mutation_id));
   end if;
 
   if v_continued_from_session_ids_payload is not null
@@ -441,6 +464,37 @@ begin
     end if;
   end loop;
 
+  perform pg_advisory_xact_lock(hashtextextended(v_organization_id||chr(31)||'stock-movement'||chr(31)||(movement->>'id'),0))
+  from jsonb_array_elements(v_stock_movements) movement
+  order by movement->>'id';
+  if exists(select 1 from jsonb_array_elements(v_stock_movements) movement where nullif(movement->>'id','') is null)
+    or exists(select 1 from jsonb_array_elements(v_stock_movements) movement group by movement->>'id' having count(*)>1)
+  then
+    perform public.raise_operational_rpc_error('invalid_payload', 'Stock movement IDs must be present and unique.', jsonb_build_object('session_id', v_session_id));
+  end if;
+  if exists(
+    select 1 from public.stock_movements existing
+    where existing.organization_id=v_organization_id
+      and existing.id in (select movement->>'id' from jsonb_array_elements(v_stock_movements) movement)
+  ) then
+    perform public.raise_operational_rpc_error('stock_movement_id_conflict', 'A stock movement ID is already in use.', jsonb_build_object('session_id', v_session_id));
+  end if;
+  perform pg_advisory_xact_lock(hashtextextended(v_organization_id||chr(31)||'audit'||chr(31)||(audit->>'id'),0))
+  from jsonb_array_elements(v_audit_logs) audit
+  order by audit->>'id';
+  if exists(select 1 from jsonb_array_elements(v_audit_logs) audit where nullif(audit->>'id','') is null)
+    or exists(select 1 from jsonb_array_elements(v_audit_logs) audit group by audit->>'id' having count(*)>1)
+  then
+    perform public.raise_operational_rpc_error('invalid_payload', 'Audit IDs must be present and unique.', jsonb_build_object('session_id', v_session_id));
+  end if;
+  if exists(
+    select 1 from public.audit_logs existing
+    where existing.organization_id=v_organization_id
+      and existing.id in (select audit->>'id' from jsonb_array_elements(v_audit_logs) audit)
+  ) then
+    perform public.raise_operational_rpc_error('audit_id_conflict', 'An audit ID is already in use.', jsonb_build_object('session_id', v_session_id));
+  end if;
+
   if jsonb_typeof(v_customer) = 'object' then
     v_customer_name := nullif(trim(coalesce(v_customer->>'name', '')), '');
     v_customer_phone := nullif(trim(coalesce(v_customer->>'phone', '')), '');
@@ -660,6 +714,11 @@ begin
   where movement ? 'id'
   on conflict (organization_id, id) do nothing;
 
+  get diagnostics v_inserted_stock_movement_count = row_count;
+  if v_inserted_stock_movement_count <> jsonb_array_length(v_stock_movements) then
+    perform public.raise_operational_rpc_error('stock_movement_id_conflict', 'A stock movement ID was claimed concurrently.', jsonb_build_object('session_id', v_session_id));
+  end if;
+
   select coalesce(jsonb_agg(movement->>'id' order by movement->>'id'), '[]'::jsonb)
   into v_stock_movement_ids
   from jsonb_array_elements(v_stock_movements) as movement
@@ -690,12 +749,29 @@ begin
   where audit ? 'id'
   on conflict (organization_id, id) do nothing;
 
+  get diagnostics v_inserted_audit_count = row_count;
+  if v_inserted_audit_count <> jsonb_array_length(v_audit_logs) then
+    perform public.raise_operational_rpc_error('audit_id_conflict', 'An audit ID was claimed concurrently.', jsonb_build_object('session_id', v_session_id));
+  end if;
+
   select coalesce(jsonb_agg(audit->>'id' order by audit->>'id'), '[]'::jsonb)
   into v_audit_log_ids
   from jsonb_array_elements(v_audit_logs) as audit
   where audit ? 'id';
 
+  v_event_id := 'event-' || gen_random_uuid()::text;
+  v_changed_rows := jsonb_build_object(
+    'sessions', jsonb_build_array(v_session_id),
+    'customers', v_customer_ids,
+    'session_items', v_session_item_ids,
+    'session_combo_applications', v_combo_application_ids,
+    'stock_movements', v_stock_movement_ids,
+    'audit_logs', v_audit_log_ids,
+    'operational_events', jsonb_build_array(v_event_id)
+  );
+
   insert into public.operational_events (
+    id,
     organization_id,
     event_type,
     entity_type,
@@ -704,6 +780,7 @@ begin
     metadata
   )
   values (
+    v_event_id,
     v_organization_id,
     'start_session',
     'session',
@@ -712,14 +789,15 @@ begin
     jsonb_build_object(
       'mutation_id', v_mutation_id,
       'mutation_kind', v_mutation_kind,
+      'request_fingerprint', v_request_fingerprint,
       'station_id', v_station_id,
       'customer_id', v_resolved_customer_id,
       'session_item_ids', v_session_item_ids,
       'stock_movement_ids', v_stock_movement_ids,
-      'audit_log_ids', v_audit_log_ids
+      'audit_log_ids', v_audit_log_ids,
+      'changed_rows', v_changed_rows
     )
-  )
-  returning id into v_event_id;
+  );
 
   return jsonb_build_object(
     'mutation_id', v_mutation_id,
@@ -728,15 +806,7 @@ begin
     'entity_id', v_session_id,
     'event_id', v_event_id,
     'server_time', timezone('utc', now()),
-    'changed_rows', jsonb_build_object(
-      'sessions', jsonb_build_array(v_session_id),
-      'customers', v_customer_ids,
-      'session_items', v_session_item_ids,
-      'session_combo_applications', v_combo_application_ids,
-      'stock_movements', v_stock_movement_ids,
-      'audit_logs', v_audit_log_ids,
-      'operational_events', jsonb_build_array(v_event_id)
-    )
+    'changed_rows', v_changed_rows
   );
 end;
 $$;

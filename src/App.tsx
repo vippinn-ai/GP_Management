@@ -19,7 +19,7 @@ import { DashboardPanel } from "./panels/DashboardPanel";
 import { BillRegisterPanel } from "./panels/BillRegisterPanel";
 import { ActivityPanel } from "./panels/ActivityPanel";
 import { useActivityFeed } from "./hooks/useActivityFeed";
-import brandLogo from "../Branding/Logo.png";
+import brandLogo from "../Branding/Logo.optimized.png";
 import {
   buildReceiptPreviewModel,
   downloadReceiptPdf,
@@ -54,6 +54,8 @@ import {
   buildFinancialAdjustmentPatch,
   buildFinancialCheckoutPatch,
   clearCachedNormalizedOrganizationId,
+  loadDeferredNormalizedExpenseAdminData,
+  loadDeferredNormalizedInventoryHistory,
   loadInventoryReportSummaryData,
   loadAnalyticsSummaryData,
   isAnalyticsSummaryDataReady,
@@ -461,7 +463,10 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<TabId>("dashboard");
   const [activityFilters, setActivityFilters] = useState<ActivityFeedFilters>({});
   const [online, setOnline] = useState<boolean>(navigator.onLine);
-  const now = useClock();
+  // App-level consumers render minute-granularity labels and billing estimates;
+  // a 30-second cadence preserves that behavior without rerendering the entire
+  // application tree every second. Exact mutation timestamps remain event-driven.
+  const now = useClock(30_000);
   const [loginUsername, setLoginUsername] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
   const [loginError, setLoginError] = useState("");
@@ -553,6 +558,8 @@ export default function App() {
   );
   const [normalizedReportRefreshSignal, setNormalizedReportRefreshSignal] = useState(0);
   const [inventoryReportRefreshSignal, setInventoryReportRefreshSignal] = useState(0);
+  const deferredExpenseAdminLoadedRef = useRef(false);
+  const deferredInventoryHistoryLoadedRef = useRef(false);
   const receiptPreviewBlockRef = useRef<HTMLDivElement | null>(null);
   const [, setReceiptPreviewBlockHeight] = useState<number | null>(null);
   const skipRemotePersistRef = useRef(false);
@@ -1732,6 +1739,55 @@ export default function App() {
       onSuggestionQueryChange: setCustomerSuggestionQuery
     };
   }, [normalizedCustomerSearchReadsEnabled, normalizedCustomerSearchState]);
+
+  useEffect(() => {
+    if (!activeUserId) {
+      deferredExpenseAdminLoadedRef.current = false;
+      deferredInventoryHistoryLoadedRef.current = false;
+    }
+  }, [activeUserId]);
+
+  useEffect(() => {
+    if (
+      !BACKEND_FEATURE_FLAGS.normalizedBootstrap
+      || activeTab !== "reports"
+      || !activeUserId
+      || !canAccessTab("reports")
+      || deferredExpenseAdminLoadedRef.current
+    ) return;
+    let cancelled = false;
+    runQaControlledNormalizedRead("reports", loadDeferredNormalizedExpenseAdminData)
+      .then((overlay) => {
+        if (cancelled) return;
+        setAppData((previous) => mergeNormalizedAppDataOverlay(previous, overlay));
+        deferredExpenseAdminLoadedRef.current = true;
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) setRemoteError(error instanceof Error ? `Expense administration data could not be loaded: ${error.message}` : "Expense administration data could not be loaded. Reopen Reports to retry.");
+      });
+    return () => { cancelled = true; };
+  }, [activeTab, activeUserId, canAccessTab]);
+
+  useEffect(() => {
+    if (
+      !BACKEND_FEATURE_FLAGS.normalizedBootstrap
+      || activeTab !== "inventory"
+      || !activeUserId
+      || !canAccessTab("inventory")
+      || deferredInventoryHistoryLoadedRef.current
+    ) return;
+    let cancelled = false;
+    runQaControlledNormalizedRead("inventory", loadDeferredNormalizedInventoryHistory)
+      .then((stockMovements) => {
+        if (cancelled) return;
+        setAppData((previous) => mergeNormalizedAppDataOverlay(previous, { stockMovements }));
+        deferredInventoryHistoryLoadedRef.current = true;
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) setRemoteError(error instanceof Error ? `Inventory movement history could not be loaded: ${error.message}` : "Inventory movement history could not be loaded. Reopen Inventory to retry.");
+      });
+    return () => { cancelled = true; };
+  }, [activeTab, activeUserId, canAccessTab]);
 
   useEffect(() => {
     if (!analyticsSummaryReadsEnabled || activeTab !== "reports" || !activeUserId || !canAccessTab("reports")) {

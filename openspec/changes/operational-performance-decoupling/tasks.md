@@ -13,7 +13,7 @@ Each completed item records commit SHA, command, timestamp, artifact path, and S
 
 - [x] Add least-privilege `operational_mutations` and normalized-only v2 functions. Evidence pending independent review and staging install.
 - [x] Harden new-tab continuation-source locking and actor attribution. Evidence pending independent review and staging races.
-- [ ] Add narrow installer, exact-definition/grant verification, rollback capture, and transactional proof.
+- [x] Add database-identity-bound installer, exact source/artifact/body/grant verification, guarded rollback capture, and transactional proof tooling. Evidence pending staging execution.
 - [ ] Prove `app_state` data hash/version/timestamp/updater invariance.
 
 ## 3. Frontend lifecycle
@@ -29,13 +29,13 @@ Each completed item records commit SHA, command, timestamp, artifact path, and S
 
 - [x] Demand-load XLSX/PDF libraries with popup-safe behavior.
 - [x] Add subscription-first buffering/catch-up before writes are enabled.
-- [ ] Defer noncritical screen data and parallelize critical reads.
+- [x] Defer customer directory, 30-day stock movements, and expense administration rows until their owning screens while retaining current-day dashboard expenses.
 - [ ] Add per-slice/request startup telemetry without PII.
-- [ ] Remove root one-second render coupling and gate heavy derived models in a later isolated commit if required by measurements.
+- [x] Remove root one-second render coupling (30-second display clock) and reduce the shared logo asset from 226 KB to 61 KB without changing its visual identity.
 
 ## 5. Gates
 
-- [ ] Local TypeScript, lint, tests, builds, and Playwright discovery pass without retries.
+- [x] Local TypeScript, lint (0 errors, 4 pre-existing warnings), 62-file/587-test suite, production build, and 19-case Playwright discovery pass without retries.
 - [ ] Reviewer approves exact candidate SHA.
 - [ ] Fail-closed staging preflight and flag-off SQL install pass.
 - [ ] Functional, edge, security, idempotency, race, recovery, realtime, parity, and performance suites pass.

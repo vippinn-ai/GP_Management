@@ -5,6 +5,9 @@ do $$
 declare function_name text; function_body text; incomplete_operational integer;
 begin
   if not exists(select 1 from public.organizations where id='org-primary') then raise exception 'staging organization identity failed'; end if;
+  if to_regclass('public.deployment_environment_identity') is null
+    or not exists(select 1 from public.deployment_environment_identity where environment='staging' and project_ref='tkbdyzxwwbhkpztgjjxh')
+  then raise exception 'database-derived staging identity failed'; end if;
   if to_regclass('public.operational_mutations') is null then raise exception 'operational_mutations is missing'; end if;
   execute 'select count(*) from public.operational_mutations where status<>''committed''' into incomplete_operational;
   if incomplete_operational <> 0 then raise exception 'staging has incomplete operational mutations'; end if;
@@ -39,6 +42,7 @@ with target_functions as (
 )
 select jsonb_build_object(
   'expected_project_ref','tkbdyzxwwbhkpztgjjxh',
+  'environment_identity',(select jsonb_build_object('environment',environment,'project_ref',project_ref,'identity_nonce',identity_nonce) from public.deployment_environment_identity where environment='staging'),
   'captured_at_utc',timezone('utc',clock_timestamp()),
   'organization_id','org-primary',
   'app_state',(select jsonb_build_object('version',version,'bytes',octet_length(data::text),'md5',md5(data::text),'updated_at',updated_at,'updated_by',updated_by) from public.app_state where id='primary'),
@@ -49,7 +53,9 @@ select jsonb_build_object(
   'operational_mutations_rls',(select relrowsecurity from pg_class where oid='public.operational_mutations'::regclass),
   'functions',(select jsonb_agg(jsonb_build_object(
     'name',proname,'definition',pg_get_functiondef(oid),'definition_md5',md5(pg_get_functiondef(oid)),
-    'owner',quote_ident(pg_get_userbyid(proowner)),'security_definer',prosecdef,'config',proconfig,'acl',proacl
+    'owner',quote_ident(pg_get_userbyid(proowner)),'security_definer',prosecdef,'config',proconfig,'acl',proacl,
+    'anon_execute',has_function_privilege('anon',oid,'execute'),
+    'authenticated_execute',has_function_privilege('authenticated',oid,'execute')
   ) order by proname) from target_functions)
 ) as evidence;
 

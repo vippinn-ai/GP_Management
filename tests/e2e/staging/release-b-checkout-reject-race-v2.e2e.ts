@@ -110,7 +110,7 @@ test.describe.serial("Release B checkout versus rejection concurrency", () => {
         await expect(observerCustomer).toHaveValue(customerName);
         await observerCustomer.locator("xpath=ancestor::form")
           .getByRole("button", { name: "Cancel", exact: true }).click();
-        rejectCommand = await interceptSingleRpcCommand(observer.page, "**/rest/v1/rpc/reject_session");
+        rejectCommand = await interceptSingleRpcCommand(observer.page, "**/rest/v1/rpc/reject_session*");
         observer.page.once("dialog", (dialog) => dialog.accept(rejectReason));
         await observerSession.getByRole("button", { name: "Reject Session", exact: true }).click();
         const capturedReject = await rejectCommand.captured;
@@ -355,7 +355,7 @@ test.describe.serial("Release B checkout versus rejection concurrency", () => {
         };
         page.off("dialog", dismissOriginDialog);
         await page.unroute("**/rest/v1/rpc/commit_checkout_bill_v2");
-        await observer.page.unroute("**/rest/v1/rpc/reject_session");
+        await observer.page.unroute("**/rest/v1/rpc/reject_session*");
         await Promise.all([
           page.reload({ waitUntil: "domcontentloaded" }),
           observer.page.reload({ waitUntil: "domcontentloaded" })
@@ -389,7 +389,7 @@ test.describe.serial("Release B checkout versus rejection concurrency", () => {
         checkoutCommand?.cancel();
         rejectCommand?.cancel();
         await page.unroute("**/rest/v1/rpc/commit_checkout_bill_v2").catch(() => undefined);
-        await observer.page.unroute("**/rest/v1/rpc/reject_session").catch(() => undefined);
+        await observer.page.unroute("**/rest/v1/rpc/reject_session*").catch(() => undefined);
         sessionStarted = sessionStarted || rpcEvidence.some(
           (entry) => entry.rpc === "start_session" && entry.status < 300
         );

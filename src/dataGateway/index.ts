@@ -16,7 +16,11 @@ export {
   type BackendFeatureFlags
 } from "./featureFlags";
 export { appStateRemoteDataGateway } from "./appStateGateway";
-export { mergeNormalizedAppDataOverlay } from "./normalizedGateway";
+export {
+  loadDeferredNormalizedExpenseAdminData,
+  loadDeferredNormalizedInventoryHistory,
+  mergeNormalizedAppDataOverlay
+} from "./normalizedGateway";
 export {
   adminDataChangePatchHasChanges,
   adminDataChangePatchHasUnsupportedChanges,

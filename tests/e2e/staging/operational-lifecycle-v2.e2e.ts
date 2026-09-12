@@ -49,7 +49,7 @@ async function appStateSnapshot(page: Parameters<typeof readRestRows>[0], restBa
   return rows[0];
 }
 
-test.describe.serial("Operational lifecycle v2 staging gate", () => {
+test.describe("Operational lifecycle v2 staging gate", () => {
   test("hop is canonical, idempotent, actor-safe, realtime-visible, and app_state-invariant", async ({ browser, page }, testInfo) => {
     const observer = await createObserver(browser);
     const rpcEvidence: RpcEvidence[] = [];

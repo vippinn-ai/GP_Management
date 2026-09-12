@@ -34,7 +34,7 @@ export default class CompactEvidenceReporter {
       tests: this.tests
     };
     const output = path.join(directory, `summary-${this.runId}.json`);
-    fs.writeFileSync(output, `${JSON.stringify(summary, null, 2)}\n`, "utf8");
+    fs.writeFileSync(output, `${JSON.stringify(summary, null, 2)}\n`, { encoding: "utf8", flag: "wx" });
     console.log(`Compact Playwright evidence: ${path.relative(process.cwd(), output)}`);
   }
 }

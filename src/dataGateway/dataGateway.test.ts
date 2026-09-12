@@ -717,7 +717,7 @@ describe("app_state data gateway", () => {
           paidAt: "2026-06-24T10:30:00.000Z"
         }
       ],
-      expenses: [],
+      expenses: [{ id: "expense-1", title: "Milk", category: "Food", amount: 120 }],
       billBusinessDates: { "bill-paid-today": "2026-05-17" }
     });
     normalizedReadMocks.loadNormalizedAppDataOverlay.mockResolvedValue({
@@ -793,9 +793,9 @@ describe("app_state data gateway", () => {
           expect.objectContaining({ id: "customer-3", name: "Older Customer" })
         ],
         expenses: [expect.objectContaining({ id: "expense-1", title: "Milk" })],
-        expenseTemplates: [expect.objectContaining({ id: "template-1", title: "Rent" })],
-        expenseTemplateOverrides: [expect.objectContaining({ id: "override-1", templateId: "template-1" })],
-        stockMovements: [expect.objectContaining({ id: "movement-1", itemId: "item-1" })],
+        expenseTemplates: [],
+        expenseTemplateOverrides: [],
+        stockMovements: [],
         auditLogs: [expect.objectContaining({ id: "audit-1", message: "Issued recent bill." })]
       }
     });
@@ -828,12 +828,9 @@ describe("app_state data gateway", () => {
       }),
       client
     );
-    expect(normalizedReadMocks.loadNormalizedExpenseAdminData).toHaveBeenCalledWith("org-primary", client);
-    expect(normalizedReadMocks.loadNormalizedStockMovements).toHaveBeenCalledWith(
-      "org-primary",
-      expect.objectContaining({ limit: 5000 }),
-      client
-    );
+    expect(normalizedReadMocks.loadNormalizedExpenseAdminData).not.toHaveBeenCalled();
+    expect(normalizedReadMocks.loadNormalizedStockMovements).not.toHaveBeenCalled();
+    expect(normalizedCustomerMocks.loadNormalizedCustomerDirectory).not.toHaveBeenCalled();
     expect(normalizedReadMocks.loadNormalizedAuditLogs).toHaveBeenCalledWith("org-primary", { limit: 20 }, client);
   });
 
@@ -1183,9 +1180,10 @@ describe("app_state data gateway", () => {
       normalizedRealtime: true
     });
     const onChange = vi.fn();
+    const onError = vi.fn();
 
     await gateway.loadAppDataSnapshot();
-    gateway.subscribeToAppData(onChange);
+    gateway.subscribeToAppData(onChange, onError);
     realtimeHandler?.({
       new: {
         organization_id: "org-primary",
@@ -1203,8 +1201,44 @@ describe("app_state data gateway", () => {
       expect.objectContaining({ message: "A full-refresh event requires an explicit normalized restore." })
     ));
     expect(onChange).not.toHaveBeenCalled();
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: "A full-refresh event requires an explicit normalized restore." }));
     expect(backendMocks.loadRemoteAppDataSnapshot).toHaveBeenCalledTimes(1);
     warn.mockRestore();
+  });
+
+  it("surfaces a post-ready realtime disconnect and creates a fresh subscription for recovery", async () => {
+    const statusCallbacks: Array<(status: string) => void> = [];
+    const channels = Array.from({ length: 2 }, () => {
+      const channel = {
+        on: vi.fn().mockReturnThis(),
+        subscribe: vi.fn((onStatus?: (status: string) => void) => {
+          if (onStatus) statusCallbacks.push(onStatus);
+          return channel;
+        })
+      };
+      return channel;
+    });
+    const client = { channel: vi.fn().mockReturnValueOnce(channels[0]).mockReturnValueOnce(channels[1]), removeChannel: vi.fn() };
+    backendMocks.getSupabaseClient.mockReturnValue(client);
+    backendMocks.loadRemoteAppDataSnapshot.mockResolvedValue(createSnapshot(20));
+    normalizedReadMocks.loadNormalizedAppDataOverlay.mockResolvedValue({ appData: {}, organizationId: "org-primary" });
+    const gateway = createRemoteDataGateway({ ...DEFAULT_BACKEND_FEATURE_FLAGS, normalizedRealtime: true });
+    const onError = vi.fn();
+
+    const initialLoad = gateway.loadAppDataSnapshot();
+    await vi.waitFor(() => expect(statusCallbacks).toHaveLength(1));
+    statusCallbacks[0]("SUBSCRIBED");
+    await initialLoad;
+    const dispose = gateway.subscribeToAppData(vi.fn(), onError);
+    statusCallbacks[0]("CHANNEL_ERROR");
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining("fresh restore") }));
+
+    const recovery = gateway.loadAppDataSnapshot();
+    await vi.waitFor(() => expect(statusCallbacks).toHaveLength(2));
+    statusCallbacks[1]("SUBSCRIBED");
+    await expect(recovery).resolves.toMatchObject({ version: 20 });
+    expect(client.channel).toHaveBeenCalledTimes(2);
+    dispose();
   });
 
   it("marks compact financial realtime snapshots so screen-specific bill readers refetch", async () => {

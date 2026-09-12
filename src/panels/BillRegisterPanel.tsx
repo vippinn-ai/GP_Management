@@ -4,7 +4,7 @@ import type { NormalizedBillRegisterQuery } from "../dataGateway";
 import type { ReceiptPreviewModel } from "../exporters";
 import { openReceiptWindow, downloadReceiptPdf } from "../exporters";
 import { currency, formatDateTime, toBusinessDayKey, toLocalDateKey, addDays } from "../utils";
-import brandLogo from "../../Branding/Logo.png";
+import brandLogo from "../../Branding/Logo.optimized.png";
 
 type QuickFilter = "all" | "pending" | "today" | "yesterday" | "this_week" | "issued" | "voided";
 type RegisterView = "bills" | "receivables";

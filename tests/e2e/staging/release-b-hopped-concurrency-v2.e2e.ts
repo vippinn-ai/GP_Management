@@ -63,8 +63,8 @@ test.describe.serial("Release B hopped-session checkout concurrency", () => {
       const continuation = page.getByRole("dialog", { name: "Continue Customer", exact: true });
       await expect(continuation).toContainText(customerName);
       hopConfirmed = true;
-      await expect.poll(() => rpcEvidence.findLast((entry) => entry.rpc === "hop_session" && entry.status < 300)?.entityId).toBeTruthy();
-      hoppedSessionId = rpcEvidence.findLast((entry) => entry.rpc === "hop_session" && entry.status < 300)!.entityId;
+      await expect.poll(() => rpcEvidence.findLast((entry) => entry.rpc.startsWith("hop_session") && entry.status < 300)?.entityId).toBeTruthy();
+      hoppedSessionId = rpcEvidence.findLast((entry) => entry.rpc.startsWith("hop_session") && entry.status < 300)!.entityId;
       await continuation.getByRole("button", { name: "Bill & Done", exact: true }).click();
 
       type CapturedRequest = { url: string; headers: Record<string, string>; body: unknown };

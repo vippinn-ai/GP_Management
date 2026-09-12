@@ -118,7 +118,7 @@ test.describe.serial("Release B admin checkout versus game-hop concurrency", () 
         await expect(hopCheckout.getByRole("button", { name: "Confirm Game Hop", exact: true })).toBeEnabled();
 
         checkoutCommand = await interceptSingleRpcCommand(page, "**/rest/v1/rpc/commit_checkout_bill_v2");
-        hopCommand = await interceptSingleRpcCommand(observer.page, "**/rest/v1/rpc/hop_session");
+        hopCommand = await interceptSingleRpcCommand(observer.page, "**/rest/v1/rpc/hop_session*");
         observer.page.on("dialog", dismissObserverDialog);
         await Promise.all([
           checkout.getByRole("button", { name: "Issue Bill", exact: true }).click(),
@@ -419,7 +419,7 @@ test.describe.serial("Release B admin checkout versus game-hop concurrency", () 
         }
         observer.page.off("dialog", dismissObserverDialog);
         await page.unroute("**/rest/v1/rpc/commit_checkout_bill_v2");
-        await observer.page.unroute("**/rest/v1/rpc/hop_session");
+        await observer.page.unroute("**/rest/v1/rpc/hop_session*");
         await Promise.all([
           page.reload({ waitUntil: "domcontentloaded" }),
           observer.page.reload({ waitUntil: "domcontentloaded" })
@@ -446,7 +446,7 @@ test.describe.serial("Release B admin checkout versus game-hop concurrency", () 
         checkoutCommand?.cancel();
         hopCommand?.cancel();
         await page.unroute("**/rest/v1/rpc/commit_checkout_bill_v2").catch(() => undefined);
-        await observer.page.unroute("**/rest/v1/rpc/hop_session").catch(() => undefined);
+        await observer.page.unroute("**/rest/v1/rpc/hop_session*").catch(() => undefined);
         sessionStarted = sessionStarted || rpcEvidence.some(
           (entry) => entry.rpc === "start_session" && entry.status < 300
         );

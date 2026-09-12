@@ -1,5 +1,5 @@
 import type { jsPDF as JsPdfDocument } from "jspdf";
-import brandLogo from "../Branding/Logo.png";
+import brandLogo from "../Branding/Logo.optimized.png";
 import type { Bill, BusinessProfile, Payment } from "./types";
 import { currency, downloadBlob, escapeHtml, formatDateTime } from "./utils";
 
