@@ -12,6 +12,7 @@ begin
   if not exists (
     select 1 from public.deployment_environment_identity
     where environment = 'staging' and project_ref = 'tkbdyzxwwbhkpztgjjxh'
+      and identity_nonce = '__IDENTITY_NONCE__'::uuid
   ) then raise exception 'database staging identity failed'; end if;
 end $$;
 

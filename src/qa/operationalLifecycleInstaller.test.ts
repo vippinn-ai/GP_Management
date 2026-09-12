@@ -91,13 +91,18 @@ describe("operational lifecycle staging installer", () => {
       return { name, definition, definition_md5: crypto.createHash("md5").update(definition).digest("hex") };
     });
     const preflightPath = path.join(fixtureDir, "preflight.json");
-    const preflightText = JSON.stringify({ functions: preflightFunctions });
+    const identityNonce = "12345678-1234-4123-8123-123456789abc";
+    const preflightText = JSON.stringify({
+      environment_identity: { environment: "staging", project_ref: "tkbdyzxwwbhkpztgjjxh", identity_nonce: identityNonce },
+      functions: preflightFunctions
+    });
     fs.writeFileSync(preflightPath, preflightText);
     const preflightSha = crypto.createHash("sha256").update(preflightText).digest("hex");
     const dbManifestPath = path.join(fixtureDir, "manifest.json");
     const dbManifest = {
       runId: "normops-20260912-2200-install-fixture",
       target: { projectRef: "tkbdyzxwwbhkpztgjjxh", systemIdentifier: "7623125441096521075", organizationId: "org-primary" },
+      environmentIdentity: { environment: "staging", project_ref: "tkbdyzxwwbhkpztgjjxh", identity_nonce: identityNonce },
       preflight: { path: preflightPath, sha256: preflightSha }
     };
     const dbManifestText = JSON.stringify(dbManifest);
@@ -136,8 +141,16 @@ describe("operational lifecycle staging installer", () => {
     expect(result.status, result.stderr).toBe(0);
     const proof = fs.readFileSync(proofPath, "utf8");
     expect(proof).toContain("installed function drift");
+    expect(proof).toContain("do $$\ndeclare function_name");
+    expect(proof).toContain("end $$;");
+    expect(proof).not.toContain("do $\ndeclare function_name");
+    expect(proof).not.toContain("end $;");
+    expect(proof).toContain(`identity_nonce = '${identityNonce}'::uuid`);
     for (const entry of preflightFunctions) expect(proof).toContain(entry.definition_md5);
     expect(proof).not.toContain("__INSTALLED_FUNCTION_GUARDS__");
+    expect(proof).not.toContain("__IDENTITY_NONCE__");
     expect(proof.trimEnd().endsWith("rollback;")).toBe(true);
+    const proofManifest = JSON.parse(fs.readFileSync(proofManifestPath, "utf8"));
+    expect(proofManifest.target.identityNonce).toBe(identityNonce);
   });
 });

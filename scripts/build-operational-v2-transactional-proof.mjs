@@ -44,6 +44,17 @@ if (sha256(preflightText) !== installManifest.preflight.sha256) {
 }
 const parsedPreflight = JSON.parse(preflightText);
 const preflight = parsedPreflight.evidence ?? parsedPreflight;
+const identityNonce = preflight.environment_identity?.identity_nonce;
+if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(identityNonce ?? "")) {
+  throw new Error("Immutable preflight omitted the staging identity nonce.");
+}
+if (
+  installManifest.environmentIdentity?.environment !== "staging" ||
+  installManifest.environmentIdentity?.project_ref !== "tkbdyzxwwbhkpztgjjxh" ||
+  installManifest.environmentIdentity?.identity_nonce !== identityNonce
+) {
+  throw new Error("Install manifest and immutable preflight staging identities do not match.");
+}
 
 const requiredInstalledFunctions = [
   "hop_session_v2",
@@ -93,8 +104,14 @@ ${guardedFunctions.map((name) => `    ('${name}', '${guardedDefinitionMd5[name]}
 end $$;`;
 const generated = source
   .replaceAll("__RUN_ID__", runId)
-  .replace("__INSTALLED_FUNCTION_GUARDS__", definitionGuards);
-if (generated.includes("__RUN_ID__") || generated.includes("__INSTALLED_FUNCTION_GUARDS__")) throw new Error("Transactional proof contains an unresolved marker.");
+  .replaceAll("__IDENTITY_NONCE__", identityNonce)
+  .replace("__INSTALLED_FUNCTION_GUARDS__", () => definitionGuards);
+if (generated.includes("__RUN_ID__") || generated.includes("__IDENTITY_NONCE__") || generated.includes("__INSTALLED_FUNCTION_GUARDS__")) {
+  throw new Error("Transactional proof contains an unresolved marker.");
+}
+if (!generated.includes("do $$\ndeclare function_name") || !generated.includes("end $$;")) {
+  throw new Error("Transactional proof function-definition guard lost its dollar delimiters.");
+}
 const outputDirectory = path.join(root, "test-artifacts", "sql");
 fs.mkdirSync(outputDirectory, { recursive: true });
 const outputPath = path.join(outputDirectory, `${runId}-operational-v2-transactional-proof.sql`);
@@ -103,7 +120,7 @@ if (fs.existsSync(outputPath) || fs.existsSync(manifestPath)) throw new Error("T
 fs.writeFileSync(outputPath, generated, { encoding: "utf8", flag: "wx" });
 const manifest = {
   runId,
-  target: { environment: "staging", projectRef: "tkbdyzxwwbhkpztgjjxh", organizationId: "org-primary" },
+  target: { environment: "staging", projectRef: "tkbdyzxwwbhkpztgjjxh", organizationId: "org-primary", identityNonce },
   rollbackOnly: true,
   installManifest: { path: path.relative(root, installManifestPath), sha256: installManifestExpectedSha, runId: installManifest.runId },
   installPreflight: { path: path.relative(root, preflightPath), sha256: installManifest.preflight.sha256 },
