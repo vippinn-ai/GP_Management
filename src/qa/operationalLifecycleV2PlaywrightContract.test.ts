@@ -198,6 +198,9 @@ describe("operational lifecycle v2 Playwright and performance contract", () => {
       "itemsAfterStart.map(canonicalItem)",
       "inventoryAfterHop).toEqual(inventoryAfterStart)",
       "billedItems).toEqual(itemsAfterStart.map(canonicalItem))",
+      "inventoryAfterBill",
+      "must decrement exactly once",
+      "billStockMovements",
       "directRpcEvidence",
       "event cardinality",
       "audit cardinality",
@@ -220,6 +223,8 @@ describe("operational lifecycle v2 Playwright and performance contract", () => {
       "duplicateRealtimeFrameDelivered",
       "observerPanelUnmountedDuringDuplicate"
     ]) expect(spec).toContain(marker);
+    expect(spec).toContain("unresolvedSessionIds");
+    expect(spec).toContain("consoleErrors: [], pageErrors: []");
   });
 
   it("reconstructs the same bill and receipt after refresh, mobile resize, and logout-login", () => {
@@ -251,6 +256,8 @@ describe("operational lifecycle v2 Playwright and performance contract", () => {
       "session_not_open",
       "close_disposition: \"hopped\"",
       "must not leave an open pause",
+      "Rejected timing mutation must leave canonical start unchanged",
+      "Rejected pause mutation must not create a pause row",
       "mutation event cardinality",
       "mutation audit cardinality",
       "itemsAfterBill",
@@ -258,6 +265,10 @@ describe("operational lifecycle v2 Playwright and performance contract", () => {
       "unresolvedSourceIds",
       "consoleErrors: [], pageErrors: []"
     ]) expect(spec).toContain(marker);
+    const safeEvidence = spec.slice(spec.indexOf("function safeCommandEvidence"), spec.indexOf("async function timedSubmit"));
+    expect(safeEvidence).toContain("urlPath");
+    expect(safeEvidence).not.toContain("headers");
+    expect(spec).not.toMatch(/\bcapturedHop,\s*\n\s*capturedMutation\b/);
   });
 
   it("keeps heavy exports demand-loaded and removes the one-second App render cadence", () => {

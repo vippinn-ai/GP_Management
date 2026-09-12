@@ -5,7 +5,7 @@
 - Clean worktree, approved SHA, reusable Playwright/direct-DB scripts, and `retries: 0`.
 - Unique `normops-YYYYMMDD-HHMM-<case>-<n>` IDs for every run/entity/mutation/audit/customer.
 - Never rerun ambiguity with a new ID; reconcile, then replay only the same ID where specified.
-- Persist request/response/database/timing/console/network/cleanup evidence as immutable JSON with SHA-256.
+- Persist request body/response/database/timing/console/network/cleanup evidence as immutable JSON with SHA-256. Never persist authorization, API-key, cookie, password, or other credential headers in evidence.
 - Capture old deployed definitions, ACLs, proconfig, flags, publication, compatibility hash/version/bytes, and rollback SQL before install.
 
 ## Functional and parity matrix
@@ -19,7 +19,7 @@
 
 Reusable suite ownership:
 
-- `operational-lifecycle-v2-continuations.e2e.ts`: unit-sale hop with canonical mode/item/inventory/bill-line preservation; new/existing consumables-tab continuation; three-consumer exclusivity; reject-and-recover; exact direct RPC timing/body, event/audit actor, browser-error, and unresolved-entity evidence.
+- `operational-lifecycle-v2-continuations.e2e.ts`: unit-sale hop with canonical mode/item/inventory/bill-line preservation and exact one-time final stock decrement/movement; new/existing consumables-tab continuation; three-consumer exclusivity; reject-and-recover; exact direct RPC timing/body, event/audit actor, browser-error, and unresolved-entity evidence.
 - `operational-lifecycle-v2-recovery-realtime.e2e.ts`: committed/lost response; configured 20-second critical-acknowledgement waiter expiry; manual same-ID replay; realtime-first/response-first; offline gap; controlled duplicate realtime frame; observer-panel unmount/reconnect.
 - `operational-lifecycle-v2-hop-mutation-races.e2e.ts`: hop versus timing, pause, resume, add-item, and remove-item writes, using distinct actors and accepting only success or exact `session_not_open`; reconcile the canonical session, closed pause, item/bill-line outcome, event, audit, actor, console, pending queue, and unresolved-session ledger.
 - `operational-lifecycle-v2-concurrency.e2e.ts`: same-target races, exact 20-by-3 latency sampling, and 50 unrelated-target overlap/reload pairs.

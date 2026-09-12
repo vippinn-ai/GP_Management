@@ -186,9 +186,16 @@ test.describe.serial("Operational v2 lost-response and realtime convergence", ()
     const observer = await createObserver(browser);
     const requests: CapturedRpcRequest[] = [];
     captureAuthenticatedRestRequests(page, requests);
+    const rpcEvidence: RpcEvidence[] = [];
+    captureRpcEvidence(page, "origin", rpcEvidence);
+    captureRpcEvidence(observer.page, "observer", rpcEvidence);
+    const originErrors = capturePageErrors(page);
+    const observerErrors = capturePageErrors(observer.page);
+    const unresolvedSessionIds = new Set<string>();
     const customerName = `QA Reconnect Reject ${runId}`;
     const duplicateCustomerName = `QA Duplicate Event ${runId}`;
     let capturedReject: CapturedRpcRequest | undefined;
+    let primaryError: unknown;
     try {
       await observer.page.addInitScript(() => {
         const NativeWebSocket = window.WebSocket;
@@ -213,6 +220,9 @@ test.describe.serial("Operational v2 lost-response and realtime convergence", ()
       });
       await Promise.all([signIn(page, credentials("A")), signIn(observer.page, credentials("B"))]);
       await startSession(page, station, customerName);
+      const firstSessionId = rpcEvidence.findLast((entry) => entry.rpc === "start_session" && entry.status < 300)?.entityId;
+      expect(firstSessionId).toBeTruthy();
+      unresolvedSessionIds.add(firstSessionId!);
       await expect(stationCard(observer.page, station)).toContainText(customerName);
       await observer.context.setOffline(true);
 
@@ -224,6 +234,7 @@ test.describe.serial("Operational v2 lost-response and realtime convergence", ()
       const request = await requestPromise;
       capturedReject = { url: request.url(), headers: request.headers(), body: request.postDataJSON() };
       expect((await responsePromise).status()).toBe(200);
+      unresolvedSessionIds.delete(firstSessionId!);
       const responseCompletedAt = new Date().toISOString();
       await expect(stationCard(page, station)).toContainText("Available");
 
@@ -253,6 +264,9 @@ test.describe.serial("Operational v2 lost-response and realtime convergence", ()
 
       await page.getByRole("button", { name: "Live Dashboard", exact: true }).click();
       await startSession(page, station, duplicateCustomerName);
+      const duplicateSessionId = rpcEvidence.findLast((entry) => entry.rpc === "start_session" && entry.status < 300)?.entityId;
+      expect(duplicateSessionId).toBeTruthy();
+      unresolvedSessionIds.add(duplicateSessionId!);
       await expect(stationCard(observer.page, station)).toContainText(duplicateCustomerName);
       await observer.page.getByRole("button", { name: "Bill Register", exact: true }).click();
       await expect(observer.page.getByRole("heading", { name: "Bill Register", exact: true })).toBeVisible();
@@ -268,6 +282,7 @@ test.describe.serial("Operational v2 lost-response and realtime convergence", ()
       await duplicateManaged.getByRole("button", { name: "Reject Session", exact: true }).click();
       const duplicateRequest = await duplicateRequestPromise;
       expect((await duplicateResponsePromise).status()).toBe(200);
+      unresolvedSessionIds.delete(duplicateSessionId!);
       const duplicateEnvelope = duplicateRequest.postDataJSON() as { payload: { mutation_id: string } };
       await expect.poll(() => observer.page.evaluate(() =>
         (window as unknown as { __bpRealtimeDuplicateControl?: { duplicates: number } }).__bpRealtimeDuplicateControl?.duplicates ?? 0
@@ -284,6 +299,9 @@ test.describe.serial("Operational v2 lost-response and realtime convergence", ()
         select: "id"
       });
       expect(duplicateEvents).toHaveLength(1);
+      expect([...unresolvedSessionIds]).toEqual([]);
+      expect(originErrors).toEqual({ consoleErrors: [], pageErrors: [] });
+      expect(observerErrors).toEqual({ consoleErrors: [], pageErrors: [] });
       await attachJson(testInfo, "operational-v2-realtime-gap-reconnect", {
         runId,
         mutationId: envelope.payload.mutation_id,
@@ -296,13 +314,25 @@ test.describe.serial("Operational v2 lost-response and realtime convergence", ()
         duplicateRealtimeMutationId: duplicateEnvelope.payload.mutation_id,
         duplicateRealtimeEventCount: duplicateEvents.length,
         observerPanelUnmountedDuringDuplicate: true,
-        eventCount: events.length
+        eventCount: events.length,
+        rpcEvidence,
+        originErrors,
+        observerErrors
       });
+    } catch (error) {
+      primaryError = error;
     } finally {
       await observer.context.setOffline(false).catch(() => undefined);
+      await attachJson(testInfo, "operational-v2-realtime-cleanup-ledger", {
+        runId,
+        unresolvedSessionIds: [...unresolvedSessionIds],
+        failed: Boolean(primaryError)
+      });
       await attachFailureScreenshot(testInfo, page, "realtime-gap-origin-failure");
       await attachFailureScreenshot(testInfo, observer.page, "realtime-gap-observer-failure");
       await observer.context.close();
     }
+    if (primaryError) throw primaryError;
+    if (unresolvedSessionIds.size) throw new Error("Realtime recovery left exact unresolved staging sessions; reconcile before another run.");
   });
 });

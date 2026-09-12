@@ -81,6 +81,11 @@ function auditIdFrom(command: CapturedRpcRequest) {
   return typeof auditLog.id === "string" ? auditLog.id : null;
 }
 
+function safeCommandEvidence(command: CapturedRpcRequest) {
+  const url = new URL(command.url);
+  return { urlPath: url.pathname, body: command.body };
+}
+
 async function timedSubmit(command: Awaited<ReturnType<typeof interceptSingleRpcCommand>>, body: unknown) {
   const startedAt = new Date().toISOString();
   const started = performance.now();
@@ -232,12 +237,18 @@ test("hop serializes safely against timing, pause, resume, add-item, and remove-
       expect(mutationId).toBeTruthy();
       expect(hopAuditId).toBeTruthy();
       expect(mutationAuditId).toBeTruthy();
-      const itemsBeforeRace = await readRestRows<SessionItemRow>(page, origin.restBase, origin.headers, "session_items", {
-        organization_id: `eq.${organizationId}`,
-        session_id: `eq.${sourceId}`,
-        select: "id,inventory_item_id,name,quantity,unit_price",
-        order: "id.asc"
-      });
+      const [sessionBeforeRace, pauseLogsBeforeRace, itemsBeforeRace] = await Promise.all([
+        readRestRows<{ id: string; status: string; started_at: string }>(page, origin.restBase, origin.headers, "sessions", {
+          organization_id: `eq.${organizationId}`, id: `eq.${sourceId}`, select: "id,status,started_at"
+        }),
+        readRestRows<{ id: string; paused_at: string; resumed_at: string | null }>(page, origin.restBase, origin.headers, "session_pause_logs", {
+          organization_id: `eq.${organizationId}`, session_id: `eq.${sourceId}`, select: "id,paused_at,resumed_at", order: "id.asc"
+        }),
+        readRestRows<SessionItemRow>(page, origin.restBase, origin.headers, "session_items", {
+          organization_id: `eq.${organizationId}`, session_id: `eq.${sourceId}`, select: "id,inventory_item_id,name,quantity,unit_price", order: "id.asc"
+        })
+      ]);
+      expect(sessionBeforeRace).toHaveLength(1);
       expect(hopCommand.captureCount()).toBe(1);
       expect(mutationCommand.captureCount()).toBe(1);
       const [hopSubmission, mutationSubmission] = await Promise.all([
@@ -311,10 +322,25 @@ test("hop serializes safely against timing, pause, resume, add-item, and remove-
         expect(mutationAudits[0]).toEqual({ id: mutationAuditId, user_id: second.actorId });
       }
 
-      if (kind === "timing" && mutationResponse.status() === 200) {
-        const intendedStartedAt = String(mutationParts.payload.startedAt ?? "");
-        expect(intendedStartedAt).toBeTruthy();
-        expect(Date.parse(sessions[0].started_at)).toBe(Date.parse(intendedStartedAt));
+      if (kind === "timing") {
+        if (mutationResponse.status() === 200) {
+          const intendedStartedAt = String(mutationParts.payload.startedAt ?? "");
+          expect(intendedStartedAt).toBeTruthy();
+          expect(Date.parse(sessions[0].started_at)).toBe(Date.parse(intendedStartedAt));
+        } else {
+          expect(Date.parse(sessions[0].started_at), "Rejected timing mutation must leave canonical start unchanged.")
+            .toBe(Date.parse(sessionBeforeRace[0].started_at));
+        }
+      }
+      if (kind === "pause") {
+        if (mutationResponse.status() === 200) {
+          expect(pauseLogs).toHaveLength(pauseLogsBeforeRace.length + 1);
+          const newPauses = pauseLogs.filter((row) => !pauseLogsBeforeRace.some((before) => before.id === row.id));
+          expect(newPauses).toHaveLength(1);
+          expect(newPauses[0].resumed_at, "Successful competing pause must be closed by the hop.").not.toBeNull();
+        } else {
+          expect(pauseLogs, "Rejected pause mutation must not create a pause row.").toEqual(pauseLogsBeforeRace);
+        }
       }
       if (kind === "add-item") {
         expect(attemptedItemName).toBeTruthy();
@@ -339,10 +365,12 @@ test("hop serializes safely against timing, pause, resume, add-item, and remove-
         hopMutationId,
         mutationId,
         billId,
-        capturedHop,
-        capturedMutation,
+        hopCommand: safeCommandEvidence(capturedHop),
+        mutationCommand: safeCommandEvidence(capturedMutation),
         hopSubmission: { startedAt: hopSubmission.startedAt, completedAt: hopSubmission.completedAt, elapsedMs: hopSubmission.elapsedMs },
         mutationSubmission: { startedAt: mutationSubmission.startedAt, completedAt: mutationSubmission.completedAt, elapsedMs: mutationSubmission.elapsedMs },
+        sessionBeforeRace,
+        pauseLogsBeforeRace,
         itemsBeforeRace,
         sessions,
         pauseLogs,

@@ -40,6 +40,8 @@ interface SessionItemRow {
   name: string;
   quantity: number | string;
   unit_price: number | string;
+  sold_as_pack_of: number | string | null;
+  stock_units_per_sale: number | string | null;
 }
 interface DirectRpcEvidence {
   client: "origin" | "observer";
@@ -106,6 +108,10 @@ function canonicalItem(row: SessionItemRow) {
     quantity: Number(row.quantity),
     unitPrice: Number(row.unit_price)
   };
+}
+
+function stockUnits(row: SessionItemRow) {
+  return Number(row.quantity) * Number(row.stock_units_per_sale ?? row.sold_as_pack_of ?? 1);
 }
 
 function mutationAuditIds(payload: Record<string, unknown>) {
@@ -328,16 +334,16 @@ test.describe.serial("Operational v2 continuation and unit-sale matrix", () => {
         ),
         readRestRows<SessionItemRow>(page, identity.restBase, identity.headers, "session_items", {
           organization_id: `eq.${organizationId}`, session_id: `eq.${sourceId}`,
-          select: "id,inventory_item_id,name,quantity,unit_price", order: "id.asc"
+          select: "id,inventory_item_id,name,quantity,unit_price,sold_as_pack_of,stock_units_per_sale", order: "id.asc"
         })
       ]);
       expect(sessionAfterStart).toEqual([{ id: sourceId, mode: "unit_sale", status: "active", close_disposition: null, closed_bill_id: null }]);
       expect(itemsAfterStart.length, "Unit-sale start must persist at least one canonical item.").toBeGreaterThan(0);
       const inventoryIds = [...new Set(itemsAfterStart.map((row) => row.inventory_item_id).filter((id): id is string => Boolean(id)))];
       expect(inventoryIds.length, "Every unit-sale item must retain an inventory identity.").toBeGreaterThan(0);
-      const inventoryAfterStart = await readRestRows<{ id: string; stock_qty: number | string }>(
+      const inventoryAfterStart = await readRestRows<{ id: string; stock_qty: number | string; is_reusable: boolean }>(
         page, identity.restBase, identity.headers, "inventory_items",
-        { organization_id: `eq.${organizationId}`, id: `in.(${inventoryIds.join(",")})`, select: "id,stock_qty", order: "id.asc" }
+        { organization_id: `eq.${organizationId}`, id: `in.(${inventoryIds.join(",")})`, select: "id,stock_qty,is_reusable", order: "id.asc" }
       );
       const managed = await openManagedSession(page, unitStationName);
       await managed.getByRole("button", { name: "Proceed to Checkout", exact: true }).click();
@@ -354,10 +360,10 @@ test.describe.serial("Operational v2 continuation and unit-sale matrix", () => {
         ),
         readRestRows<SessionItemRow>(page, identity.restBase, identity.headers, "session_items", {
           organization_id: `eq.${organizationId}`, session_id: `eq.${sourceId}`,
-          select: "id,inventory_item_id,name,quantity,unit_price", order: "id.asc"
+          select: "id,inventory_item_id,name,quantity,unit_price,sold_as_pack_of,stock_units_per_sale", order: "id.asc"
         }),
-        readRestRows<{ id: string; stock_qty: number | string }>(page, identity.restBase, identity.headers, "inventory_items", {
-          organization_id: `eq.${organizationId}`, id: `in.(${inventoryIds.join(",")})`, select: "id,stock_qty", order: "id.asc"
+        readRestRows<{ id: string; stock_qty: number | string; is_reusable: boolean }>(page, identity.restBase, identity.headers, "inventory_items", {
+          organization_id: `eq.${organizationId}`, id: `in.(${inventoryIds.join(",")})`, select: "id,stock_qty,is_reusable", order: "id.asc"
         })
       ]);
       expect(sessionAfterHop).toEqual([{ id: sourceId, mode: "unit_sale", status: "closed", close_disposition: "hopped", closed_bill_id: null }]);
@@ -372,7 +378,7 @@ test.describe.serial("Operational v2 continuation and unit-sale matrix", () => {
       await waitForSynced(page);
       billId = rpcEvidence.findLast((entry) => entry.rpc === "commit_checkout_bill_v2" && entry.status < 300)?.billId;
       expect(billId).toBeTruthy();
-      const [sessionAfterBill, billLines] = await Promise.all([
+      const [sessionAfterBill, billLines, inventoryAfterBill, billStockMovements] = await Promise.all([
         readRestRows<{ id: string; mode: string; status: string; close_disposition: string | null; closed_bill_id: string | null }>(
           page, identity.restBase, identity.headers, "sessions",
           { organization_id: `eq.${organizationId}`, id: `eq.${sourceId}`, select: "id,mode,status,close_disposition,closed_bill_id" }
@@ -380,14 +386,33 @@ test.describe.serial("Operational v2 continuation and unit-sale matrix", () => {
         readRestRows<{ description: string; quantity: number | string; unit_price: number | string; inventory_item_id: string | null; linked_session_id: string | null }>(
           page, identity.restBase, identity.headers, "bill_lines",
           { organization_id: `eq.${organizationId}`, bill_id: `eq.${billId}`, linked_session_id: `eq.${sourceId}`, select: "description,quantity,unit_price,inventory_item_id,linked_session_id", order: "id.asc" }
-        )
+        ),
+        readRestRows<{ id: string; stock_qty: number | string; is_reusable: boolean }>(page, identity.restBase, identity.headers, "inventory_items", {
+          organization_id: `eq.${organizationId}`, id: `in.(${inventoryIds.join(",")})`, select: "id,stock_qty,is_reusable", order: "id.asc"
+        }),
+        readRestRows<{ id: string; item_id: string; quantity: number | string; related_bill_id: string | null }>(page, identity.restBase, identity.headers, "stock_movements", {
+          organization_id: `eq.${organizationId}`, related_bill_id: `eq.${billId}`, item_id: `in.(${inventoryIds.join(",")})`, select: "id,item_id,quantity,related_bill_id", order: "id.asc"
+        })
       ]);
       expect(sessionAfterBill).toEqual([{ id: sourceId, mode: "unit_sale", status: "closed", close_disposition: "hopped", closed_bill_id: billId }]);
       const billedItems = billLines
         .filter((line) => line.inventory_item_id)
         .map((line) => ({ inventoryItemId: line.inventory_item_id, name: line.description, quantity: Number(line.quantity), unitPrice: Number(line.unit_price) }));
       expect(billedItems).toEqual(itemsAfterStart.map(canonicalItem));
-      const unitEvidence = { startEnvelope, sessionAfterStart, itemsAfterStart, inventoryAfterStart, sessionAfterHop, itemsAfterHop, inventoryAfterHop, sessionAfterBill, billLines };
+      for (const before of inventoryAfterHop) {
+        const after = inventoryAfterBill.find((row) => row.id === before.id);
+        expect(after, `Final inventory row ${before.id} must exist.`).toBeTruthy();
+        const expectedDelta = before.is_reusable
+          ? 0
+          : itemsAfterStart.filter((row) => row.inventory_item_id === before.id).reduce((sum, row) => sum + stockUnits(row), 0);
+        expect(Number(after!.stock_qty), `Final stock for ${before.id} must decrement exactly once.`).toBe(Number(before.stock_qty) - expectedDelta);
+        const movementTotal = billStockMovements.filter((row) => row.item_id === before.id).reduce((sum, row) => sum + Number(row.quantity), 0);
+        expect(movementTotal, `Bill stock movement for ${before.id} must match the one-time decrement.`).toBe(-expectedDelta);
+      }
+      const unitEvidence = {
+        startEnvelope, sessionAfterStart, itemsAfterStart, inventoryAfterStart, sessionAfterHop, itemsAfterHop,
+        inventoryAfterHop, sessionAfterBill, billLines, inventoryAfterBill, billStockMovements
+      };
       expect(originErrors).toEqual({ consoleErrors: [], pageErrors: [] });
       expect(observerErrors).toEqual({ consoleErrors: [], pageErrors: [] });
       await attachJson(testInfo, "operational-v2-unit-sale-hop", { runId, customerName, sourceId, billId, unitEvidence, rpcEvidence });
