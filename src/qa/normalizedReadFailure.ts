@@ -1,4 +1,4 @@
-export type QaNormalizedReadFailureTarget = "bill-history" | "reports" | "customers" | "inventory";
+export type QaNormalizedReadFailureTarget = "dashboard" | "bill-history" | "reports" | "customers" | "inventory";
 
 export const QA_NORMALIZED_READ_FAILURE_HOST =
   "gp-management-staging-failclosed-qa.breakperfectgaminglounge.workers.dev";
@@ -21,6 +21,7 @@ const QA_NORMALIZED_READ_BUILD_CONTRACT = [
   `v2=${import.meta.env.VITE_BACKEND_FINANCIAL_RPC_V2}`
 ].join("|");
 const QA_NORMALIZED_READ_FAILURE_TARGETS = new Set<QaNormalizedReadFailureTarget>([
+  "dashboard",
   "bill-history",
   "reports",
   "customers",

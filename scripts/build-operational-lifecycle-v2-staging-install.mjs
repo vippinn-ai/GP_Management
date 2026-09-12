@@ -47,6 +47,9 @@ const preflightPath = path.resolve(root, argument("preflight"));
 const preflightText = fs.readFileSync(preflightPath, "utf8");
 const preflight = readEvidence(preflightPath);
 if (preflight.expected_project_ref !== EXPECTED_STAGING_PROJECT_REF) throw new Error("Preflight project ref is not staging.");
+if (typeof preflight.api_url_setting !== "string" || !preflight.api_url_setting.includes(EXPECTED_STAGING_PROJECT_REF)) {
+  throw new Error("Preflight database API URL does not identify staging.");
+}
 if (preflight.environment_identity?.environment !== "staging" || preflight.environment_identity?.project_ref !== EXPECTED_STAGING_PROJECT_REF || !/^[0-9a-f-]{36}$/i.test(preflight.environment_identity?.identity_nonce || "")) {
   throw new Error("Preflight lacks the database-derived staging identity anchor.");
 }
@@ -59,6 +62,9 @@ const deployedFunctions = new Map((preflight.functions ?? []).map((entry) => [en
 for (const name of REPLACED_FUNCTIONS) {
   const entry = deployedFunctions.get(name);
   if (!entry?.definition || !entry?.definition_md5 || !entry?.owner) throw new Error(`Preflight omitted deployed ${name}.`);
+  if (typeof entry.security_definer !== "boolean" || typeof entry.volatility !== "string" || !(entry.config === null || Array.isArray(entry.config))) {
+    throw new Error(`Preflight omitted deployed configuration for ${name}.`);
+  }
   if (crypto.createHash("md5").update(entry.definition).digest("hex") !== entry.definition_md5) {
     throw new Error(`Preflight definition hash mismatch for ${name}.`);
   }
@@ -111,8 +117,27 @@ const expectedFunctionBodies = Object.fromEntries(Object.entries(reviewedFunctio
 }]));
 
 const oldDefinitionGuards = REPLACED_FUNCTIONS.map((name) => {
-  const expected = deployedFunctions.get(name).definition_md5;
-  return `select md5(pg_get_functiondef(p.oid)) into actual_hash from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and p.proname=${sqlLiteral(name)} and pg_get_function_identity_arguments(p.oid)='payload jsonb';\n  if actual_hash is distinct from ${sqlLiteral(expected)} then raise exception 'deployed definition drift for ${name}'; end if;`;
+  const entry = deployedFunctions.get(name);
+  const expectedAcl = JSON.stringify(entry.acl_detail);
+  const expectedConfig = JSON.stringify(entry.config ?? null);
+  return `select md5(pg_get_functiondef(p.oid)), quote_ident(pg_get_userbyid(p.proowner)), p.prosecdef, p.provolatile, to_jsonb(p.proconfig),
+    (select jsonb_agg(jsonb_build_object(
+      'grantor',case when acl_items.grantor=0 then 'PUBLIC' else pg_get_userbyid(acl_items.grantor) end,
+      'grantee',case when acl_items.grantee=0 then 'PUBLIC' else pg_get_userbyid(acl_items.grantee) end,
+      'privilege_type',acl_items.privilege_type,
+      'is_grantable',acl_items.is_grantable
+    ) order by acl_items.grantee,acl_items.privilege_type)
+    from aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) acl_items)
+  into actual_hash, actual_owner, actual_security_definer, actual_volatility, actual_config, actual_acl
+  from pg_proc p join pg_namespace n on n.oid=p.pronamespace
+  where n.nspname='public' and p.proname=${sqlLiteral(name)} and pg_get_function_identity_arguments(p.oid)='payload jsonb';
+  if actual_hash is distinct from ${sqlLiteral(entry.definition_md5)}
+    or actual_owner is distinct from ${sqlLiteral(entry.owner)}
+    or actual_security_definer is distinct from ${entry.security_definer === true ? "true" : "false"}
+    or actual_volatility is distinct from ${sqlLiteral(entry.volatility)}
+    or actual_config is distinct from ${sqlLiteral(expectedConfig)}::jsonb
+    or actual_acl is distinct from ${sqlLiteral(expectedAcl)}::jsonb
+  then raise exception 'deployed definition drift for ${name}: definition, owner, configuration, or ACL changed'; end if;`;
 }).join("\n  ");
 
 const install = [
@@ -122,9 +147,10 @@ const install = [
 select version, md5(data::text) as data_md5, octet_length(data::text) as data_bytes, updated_at, updated_by
 from public.app_state where id='primary';`,
   `do $$
-declare actual_hash text;
+declare actual_hash text; actual_owner text; actual_security_definer boolean; actual_volatility "char"; actual_config jsonb; actual_acl jsonb;
 begin
   if not exists(select 1 from public.deployment_environment_identity where environment='staging' and project_ref=${sqlLiteral(EXPECTED_STAGING_PROJECT_REF)} and identity_nonce=${sqlLiteral(preflight.environment_identity.identity_nonce)}::uuid) then raise exception 'database-derived staging identity drift'; end if;
+  if current_setting('app.settings.api_url', true) is null or position(${sqlLiteral(EXPECTED_STAGING_PROJECT_REF)} in current_setting('app.settings.api_url', true)) = 0 then raise exception 'database API URL does not identify the approved staging project'; end if;
   if not exists(select 1 from public.organizations where id=${sqlLiteral(EXPECTED_ORGANIZATION_ID)}) then raise exception 'staging organization identity failed'; end if;
   if (select count(*) from public.sessions where status<>'closed') <> 0 then raise exception 'staging has open sessions'; end if;
   if (select count(*) from public.customer_tabs where status='open') <> 0 then raise exception 'staging has open customer tabs'; end if;

@@ -4,11 +4,11 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   assertLiveCredentials,
+  assertOperationalRunId,
   assertStagingBaseUrl,
   assertStagingSupabaseEnvironment,
   parseEnvFile,
   PRODUCTION_PROJECT_REF,
-  sanitizeRunId,
   STAGING_APP_URL,
   STAGING_PROJECT_REF
 } from "./playwright-staging-env.mjs";
@@ -31,7 +31,8 @@ for (const flag of [
   if (stagingEnv[flag] !== "true") throw new Error(`Operational v2 staging E2E requires ${flag}=true.`);
 }
 env.E2E_BASE_URL = assertStagingBaseUrl(env.E2E_BASE_URL || STAGING_APP_URL);
-env.E2E_RUN_ID = sanitizeRunId(env.E2E_RUN_ID);
+const generatedRunStamp = new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 12);
+env.E2E_RUN_ID = assertOperationalRunId(env.E2E_RUN_ID || `normops-${generatedRunStamp.slice(0, 8)}-${generatedRunStamp.slice(8)}-discovery`);
 env.E2E_ROLE_MATRIX = "release-b-receptionist-manager";
 env.E2E_ROLE_MATRIX_PHASE = "all";
 if (!discoveryOnly) assertLiveCredentials(env);

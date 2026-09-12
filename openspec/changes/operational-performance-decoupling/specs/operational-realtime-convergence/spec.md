@@ -14,3 +14,6 @@ Origin and observers SHALL hydrate compact changed normalized IDs without a full
 ### Requirement: Startup catches concurrent events
 The application SHALL subscribe and catch up compact events before enabling writes after critical bootstrap.
 
+#### Scenario: Mutation arrives during startup
+- **WHEN** a compact operational event arrives after subscription is confirmed but before the critical snapshot is ready
+- **THEN** the application buffers and applies that event before enabling writes, without reading or reapplying `app_state.data`

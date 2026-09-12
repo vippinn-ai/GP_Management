@@ -221,6 +221,8 @@ begin
     'audit_log_id', v_audit_log_id
   )::text);
 
+  perform pg_advisory_xact_lock(hashtextextended(v_organization_id || chr(31) || v_mutation_id, 0));
+
   select operational_events.id, operational_events.metadata, operational_events.created_by
   into v_event_id, v_event_metadata, v_event_actor
   from public.operational_events

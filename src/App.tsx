@@ -54,6 +54,7 @@ import {
   buildFinancialAdjustmentPatch,
   buildFinancialCheckoutPatch,
   clearCachedNormalizedOrganizationId,
+  loadDeferredNormalizedDashboardContext,
   loadDeferredNormalizedExpenseAdminData,
   loadDeferredNormalizedInventoryHistory,
   loadInventoryReportSummaryData,
@@ -558,8 +559,10 @@ export default function App() {
   );
   const [normalizedReportRefreshSignal, setNormalizedReportRefreshSignal] = useState(0);
   const [inventoryReportRefreshSignal, setInventoryReportRefreshSignal] = useState(0);
+  const [deferredDashboardContextRefreshSignal, setDeferredDashboardContextRefreshSignal] = useState(0);
   const deferredExpenseAdminLoadedRef = useRef(false);
   const deferredInventoryHistoryLoadedRef = useRef(false);
+  const deferredDashboardContextLoadedRef = useRef(false);
   const receiptPreviewBlockRef = useRef<HTMLDivElement | null>(null);
   const [, setReceiptPreviewBlockHeight] = useState<number | null>(null);
   const skipRemotePersistRef = useRef(false);
@@ -879,7 +882,19 @@ export default function App() {
     const activePending = pendingOperationalMutationsRef.current.filter(
       (mutation) => mutation.status !== "conflict" && mutation.id !== snapshot.sourceMutationId
     );
-    const normalizedRemoteData = normalizeAppDataCustomers(snapshot.appData);
+    const snapshotWithRetainedNoncriticalData = BACKEND_FEATURE_FLAGS.normalizedBootstrap
+      ? mergeNormalizedAppDataOverlay(snapshot.appData, {
+          bills: appDataRef.current.bills,
+          payments: appDataRef.current.payments,
+          customers: appDataRef.current.customers,
+          stockMovements: appDataRef.current.stockMovements,
+          auditLogs: appDataRef.current.auditLogs,
+          expenses: appDataRef.current.expenses,
+          expenseTemplates: appDataRef.current.expenseTemplates,
+          expenseTemplateOverrides: appDataRef.current.expenseTemplateOverrides
+        })
+      : snapshot.appData;
+    const normalizedRemoteData = normalizeAppDataCustomers(snapshotWithRetainedNoncriticalData);
     const rebased = rebasePendingMutations(normalizedRemoteData, activePending);
     const nextMutations = [
       ...rebased.pendingMutations,
@@ -900,6 +915,10 @@ export default function App() {
     }
     if (snapshot.refreshedSlices?.includes("bills")) {
       setNormalizedBillRegisterRefreshSignal((previous) => previous + 1);
+    }
+    if (BACKEND_FEATURE_FLAGS.normalizedBootstrap && !snapshot.sourceEventId) {
+      deferredDashboardContextLoadedRef.current = false;
+      setDeferredDashboardContextRefreshSignal((previous) => previous + 1);
     }
     if (rebased.conflicts.length > 0) {
       setRemoteError(getOperationalConflictMessages(rebased.conflicts).join(" "));
@@ -1630,6 +1649,17 @@ export default function App() {
     }
   }, [activeTab, activeUser, canAccessTab, visibleTabs]);
 
+  useEffect(() => {
+    if (
+      activeUser
+      && !remoteLoading
+      && remoteRestoreState === "ready"
+      && typeof performance.mark === "function"
+    ) {
+      performance.mark("bp-safe-interactive");
+    }
+  }, [activeUser, remoteLoading, remoteRestoreState]);
+
   const normalizedBillRegisterQueryKey = useMemo(
     () => JSON.stringify(normalizedBillRegisterQuery),
     [normalizedBillRegisterQuery]
@@ -1742,10 +1772,32 @@ export default function App() {
 
   useEffect(() => {
     if (!activeUserId) {
+      deferredDashboardContextLoadedRef.current = false;
       deferredExpenseAdminLoadedRef.current = false;
       deferredInventoryHistoryLoadedRef.current = false;
     }
   }, [activeUserId]);
+
+  useEffect(() => {
+    if (
+      !BACKEND_FEATURE_FLAGS.normalizedBootstrap
+      || activeTab !== "dashboard"
+      || !activeUserId
+      || !canAccessTab("dashboard")
+      || deferredDashboardContextLoadedRef.current
+    ) return;
+    let cancelled = false;
+    runQaControlledNormalizedRead("dashboard", loadDeferredNormalizedDashboardContext)
+      .then((overlay) => {
+        if (cancelled) return;
+        setAppData((previous) => mergeNormalizedAppDataOverlay(previous, overlay));
+        deferredDashboardContextLoadedRef.current = true;
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) setRemoteError(error instanceof Error ? `Dashboard history could not be loaded: ${error.message}` : "Dashboard history could not be loaded. Reopen Dashboard to retry.");
+      });
+    return () => { cancelled = true; };
+  }, [activeTab, activeUserId, canAccessTab, deferredDashboardContextRefreshSignal]);
 
   useEffect(() => {
     if (
@@ -4688,7 +4740,14 @@ export default function App() {
       window.alert("Customer name is required.");
       return;
     }
-    const duplicate = appData.customers.find((customer) => {
+    const sourceCustomer = customerAnalyticsCustomers.find(
+      (customer) => customer.id === editCustomerProfileDraft.customerId
+    );
+    if (!sourceCustomer) {
+      window.alert("The customer profile is no longer available. Refresh Customers and try again.");
+      return;
+    }
+    const duplicate = customerAnalyticsCustomers.find((customer) => {
       if (customer.id === editCustomerProfileDraft.customerId) {
         return false;
       }
@@ -4704,9 +4763,10 @@ export default function App() {
       return;
     }
     void commitAppDataChange("Saving customer profile...", (draft) => {
-      const customer = draft.customers.find((entry) => entry.id === editCustomerProfileDraft.customerId);
+      let customer = draft.customers.find((entry) => entry.id === editCustomerProfileDraft.customerId);
       if (!customer) {
-        return false;
+        customer = cloneValue(sourceCustomer);
+        draft.customers.push(customer);
       }
       const previousName = customer.name;
       const previousPhone = customer.phone;
@@ -7761,7 +7821,7 @@ export default function App() {
   }
 
   return (
-    <div className="app-shell">
+    <div className="app-shell" data-app-safe-interactive="true">
       <aside className="sidebar">
         <div className="brand app-brand">
           <div className="brand-mark image-mark">

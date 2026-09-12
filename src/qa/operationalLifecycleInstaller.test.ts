@@ -27,6 +27,9 @@ describe("operational lifecycle staging installer", () => {
         definition,
         definition_md5: crypto.createHash("md5").update(definition).digest("hex"),
         owner: "postgres",
+        security_definer: false,
+        volatility: "v",
+        config: null,
         acl: ["postgres=X/postgres", "authenticated=X/postgres"],
         acl_detail: [
           { grantor: "postgres", grantee: "postgres", privilege_type: "EXECUTE", is_grantable: true },
@@ -41,6 +44,7 @@ describe("operational lifecycle staging installer", () => {
     const preflightPath = path.join(fixtureDir, "preflight.json");
     fs.writeFileSync(preflightPath, JSON.stringify({
       expected_project_ref: "tkbdyzxwwbhkpztgjjxh",
+      api_url_setting: "https://tkbdyzxwwbhkpztgjjxh.supabase.co",
       environment_identity: { environment: "staging", project_ref: "tkbdyzxwwbhkpztgjjxh", identity_nonce: "12345678-1234-4123-8123-123456789abc" },
       organization_id: "org-primary",
       organization_exists: true,

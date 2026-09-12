@@ -95,7 +95,7 @@ test.describe.serial("Release A staging inventory matrix", () => {
       await page.getByRole("button", { name: "Reject Tab", exact: true }).click();
       await waitForSynced(page);
       await expect(page.locator("button.tab-chip").filter({ hasText: customerName })).toHaveCount(0);
-      cleanupConfirmed = rpcEvidence.some((entry) => entry.rpc === "reject_customer_tab" && entry.status < 300);
+      cleanupConfirmed = rpcEvidence.some((entry) => entry.rpc.startsWith("reject_customer_tab") && entry.status < 300);
     }
 
     try {
@@ -197,7 +197,7 @@ test.describe.serial("Release A staging inventory matrix", () => {
 
       expect(rpcEvidence.filter((entry) => entry.rpc === "add_customer_tab_item" && entry.status < 300)).toHaveLength(2);
       expect(rpcEvidence.filter((entry) => entry.rpc === "apply_customer_tab_combo" && entry.status < 300)).toHaveLength(1);
-      expect(rpcEvidence.filter((entry) => entry.rpc === "reject_customer_tab" && entry.status < 300)).toHaveLength(1);
+      expect(rpcEvidence.filter((entry) => entry.rpc === "reject_customer_tab_v2" && entry.status < 300)).toHaveLength(1);
       assertNoPageErrors(originErrors, observerErrors);
 
       await attachJson(testInfo, "release-a-inventory-matrix-evidence", {
@@ -214,7 +214,7 @@ test.describe.serial("Release A staging inventory matrix", () => {
       primaryError = error;
       throw error;
     } finally {
-      tabOpened = tabOpened || rpcEvidence.some((entry) => entry.rpc === "open_customer_tab" && entry.status < 300);
+      tabOpened = tabOpened || rpcEvidence.some((entry) => entry.rpc.startsWith("open_customer_tab") && entry.status < 300);
       if (tabOpened && !cleanupAttempted) {
         try {
           await rejectExactQaTab();

@@ -14,3 +14,6 @@ Spreadsheet and PDF generators SHALL load only after an export action needs them
 ### Requirement: Noncritical data is screen gated
 History/report/customer/audit data SHALL not block safe dashboard readiness and writes SHALL remain disabled until critical snapshot catch-up is complete.
 
+#### Scenario: Dashboard becomes safely interactive
+- **WHEN** authenticated startup has restored configuration, catalog, combos, live operational entities, and buffered realtime changes
+- **THEN** writes become available without waiting for bill history, reports, customer history, stock-movement history, expense administration, or audit history

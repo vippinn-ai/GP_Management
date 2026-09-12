@@ -24,12 +24,32 @@ describe("operational lifecycle v2 Playwright and performance contract", () => {
     expect(config).toContain("operational-lifecycle-v2.e2e.ts");
     for (const regressionSpec of [
       "release-a-hop-pause.e2e.ts",
+      "release-a-inventory-matrix.e2e.ts",
+      "release-a-report-exports.e2e.ts",
       "release-b-checkout-reject-race-v2.e2e.ts",
       "release-b-checkout-hop-race-v2.e2e.ts",
       "release-b-hopped-concurrency-v2.e2e.ts",
       "release-b-multihop-concurrency-v2.e2e.ts",
       "release-b-role-checkout-hop-timing-v2.e2e.ts"
     ]) expect(config).toContain(regressionSpec);
+  });
+
+  it("provides a reusable immutable 30-load performance gate", () => {
+    const runner = read("scripts/run-operational-performance-staging-e2e.mjs");
+    const config = read("playwright.operational-performance.staging.config.ts");
+    const spec = read("tests/e2e/staging/operational-performance.e2e.ts");
+    expect(runner).toContain('E2E_PERFORMANCE_SAMPLES = "30"');
+    expect(runner).toContain("E2E_PERFORMANCE_BASELINE_SHA256");
+    expect(runner).toContain("E2E_EXPECTED_BUNDLE_SHA256");
+    expect(runner).toContain('flag: "wx"');
+    expect(config).toMatch(/retries:\s*0/);
+    expect(config).toMatch(/workers:\s*1/);
+    expect(spec).toContain("bp-safe-interactive");
+    expect(spec).toContain("requestedFullAppStateData");
+    expect(spec).toContain("requestedHistoryBeforeSafeInteractive");
+    expect(spec).toContain("bootstrapDependencyDepth: 3");
+    expect(spec).toContain("summary.p95");
+    expect(spec).toContain("3_500");
   });
 
   it("covers canonical hop, paused rejection, same-ID replay, mismatch, actor, realtime, cleanup, and app_state invariance", () => {

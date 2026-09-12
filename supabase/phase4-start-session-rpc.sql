@@ -156,6 +156,7 @@ begin
     'audit_logs', v_audit_logs
   )::text);
 
+  perform pg_advisory_xact_lock(hashtextextended(v_organization_id || chr(31) || v_mutation_id, 0));
   perform pg_advisory_xact_lock(hashtext(v_organization_id || ':station:' || v_station_id));
 
   select operational_events.id, operational_events.metadata, operational_events.created_by

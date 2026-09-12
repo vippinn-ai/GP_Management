@@ -11,11 +11,12 @@ Record branch, commit SHA, clean status, build asset names/hashes, SQL file hash
 ## Fail-closed preflight
 
 1. Confirm the staging host, project, organization, and authenticated QA roles.
-2. Confirm no non-QA active session/tab and no unresolved prior QA mutation.
-3. Run `operational-lifecycle-v2-staging-preflight-readonly.sql` in the staging SQL editor and save its single JSON value without editing it.
-4. Build with `npm run build:db:staging:operational-v2 -- --run-id=normops-YYYYMMDD-HHMM-install --preflight=<saved-json>`.
-5. Verify the immutable manifest binds the preflight, source files, install, and rollback by SHA-256 before execution.
-6. Stop on wrong environment, unknown deployed-function hash, any open session/tab, dirty mutation floor, missing rollback artifact, or incomplete role access.
+2. If the identity anchor is not installed, run `operational-v2-staging-environment-identity.sql` once. It must refuse execution unless the database-owned `app.settings.api_url` contains the approved staging project ref; never edit that guard.
+3. Confirm no non-QA active session/tab and no unresolved prior QA mutation.
+4. Run `operational-lifecycle-v2-staging-preflight-readonly.sql` in the staging SQL editor and save its single JSON value without editing it. The preflight independently validates both the database API URL and the locked identity nonce.
+5. Build with `npm run build:db:staging:operational-v2 -- --run-id=normops-YYYYMMDD-HHMM-install --preflight=<saved-json>`.
+6. Verify the immutable manifest binds the preflight, source files, install, and rollback by SHA-256 before execution.
+7. Stop on wrong environment, unknown or drifted deployed-function definition/owner/configuration/ACL, any open session/tab, dirty mutation floor, missing rollback artifact, or incomplete role access.
 
 ## Additive install
 

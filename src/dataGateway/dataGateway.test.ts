@@ -64,6 +64,7 @@ import {
   resolveBackendFeatureFlags
 } from ".";
 import {
+  loadDeferredNormalizedDashboardContext,
   loadNormalizedBillPages,
   loadNormalizedBootstrapStockMovements,
   mergeNormalizedAppDataOverlay
@@ -778,25 +779,14 @@ describe("app_state data gateway", () => {
         businessProfile: { name: "BreakPerfect" },
         inventoryCategories: ["Food"],
         inventoryItems: [normalizedItem],
-        bills: expect.arrayContaining([
-          expect.objectContaining({ id: "bill-pending", customerName: "Pending Customer" }),
-          expect.objectContaining({ id: "bill-recent", customerName: "Recent Customer" }),
-          expect.objectContaining({ id: "bill-paid-today", customerName: "Older Customer" })
-        ]),
-        payments: expect.arrayContaining([
-          expect.objectContaining({ id: "payment-1" }),
-          expect.objectContaining({ id: "payment-today-older-bill", billId: "bill-paid-today" })
-        ]),
-        customers: [
-          expect.objectContaining({ id: "customer-1", name: "Recent Customer" }),
-          expect.objectContaining({ id: "customer-2", name: "Pending Customer" }),
-          expect.objectContaining({ id: "customer-3", name: "Older Customer" })
-        ],
-        expenses: [expect.objectContaining({ id: "expense-1", title: "Milk" })],
+        bills: [],
+        payments: [],
+        customers: [],
+        expenses: [],
         expenseTemplates: [],
         expenseTemplateOverrides: [],
         stockMovements: [],
-        auditLogs: [expect.objectContaining({ id: "audit-1", message: "Issued recent bill." })]
+        auditLogs: []
       }
     });
     expect(backendMocks.loadRemoteAppDataSnapshot).not.toHaveBeenCalled();
@@ -807,6 +797,24 @@ describe("app_state data gateway", () => {
       normalizedComboReads: true,
       normalizedLiveReads: true,
       client
+    });
+    expect(normalizedBillRegisterMocks.loadNormalizedBillRegisterPage).not.toHaveBeenCalled();
+    expect(normalizedBillRegisterMocks.loadNormalizedPendingBills).not.toHaveBeenCalled();
+    expect(normalizedReportMocks.loadNormalizedReportData).not.toHaveBeenCalled();
+    expect(normalizedReadMocks.loadNormalizedAuditLogs).not.toHaveBeenCalled();
+
+    await expect(loadDeferredNormalizedDashboardContext("org-primary")).resolves.toMatchObject({
+      bills: expect.arrayContaining([
+        expect.objectContaining({ id: "bill-pending", customerName: "Pending Customer" }),
+        expect.objectContaining({ id: "bill-recent", customerName: "Recent Customer" }),
+        expect.objectContaining({ id: "bill-paid-today", customerName: "Older Customer" })
+      ]),
+      payments: expect.arrayContaining([
+        expect.objectContaining({ id: "payment-1" }),
+        expect.objectContaining({ id: "payment-today-older-bill", billId: "bill-paid-today" })
+      ]),
+      expenses: [expect.objectContaining({ id: "expense-1", title: "Milk" })],
+      auditLogs: [expect.objectContaining({ id: "audit-1", message: "Issued recent bill." })]
     });
     expect(normalizedBillRegisterMocks.loadNormalizedBillRegisterPage).toHaveBeenCalledTimes(1);
     expect(normalizedBillRegisterMocks.loadNormalizedBillRegisterPage).toHaveBeenNthCalledWith(

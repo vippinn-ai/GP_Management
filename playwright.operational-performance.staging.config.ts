@@ -7,24 +7,14 @@ const runId = assertOperationalRunId(process.env.E2E_RUN_ID);
 
 export default defineConfig({
   testDir: "./tests/e2e/staging",
-  testMatch: [
-    "operational-lifecycle-v2.e2e.ts",
-    "release-a-hop-pause.e2e.ts",
-    "release-a-inventory-matrix.e2e.ts",
-    "release-a-report-exports.e2e.ts",
-    "release-b-checkout-reject-race-v2.e2e.ts",
-    "release-b-checkout-hop-race-v2.e2e.ts",
-    "release-b-hopped-concurrency-v2.e2e.ts",
-    "release-b-multihop-concurrency-v2.e2e.ts",
-    "release-b-role-checkout-hop-timing-v2.e2e.ts"
-  ],
-  outputDir: path.join("test-artifacts", "playwright", `operational-v2-run-${runId}`),
+  testMatch: ["operational-performance.e2e.ts"],
+  outputDir: path.join("test-artifacts", "playwright", `operational-performance-${runId}`),
   fullyParallel: false,
   workers: 1,
   retries: 0,
   forbidOnly: true,
-  timeout: 120_000,
-  expect: { timeout: 20_000 },
+  timeout: 12 * 60_000,
+  expect: { timeout: 30_000 },
   reporter: [["line"], ["./scripts/playwright-compact-reporter.mjs", { runId }]],
   use: {
     baseURL,

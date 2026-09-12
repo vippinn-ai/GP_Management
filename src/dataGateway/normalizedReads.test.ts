@@ -6,6 +6,25 @@ import {
   buildNormalizedLiveData,
   mapNormalizedAuditLog
 } from "./normalizedReads";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+
+describe("normalized critical bootstrap graph", () => {
+  it("resolves organization once, parallelizes core slices, and excludes financial/audit history", () => {
+    const reads = readFileSync(path.join(process.cwd(), "src/dataGateway/normalizedReads.ts"), "utf8");
+    const gateway = readFileSync(path.join(process.cwd(), "src/dataGateway/normalizedGateway.ts"), "utf8");
+    const overlayBody = reads.match(/export async function loadNormalizedAppDataOverlay[\s\S]*?return \{ organizationId, appData: overlay \};/i)?.[0] ?? "";
+    const snapshotStart = gateway.indexOf("async function loadNormalizedBootstrapSnapshot");
+    const snapshotEnd = gateway.indexOf("export function createNormalizedRemoteDataGateway", snapshotStart);
+    const snapshotBody = gateway.slice(snapshotStart, snapshotEnd);
+    expect(overlayBody).toContain("await loadNormalizedActiveOrganization(client)");
+    expect(overlayBody).toContain("await Promise.all");
+    expect(snapshotBody).not.toContain("loadNormalizedBootstrapHistory");
+    expect(snapshotBody).not.toContain("loadNormalizedAuditLogs");
+    expect(snapshotBody).toContain("bills: []");
+    expect(gateway).toContain("loadDeferredNormalizedDashboardContext");
+  });
+});
 
 describe("normalized audit mapping", () => {
   it("uses the typed audit timestamp instead of a timezone-less raw timestamp", () => {

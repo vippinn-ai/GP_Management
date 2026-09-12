@@ -29,13 +29,13 @@ Each completed item records commit SHA, command, timestamp, artifact path, and S
 
 - [x] Demand-load XLSX/PDF libraries with popup-safe behavior.
 - [x] Add subscription-first buffering/catch-up before writes are enabled.
-- [x] Defer customer directory, 30-day stock movements, and expense administration rows until their owning screens while retaining current-day dashboard expenses.
-- [ ] Add per-slice/request startup telemetry without PII.
+- [x] Defer bill/report/audit/customer/stock-movement/expense-administration history until after safe interaction or its owning screen; preserve loaded noncritical slices across reconnect and explicitly refresh dashboard context.
+- [x] Add named critical-bootstrap marks and a PII-free, immutable 30-cold-load Playwright harness for request/byte/dependency-depth and safe-interactive evidence.
 - [x] Remove root one-second render coupling (30-second display clock) and reduce the shared logo asset from 226 KB to 61 KB without changing its visual identity.
 
 ## 5. Gates
 
-- [x] Local TypeScript, lint (0 errors, 4 pre-existing warnings), 62-file/587-test suite, production build, and 19-case Playwright discovery pass without retries.
+- [x] Local TypeScript, lint (0 errors, 4 pre-existing warnings), 62-file/590-test suite, production build, 23-case operational Playwright discovery, and separate 30-load performance discovery pass without retries.
 - [ ] Reviewer approves exact candidate SHA.
 - [ ] Fail-closed staging preflight and flag-off SQL install pass.
 - [ ] Functional, edge, security, idempotency, race, recovery, realtime, parity, and performance suites pass.

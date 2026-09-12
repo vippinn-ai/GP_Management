@@ -5,6 +5,9 @@ begin isolation level repeatable read read only;
 do $$
 declare incomplete_operational integer := 0;
 begin
+  if current_setting('app.settings.api_url', true) is null
+    or position('tkbdyzxwwbhkpztgjjxh' in current_setting('app.settings.api_url', true)) = 0
+  then raise exception 'database API URL does not identify the approved staging project'; end if;
   if not exists(select 1 from public.organizations where id='org-primary') then raise exception 'staging organization identity failed'; end if;
   if to_regclass('public.deployment_environment_identity') is null
     or not exists(select 1 from public.deployment_environment_identity where environment='staging' and project_ref='tkbdyzxwwbhkpztgjjxh')

@@ -20,6 +20,11 @@ async function readDownload(download: Download): Promise<Buffer> {
 
 test("normalized reports export complete CSV, Excel, and PDF files", async ({ page }, testInfo) => {
   const errors = capturePageErrors(page);
+  const browserChunks: string[] = [];
+  page.on("request", (request) => {
+    const pathname = new URL(request.url()).pathname;
+    if (/(?:xlsx|jspdf)-[^/]+\.js$/i.test(pathname)) browserChunks.push(pathname);
+  });
 
   try {
     await signIn(page, credentials("A"));
@@ -36,14 +41,22 @@ test("normalized reports export complete CSV, Excel, and PDF files", async ({ pa
       page.waitForEvent("download"),
       page.getByRole("button", { name: "Export CSV", exact: true }).click()
     ]);
+    expect(browserChunks).toEqual([]);
+    const xlsxStartedAt = performance.now();
     const [xlsxDownload] = await Promise.all([
       page.waitForEvent("download"),
       page.getByRole("button", { name: "Export Excel", exact: true }).click()
     ]);
+    const xlsxMs = performance.now() - xlsxStartedAt;
+    expect(browserChunks.filter((path) => /xlsx-/i.test(path))).toHaveLength(1);
+    expect(browserChunks.filter((path) => /jspdf-/i.test(path))).toHaveLength(0);
+    const pdfStartedAt = performance.now();
     const [pdfDownload] = await Promise.all([
       page.waitForEvent("download"),
       page.getByRole("button", { name: "Export PDF", exact: true }).click()
     ]);
+    const pdfMs = performance.now() - pdfStartedAt;
+    expect(browserChunks.filter((path) => /jspdf-/i.test(path))).toHaveLength(1);
 
     expect(csvDownload.suggestedFilename()).toBe(`${fileStem}.csv`);
     expect(xlsxDownload.suggestedFilename()).toBe(`${fileStem}.xlsx`);
@@ -65,6 +78,8 @@ test("normalized reports export complete CSV, Excel, and PDF files", async ({ pa
 
     expect(pdfBuffer.subarray(0, 4).toString("ascii")).toBe("%PDF");
     expect(pdfBuffer.byteLength).toBeGreaterThan(500);
+    expect(xlsxMs).toBeLessThanOrEqual(2_000);
+    expect(pdfMs).toBeLessThanOrEqual(2_000);
     assertNoPageErrors(errors);
 
     await attachJson(testInfo, "release-a-report-export-evidence", {
@@ -74,9 +89,51 @@ test("normalized reports export complete CSV, Excel, and PDF files", async ({ pa
         xlsx: { name: xlsxDownload.suggestedFilename(), bytes: xlsxBuffer.byteLength, rows: rows.length },
         pdf: { name: pdfDownload.suggestedFilename(), bytes: pdfBuffer.byteLength }
       },
+      browserChunks,
+      timingsMs: { xlsx: xlsxMs, pdf: pdfMs },
       verifiedBillNumber: "BILL-20260820-006"
     });
   } finally {
     await attachFailureScreenshot(testInfo, page, "report-export-failure");
+  }
+});
+
+test("a failed spreadsheet chunk is visible and succeeds after an explicit reload", async ({ page }, testInfo) => {
+  const errors = capturePageErrors(page);
+  const alertPromise = new Promise<string>((resolve) => {
+    page.once("dialog", async (dialog) => {
+      resolve(dialog.message());
+      await dialog.accept();
+    });
+  });
+  try {
+    await signIn(page, credentials("A"));
+    await page.getByRole("button", { name: "Analytics", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Operational Reports", exact: true })).toBeVisible();
+    await expect(page.getByText("Report range is loaded from backend report data.", { exact: true })).toBeVisible();
+    await page.route("**/assets/xlsx-*.js", (route) => route.abort("failed"));
+    await page.getByRole("button", { name: "Export Excel", exact: true }).click();
+    const alertMessage = await alertPromise;
+    expect(alertMessage).toContain("Unable to load the spreadsheet exporter");
+
+    await page.unroute("**/assets/xlsx-*.js");
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.getByRole("button", { name: "Analytics", exact: true }).click();
+    await expect(page.getByText("Report range is loaded from backend report data.", { exact: true })).toBeVisible();
+    const [download] = await Promise.all([
+      page.waitForEvent("download"),
+      page.getByRole("button", { name: "Export Excel", exact: true }).click()
+    ]);
+    const bytes = await readDownload(download);
+    expect(bytes.byteLength).toBeGreaterThan(500);
+    await attachJson(testInfo, "release-a-export-recovery-evidence", {
+      alertMessage,
+      recoveredFilename: download.suggestedFilename(),
+      recoveredBytes: bytes.byteLength
+    });
+    assertNoPageErrors(errors);
+  } finally {
+    await page.unroute("**/assets/xlsx-*.js").catch(() => undefined);
+    await attachFailureScreenshot(testInfo, page, "report-export-recovery-failure");
   }
 });

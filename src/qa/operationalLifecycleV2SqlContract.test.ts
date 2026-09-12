@@ -88,9 +88,29 @@ describe("normalized lifecycle v2 SQL contract", () => {
     }
   });
 
+  it("serializes continuation-chain replay by organization and mutation before target locks", () => {
+    for (const [name, functionSource] of [
+      ["start_session", startSessionSource],
+      ["open_customer_tab", customerTabSource],
+      ["link_customer_tab_continuation", linkContinuationSource]
+    ] as const) {
+      const match = functionSource.match(new RegExp(`create or replace function public\\.${name}\\(payload jsonb\\)[\\s\\S]*?as \\$\\$([\\s\\S]*?)\\$\\$;`, "i"));
+      expect(match, `Missing ${name}`).not.toBeNull();
+      const functionBody = match![1];
+      const mutationLock = functionBody.search(/pg_advisory_xact_lock\(hashtextextended\(v_(?:organization_id|org)\s*\|\|\s*chr\(31\)\s*\|\|\s*v_(?:mutation_id|mid)/i);
+      const replayLookup = functionBody.search(/from public\.operational_events[\s\S]{0,220}metadata->>'mutation_id'/i);
+      expect(mutationLock, `${name} mutation lock`).toBeGreaterThanOrEqual(0);
+      expect(replayLookup, `${name} replay lookup`).toBeGreaterThan(mutationLock);
+    }
+  });
+
   it("builds immutable preflight-bound install and rollback evidence", () => {
     expect(installer).toMatch(/argument\("preflight"\)/i);
     expect(installer).toMatch(/deployed definition drift/i);
+    expect(installer).toMatch(/actual_owner/i);
+    expect(installer).toMatch(/actual_config/i);
+    expect(installer).toMatch(/actual_acl/i);
+    expect(preflight).toContain("app.settings.api_url");
     expect(installer).toMatch(/staging-rollback\.sql/i);
     expect(installer).toMatch(/flag:\s*"wx"/i);
     expect(installer).toMatch(/install changed compatibility app_state/i);

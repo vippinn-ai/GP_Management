@@ -1,6 +1,14 @@
--- One-time staging identity anchor. Run only while the SQL-editor URL visibly shows
--- project tkbdyzxwwbhkpztgjjxh. Later preflights bind every artifact to this DB row.
+-- One-time staging identity anchor. This refuses to initialize unless the
+-- database's own Supabase API URL names project tkbdyzxwwbhkpztgjjxh.
 begin;
+
+do $$
+declare api_url text := current_setting('app.settings.api_url', true);
+begin
+  if api_url is null or position('tkbdyzxwwbhkpztgjjxh' in api_url) = 0 then
+    raise exception 'database API URL does not identify the approved staging project';
+  end if;
+end $$;
 
 create table if not exists public.deployment_environment_identity (
   environment text primary key,

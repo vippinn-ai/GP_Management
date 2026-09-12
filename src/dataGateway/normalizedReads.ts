@@ -1058,9 +1058,10 @@ export async function loadNormalizedActiveOrganization(client: SupabaseClient = 
   return organization;
 }
 
-export async function loadNormalizedConfigData(client: SupabaseClient = getSupabaseClient()): Promise<NormalizedConfigData> {
-  const organization = await loadNormalizedActiveOrganization(client);
-
+async function loadNormalizedConfigDataForOrganization(
+  organization: OrganizationRow,
+  client: SupabaseClient
+): Promise<NormalizedConfigData> {
   const organizationId = organization.id;
   const [inventoryCategories, stations, pricingRules] = await Promise.all([
     readMany<InventoryCategoryRow>(
@@ -1091,6 +1092,11 @@ export async function loadNormalizedConfigData(client: SupabaseClient = getSupab
   ]);
 
   return buildNormalizedConfigData({ organization, inventoryCategories, stations, pricingRules });
+}
+
+export async function loadNormalizedConfigData(client: SupabaseClient = getSupabaseClient()): Promise<NormalizedConfigData> {
+  const organization = await loadNormalizedActiveOrganization(client);
+  return loadNormalizedConfigDataForOrganization(organization, client);
 }
 
 export async function loadNormalizedCatalogData(
@@ -1579,41 +1585,44 @@ export async function loadNormalizedAppDataOverlay(params: {
 }): Promise<{ organizationId?: string; appData: Partial<AppData> }> {
   const client = params.client ?? getSupabaseClient();
   const overlay: Partial<AppData> = {};
-  let organizationId: string | undefined;
+  const needsOrganization =
+    params.normalizedConfigReads ||
+    params.normalizedCatalogReads ||
+    params.normalizedComboReads ||
+    Boolean(params.normalizedLiveReads);
+  const organization = needsOrganization ? await loadNormalizedActiveOrganization(client) : undefined;
+  const organizationId = organization?.id;
 
-  if (params.normalizedConfigReads) {
-    const configData = await loadNormalizedConfigData(client);
-    organizationId = configData.organizationId;
+  const [configData, catalogData, comboData, liveData] = organization
+    ? await Promise.all([
+        params.normalizedConfigReads
+          ? loadNormalizedConfigDataForOrganization(organization, client)
+          : Promise.resolve(undefined),
+        params.normalizedCatalogReads
+          ? loadNormalizedCatalogData(organization.id, client)
+          : Promise.resolve(undefined),
+        params.normalizedComboReads
+          ? loadNormalizedComboData(organization.id, client)
+          : Promise.resolve(undefined),
+        params.normalizedLiveReads
+          ? loadNormalizedLiveData(organization.id, client)
+          : Promise.resolve(undefined)
+      ])
+    : [undefined, undefined, undefined, undefined];
+
+  if (configData) {
     overlay.businessProfile = configData.businessProfile;
     overlay.inventoryCategories = configData.inventoryCategories;
     overlay.stations = configData.stations;
     overlay.pricingRules = configData.pricingRules;
-  } else if (params.normalizedCatalogReads || params.normalizedComboReads || params.normalizedLiveReads) {
-    const organization = await loadNormalizedActiveOrganization(client);
-    organizationId = organization.id;
   }
-
-  if (params.normalizedCatalogReads) {
-    if (!organizationId) {
-      throw new Error("Normalized catalog reads require an active organization.");
-    }
-    const catalogData = await loadNormalizedCatalogData(organizationId, client);
+  if (catalogData) {
     overlay.inventoryItems = catalogData.inventoryItems;
   }
-
-  if (params.normalizedComboReads) {
-    if (!organizationId) {
-      throw new Error("Normalized combo reads require an active organization.");
-    }
-    const comboData = await loadNormalizedComboData(organizationId, client);
+  if (comboData) {
     overlay.combos = comboData.combos;
   }
-
-  if (params.normalizedLiveReads) {
-    if (!organizationId) {
-      throw new Error("Normalized live reads require an active organization.");
-    }
-    const liveData = await loadNormalizedLiveData(organizationId, client);
+  if (liveData) {
     overlay.sessions = liveData.sessions;
     overlay.sessionPauseLogs = liveData.sessionPauseLogs;
     overlay.customerTabs = liveData.customerTabs;

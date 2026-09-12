@@ -42,6 +42,13 @@ const NORMALIZED_BOOTSTRAP_PAGE_SIZE = 200;
 const NORMALIZED_BOOTSTRAP_MAX_RECENT_BILLS = 5_000;
 const NORMALIZED_BOOTSTRAP_MAX_STOCK_MOVEMENTS = 5_000;
 const NORMALIZED_BOOTSTRAP_RECENT_AUDIT_LOGS = 20;
+const MAX_PROCESSED_REALTIME_EVENT_IDS = 2_000;
+
+function markBootstrapPerformance(name: string) {
+  if (typeof performance !== "undefined" && typeof performance.mark === "function") {
+    performance.mark(name);
+  }
+}
 
 function mergeLiveSessions(baseSessions: Session[], normalizedSessions: Session[]): Session[] {
   const baseSessionsById = new Map(baseSessions.map((session) => [session.id, session]));
@@ -266,6 +273,20 @@ export async function loadDeferredNormalizedExpenseAdminData() {
   return loadNormalizedExpenseAdminData(organizationId, client);
 }
 
+export async function loadDeferredNormalizedDashboardContext(explicitOrganizationId?: string) {
+  const client = getSupabaseClient();
+  const organizationId = explicitOrganizationId ?? await resolveNormalizedOrganizationId(client);
+  const [history, auditLogs] = await Promise.all([
+    loadNormalizedBootstrapHistory(organizationId, client),
+    loadNormalizedAuditLogs(
+      organizationId,
+      { limit: NORMALIZED_BOOTSTRAP_RECENT_AUDIT_LOGS },
+      client
+    )
+  ]);
+  return { ...history, auditLogs };
+}
+
 function upsertStartupCustomer(
   customersById: Map<string, Customer>,
   source: {
@@ -350,24 +371,13 @@ async function loadNormalizedBootstrapSnapshot(): Promise<RemoteAppDataSnapshot>
         client
       })
     ]);
-    const [history, auditLogs] = overlay.organizationId
-      ? await Promise.all([
-          loadNormalizedBootstrapHistory(overlay.organizationId, client),
-          loadNormalizedAuditLogs(
-            overlay.organizationId,
-            { limit: NORMALIZED_BOOTSTRAP_RECENT_AUDIT_LOGS },
-            client
-          )
-        ])
-      : [
-          { bills: [], payments: [], expenses: [] },
-          []
-        ];
     const startupAppData = {
       ...overlay.appData,
-      ...history,
+      bills: [],
+      payments: [],
+      expenses: [],
       stockMovements: [],
-      auditLogs
+      auditLogs: []
     };
     const appData = hydrateAppData({
       ...startupAppData,
@@ -430,6 +440,11 @@ export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): 
         refreshedSlices: overlay.refreshedSlices
       };
       processedRealtimeEventIds.add(event.id);
+      while (processedRealtimeEventIds.size > MAX_PROCESSED_REALTIME_EVENT_IDS) {
+        const oldestEventId = processedRealtimeEventIds.values().next().value;
+        if (typeof oldestEventId !== "string") break;
+        processedRealtimeEventIds.delete(oldestEventId);
+      }
       recordCompactRealtimeTelemetry({
         eventPayload: event,
         eventType: event.event_type,
@@ -511,10 +526,12 @@ export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): 
   };
   const gateway: RemoteDataGateway = {
     async loadAppDataSnapshot() {
+      markBootstrapPerformance("bp-bootstrap-requested");
       bootstrapInFlight = true;
       try {
         try {
           await ensureRealtimeReady();
+          markBootstrapPerformance("bp-realtime-ready");
         } catch (error) {
           realtimeUnsubscribe?.();
           realtimeUnsubscribe = null;
@@ -523,6 +540,7 @@ export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): 
         }
         if (_flags.normalizedBootstrap) {
           lastSnapshot = await loadNormalizedBootstrapSnapshot();
+          markBootstrapPerformance("bp-critical-snapshot-ready");
         } else {
           const snapshot = await appStateRemoteDataGateway.loadAppDataSnapshot();
           const overlay = await loadNormalizedAppDataOverlay({
@@ -539,6 +557,7 @@ export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): 
         while (lastSnapshot && bufferedBootstrapEvents.length > 0) {
           await applyRealtimeEvent(bufferedBootstrapEvents.shift()!, false);
         }
+        markBootstrapPerformance("bp-critical-catchup-ready");
         return lastSnapshot;
       } finally {
         bootstrapInFlight = false;
