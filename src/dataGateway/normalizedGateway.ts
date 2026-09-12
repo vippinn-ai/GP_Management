@@ -14,7 +14,8 @@ import { loadNormalizedCustomerDirectory } from "./normalizedCustomerSearch";
 import {
   emitGenericAppStateSaveEvent,
   loadNormalizedRealtimeOverlay,
-  subscribeToOperationalEvents
+  subscribeToOperationalEvents,
+  type OperationalEventRow
 } from "./normalizedRealtime";
 import {
   loadNormalizedAppDataOverlay,
@@ -395,24 +396,47 @@ async function loadNormalizedBootstrapSnapshot(): Promise<RemoteAppDataSnapshot>
 
 export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): RemoteDataGateway {
   let lastSnapshot: RemoteAppDataSnapshot | null = null;
+  let realtimeEventPipeline: Promise<void> = Promise.resolve();
+  let bootstrapInFlight = false;
+  const bufferedBootstrapEvents: OperationalEventRow[] = [];
   const gateway: RemoteDataGateway = {
     async loadAppDataSnapshot() {
-      if (_flags.normalizedBootstrap) {
-        lastSnapshot = await loadNormalizedBootstrapSnapshot();
+      bootstrapInFlight = true;
+      try {
+        if (_flags.normalizedBootstrap) {
+          lastSnapshot = await loadNormalizedBootstrapSnapshot();
+        } else {
+          const snapshot = await appStateRemoteDataGateway.loadAppDataSnapshot();
+          const overlay = await loadNormalizedAppDataOverlay({
+            normalizedConfigReads: _flags.normalizedConfigReads,
+            normalizedCatalogReads: _flags.normalizedCatalogReads,
+            normalizedComboReads: _flags.normalizedComboReads,
+            normalizedLiveReads: _flags.normalizedLiveReads
+          });
+          lastSnapshot = {
+            ...snapshot,
+            appData: mergeNormalizedAppDataOverlay(snapshot.appData, overlay.appData)
+          };
+        }
+        while (lastSnapshot && bufferedBootstrapEvents.length > 0) {
+          const event = bufferedBootstrapEvents.shift()!;
+          const overlay = await loadNormalizedRealtimeOverlay(event, _flags, getSupabaseClient());
+          if (overlay.requiresFullRefresh) {
+            throw new Error("A full-refresh event arrived during normalized bootstrap; retrying is required.");
+          }
+          lastSnapshot = {
+            ...lastSnapshot,
+            appData: mergeNormalizedAppDataOverlay(lastSnapshot.appData, overlay.appData),
+            version: overlay.appStateVersion ?? lastSnapshot.version,
+            sourceMutationId: overlay.sourceMutationId,
+            sourceEventId: event.id,
+            refreshedSlices: overlay.refreshedSlices
+          };
+        }
         return lastSnapshot;
+      } finally {
+        bootstrapInFlight = false;
       }
-      const snapshot = await appStateRemoteDataGateway.loadAppDataSnapshot();
-      const overlay = await loadNormalizedAppDataOverlay({
-        normalizedConfigReads: _flags.normalizedConfigReads,
-        normalizedCatalogReads: _flags.normalizedCatalogReads,
-        normalizedComboReads: _flags.normalizedComboReads,
-        normalizedLiveReads: _flags.normalizedLiveReads
-      });
-      lastSnapshot = {
-        ...snapshot,
-        appData: mergeNormalizedAppDataOverlay(snapshot.appData, overlay.appData)
-      };
-      return lastSnapshot;
     },
     async saveAppData(appData, activeUserId, expectedVersion, telemetryOptions) {
       if (_flags.normalizedBootstrap) {
@@ -438,9 +462,14 @@ export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): 
     subscribeToAppData(onChange) {
       if (_flags.normalizedRealtime) {
         const client = getSupabaseClient();
-        return subscribeToOperationalEvents(client, async (event) => {
-          const startedAt = Date.now();
-          try {
+        return subscribeToOperationalEvents(client, (event) => {
+          if (bootstrapInFlight || !lastSnapshot) {
+            bufferedBootstrapEvents.push(event);
+            return Promise.resolve();
+          }
+          realtimeEventPipeline = realtimeEventPipeline.then(async () => {
+            const startedAt = Date.now();
+            try {
             if (!lastSnapshot) {
               lastSnapshot = await gateway.loadAppDataSnapshot();
             }
@@ -471,8 +500,8 @@ export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): 
               skippedFullSnapshot: !overlay.requiresFullRefresh
             });
             onChange(lastSnapshot);
-          } catch (error) {
-            recordCompactRealtimeTelemetry({
+            } catch (error) {
+              recordCompactRealtimeTelemetry({
               eventPayload: event,
               eventType: event.event_type,
               entityType: event.entity_type,
@@ -483,15 +512,19 @@ export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): 
               errorMessage: error instanceof Error ? error.message : "Unable to refresh compact realtime event.",
               skippedFullSnapshot: true
             });
-            console.warn("Unable to apply compact realtime event.", error);
-          }
+              console.warn("Unable to apply compact realtime event.", error);
+            }
+          });
+          return realtimeEventPipeline;
         });
       }
       return appStateRemoteDataGateway.subscribeToAppData(onChange);
     }
   };
   if (_flags.rpcOperationalWrites) {
-    gateway.commitOperationalMutation = (mutation) => invokeOperationalMutationRpc(mutation);
+    gateway.commitOperationalMutation = (mutation) => invokeOperationalMutationRpc(mutation, {
+      useV2: _flags.operationalRpcV2
+    });
   }
   if (_flags.rpcFinancialWrites || _flags.financialRpcV2) {
     gateway.commitFinancialCheckout = (patch) => invokeFinancialCheckoutRpc(patch, { useV2: _flags.financialRpcV2 });

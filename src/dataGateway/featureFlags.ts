@@ -11,6 +11,7 @@ export interface BackendFeatureFlags {
   normalizedBillHistoryReads: boolean;
   normalizedRealtime: boolean;
   rpcOperationalWrites: boolean;
+  operationalRpcV2: boolean;
   rpcFinancialWrites: boolean;
   financialRpcV2: boolean;
   activityFeed: boolean;
@@ -29,6 +30,7 @@ export const DEFAULT_BACKEND_FEATURE_FLAGS: BackendFeatureFlags = Object.freeze(
   normalizedBillHistoryReads: false,
   normalizedRealtime: false,
   rpcOperationalWrites: false,
+  operationalRpcV2: false,
   rpcFinancialWrites: false,
   financialRpcV2: false,
   activityFeed: false
@@ -49,6 +51,7 @@ const ENV_FLAG_NAMES: Record<BackendFeatureFlagKey, keyof ImportMetaEnv> = {
   normalizedBillHistoryReads: "VITE_BACKEND_NORMALIZED_BILL_HISTORY_READS",
   normalizedRealtime: "VITE_BACKEND_NORMALIZED_REALTIME",
   rpcOperationalWrites: "VITE_BACKEND_RPC_OPERATIONAL_WRITES",
+  operationalRpcV2: "VITE_BACKEND_OPERATIONAL_RPC_V2",
   rpcFinancialWrites: "VITE_BACKEND_RPC_FINANCIAL_WRITES",
   financialRpcV2: "VITE_BACKEND_FINANCIAL_RPC_V2",
   activityFeed: "VITE_BACKEND_ACTIVITY_FEED"
@@ -91,6 +94,20 @@ export function resolveBackendFeatureFlags(
       );
     }
   }
+  if (merged.operationalRpcV2) {
+    const requiredFlags: BackendFeatureFlagKey[] = [
+      "normalizedBootstrap",
+      "normalizedLiveReads",
+      "normalizedRealtime",
+      "rpcOperationalWrites"
+    ];
+    const missingFlags = requiredFlags.filter((key) => !merged[key]);
+    if (missingFlags.length > 0) {
+      throw new Error(
+        `VITE_BACKEND_OPERATIONAL_RPC_V2 requires normalized lifecycle reads and realtime first. Missing flags: ${missingFlags.join(", ")}.`
+      );
+    }
+  }
   return merged;
 }
 
@@ -112,5 +129,5 @@ export function hasNormalizedGatewayFlag(flags: BackendFeatureFlags): boolean {
 }
 
 export function hasRpcGatewayFlag(flags: BackendFeatureFlags): boolean {
-  return flags.rpcOperationalWrites || flags.rpcFinancialWrites || flags.financialRpcV2;
+  return flags.rpcOperationalWrites || flags.operationalRpcV2 || flags.rpcFinancialWrites || flags.financialRpcV2;
 }

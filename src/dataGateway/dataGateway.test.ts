@@ -319,6 +319,7 @@ describe("data gateway feature flags", () => {
       normalizedBillHistoryReads: false,
       normalizedRealtime: false,
       rpcOperationalWrites: false,
+      operationalRpcV2: false,
       rpcFinancialWrites: false,
       financialRpcV2: false,
       activityFeed: false
@@ -341,6 +342,7 @@ describe("data gateway feature flags", () => {
         VITE_BACKEND_NORMALIZED_BILL_HISTORY_READS: "true",
         VITE_BACKEND_NORMALIZED_REALTIME: "true",
         VITE_BACKEND_RPC_OPERATIONAL_WRITES: "true",
+        VITE_BACKEND_OPERATIONAL_RPC_V2: "true",
         VITE_BACKEND_RPC_FINANCIAL_WRITES: "false",
         VITE_BACKEND_FINANCIAL_RPC_V2: "true",
         VITE_BACKEND_ACTIVITY_FEED: "true"
@@ -358,6 +360,7 @@ describe("data gateway feature flags", () => {
     expect(flags.inventoryReportReads).toBe(true);
     expect(flags.normalizedBillHistoryReads).toBe(true);
     expect(flags.rpcFinancialWrites).toBe(true);
+    expect(flags.operationalRpcV2).toBe(true);
     expect(flags.financialRpcV2).toBe(true);
     expect(flags.activityFeed).toBe(true);
   });
@@ -367,6 +370,13 @@ describe("data gateway feature flags", () => {
       VITE_BACKEND_FINANCIAL_RPC_V2: "true",
       VITE_BACKEND_RPC_FINANCIAL_WRITES: "true"
     })).toThrow(/requires the normalized source-of-truth rollout first/i);
+  });
+
+  it("fails closed when operational v2 is enabled before normalized live and realtime prerequisites", () => {
+    expect(() => resolveBackendFeatureFlags({}, {
+      VITE_BACKEND_OPERATIONAL_RPC_V2: "true",
+      VITE_BACKEND_RPC_OPERATIONAL_WRITES: "true"
+    })).toThrow(/requires normalized lifecycle reads and realtime first/i);
   });
 });
 
@@ -1055,6 +1065,59 @@ describe("app_state data gateway", () => {
       { sessionIds: [], customerTabIds: ["tab-1"] },
       client
     );
+  });
+
+  it("buffers compact events received during bootstrap and folds them into the returned snapshot", async () => {
+    let resolveBase!: (snapshot: RemoteAppDataSnapshot) => void;
+    const basePromise = new Promise<RemoteAppDataSnapshot>((resolve) => {
+      resolveBase = resolve;
+    });
+    let realtimeHandler: ((payload: { new: unknown }) => void) | undefined;
+    const channel = {
+      on: vi.fn((_kind, _config, handler) => {
+        realtimeHandler = handler;
+        return channel;
+      }),
+      subscribe: vi.fn().mockReturnThis()
+    };
+    const client = { channel: vi.fn(() => channel), removeChannel: vi.fn() };
+    backendMocks.getSupabaseClient.mockReturnValue(client);
+    backendMocks.loadRemoteAppDataSnapshot.mockReturnValue(basePromise);
+    normalizedReadMocks.loadNormalizedAppDataOverlay.mockResolvedValueOnce({ appData: {}, organizationId: "org-primary" });
+    normalizedReadMocks.loadNormalizedLiveDataByIds.mockResolvedValueOnce({
+      sessions: [{ id: "session-closed", stationId: "station-1", status: "closed", closeDisposition: "hopped" }],
+      sessionPauseLogs: [],
+      customerTabs: []
+    });
+    const gateway = createRemoteDataGateway({
+      ...DEFAULT_BACKEND_FEATURE_FLAGS,
+      normalizedRealtime: true
+    });
+    const onChange = vi.fn();
+    gateway.subscribeToAppData(onChange);
+    const loading = gateway.loadAppDataSnapshot();
+
+    realtimeHandler?.({
+      new: {
+        organization_id: "org-primary",
+        id: "event-during-bootstrap",
+        event_type: "hop_session_v2",
+        entity_type: "session",
+        entity_id: "session-closed",
+        created_at: "2026-09-12T10:00:00.000Z",
+        metadata: { changed_rows: { sessions: ["session-closed"] } }
+      }
+    });
+    resolveBase(createSnapshot(20));
+
+    await expect(loading).resolves.toMatchObject({
+      sourceEventId: "event-during-bootstrap",
+      appData: {
+        sessions: [expect.objectContaining({ id: "session-closed", closeDisposition: "hopped" })]
+      }
+    });
+    expect(onChange).not.toHaveBeenCalled();
+    expect(backendMocks.loadRemoteAppDataSnapshot).toHaveBeenCalledTimes(1);
   });
 
   it("carries the event identity through a realtime full refresh", async () => {

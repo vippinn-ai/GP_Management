@@ -831,8 +831,11 @@ export default function App() {
     mutation: OperationalMutation,
     result: OperationalRpcCommitResult
   ) {
+    const canonicalSource = result.normalizedPatch
+      ? mergeNormalizedAppDataOverlay(source, result.normalizedPatch)
+      : source;
     const identityReconciledSource = reconcileOperationalServerIdentity(
-      source,
+      canonicalSource,
       mutation,
       result.changedRows
     );
@@ -2447,7 +2450,8 @@ export default function App() {
             const result = await defaultRemoteDataGateway.commitOperationalMutation(mutation);
             const lineReconciliation = getCustomerTabLineIdReconciliation(mutation, result);
             let reconciledData = reconcileOperationalRpcResult(appDataRef.current, mutation, result);
-            if (mutation.optimistic === false || shouldReapplyAcknowledgedOperationalMutation(mutation.kind)) {
+            if (!result.canonicalHydrated &&
+              (mutation.optimistic === false || shouldReapplyAcknowledgedOperationalMutation(mutation.kind))) {
               reconciledData = applyOperationalMutation(reconciledData, mutation, { skipValidation: true });
             }
             if (result.appStateVersion) {
@@ -2840,11 +2844,14 @@ export default function App() {
         return outcome;
       }
 
-      const confirmedData = applyOperationalMutation(appDataRef.current, mutation, { skipValidation: true });
-      skipRemotePersistRef.current = true;
-      appDataRef.current = confirmedData;
-      setAppData(confirmedData);
-      saveAppData(confirmedData);
+      if (!(BACKEND_FEATURE_FLAGS.operationalRpcV2 &&
+        (mutation.kind === "hopSession" || mutation.kind === "rejectSession" || mutation.kind === "rejectCustomerTab"))) {
+        const confirmedData = applyOperationalMutation(appDataRef.current, mutation, { skipValidation: true });
+        skipRemotePersistRef.current = true;
+        appDataRef.current = confirmedData;
+        setAppData(confirmedData);
+        saveAppData(confirmedData);
+      }
       return outcome;
     } finally {
       criticalOperationalActionsRef.current.delete(actionKey);
@@ -4279,7 +4286,7 @@ export default function App() {
     setStartSessionDraft(createStartSessionDraft());
   }
 
-  function linkCustomerTabContinuation(
+  async function linkCustomerTabContinuation(
     customerTabId: string,
     continuedFromSessionIds: string[],
     onSuccess?: (tab: CustomerTab) => void
@@ -4306,7 +4313,15 @@ export default function App() {
         userId: activeUser.id
       };
     });
-    const committed = commitOperationalChange(createOperationalMutation(
+    const retryMutation = pendingOperationalMutationsRef.current.find((mutation) => {
+      const payload = mutation.payload as { customerTabId?: string; continuedFromSessionIds?: string[] };
+      return mutation.kind === "linkCustomerTabContinuation"
+        && mutation.entityId === targetTab.id
+        && mutation.retryPolicy === "manual"
+        && mutation.status === "failed"
+        && JSON.stringify([...(payload.continuedFromSessionIds ?? [])].sort()) === JSON.stringify([...continuationIds].sort());
+    });
+    const mutation = retryMutation ?? createOperationalMutation(
       "linkCustomerTabContinuation",
       "Linking customer tab...",
       "customer_tab",
@@ -4315,15 +4330,23 @@ export default function App() {
         customerTabId: targetTab.id,
         continuedFromSessionIds: continuationIds,
         auditLogs
-      }
-    ), (nextAppData) => {
-      const updatedTab = nextAppData.customerTabs.find((tab) => tab.id === targetTab.id) ?? targetTab;
-      onSuccess?.(updatedTab);
-    });
-    if (!committed) {
-      window.alert(remoteError || "Unable to link the hopped session to this customer tab.");
+      },
+      { retryPolicy: "manual", optimistic: false, acknowledgementRequired: true }
+    );
+    const outcome = await commitCriticalOperationalChange(
+      mutation,
+      `hop-tab-continuation:${continuationIds.join(":")}`,
+      { existingMutation: Boolean(retryMutation) }
+    );
+    if (outcome.status !== "synced") {
+      window.alert(outcome.status === "conflict"
+        ? "The hopped session was claimed or changed in another browser. Refresh and review before continuing."
+        : `Unable to link the hopped session to this customer tab. ${outcome.failureReason}`);
+      return false;
     }
-    return committed;
+    const updatedTab = appDataRef.current.customerTabs.find((tab) => tab.id === targetTab.id) ?? targetTab;
+    onSuccess?.(updatedTab);
+    return true;
   }
 
   async function openOrCreateCustomerTab(
@@ -4357,7 +4380,7 @@ export default function App() {
     );
     if (existing) {
       if (options?.continuedFromSessionIds?.length) {
-        linkCustomerTabContinuation(existing.id, options.continuedFromSessionIds, () => {
+        await linkCustomerTabContinuation(existing.id, options.continuedFromSessionIds, () => {
           setSelectedCustomerTabId(existing.id);
           if (options?.updateSaleDraft) {
             setCustomerTabDraft({
@@ -4408,10 +4431,10 @@ export default function App() {
       setPendingWarningDraft({ pendingBills: pendingForCustomer, customerLabel: label, intent: { type: "tab", draftValue: resolvedDraft, options } });
       return;
     }
-    doCommitTabDirect(resolvedDraft, options);
+    await doCommitTabDirect(resolvedDraft, options);
   }
 
-  function doCommitTabDirect(
+  async function doCommitTabDirect(
     draftValue: CustomerTabDraft,
     options?: { updateSaleDraft?: boolean; clearDraft?: boolean; switchToSale?: boolean; continuedFromSessionIds?: string[]; onSuccess?: () => void }
   ) {
@@ -4426,7 +4449,7 @@ export default function App() {
     const continuedFromSession = options?.continuedFromSessionIds?.[0]
       ? appData.sessions.find((session) => session.id === options.continuedFromSessionIds![0])
       : undefined;
-    commitOperationalChange(createOperationalMutation(
+    const mutation = createOperationalMutation(
       "openCustomerTab",
       "Opening customer tab",
       "customer_tab",
@@ -4457,8 +4480,12 @@ export default function App() {
           createdAt,
           userId: activeUser.id
         }
-      }
-    ), (nextAppData) => {
+      },
+      options?.continuedFromSessionIds?.length
+        ? { retryPolicy: "manual", optimistic: false, acknowledgementRequired: true }
+        : undefined
+    );
+    const finishOpen = (nextAppData: AppData) => {
       resolvedCustomerId = nextAppData.customerTabs.find((tab) => tab.id === tabId)?.customerId;
       setSelectedCustomerTabId(tabId);
       if (options?.updateSaleDraft) {
@@ -4471,7 +4498,22 @@ export default function App() {
         setActiveTab("sale");
       }
       options?.onSuccess?.();
-    });
+    };
+    if (options?.continuedFromSessionIds?.length) {
+      const outcome = await commitCriticalOperationalChange(
+        mutation,
+        `hop-new-tab-continuation:${options.continuedFromSessionIds.join(":")}`
+      );
+      if (outcome.status !== "synced") {
+        window.alert(outcome.status === "conflict"
+          ? "The hopped session was claimed or changed in another browser. Refresh and review before continuing."
+          : `The consumables tab was not opened. ${outcome.failureReason}`);
+        return;
+      }
+      finishOpen(appDataRef.current);
+      return;
+    }
+    commitOperationalChange(mutation, finishOpen);
   }
 
   function createDashboardCustomerTab(event: FormEvent<HTMLFormElement>) {
@@ -5210,7 +5252,7 @@ export default function App() {
     });
   }
 
-  function confirmPostHopCustomerTabLink() {
+  async function confirmPostHopCustomerTabLink() {
     if (!postHopTabLinkDraft) {
       return;
     }
@@ -5229,7 +5271,7 @@ export default function App() {
       });
       return;
     }
-    linkCustomerTabContinuation(
+    await linkCustomerTabContinuation(
       selectedTab.id,
       postHopTabLinkDraft.continuedFromSessionIds,
       completePostHopConsumablesTabSelection
@@ -9778,7 +9820,7 @@ export default function App() {
                 if (intent.type === "session") {
                   doStartSessionDirect(intent.draftValue);
                 } else {
-                  doCommitTabDirect(intent.draftValue, intent.options);
+                  void doCommitTabDirect(intent.draftValue, intent.options);
                 }
               }}
             >

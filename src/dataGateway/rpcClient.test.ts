@@ -3,6 +3,7 @@ import type { OperationalMutation } from "../operationalSync";
 import { clearCachedNormalizedOrganizationIdForTests } from "./normalizedOrganization";
 import {
   buildOperationalRpcPayload,
+  buildOperationalLifecycleV2Payload,
   getOperationalRpcFunctionName,
   invokeOperationalMutationRpc,
   mapOperationalRpcResult,
@@ -192,6 +193,42 @@ describe("operational RPC client", () => {
     expect(rpc).toHaveBeenCalledWith("hop_session", {
       payload: buildOperationalRpcPayload(mutation, "org-primary")
     });
+  });
+
+  it("builds intent-only lifecycle v2 payloads without actor or app-state authority", () => {
+    const mutation = createMutation({
+      kind: "rejectSession",
+      entityType: "session",
+      entityId: "session-1",
+      payload: {
+        session: {
+          id: "session-1",
+          endedAt: "2026-07-25T10:30:00.000Z",
+          closeReason: "Incorrect booking"
+        },
+        auditLog: { id: "audit-reject-1" }
+      } as never
+    });
+
+    const payload = buildOperationalLifecycleV2Payload(mutation, "org-primary");
+
+    expect(payload).toEqual({
+      organization_id: "org-primary",
+      mutation_id: "op-1",
+      mutation_kind: "rejectSession",
+      label: "Add Coke",
+      entity_type: "session",
+      entity_id: "session-1",
+      client_created_at: "2026-06-20T10:00:00.000Z",
+      payload: {
+        effective_ended_at: "2026-07-25T10:30:00.000Z",
+        reason: "Incorrect booking",
+        audit_log_id: "audit-reject-1"
+      }
+    });
+    expect(payload).not.toHaveProperty("user_id");
+    expect(payload).not.toHaveProperty("base_app_state_version");
+    expect(payload.payload).not.toHaveProperty("session");
   });
 
   it("resolves organization once when the caller does not provide an organization id", async () => {

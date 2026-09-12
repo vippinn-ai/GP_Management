@@ -2,6 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { getSupabaseClient } from "../backend";
 import type { OperationalMutation, OperationalMutationKind } from "../operationalSync";
 import { resolveNormalizedOrganizationId } from "./normalizedOrganization";
+import { loadNormalizedAuditLogsByIds, loadNormalizedLiveDataByIds } from "./normalizedReads";
 import type { OperationalRpcCommitResult } from "./types";
 
 const OPERATIONAL_RPC_TIMEOUT_MS = 15_000;
@@ -29,6 +30,18 @@ export const OPERATIONAL_RPC_FUNCTION_NAMES: Record<OperationalMutationKind, str
   saveLiveCustomerTabDetails: "save_live_customer_tab_details"
 });
 
+export const OPERATIONAL_RPC_V2_FUNCTION_NAMES = Object.freeze({
+  hopSession: "hop_session_v2",
+  rejectSession: "reject_session_v2",
+  rejectCustomerTab: "reject_customer_tab_v2"
+} satisfies Partial<Record<OperationalMutationKind, string>>);
+
+export function isOperationalLifecycleV2Kind(
+  kind: OperationalMutationKind
+): kind is keyof typeof OPERATIONAL_RPC_V2_FUNCTION_NAMES {
+  return Object.prototype.hasOwnProperty.call(OPERATIONAL_RPC_V2_FUNCTION_NAMES, kind);
+}
+
 export interface OperationalRpcPayloadEnvelope {
   organization_id: string;
   mutation_id: string;
@@ -40,6 +53,22 @@ export interface OperationalRpcPayloadEnvelope {
   client_created_at: string;
   base_app_state_version: number;
   payload: OperationalMutation["payload"];
+}
+
+export interface OperationalLifecycleV2PayloadEnvelope {
+  organization_id: string;
+  mutation_id: string;
+  mutation_kind: keyof typeof OPERATIONAL_RPC_V2_FUNCTION_NAMES;
+  label: string;
+  entity_type: OperationalMutation["entityType"];
+  entity_id: string;
+  client_created_at: string;
+  payload: {
+    effective_ended_at?: string;
+    effective_closed_at?: string;
+    reason?: string;
+    audit_log_id: string;
+  };
 }
 
 interface RpcResult<T> {
@@ -171,6 +200,43 @@ export function getOperationalRpcFunctionName(kind: OperationalMutationKind): st
   return OPERATIONAL_RPC_FUNCTION_NAMES[kind];
 }
 
+export function buildOperationalLifecycleV2Payload(
+  mutation: OperationalMutation,
+  organizationId: string
+): OperationalLifecycleV2PayloadEnvelope {
+  if (!isOperationalLifecycleV2Kind(mutation.kind)) {
+    throw new Error(`Operational v2 does not support ${mutation.kind}.`);
+  }
+  const source = toRecord(mutation.payload);
+  const auditLog = toRecord(source.auditLog);
+  const auditLogId = toOptionalString(auditLog.id);
+  if (!auditLogId) {
+    throw new Error("Operational v2 requires a stable audit ID.");
+  }
+  const session = toRecord(source.session);
+  const tab = toRecord(source.tab);
+  return {
+    organization_id: organizationId,
+    mutation_id: mutation.id,
+    mutation_kind: mutation.kind,
+    label: mutation.label,
+    entity_type: mutation.entityType,
+    entity_id: mutation.entityId,
+    client_created_at: mutation.createdAt,
+    payload: mutation.kind === "rejectCustomerTab"
+      ? {
+          effective_closed_at: toOptionalString(tab.closedAt),
+          reason: toOptionalString(tab.closeReason),
+          audit_log_id: auditLogId
+        }
+      : {
+          effective_ended_at: toOptionalString(session.endedAt),
+          reason: mutation.kind === "rejectSession" ? toOptionalString(session.closeReason) : undefined,
+          audit_log_id: auditLogId
+        }
+  };
+}
+
 export function buildOperationalRpcPayload(
   mutation: OperationalMutation,
   organizationId: string
@@ -218,12 +284,18 @@ export async function invokeOperationalMutationRpc(
   options: {
     organizationId?: string;
     client?: SupabaseClient;
+    useV2?: boolean;
   } = {}
 ): Promise<OperationalRpcCommitResult> {
   const client = options.client ?? getSupabaseClient();
   const organizationId = options.organizationId ?? (await resolveNormalizedOrganizationId(client));
-  const rpcName = getOperationalRpcFunctionName(mutation.kind);
-  const payload = buildOperationalRpcPayload(mutation, organizationId);
+  const useLifecycleV2 = options.useV2 === true && isOperationalLifecycleV2Kind(mutation.kind);
+  const rpcName = useLifecycleV2
+    ? OPERATIONAL_RPC_V2_FUNCTION_NAMES[mutation.kind as keyof typeof OPERATIONAL_RPC_V2_FUNCTION_NAMES]
+    : getOperationalRpcFunctionName(mutation.kind);
+  const payload = useLifecycleV2
+    ? buildOperationalLifecycleV2Payload(mutation, organizationId)
+    : buildOperationalRpcPayload(mutation, organizationId);
 
   let result: RpcResult<unknown>;
   try {
@@ -243,10 +315,34 @@ export async function invokeOperationalMutationRpc(
     throw createOperationalRpcError({ error: result.error, rpcName, mutationId: mutation.id });
   }
 
-  return mapOperationalRpcResult({
+  const mapped = mapOperationalRpcResult({
     data: result.data,
     mutation,
     organizationId,
     rpcName
   });
+  if (!useLifecycleV2) {
+    return mapped;
+  }
+  const changedRows = mapped.changedRows ?? {};
+  const changedIds = (key: string) => Array.isArray(changedRows[key])
+    ? (changedRows[key] as unknown[]).filter((value): value is string => typeof value === "string" && Boolean(value))
+    : [];
+  const [live, auditLogs] = await Promise.all([
+    loadNormalizedLiveDataByIds(organizationId, {
+      sessionIds: changedIds("sessions"),
+      customerTabIds: changedIds("customer_tabs")
+    }, client),
+    loadNormalizedAuditLogsByIds(organizationId, changedIds("audit_logs"), client)
+  ]);
+  return {
+    ...mapped,
+    normalizedPatch: {
+      sessions: live.sessions,
+      sessionPauseLogs: live.sessionPauseLogs,
+      customerTabs: live.customerTabs,
+      auditLogs
+    },
+    canonicalHydrated: true
+  };
 }

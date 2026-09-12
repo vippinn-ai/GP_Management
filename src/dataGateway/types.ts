@@ -30,6 +30,8 @@ export interface OperationalRpcCommitResult {
   appStateVersion?: number;
   serverDurationMs?: number;
   changedRows?: Record<string, unknown>;
+  normalizedPatch?: Partial<AppData>;
+  canonicalHydrated?: boolean;
   raw?: unknown;
 }
 
