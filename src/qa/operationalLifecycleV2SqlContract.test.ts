@@ -4,6 +4,8 @@ import { describe, expect, it } from "vitest";
 
 const source = readFileSync(path.join(process.cwd(), "supabase/operational-lifecycle-v2.sql"), "utf8");
 const customerTabSource = readFileSync(path.join(process.cwd(), "supabase/phase4-customer-tab-rpcs.sql"), "utf8");
+const preflight = readFileSync(path.join(process.cwd(), "supabase/operational-lifecycle-v2-staging-preflight-readonly.sql"), "utf8");
+const postflight = readFileSync(path.join(process.cwd(), "supabase/operational-lifecycle-v2-staging-postflight-readonly.sql"), "utf8");
 
 function body(name: string) {
   const match = source.match(new RegExp(`create or replace function public\\.${name}\\(payload jsonb\\)[\\s\\S]*?as \\$\\$([\\s\\S]*?)\\$\\$;`, "i"));
@@ -51,5 +53,14 @@ describe("normalized lifecycle v2 SQL contract", () => {
     expect(functionBody).toMatch(/hopped_session_unavailable/i);
     expect(functionBody).toMatch(/hopped_session_already_continued/i);
     expect(functionBody).toMatch(/closed_bill_id\s+is\s+null/i);
+  });
+
+  it("keeps preflight and postflight read-only and compatibility-hash aware", () => {
+    for (const probe of [preflight, postflight]) {
+      expect(probe).toMatch(/begin isolation level repeatable read read only/i);
+      expect(probe).toMatch(/rollback;\s*$/i);
+      expect(probe).toMatch(/md5\(data::text\)/i);
+      expect(probe).not.toMatch(/\b(?:insert\s+into|update|delete\s+from|alter\s+table|drop\s+table|create\s+table)\s+public\./i);
+    }
   });
 });
