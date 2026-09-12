@@ -14,7 +14,8 @@ function argument(name) {
 const profileId = argument("profile-id");
 if (!/^[a-z0-9][a-z0-9._-]{5,80}$/i.test(profileId)) throw new Error("Profile ID contains unsupported characters.");
 const networkProfile = argument("network-profile");
-const browser = await chromium.launch({ headless: true });
+const browserChannel = process.env.E2E_BROWSER_CHANNEL || "chrome";
+const browser = await chromium.launch({ headless: true, channel: browserChannel });
 const expectedBrowserVersion = browser.version();
 await browser.close();
 
@@ -24,6 +25,7 @@ const evidence = {
   capturedAt: new Date().toISOString(),
   hostFingerprint: createHash("sha256").update(`${os.hostname()}|${os.platform()}|${os.release()}|${os.arch()}`).digest("hex"),
   expectedBrowserVersion,
+  browserChannel,
   viewport: { width: 1440, height: 900 },
   cachePolicy: "new-context-cold-cache-service-workers-blocked",
   networkProfile,

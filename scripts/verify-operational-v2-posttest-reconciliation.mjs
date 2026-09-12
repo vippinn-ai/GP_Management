@@ -47,6 +47,14 @@ if (!isDeepStrictEqual(observed.app_state, manifest.value.expectedAppState)) {
 if (!isDeepStrictEqual(observed.functions, manifest.value.expectedFunctionDefinitionMd5)) {
   throw new Error("Installed operational function definitions drifted during tests.");
 }
+const sameTargetRace = observed.same_target_race_integrity ?? {};
+if (Number(sameTargetRace.committed_close_mutations) !== 3
+  || Number(sameTargetRace.all_close_mutations) !== 3
+  || Number(sameTargetRace.close_audits) !== 3
+  || Number(sameTargetRace.close_events) !== 3
+  || Number(sameTargetRace.actor_mismatches) !== 0) {
+  throw new Error("Same-target races did not retain exactly one committed, actor-attributed winner per case, or a loser left residue.");
+}
 const verification = {
   runId: manifest.value.runId,
   verifiedAt: new Date().toISOString(),
@@ -56,6 +64,7 @@ const verification = {
   globalFloorClean: true,
   qaLiveResidualsClean: true,
   terminalEvidenceCounts: observed.qa_terminal_evidence,
+  sameTargetRaceIntegrity: sameTargetRace,
   lineage: {
     manifestSha256: manifest.sha256,
     resultSha256: result.sha256,

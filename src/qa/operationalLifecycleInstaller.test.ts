@@ -50,6 +50,7 @@ describe("operational lifecycle staging installer", () => {
       organization_exists: true,
       open_sessions: 0,
       open_customer_tabs: 0,
+      recoverable_hopped_sessions: 0,
       processing_financial_mutations: 0,
       processing_operational_mutations: 0,
       app_state: { version: 10, md5: "0123456789abcdef0123456789abcdef" },
@@ -79,16 +80,25 @@ describe("operational lifecycle staging installer", () => {
     const root = process.cwd();
     const fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), "normops-proof-"));
     cleanupPaths.push(fixtureDir);
+    const preflightFunctions = ["hop_session", "reject_session", "reject_customer_tab"].map((name) => {
+      const definition = `CREATE OR REPLACE FUNCTION public.${name}(payload jsonb) RETURNS jsonb LANGUAGE plpgsql AS $function$ BEGIN RETURN '{}'::jsonb; END $function$`;
+      return { name, definition, definition_md5: crypto.createHash("md5").update(definition).digest("hex") };
+    });
+    const preflightPath = path.join(fixtureDir, "preflight.json");
+    const preflightText = JSON.stringify({ functions: preflightFunctions });
+    fs.writeFileSync(preflightPath, preflightText);
+    const preflightSha = crypto.createHash("sha256").update(preflightText).digest("hex");
     const dbManifestPath = path.join(fixtureDir, "manifest.json");
     const dbManifest = {
       runId: "normops-20260912-2200-install-fixture",
-      target: { projectRef: "tkbdyzxwwbhkpztgjjxh", organizationId: "org-primary" }
+      target: { projectRef: "tkbdyzxwwbhkpztgjjxh", organizationId: "org-primary" },
+      preflight: { path: preflightPath, sha256: preflightSha }
     };
     const dbManifestText = JSON.stringify(dbManifest);
     fs.writeFileSync(dbManifestPath, dbManifestText);
     const dbManifestSha = crypto.createHash("sha256").update(dbManifestText).digest("hex");
     const definitionHashes = Object.fromEntries(
-      ["hop_session_v2", "reject_session_v2", "reject_customer_tab_v2", "start_session", "open_customer_tab", "link_customer_tab_continuation"]
+      ["hop_session_v2", "reject_session_v2", "reject_customer_tab_v2", "get_operational_performance_dataset_identity", "start_session", "open_customer_tab", "link_customer_tab_continuation"]
         .map((name) => [name, crypto.createHash("md5").update(name).digest("hex")])
     );
     const verificationPath = path.join(fixtureDir, "verification.json");
@@ -120,6 +130,7 @@ describe("operational lifecycle staging installer", () => {
     expect(result.status, result.stderr).toBe(0);
     const proof = fs.readFileSync(proofPath, "utf8");
     expect(proof).toContain("installed function drift");
+    for (const entry of preflightFunctions) expect(proof).toContain(entry.definition_md5);
     expect(proof).not.toContain("__INSTALLED_FUNCTION_GUARDS__");
     expect(proof.trimEnd().endsWith("rollback;")).toBe(true);
   });

@@ -55,6 +55,7 @@ if (preflight.environment_identity?.environment !== "staging" || preflight.envir
 }
 if (preflight.organization_id !== EXPECTED_ORGANIZATION_ID || preflight.organization_exists !== true) throw new Error("Preflight organization identity is invalid.");
 if (preflight.open_sessions !== 0 || preflight.open_customer_tabs !== 0) throw new Error("Staging operational floor is not clean.");
+if (preflight.recoverable_hopped_sessions !== 0) throw new Error("Staging has an unconsumed recoverable hopped session.");
 if (preflight.processing_financial_mutations !== 0 || preflight.processing_operational_mutations !== 0) throw new Error("Staging has an incomplete mutation.");
 if (!preflight.app_state?.md5 || !Number.isInteger(preflight.app_state?.version)) throw new Error("Preflight app_state baseline is incomplete.");
 
@@ -78,12 +79,14 @@ const customerTabPath = path.join(root, "supabase", "phase4-customer-tab-rpcs.sq
 const startSessionPath = path.join(root, "supabase", "phase4-start-session-rpc.sql");
 const linkContinuationPath = path.join(root, "supabase", "phase4-link-customer-tab-continuation-rpc.sql");
 const identityPath = path.join(root, "supabase", "operational-v2-staging-environment-identity.sql");
+const datasetIdentityPath = path.join(root, "supabase", "operational-performance-dataset-identity-staging.sql");
 const outDir = path.join(root, "test-artifacts", "operational-lifecycle-v2", runId);
 const installPath = path.join(outDir, "staging-install.sql");
 const rollbackPath = path.join(outDir, "staging-rollback.sql");
 const manifestPath = path.join(outDir, "manifest.json");
 
 const lifecycle = fs.readFileSync(lifecyclePath, "utf8").trim();
+const datasetIdentity = fs.readFileSync(datasetIdentityPath, "utf8").trim();
 const customerTabs = fs.readFileSync(customerTabPath, "utf8");
 const startSession = fs.readFileSync(startSessionPath, "utf8");
 const linkContinuation = fs.readFileSync(linkContinuationPath, "utf8");
@@ -113,6 +116,7 @@ const reviewedFunctions = {
   hop_session_v2: extractFunction(lifecycle, "hop_session_v2"),
   reject_session_v2: extractFunction(lifecycle, "reject_session_v2"),
   reject_customer_tab_v2: extractFunction(lifecycle, "reject_customer_tab_v2"),
+  get_operational_performance_dataset_identity: extractFunction(datasetIdentity, "get_operational_performance_dataset_identity"),
   start_session: extractFunction(startSession, "start_session"),
   open_customer_tab: extractFunction(customerTabs, "open_customer_tab"),
   link_customer_tab_continuation: extractFunction(linkContinuation, "link_customer_tab_continuation")
@@ -166,6 +170,12 @@ begin
   if not exists(select 1 from public.organizations where id=${sqlLiteral(EXPECTED_ORGANIZATION_ID)}) then raise exception 'staging organization identity failed'; end if;
   if (select count(*) from public.sessions where status<>'closed') <> 0 then raise exception 'staging has open sessions'; end if;
   if (select count(*) from public.customer_tabs where status='open') <> 0 then raise exception 'staging has open customer tabs'; end if;
+  if exists(
+    select 1 from public.sessions source
+    where source.organization_id=${sqlLiteral(EXPECTED_ORGANIZATION_ID)} and source.status='closed' and source.close_disposition='hopped' and source.closed_bill_id is null
+      and not exists(select 1 from public.sessions consumer where consumer.organization_id=source.organization_id and consumer.continued_from_session_ids @> jsonb_build_array(source.id) and not (consumer.status='closed' and consumer.close_disposition='rejected' and consumer.closed_bill_id is null))
+      and not exists(select 1 from public.customer_tabs consumer where consumer.organization_id=source.organization_id and consumer.continued_from_session_ids @> jsonb_build_array(source.id) and not (consumer.status='closed' and consumer.close_disposition='rejected' and consumer.closed_bill_id is null))
+  ) then raise exception 'staging has a recoverable unconsumed hopped session'; end if;
   if (select count(*) from public.financial_mutations where status<>'committed') <> 0 then raise exception 'staging has incomplete financial mutations'; end if;
   if to_regclass('public.operational_mutations') is not null and (select count(*) from public.operational_mutations where status<>'committed') <> 0 then raise exception 'staging has incomplete operational mutations'; end if;
   if (select version from operational_v2_install_baseline) is distinct from ${Number(preflight.app_state.version)}
@@ -173,6 +183,7 @@ begin
   ${oldDefinitionGuards}
 end $$;`,
   lifecycle,
+  datasetIdentity,
   reviewedFunctions.start_session,
   reviewedFunctions.open_customer_tab,
   reviewedFunctions.link_customer_tab_continuation,
@@ -236,7 +247,7 @@ const manifest = {
   target: { projectRef: EXPECTED_STAGING_PROJECT_REF, organizationId: EXPECTED_ORGANIZATION_ID },
   preflight: { path: preflightPath, sha256: sha256(preflightText) },
   environmentIdentity: preflight.environment_identity,
-  sources: Object.fromEntries([lifecyclePath, startSessionPath, customerTabPath, linkContinuationPath, identityPath].map((file) => [path.relative(root, file), sha256(fs.readFileSync(file))])),
+  sources: Object.fromEntries([lifecyclePath, datasetIdentityPath, startSessionPath, customerTabPath, linkContinuationPath, identityPath].map((file) => [path.relative(root, file), sha256(fs.readFileSync(file))])),
   expectedFunctionBodies,
   artifacts: {
     install: { path: installPath, bytes: Buffer.byteLength(install), sha256: sha256(install) },

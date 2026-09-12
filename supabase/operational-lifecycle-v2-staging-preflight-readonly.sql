@@ -15,6 +15,16 @@ begin
   if not exists(select 1 from public.app_state where id='primary') then raise exception 'primary app_state is missing'; end if;
   if (select count(*) from public.sessions where status<>'closed') <> 0 then raise exception 'staging has open sessions'; end if;
   if (select count(*) from public.customer_tabs where status='open') <> 0 then raise exception 'staging has open customer tabs'; end if;
+  if exists(
+    select 1 from public.sessions source
+    where source.organization_id='org-primary' and source.status='closed' and source.close_disposition='hopped' and source.closed_bill_id is null
+      and not exists(select 1 from public.sessions consumer where consumer.organization_id=source.organization_id
+        and consumer.continued_from_session_ids @> jsonb_build_array(source.id)
+        and not (consumer.status='closed' and consumer.close_disposition='rejected' and consumer.closed_bill_id is null))
+      and not exists(select 1 from public.customer_tabs consumer where consumer.organization_id=source.organization_id
+        and consumer.continued_from_session_ids @> jsonb_build_array(source.id)
+        and not (consumer.status='closed' and consumer.close_disposition='rejected' and consumer.closed_bill_id is null))
+  ) then raise exception 'staging has a recoverable unconsumed hopped session'; end if;
   if (select count(*) from public.financial_mutations where status<>'committed') <> 0 then raise exception 'staging has incomplete financial mutations'; end if;
   if to_regclass('public.operational_mutations') is not null then
     execute 'select count(*) from public.operational_mutations where status<>''committed''' into incomplete_operational;
@@ -75,6 +85,10 @@ select jsonb_build_object(
   'organization_exists', exists(select 1 from public.organizations where id='org-primary'),
   'open_sessions', (select count(*) from public.sessions where status<>'closed'),
   'open_customer_tabs', (select count(*) from public.customer_tabs where status='open'),
+  'recoverable_hopped_sessions', (select count(*) from public.sessions source
+    where source.organization_id='org-primary' and source.status='closed' and source.close_disposition='hopped' and source.closed_bill_id is null
+      and not exists(select 1 from public.sessions consumer where consumer.organization_id=source.organization_id and consumer.continued_from_session_ids @> jsonb_build_array(source.id) and not (consumer.status='closed' and consumer.close_disposition='rejected' and consumer.closed_bill_id is null))
+      and not exists(select 1 from public.customer_tabs consumer where consumer.organization_id=source.organization_id and consumer.continued_from_session_ids @> jsonb_build_array(source.id) and not (consumer.status='closed' and consumer.close_disposition='rejected' and consumer.closed_bill_id is null))),
   'processing_financial_mutations', (select count(*) from public.financial_mutations where status<>'committed'),
   'processing_operational_mutations', current_setting('normops.processing_operational_mutations')::integer,
   'operational_mutations_table_exists', to_regclass('public.operational_mutations') is not null,

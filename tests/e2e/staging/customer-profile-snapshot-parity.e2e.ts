@@ -9,6 +9,7 @@ import {
   createObserver,
   credentials,
   openManagedSession,
+  readRestRows,
   rejectSessionIfOpen,
   signIn,
   startSession,
@@ -29,13 +30,14 @@ test("customer directory edits converge without rewriting live transaction snaps
   const forbiddenAppStateRequests: Array<{ method: string; url: string }> = [];
   const authenticatedRequests: import("./support/app").CapturedRpcRequest[] = [];
   let sessionStarted = false;
-  let cleanupConfirmed = false;
+  let operationalCleanupConfirmed = false;
+  let customerCleanupConfirmed = false;
 
   const captureForbiddenAppState = (request: import("@playwright/test").Request) => {
     const url = new URL(request.url());
     if (!url.pathname.includes("/rest/v1/app_state")) return;
     const select = url.searchParams.get("select") ?? "";
-    if (request.method() !== "GET" || select === "*" || select.split(",").includes("data")) {
+    if (request.method() !== "GET" || !select || select === "*" || select.split(",").includes("data")) {
       forbiddenAppStateRequests.push({ method: request.method(), url: request.url() });
     }
   };
@@ -58,7 +60,7 @@ test("customer directory edits converge without rewriting live transaction snaps
 
   try {
     await Promise.all([signIn(page, credentials("A")), signIn(observer.page, credentials("A"))]);
-    await assertAuthoritativeOrganizationIdentity(page, authenticatedRequests, "admin");
+    const identity = await assertAuthoritativeOrganizationIdentity(page, authenticatedRequests, "admin");
     await startSession(page, station, originalName);
     sessionStarted = true;
     await expect(stationCard(observer.page, station)).toContainText(originalName);
@@ -72,6 +74,10 @@ test("customer directory edits converge without rewriting live transaction snaps
     await editor.getByRole("button", { name: "Save Profile", exact: true }).click();
     await expect(editor).toBeHidden();
     await expect(page.locator("button.tab-chip").filter({ hasText: directoryName })).toHaveCount(1);
+    const profileMutationRequest = [...authenticatedRequests].reverse().find((entry) => new URL(entry.url).pathname.endsWith("/rpc/commit_admin_data_change"));
+    const profileMutationEnvelope = (profileMutationRequest?.body as { payload?: { payload?: { customers?: Array<{ id?: string }> } } } | undefined)?.payload;
+    const customerId = profileMutationEnvelope?.payload?.customers?.[0]?.id;
+    if (!profileMutationRequest || !customerId) throw new Error("Customer profile mutation evidence did not expose the exact cleanup identity.");
 
     await openCustomerDirectory(observer.page, directoryName);
     await observer.page.reload({ waitUntil: "domcontentloaded" });
@@ -91,8 +97,29 @@ test("customer directory edits converge without rewriting live transaction snaps
 
     await openCustomerDirectory(page, directoryName);
     await page.getByRole("button", { name: "Live Dashboard", exact: true }).click();
-    cleanupConfirmed = await rejectSessionIfOpen(page, station, sessionName, `QA profile cleanup ${runId}`);
-    expect(cleanupConfirmed).toBe(true);
+    operationalCleanupConfirmed = await rejectSessionIfOpen(page, station, sessionName, `QA profile cleanup ${runId}`);
+    expect(operationalCleanupConfirmed).toBe(true);
+    const appState = await readRestRows<{ version: number }>(page, identity.restBase, identity.headers, "app_state", { id: "eq.primary", select: "version" });
+    expect(appState).toHaveLength(1);
+    const cleanupResponse = await page.request.post(profileMutationRequest.url, {
+      headers: identity.headers,
+      data: {
+        payload: {
+          organization_id: "org-primary",
+          mutation_id: `${runId}-customer-profile-cleanup`,
+          mutation_kind: "commitAdminDataChange",
+          entity_type: "admin_data",
+          entity_id: `customer-profile-cleanup-${runId}`,
+          user_id: identity.actorId,
+          client_created_at: new Date().toISOString(),
+          base_app_state_version: appState[0].version,
+          payload: { customers: [], customerIdsToDelete: [customerId], auditLogs: [] }
+        }
+      }
+    });
+    expect(cleanupResponse.status()).toBe(200);
+    expect(await readRestRows(page, identity.restBase, identity.headers, "customers", { id: `eq.${customerId}`, select: "id" })).toEqual([]);
+    customerCleanupConfirmed = true;
     await expect(stationCard(observer.page, station)).toContainText("Available");
     expect(forbiddenAppStateRequests).toEqual([]);
     assertNoPageErrors(...errors);
@@ -102,13 +129,19 @@ test("customer directory edits converge without rewriting live transaction snaps
       directorySurvivedReload: true,
       liveSnapshotPreservedUntilExplicitEdit: true,
       forbiddenAppStateRequests,
-      cleanupConfirmed
+      operationalCleanupConfirmed,
+      customerCleanupConfirmed,
+      customerId
     });
   } finally {
-    if (sessionStarted && !cleanupConfirmed) {
+    if (sessionStarted && !operationalCleanupConfirmed) {
       await page.getByRole("button", { name: "Live Dashboard", exact: true }).click().catch(() => undefined);
       await rejectSessionIfOpen(page, station, sessionName, `QA profile fallback cleanup ${runId}`).catch(() => false);
       await rejectSessionIfOpen(page, station, originalName, `QA profile fallback cleanup ${runId}`).catch(() => false);
+    }
+    if (sessionStarted && !customerCleanupConfirmed) {
+      // No automatic retry: the exact customer identity remains in the failure
+      // evidence and must be reconciled manually before another run.
     }
     await attachFailureScreenshot(testInfo, page, "customer-profile-snapshot-parity-failure");
     await observer.context.close();

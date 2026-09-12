@@ -32,13 +32,18 @@
 - hop/hop, reject/reject, hop/reject, checkout/hop, checkout/reject, hop/timing/pause/resume/item mutation.
 - continuation start/link/new-tab double consumption; reject consumer versus new consumer.
 - unrelated session/session, session/tab, and tab/tab pairs both succeed without global serialization.
+- Direct two-client calls retain exact request/response/timing evidence; same-target cases prove winner actor attribution and the read-only post-test reconciliation proves every losing mutation/audit/event rolled back.
 - realtime-before-response, response-before-realtime, reversed hydration completion, reconnect/gap/duplicate/unmount.
 - lost response and waiter timeout recover with same mutation ID, exactly one effect, no automatic resend.
 - 50 two-client reload-versus-mutation overlaps end with database parity before writes become enabled.
 
+The rollback-only DB proof and the frozen/candidate 30-load comparison run before any mutating browser case so both performance runs are bound to the same exact normalized content fingerprints. Functional and concurrency cases run only after candidate performance passes.
+
 ## Performance gates
 
 Use guarded disposable production-logical-size staging state with exact restore artifact/hash.
+
+The full-table fingerprint helper is staging-only test instrumentation and is not part of the production lifecycle migration.
 
 - At least 20 single-send samples per target class plus ten unrelated-operation pairs; zero 57014, deadlock, timeout, retry, duplicate, or browser error.
 - Target RPC DB p95 under 500 ms and max under 2 s; HTTP/UI acknowledgement p95 under 2 s and max under 5 s; outer browser ceiling 7 s.
@@ -49,4 +54,3 @@ Use guarded disposable production-logical-size staging state with exact restore 
 - No root commits attributable to the one-second clock after the runtime unit; active-panel commit p95 <16 ms and max <50 ms.
 
 Every case is passed, failed, blocked, or not run. Any required blocked/not-run case is NO-GO unless the approved spec explicitly narrows it with recorded risk acceptance.
-

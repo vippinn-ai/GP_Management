@@ -17,6 +17,8 @@ describe("operational lifecycle v2 Playwright and performance contract", () => {
     expect(runner).toContain("E2E_DB_MANIFEST_SHA256");
     expect(runner).toContain("E2E_DB_PROOF_MANIFEST_SHA256");
     expect(runner).toContain("E2E_DB_PROOF_RESULT_SHA256");
+    expect(runner).toContain("E2E_DB_PROOF_ROLLBACK_VERIFICATION_SHA256");
+    expect(runner).toContain("rollbackProven");
     expect(runner).toContain("postflightVerification.manifestSha256 !== actualManifestSha");
     expect(runner).toContain("evidence-manifest-");
     expect(runner).toContain('productionAllowed: false');
@@ -25,6 +27,7 @@ describe("operational lifecycle v2 Playwright and performance contract", () => {
     expect(config).toMatch(/workers:\s*1/);
     expect(config).toMatch(/fullyParallel:\s*false/);
     expect(config).toContain("operational-lifecycle-v2.e2e.ts");
+    expect(config).toContain("operational-lifecycle-v2-concurrency.e2e.ts");
     for (const regressionSpec of [
       "release-a-hop-pause.e2e.ts",
       "release-a-inventory-matrix.e2e.ts",
@@ -49,6 +52,7 @@ describe("operational lifecycle v2 Playwright and performance contract", () => {
     expect(config).toMatch(/workers:\s*1/);
     expect(spec).toContain("bp-safe-interactive");
     expect(spec).toContain("requestedFullAppStateData");
+    expect(spec).toContain("Live normalized content fingerprints drifted from the immutable dataset snapshot.");
     expect(spec).toContain("requestedHistoryBeforeSafeInteractive");
     expect(spec).toContain("measureBootstrapDependencyDepth");
     expect(spec).not.toContain("bootstrapDependencyDepth: 3");
@@ -59,13 +63,48 @@ describe("operational lifecycle v2 Playwright and performance contract", () => {
     expect(spec).toContain("activePanelCommitP95Ms");
     expect(runner).toContain("E2E_EXPECTED_BASELINE_BUNDLE_SHA256");
     expect(runner).toContain("E2E_PERFORMANCE_DATASET_MANIFEST_SHA256");
+    expect(runner).toContain("scaleSource?.restoreManifest?.sha256");
+    expect(runner).toContain("scaleSource?.restoreDrill?.sha256");
+    expect(runner).toContain("E2E_EXPECTED_DATASET_IDENTITY");
     expect(runner).toContain("E2E_DB_POSTFLIGHT_VERIFICATION_SHA256");
     expect(runner).toContain("E2E_PERFORMANCE_PROFILE_MANIFEST_SHA256");
     expect(runner).toContain("E2E_PERFORMANCE_BASELINE_MANIFEST_SHA256");
+    expect(spec).toContain("initialJavascriptBytesMax");
+    expect(spec).toContain("initialJavascriptGzipBytesMax");
+    expect(spec).toContain("1_000 * 1024");
+    expect(spec).toContain("300 * 1024");
+    expect(runner).toContain("profileManifest.value.hostFingerprint !== currentHostFingerprint");
+    expect(runner).toContain("profileManifest.value.browserChannel");
     expect(spec).toContain("baseline.browserVersion !== browserVersion");
+    expect(spec).toContain("organizationResponse.requestStartMs");
     expect(spec).toContain("baseline.deployedBundleSha256");
     expect(spec).toContain("summary.p95");
     expect(spec).toContain("3_500");
+  });
+
+  it("builds the performance dataset from a read-only exact staging snapshot and verified production-scale restore source", () => {
+    const sql = read("supabase/operational-performance-dataset-readonly.sql");
+    const builder = read("scripts/build-operational-performance-dataset-manifest.mjs");
+    expect(sql).toContain("repeatable read read only");
+    expect(sql.trimEnd().endsWith("rollback;")).toBe(true);
+    expect(sql).toContain("public_counts");
+    expect(builder).toContain("Restore artifact ${entry.name} failed integrity validation.");
+    expect(builder).toContain("restoreFile.value.baselineEvidence?.sha256 !== productionFile.sha256");
+    expect(builder).toContain('readBound("restore-drill"');
+    expect(builder).toContain("restoreDrill.sourceManifest?.sha256 !== restoreFile.sha256");
+    expect(builder).toContain("Disposable restore drill count differs");
+    expect(builder).toContain("Staging dataset is below the production logical scale");
+    expect(builder).toContain('flag: "wx"');
+  });
+
+  it("keeps the database proof on the approved strict latency budget", () => {
+    const proof = read("supabase/operational-lifecycle-v2-transactional-proof.sql");
+    const runner = read("scripts/run-operational-v2-staging-e2e.mjs");
+    const runbook = read("openspec/changes/operational-performance-decoupling/staging-runbook.md");
+    expect(proof).toContain("p95_ms>=500 or max_ms>=2000");
+    expect(runner).toContain("p95_ms) < 500");
+    expect(runner).toContain("max_ms) < 2_000");
+    expect(runbook).toContain("database p95 below 500 ms and maximum below 2 seconds");
   });
 
   it("uses the intent-only lifecycle envelope in every selected checkout race and role case", () => {
@@ -101,6 +140,26 @@ describe("operational lifecycle v2 Playwright and performance contract", () => {
     ]) expect(spec).toContain(marker);
   });
 
+  it("runs real independent-connection lifecycle races and fifty reload-versus-unrelated mutation pairs", () => {
+    const spec = read("tests/e2e/staging/operational-lifecycle-v2-concurrency.e2e.ts");
+    expect(spec).toContain('["hop", "hop"]');
+    expect(spec).toContain('["reject", "reject"]');
+    expect(spec).toContain('["hop", "reject"]');
+    expect(spec).toContain("for (let iteration = 1; iteration <= 50; iteration += 1)");
+    expect(spec).toContain('"session/session"');
+    expect(spec).toContain('"session/tab"');
+    expect(spec).toContain('"tab/tab"');
+    expect(spec).toContain("observer.page.reload");
+    expect(spec).toContain("appStateSnapshot");
+    expect(spec).toContain("operational_events");
+    expect(spec).toContain("directRpcEvidence");
+    expect(spec).toContain("expectTargetsVisible");
+    expect(spec).toContain("expectTargetsAbsent");
+    expect(spec).toContain("winnerActorId");
+    expect(spec).toContain("latency.serverP95Ms");
+    expect(spec).toContain("latency.clientP95Ms");
+  });
+
   it("keeps heavy exports demand-loaded and removes the one-second App render cadence", () => {
     const exporters = read("src/exporters.ts");
     const app = read("src/App.tsx");
@@ -118,9 +177,44 @@ describe("operational lifecycle v2 Playwright and performance contract", () => {
     expect(sql.trimEnd().endsWith("rollback;")).toBe(true);
     expect(sql).toContain("qa_live_residuals");
     expect(sql).toContain("qa_terminal_evidence");
+    expect(sql).toContain("same_target_race_integrity");
     expect(builder).toContain("expectedFunctionDefinitionMd5");
     expect(builder).toContain('flag: "wx"');
     expect(verifier).toContain("browserEvidenceManifestSha256");
     expect(verifier).toContain("Compatibility app_state changed");
+    expect(verifier).toContain("Same-target races did not retain exactly one committed");
+  });
+
+  it("proves the rollback-only SQL left no exact proof-run residue before browser execution", () => {
+    const sql = read("supabase/operational-v2-proof-postrollback-readonly.sql");
+    const builder = read("scripts/build-operational-v2-proof-postrollback.mjs");
+    const verifier = read("scripts/verify-operational-v2-proof-postrollback.mjs");
+    expect(sql).toContain("repeatable read read only");
+    expect(sql).toContain("__PROOF_RUN_ID__");
+    expect(builder).toContain("rollbackOnly !== true");
+    expect(verifier).toContain("Transactional proof rollback left ${name} rows.");
+    expect(verifier).toContain("appStateRestored: true");
+  });
+
+  it("binds the rollback-only proof to exact installed v2 and pre-install legacy definitions", () => {
+    const builder = read("scripts/build-operational-v2-transactional-proof.mjs");
+    const proof = read("supabase/operational-lifecycle-v2-transactional-proof.sql");
+    expect(builder).toContain("installManifest.preflight.sha256");
+    expect(builder).toContain('const legacyFunctionNames = ["hop_session", "reject_session", "reject_customer_tab"]');
+    expect(builder).toContain("legacyFunctionDefinitionMd5");
+    expect(proof).toContain("performance_comparison");
+    expect(proof).toContain("v2_at_least_50_percent_faster");
+    expect(proof).toContain("large_small_within_budget");
+    expect(proof).toContain("qa_expect_rpc_error");
+  });
+
+  it("keeps customer snapshot parity in a separately reconciled, staging-identity-bound suite", () => {
+    const sql = read("supabase/operational-v2-customer-profile-posttest-readonly.sql");
+    const builder = read("scripts/build-operational-v2-customer-profile-posttest.mjs");
+    const verifier = read("scripts/verify-operational-v2-customer-profile-posttest.mjs");
+    expect(sql).toContain("database-owned staging API URL identity failed");
+    expect(sql).toContain("compatibility_customers");
+    expect(builder).toContain("expectedAppStateBefore");
+    expect(verifier).toContain("customerCleanupProven");
   });
 });

@@ -71,7 +71,7 @@ if (postflight.processing_financial_mutations !== 0 || postflight.processing_ope
 if (postflight.operational_mutations_rls !== true) throw new Error("Operational mutation RLS is disabled.");
 const installedEntries = new Map((postflight.functions ?? []).map((entry) => [entry.name, entry]));
 const installed = new Set(installedEntries.keys());
-for (const name of ["hop_session_v2", "reject_session_v2", "reject_customer_tab_v2", "start_session", "open_customer_tab", "link_customer_tab_continuation"]) {
+for (const name of ["hop_session_v2", "reject_session_v2", "reject_customer_tab_v2", "start_session", "open_customer_tab", "link_customer_tab_continuation", "get_operational_performance_dataset_identity"]) {
   if (!installed.has(name)) throw new Error(`Postflight omitted ${name}.`);
   const entry = installedEntries.get(name);
   if (crypto.createHash("md5").update(entry.definition).digest("hex") !== entry.definition_md5) throw new Error(`${name} postflight definition hash is inconsistent.`);

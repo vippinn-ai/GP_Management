@@ -3,6 +3,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 const source = readFileSync(path.join(process.cwd(), "supabase/operational-lifecycle-v2.sql"), "utf8");
+const stagingDatasetIdentity = readFileSync(path.join(process.cwd(), "supabase/operational-performance-dataset-identity-staging.sql"), "utf8");
 const customerTabSource = readFileSync(path.join(process.cwd(), "supabase/phase4-customer-tab-rpcs.sql"), "utf8");
 const startSessionSource = readFileSync(path.join(process.cwd(), "supabase/phase4-start-session-rpc.sql"), "utf8");
 const linkContinuationSource = readFileSync(path.join(process.cwd(), "supabase/phase4-link-customer-tab-continuation-rpc.sql"), "utf8");
@@ -37,6 +38,21 @@ describe("normalized lifecycle v2 SQL contract", () => {
     for (const name of ["hop_session_v2", "reject_session_v2", "reject_customer_tab_v2"]) {
       expect(source).toContain(`revoke execute on function public.${name}(jsonb) from anon`);
       expect(source).toContain(`grant execute on function public.${name}(jsonb) to authenticated`);
+    }
+  });
+
+  it("keeps the expensive dataset fingerprint RPC in staging-only test instrumentation", () => {
+    expect(source).not.toContain("get_operational_performance_dataset_identity");
+    expect(stagingDatasetIdentity).toContain("get_operational_performance_dataset_identity");
+    expect(stagingDatasetIdentity).toContain("PII-free exact dataset identity");
+    expect(installer).toContain("operational-performance-dataset-identity-staging.sql");
+  });
+
+  it("returns the application error contract for non-object envelopes without invoking object iterators on arrays", () => {
+    for (const name of ["hop_session_v2", "reject_session_v2", "reject_customer_tab_v2"]) {
+      const functionBody = body(name);
+      expect(functionBody).toContain("case when jsonb_typeof(payload)='object' then payload else '{}'::jsonb end");
+      expect(functionBody).toContain("case when jsonb_typeof(payload->'payload')='object' then payload->'payload' else '{}'::jsonb end");
     }
   });
 
@@ -113,6 +129,7 @@ describe("normalized lifecycle v2 SQL contract", () => {
     expect(installer).toMatch(/actual_config/i);
     expect(installer).toMatch(/actual_acl/i);
     expect(preflight).toContain("app.settings.api_url");
+    expect(preflight).toContain("recoverable_hopped_sessions");
     expect(postflight).toContain("app.settings.api_url");
     expect(installer).toMatch(/staging-rollback\.sql/i);
     expect(installer).toMatch(/flag:\s*"wx"/i);

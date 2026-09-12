@@ -32,11 +32,47 @@ if (installManifest.target?.projectRef !== "tkbdyzxwwbhkpztgjjxh" || verificatio
 if (verification.runId !== installManifest.runId || verification.manifestSha256 !== installManifestExpectedSha || verification.appStateUnchanged !== true || verification.incompleteMutations !== 0) {
   throw new Error("Transactional proof inputs are not the verified unchanged installation.");
 }
-const requiredFunctions = ["hop_session_v2", "reject_session_v2", "reject_customer_tab_v2", "start_session", "open_customer_tab", "link_customer_tab_continuation"];
+if (!installManifest.preflight?.path || !/^[0-9a-f]{64}$/.test(installManifest.preflight?.sha256 ?? "")) {
+  throw new Error("Install manifest does not bind an immutable staging preflight.");
+}
+const preflightPath = path.isAbsolute(installManifest.preflight.path)
+  ? installManifest.preflight.path
+  : path.resolve(root, installManifest.preflight.path);
+const preflightText = fs.readFileSync(preflightPath, "utf8");
+if (sha256(preflightText) !== installManifest.preflight.sha256) {
+  throw new Error("Install manifest preflight SHA-256 does not match.");
+}
+const parsedPreflight = JSON.parse(preflightText);
+const preflight = parsedPreflight.evidence ?? parsedPreflight;
+
+const requiredInstalledFunctions = [
+  "hop_session_v2",
+  "reject_session_v2",
+  "reject_customer_tab_v2",
+  "get_operational_performance_dataset_identity",
+  "start_session",
+  "open_customer_tab",
+  "link_customer_tab_continuation"
+];
 const installedDefinitionMd5 = verification.installedFunctionDefinitionMd5 ?? {};
-for (const name of requiredFunctions) {
+for (const name of requiredInstalledFunctions) {
   if (!/^[0-9a-f]{32}$/.test(installedDefinitionMd5[name] ?? "")) throw new Error(`Missing verified installed definition hash for ${name}.`);
 }
+const legacyFunctionNames = ["hop_session", "reject_session", "reject_customer_tab"];
+const preflightFunctions = new Map((preflight.functions ?? []).map((entry) => [entry.name, entry]));
+const legacyDefinitionMd5 = {};
+for (const name of legacyFunctionNames) {
+  const entry = preflightFunctions.get(name);
+  if (!entry?.definition || !/^[0-9a-f]{32}$/.test(entry.definition_md5 ?? "")) {
+    throw new Error(`Immutable preflight omitted legacy function ${name}.`);
+  }
+  if (createHash("md5").update(entry.definition).digest("hex") !== entry.definition_md5) {
+    throw new Error(`Immutable preflight definition hash mismatch for ${name}.`);
+  }
+  legacyDefinitionMd5[name] = entry.definition_md5;
+}
+const guardedDefinitionMd5 = { ...installedDefinitionMd5, ...legacyDefinitionMd5 };
+const guardedFunctions = [...requiredInstalledFunctions, ...legacyFunctionNames];
 const sourcePath = path.join(root, "supabase", "operational-lifecycle-v2-transactional-proof.sql");
 const source = fs.readFileSync(sourcePath, "utf8");
 if (!source.includes("OPERATIONAL_LIFECYCLE_V2_TRANSACTIONAL_PROOF") || !source.trimEnd().endsWith("rollback;")) {
@@ -47,7 +83,7 @@ const definitionGuards = `do $$
 declare function_name text; expected_md5 text; actual_md5 text;
 begin
   for function_name, expected_md5 in select * from (values
-${requiredFunctions.map((name) => `    ('${name}', '${installedDefinitionMd5[name]}')`).join(",\n")}
+${guardedFunctions.map((name) => `    ('${name}', '${guardedDefinitionMd5[name]}')`).join(",\n")}
   ) expected(name, definition_md5) loop
     select md5(pg_get_functiondef(p.oid)) into actual_md5
     from pg_proc p join pg_namespace n on n.oid=p.pronamespace
@@ -70,8 +106,10 @@ const manifest = {
   target: { environment: "staging", projectRef: "tkbdyzxwwbhkpztgjjxh", organizationId: "org-primary" },
   rollbackOnly: true,
   installManifest: { path: path.relative(root, installManifestPath), sha256: installManifestExpectedSha, runId: installManifest.runId },
+  installPreflight: { path: path.relative(root, preflightPath), sha256: installManifest.preflight.sha256 },
   postflightVerification: { path: path.relative(root, verificationPath), sha256: verificationExpectedSha },
   installedFunctionDefinitionMd5: installedDefinitionMd5,
+  legacyFunctionDefinitionMd5: legacyDefinitionMd5,
   source: { path: path.relative(root, sourcePath), sha256: sha256(source) },
   artifact: { path: path.relative(root, outputPath), bytes: Buffer.byteLength(generated), sha256: sha256(generated) },
   createdAt: new Date().toISOString()

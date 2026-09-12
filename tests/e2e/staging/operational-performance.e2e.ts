@@ -1,7 +1,8 @@
 import fs from "node:fs";
 import crypto from "node:crypto";
+import { gzipSync } from "node:zlib";
 import { expect, test, type Page, type Request, type Response } from "@playwright/test";
-import { attachJson, credentials, signIn } from "./support/app";
+import { attachJson, captureAuthenticatedRestRequests, credentials, signIn } from "./support/app";
 
 const runId = process.env.E2E_RUN_ID ?? "missing-run-id";
 const mode = process.env.E2E_PERFORMANCE_MODE === "baseline" ? "baseline" : "candidate";
@@ -27,6 +28,8 @@ type ResponseEvidence = {
   api: boolean;
   shell: boolean;
   appStateVersion?: number;
+  javascript: boolean;
+  gzipBytes: number;
 };
 
 type RenderEvidence = {
@@ -47,6 +50,8 @@ type LoadEvidence = {
   criticalRequestCount: number;
   criticalApiBytes: number;
   coldShellBytes: number;
+  initialJavascriptBytes: number;
+  initialJavascriptGzipBytes: number;
   failedRequestPaths: string[];
   requestedFullAppStateData: boolean;
   requestedExportChunk: boolean;
@@ -69,6 +74,8 @@ function summarize(loads: LoadEvidence[]) {
   const safe = loads.map((entry) => entry.safeInteractiveMs);
   const payloads = loads.map((entry) => entry.criticalApiBytes);
   const shells = loads.map((entry) => entry.coldShellBytes);
+  const initialJs = loads.map((entry) => entry.initialJavascriptBytes);
+  const initialJsGzip = loads.map((entry) => entry.initialJavascriptGzipBytes);
   const lcp = loads.map((entry) => entry.largestContentfulPaintMs).filter((value) => value > 0);
   const cls = loads.map((entry) => entry.cumulativeLayoutShift);
   const updateDurations = loads.flatMap((entry) => entry.activePanelCommitDurationsMs);
@@ -82,6 +89,8 @@ function summarize(loads: LoadEvidence[]) {
     criticalApiBytesP95: percentile(payloads, 0.95),
     criticalApiBytesMax: Math.max(...payloads),
     coldShellBytesP95: percentile(shells, 0.95),
+    initialJavascriptBytesMax: Math.max(...initialJs),
+    initialJavascriptGzipBytesMax: Math.max(...initialJsGzip),
     lcpP75: percentile(lcp, 0.75),
     clsMax: Math.max(...cls),
     activePanelCommitP95Ms: percentile(updateDurations, 0.95),
@@ -123,17 +132,22 @@ function measureBootstrapDependencyDepth(responses: ResponseEvidence[]): number 
   const apiResponses = responses
     .filter((entry) => entry.api && entry.status < 400)
     .sort((left, right) => left.requestStartMs - right.requestStartMs);
-  if (!apiResponses.some((entry) => /\/rest\/v1\/organizations$/.test(entry.path))) {
+  const organizationResponse = apiResponses.find((entry) => /\/rest\/v1\/organizations$/.test(entry.path));
+  if (!organizationResponse) {
     throw new Error("Candidate bootstrap did not request the active organization.");
   }
-  // Compute the longest observed non-overlapping API chain. This is derived
-  // from every actual auth/REST request, so new tables or RPCs cannot escape
-  // the gate merely because they are absent from a hand-maintained phase map.
+  // The profile lookup precedes normalized bootstrap by design. Measure the
+  // critical bootstrap graph from organization resolution onward so the gate
+  // cannot be inflated by pre-bootstrap authentication, while every REST/RPC
+  // request in the actual normalized graph remains included dynamically.
+  const bootstrapResponses = apiResponses.filter(
+    (entry) => entry.requestStartMs + 2 >= organizationResponse.requestStartMs
+  );
   const depths: number[] = [];
-  apiResponses.forEach((_entry, index) => {
+  bootstrapResponses.forEach((_entry, index) => {
     let depth = 1;
     for (let previous = 0; previous < index; previous += 1) {
-      if (apiResponses[previous].responseEndMs <= apiResponses[index].requestStartMs + 2) {
+      if (bootstrapResponses[previous].responseEndMs <= bootstrapResponses[index].requestStartMs + 2) {
         depth = Math.max(depth, depths[previous] + 1);
       }
     }
@@ -171,11 +185,14 @@ async function collectResponseEvidence(response: Response, requestStarts: Map<Re
   const headers = await response.allHeaders();
   const contentLengthBytes = Number(headers["content-length"] ?? 0);
   let bodyBytes = 0;
+  let gzipBytes = 0;
   let appStateVersion: number | undefined;
-  if (api || (shell && contentLengthBytes === 0)) {
+  const javascript = shell && /\.js$/i.test(url.pathname);
+  if (api || javascript || (shell && contentLengthBytes === 0)) {
     try {
       const body = await response.body();
       bodyBytes = body.byteLength;
+      if (javascript) gzipBytes = gzipSync(body).byteLength;
       if (url.pathname.endsWith("/rest/v1/app_state")) {
         const parsed = JSON.parse(body.toString("utf8"));
         const row = Array.isArray(parsed) ? parsed[0] : parsed;
@@ -194,6 +211,8 @@ async function collectResponseEvidence(response: Response, requestStarts: Map<Re
     contentLengthBytes,
     api,
     shell,
+    javascript,
+    gzipBytes,
     appStateVersion
   });
 }
@@ -203,7 +222,23 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
   expect(sampleCount).toBe(30);
   expect(browser.version()).toBe(process.env.E2E_EXPECTED_BROWSER_VERSION);
   expect(process.env.E2E_NETWORK_PROFILE?.trim()).toBeTruthy();
+  const authenticatedRequests: import("./support/app").CapturedRpcRequest[] = [];
+  captureAuthenticatedRestRequests(page, authenticatedRequests);
   await signIn(page, credentials("A"));
+  const captured = authenticatedRequests.find((entry) => new URL(entry.url).pathname.includes("/rest/v1/"));
+  if (!captured) throw new Error("Unable to capture an authenticated REST identity for dataset verification.");
+  const capturedUrl = new URL(captured.url);
+  const restMarker = "/rest/v1";
+  const restBase = `${capturedUrl.origin}${capturedUrl.pathname.slice(0, capturedUrl.pathname.indexOf(restMarker))}${restMarker}`;
+  const expectedDatasetIdentity = JSON.parse(process.env.E2E_EXPECTED_DATASET_IDENTITY ?? "null") as Record<string, unknown> | null;
+  if (!expectedDatasetIdentity) throw new Error("Performance dataset identity is missing.");
+  const identityResponse = await page.request.post(`${restBase}/rpc/get_operational_performance_dataset_identity`, {
+    headers: { apikey: captured.headers.apikey, authorization: captured.headers.authorization, "content-type": "application/json" },
+    data: { payload: { organization_id: "org-primary" } }
+  });
+  expect(identityResponse.status()).toBe(200);
+  const observedDatasetIdentity = await identityResponse.json();
+  expect(observedDatasetIdentity, "Live normalized content fingerprints drifted from the immutable dataset snapshot.").toEqual(expectedDatasetIdentity);
   const storageState = await page.context().storageState();
   const loads: LoadEvidence[] = [];
   const baseOrigin = new URL(process.env.E2E_BASE_URL!).origin;
@@ -251,7 +286,7 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
       }
       if (url.pathname.includes("/rest/v1/app_state")) {
         const select = url.searchParams.get("select") ?? "";
-        requestedFullAppStateData ||= select === "*" || select.split(",").includes("data");
+        requestedFullAppStateData ||= !select || select === "*" || select.split(",").includes("data");
       }
       requestedExportChunk ||= /(?:xlsx|jspdf)[^/]*-[^/]+\.js$/i.test(url.pathname);
     });
@@ -322,6 +357,8 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
 
     const criticalApiBytes = criticalResponses.filter((entry) => entry.api).reduce((total, entry) => total + (entry.bodyBytes || entry.contentLengthBytes), 0);
     const coldShellBytes = criticalResponses.filter((entry) => entry.shell).reduce((total, entry) => total + (entry.contentLengthBytes || entry.bodyBytes), 0);
+    const initialJavascriptBytes = criticalResponses.filter((entry) => entry.javascript).reduce((total, entry) => total + entry.bodyBytes, 0);
+    const initialJavascriptGzipBytes = criticalResponses.filter((entry) => entry.javascript).reduce((total, entry) => total + entry.gzipBytes, 0);
     loads.push({
       sample,
       safeInteractiveMs,
@@ -331,6 +368,8 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
       criticalRequestCount: criticalResources.length,
       criticalApiBytes,
       coldShellBytes,
+      initialJavascriptBytes,
+      initialJavascriptGzipBytes,
       failedRequestPaths,
       requestedFullAppStateData,
       requestedExportChunk,
@@ -359,6 +398,7 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
     cachePolicy: "new-context-cold-cache-service-workers-blocked",
     profileId: process.env.E2E_PERFORMANCE_PROFILE_ID,
     networkProfile: process.env.E2E_NETWORK_PROFILE,
+    datasetIdentity: observedDatasetIdentity,
     summary,
     baseline,
     loads
@@ -367,6 +407,12 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
 
   expect(loads.every((entry) => entry.failedRequestPaths.length === 0)).toBe(true);
   expect(loads.every((entry) => !entry.requestedExportChunk)).toBe(true);
+  const expectedAppStateVersion = Number(process.env.E2E_EXPECTED_APP_STATE_VERSION);
+  expect(Number.isInteger(expectedAppStateVersion)).toBe(true);
+  expect(loads.every((entry) => {
+    const identities = entry.criticalResponses.filter((response) => response.path.endsWith("/rest/v1/app_state"));
+    return identities.length > 0 && identities.every((response) => response.appStateVersion === expectedAppStateVersion);
+  })).toBe(true);
   if (mode === "candidate") {
     expect(loads.every((entry) => !entry.requestedFullAppStateData)).toBe(true);
     expect(loads.every((entry) => !entry.requestedHistoryBeforeSafeInteractive)).toBe(true);
@@ -376,11 +422,6 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
     expect(loads.every((entry) => entry.criticalResponses.every((response) =>
       response.status === 204 || response.status === 304 || response.bodyBytes > 0 || response.contentLengthBytes > 0
     ))).toBe(true);
-    const expectedAppStateVersion = Number(process.env.E2E_EXPECTED_APP_STATE_VERSION);
-    expect(Number.isInteger(expectedAppStateVersion)).toBe(true);
-    expect(loads.every((entry) => entry.criticalResponses
-      .filter((response) => response.path.endsWith("/rest/v1/app_state"))
-      .every((response) => response.appStateVersion === expectedAppStateVersion))).toBe(true);
     expect(loads.every((entry) => entry.idleRootCommits === 0)).toBe(true);
     expect(summary.p95).toBeLessThanOrEqual(3_500);
     expect(summary.max).toBeLessThanOrEqual(5_000);
@@ -388,6 +429,8 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
     expect(summary.criticalApiBytesP95).toBeLessThanOrEqual(750 * 1024);
     expect(summary.criticalApiBytesP95).toBeLessThanOrEqual(baseline!.summary.criticalApiBytesP95 * 0.4);
     expect(summary.coldShellBytesP95).toBeLessThanOrEqual(450 * 1024);
+    expect(summary.initialJavascriptBytesMax).toBeLessThanOrEqual(1_000 * 1024);
+    expect(summary.initialJavascriptGzipBytesMax).toBeLessThanOrEqual(300 * 1024);
     expect(summary.lcpP75).toBeGreaterThan(0);
     expect(summary.lcpP75).toBeLessThanOrEqual(2_500);
     expect(summary.clsMax).toBeLessThanOrEqual(0.1);

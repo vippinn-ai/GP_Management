@@ -15,7 +15,7 @@ begin
   if incomplete_operational <> 0 then raise exception 'staging has incomplete operational mutations'; end if;
   foreach function_name in array array[
     'hop_session_v2','reject_session_v2','reject_customer_tab_v2',
-    'start_session','open_customer_tab','link_customer_tab_continuation'
+    'start_session','open_customer_tab','link_customer_tab_continuation','get_operational_performance_dataset_identity'
   ] loop
     select pg_get_functiondef(p.oid) into function_body from pg_proc p join pg_namespace n on n.oid=p.pronamespace
     where n.nspname='public' and p.proname=function_name and pg_get_function_identity_arguments(p.oid)='payload jsonb';
@@ -23,7 +23,7 @@ begin
     if function_name like '%\_v2' escape '\' and (function_body ~* '\mapp_state\M' or function_body ~* 'patch_app_state') then
       raise exception 'forbidden compatibility-state reference in %', function_name;
     end if;
-    if function_name in ('hop_session_v2','reject_session_v2','reject_customer_tab_v2','start_session','open_customer_tab','link_customer_tab_continuation')
+    if function_name in ('hop_session_v2','reject_session_v2','reject_customer_tab_v2','start_session','open_customer_tab','link_customer_tab_continuation','get_operational_performance_dataset_identity')
       and function_body !~* 'auth\.uid\(\)' then raise exception 'authenticated actor binding missing from %', function_name; end if;
   end loop;
   if has_table_privilege('anon','public.operational_mutations','select')
@@ -31,6 +31,9 @@ begin
   if has_function_privilege('anon','public.hop_session_v2(jsonb)','execute')
     or has_function_privilege('anon','public.reject_session_v2(jsonb)','execute')
     or has_function_privilege('anon','public.reject_customer_tab_v2(jsonb)','execute') then raise exception 'anonymous lifecycle v2 execution is enabled'; end if;
+  if has_function_privilege('anon','public.get_operational_performance_dataset_identity(jsonb)','execute')
+    or not has_function_privilege('authenticated','public.get_operational_performance_dataset_identity(jsonb)','execute')
+  then raise exception 'performance dataset identity grants are invalid'; end if;
   if not has_function_privilege('authenticated','public.hop_session_v2(jsonb)','execute')
     or not has_function_privilege('authenticated','public.reject_session_v2(jsonb)','execute')
     or not has_function_privilege('authenticated','public.reject_customer_tab_v2(jsonb)','execute') then raise exception 'authenticated lifecycle v2 execution is missing'; end if;
@@ -39,7 +42,7 @@ end $$;
 with target_functions as (
   select p.*, n.nspname from pg_proc p join pg_namespace n on n.oid=p.pronamespace
   where n.nspname='public'
-    and p.proname in ('hop_session_v2','reject_session_v2','reject_customer_tab_v2','start_session','open_customer_tab','link_customer_tab_continuation')
+    and p.proname in ('hop_session_v2','reject_session_v2','reject_customer_tab_v2','start_session','open_customer_tab','link_customer_tab_continuation','get_operational_performance_dataset_identity')
     and pg_get_function_identity_arguments(p.oid)='payload jsonb'
 )
 select jsonb_build_object(

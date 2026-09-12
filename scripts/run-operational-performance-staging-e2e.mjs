@@ -1,7 +1,9 @@
 import path from "node:path";
 import fs from "node:fs";
+import os from "node:os";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { gzipSync } from "node:zlib";
 import {
   assertOperationalRunId,
   assertStagingBaseUrl,
@@ -54,15 +56,20 @@ if (!discoveryOnly) {
     env.E2E_PERFORMANCE_PROFILE_MANIFEST_SHA256,
     "Performance environment profile manifest"
   );
+  const currentHostFingerprint = createHash("sha256")
+    .update(`${os.hostname()}|${os.platform()}|${os.release()}|${os.arch()}`)
+    .digest("hex");
   if (
     profileManifest.value.schemaVersion !== 1
     || profileManifest.value.profileId !== env.E2E_PERFORMANCE_PROFILE_ID
     || !profileManifest.value.expectedBrowserVersion
+    || profileManifest.value.browserChannel !== (env.E2E_BROWSER_CHANNEL || "chrome")
+    || profileManifest.value.hostFingerprint !== currentHostFingerprint
     || !profileManifest.value.networkProfile
     || profileManifest.value.cachePolicy !== "new-context-cold-cache-service-workers-blocked"
     || profileManifest.value.viewport?.width !== 1440
     || profileManifest.value.viewport?.height !== 900
-  ) throw new Error("Performance environment profile manifest is incomplete or incompatible.");
+  ) throw new Error("Performance environment profile manifest is incomplete, incompatible, or belongs to another host.");
   env.E2E_EXPECTED_BROWSER_VERSION = profileManifest.value.expectedBrowserVersion;
   env.E2E_NETWORK_PROFILE = profileManifest.value.networkProfile;
   env.E2E_PERFORMANCE_PROFILE_MANIFEST_SHA256 = profileManifest.sha256;
@@ -71,13 +78,43 @@ if (!discoveryOnly) {
     env.E2E_PERFORMANCE_DATASET_MANIFEST_SHA256,
     "Performance dataset manifest"
   );
-  const dataset = datasetManifest.value.evidence ?? datasetManifest.value;
+  const dataset = datasetManifest.value.snapshot ?? datasetManifest.value.evidence ?? datasetManifest.value;
   if (dataset.expected_project_ref !== STAGING_PROJECT_REF && dataset.target?.projectRef !== STAGING_PROJECT_REF) {
     throw new Error("Performance dataset manifest is not for staging.");
   }
   if (!Number.isInteger(dataset.app_state?.version) || !dataset.app_state?.md5) {
     throw new Error("Performance dataset manifest lacks the compatibility app_state identity.");
   }
+  if (
+    datasetManifest.value.schemaVersion !== 1
+    || !datasetManifest.value.snapshotArtifact?.sha256
+    || !datasetManifest.value.scaleSource?.restoreManifest?.sha256
+    || !datasetManifest.value.scaleSource?.restoreDrill?.sha256
+    || datasetManifest.value.scaleSource?.restoreDrill?.targetProjectRef === "rrdwbxvuwrbxefarxnse"
+    || !datasetManifest.value.scaleSource?.productionBaseline?.sha256
+    || !dataset.public_counts
+    || !dataset.public_fingerprints
+  ) throw new Error("Performance dataset manifest lacks immutable snapshot or production-scale restore lineage.");
+  const allowedDatasetTables = [
+    "audit_logs", "bill_lines", "bills", "combos", "customer_tab_items", "customer_tabs", "customers",
+    "inventory_items", "operational_events", "payments", "session_items", "session_pause_logs", "sessions",
+    "stations", "stock_movements"
+  ];
+  if (
+    JSON.stringify(Object.keys(dataset.public_counts).sort()) !== JSON.stringify(allowedDatasetTables)
+    || Object.values(dataset.public_counts).some((value) => !Number.isInteger(value) || value < 0)
+  ) throw new Error("Performance dataset contains an unsafe table set or invalid row count.");
+  const allowedFingerprintTables = ["audit_logs", "bill_lines", "bills", "customer_tabs", "customers", "operational_events", "payments", "sessions", "stock_movements"];
+  if (
+    JSON.stringify(Object.keys(dataset.public_fingerprints).sort()) !== JSON.stringify(allowedFingerprintTables)
+    || Object.values(dataset.public_fingerprints).some((value) => !/^[0-9a-f]{32}$/.test(value))
+  ) throw new Error("Performance dataset contains an invalid content-fingerprint set.");
+  env.E2E_EXPECTED_DATASET_IDENTITY = JSON.stringify({
+    organization_id: "org-primary",
+    app_state: dataset.app_state,
+    public_counts: dataset.public_counts,
+    public_fingerprints: dataset.public_fingerprints
+  });
   if (dataset.open_sessions !== 0 || dataset.open_customer_tabs !== 0 || dataset.processing_financial_mutations !== 0 || dataset.processing_operational_mutations !== 0) {
     throw new Error("Performance dataset does not have a clean staging operational floor.");
   }
@@ -136,7 +173,12 @@ if (!discoveryOnly) {
   if (!bundleResponse.ok) throw new Error(`Unable to read staging bundle (${bundleResponse.status}).`);
   const bundle = await bundleResponse.text();
   if (!bundle.includes(STAGING_PROJECT_REF) || bundle.includes(PRODUCTION_PROJECT_REF)) throw new Error("Performance target is not the staging bundle.");
-  deployedArtifact = { bundle: bundleUrl.pathname, sha256: createHash("sha256").update(bundle).digest("hex") };
+  deployedArtifact = {
+    bundle: bundleUrl.pathname,
+    sha256: createHash("sha256").update(bundle).digest("hex"),
+    minifiedBytes: Buffer.byteLength(bundle),
+    gzipBytes: gzipSync(Buffer.from(bundle)).byteLength
+  };
   const expectedBundleSha = mode === "baseline" ? env.E2E_EXPECTED_BASELINE_BUNDLE_SHA256 : env.E2E_EXPECTED_BUNDLE_SHA256;
   if (!/^[a-f0-9]{64}$/i.test(expectedBundleSha || "") || deployedArtifact.sha256 !== expectedBundleSha.toLowerCase()) {
     throw new Error(`${mode} performance target does not match the approved bundle SHA-256.`);

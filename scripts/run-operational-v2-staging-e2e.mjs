@@ -55,6 +55,7 @@ let postflightVerification;
 let postflightVerificationPath;
 let transactionalProofManifest;
 let transactionalProofResult;
+let proofRollbackVerification;
 if (!discoveryOnly) {
   if (!/^[a-f0-9]{64}$/i.test(env.E2E_EXPECTED_BUNDLE_SHA256 || "")) {
     throw new Error("Live staging E2E requires E2E_EXPECTED_BUNDLE_SHA256 from the approved candidate deployment.");
@@ -95,13 +96,27 @@ if (!discoveryOnly) {
   };
   transactionalProofManifest = readBoundProof(env.E2E_DB_PROOF_MANIFEST_PATH, env.E2E_DB_PROOF_MANIFEST_SHA256, "Transactional proof manifest");
   transactionalProofResult = readBoundProof(env.E2E_DB_PROOF_RESULT_PATH, env.E2E_DB_PROOF_RESULT_SHA256, "Transactional proof result");
+  if (!env.E2E_DB_PROOF_ROLLBACK_VERIFICATION_PATH || !env.E2E_DB_PROOF_ROLLBACK_VERIFICATION_SHA256) {
+    throw new Error("Live staging E2E requires immutable transactional proof post-rollback verification.");
+  }
+  proofRollbackVerification = readBoundProof(
+    env.E2E_DB_PROOF_ROLLBACK_VERIFICATION_PATH,
+    env.E2E_DB_PROOF_ROLLBACK_VERIFICATION_SHA256,
+    "Transactional proof post-rollback verification"
+  );
   const proof = transactionalProofResult.value.evidence ?? transactionalProofResult.value?.[0]?.evidence ?? transactionalProofResult.value;
   const proofPerformance = proof?.performance ?? {};
+  const proofComparison = proof?.performance_comparison ?? {};
+  const proofNegativeCases = proof?.negative_cases ?? {};
   const performancePassed = ["hop_session_v2", "reject_session_v2", "reject_customer_tab_v2"].every((name) =>
     proofPerformance[name]?.samples === 20
-      && Number(proofPerformance[name]?.p95_ms) < 2_000
-      && Number(proofPerformance[name]?.max_ms) < 5_000
+      && Number(proofPerformance[name]?.p95_ms) < 500
+      && Number(proofPerformance[name]?.max_ms) < 2_000
+      && proofComparison[name]?.v2_at_least_50_percent_faster === true
+      && proofComparison[name]?.large_small_within_budget === true
   );
+  const negativeMatrixPassed = Object.keys(proofNegativeCases).length >= 30
+    && Object.values(proofNegativeCases).every((entry) => entry?.expected_code === entry?.observed_code);
   if (
     transactionalProofManifest.value.target?.projectRef !== STAGING_PROJECT_REF
     || transactionalProofManifest.value.installManifest?.sha256 !== actualManifestSha
@@ -111,7 +126,12 @@ if (!discoveryOnly) {
     || proof?.project_ref !== STAGING_PROJECT_REF
     || proof?.app_state_unchanged !== true
     || proof?.rollback_required !== true
+    || proofRollbackVerification.value.status !== "passed"
+    || proofRollbackVerification.value.rollbackProven !== true
+    || proofRollbackVerification.value.proofRunId !== transactionalProofManifest.value.runId
+    || proofRollbackVerification.value.lineage?.proofResultSha256 !== transactionalProofResult.sha256
     || !performancePassed
+    || !negativeMatrixPassed
   ) throw new Error("Transactional database proof is not bound to the approved staging installation.");
 }
 
@@ -145,6 +165,10 @@ console.log(JSON.stringify({
   transactionalProof: transactionalProofManifest ? {
     manifest: { path: path.relative(root, transactionalProofManifest.absolutePath), sha256: transactionalProofManifest.sha256 },
     result: { path: path.relative(root, transactionalProofResult.absolutePath), sha256: transactionalProofResult.sha256 }
+  } : undefined,
+  proofRollbackVerification: proofRollbackVerification ? {
+    path: path.relative(root, proofRollbackVerification.absolutePath),
+    sha256: proofRollbackVerification.sha256
   } : undefined,
   credentials: discoveryOnly ? "not-required" : "loaded-from-ignored-environment",
   productionAllowed: false,
@@ -181,6 +205,10 @@ if (!discoveryOnly) {
     transactionalProof: {
       manifest: { path: path.relative(root, transactionalProofManifest.absolutePath), sha256: transactionalProofManifest.sha256 },
       result: { path: path.relative(root, transactionalProofResult.absolutePath), sha256: transactionalProofResult.sha256 }
+    },
+    proofRollbackVerification: {
+      path: path.relative(root, proofRollbackVerification.absolutePath),
+      sha256: proofRollbackVerification.sha256
     },
     files
   }, null, 2) + "\n", { encoding: "utf8", flag: "wx" });

@@ -56,6 +56,9 @@ begin
   if jsonb_typeof(payload) <> 'object' or v_organization_id is null or v_mutation_id is null
     or v_mutation_kind <> 'hopSession' or v_entity_type <> 'session' or v_entity_id is null
     or v_audit_log_id is null or payload ? 'user_id' or payload ? 'base_app_state_version'
+    or jsonb_typeof(payload->'payload') <> 'object'
+    or exists (select 1 from jsonb_object_keys(case when jsonb_typeof(payload)='object' then payload else '{}'::jsonb end) key where key not in ('organization_id','mutation_id','mutation_kind','label','entity_type','entity_id','client_created_at','payload'))
+    or exists (select 1 from jsonb_object_keys(case when jsonb_typeof(payload->'payload')='object' then payload->'payload' else '{}'::jsonb end) key where key not in ('effective_ended_at','audit_log_id'))
   then
     perform public.raise_operational_rpc_error('invalid_payload', 'The normalized hop payload is invalid.', '{}'::jsonb);
   end if;
@@ -232,6 +235,9 @@ begin
   if jsonb_typeof(payload) <> 'object' or v_organization_id is null or v_mutation_id is null
     or v_mutation_kind <> 'rejectSession' or v_entity_type <> 'session' or v_entity_id is null
     or v_audit_log_id is null or v_reason is null or payload ? 'user_id' or payload ? 'base_app_state_version'
+    or jsonb_typeof(payload->'payload') <> 'object'
+    or exists (select 1 from jsonb_object_keys(case when jsonb_typeof(payload)='object' then payload else '{}'::jsonb end) key where key not in ('organization_id','mutation_id','mutation_kind','label','entity_type','entity_id','client_created_at','payload'))
+    or exists (select 1 from jsonb_object_keys(case when jsonb_typeof(payload->'payload')='object' then payload->'payload' else '{}'::jsonb end) key where key not in ('effective_ended_at','reason','audit_log_id'))
   then perform public.raise_operational_rpc_error('invalid_payload', 'The normalized session rejection payload is invalid.', '{}'::jsonb); end if;
   begin v_effective_end := nullif(payload #>> '{payload,effective_ended_at}', '')::timestamptz;
   exception when others then perform public.raise_operational_rpc_error('invalid_session_timing', 'The rejection time is invalid.', '{}'::jsonb); end;
@@ -294,7 +300,11 @@ declare
   v_audit_id text := nullif(payload#>>'{payload,audit_log_id}',''); v_fp text; v_existing public.operational_mutations%rowtype; v_tab public.customer_tabs%rowtype;
   v_released jsonb; v_event text := 'event-'||gen_random_uuid()::text; v_message text; v_changed jsonb; v_result jsonb; v_duration numeric;
 begin
-  if jsonb_typeof(payload)<>'object' or v_org is null or v_mid is null or v_kind<>'rejectCustomerTab' or v_type<>'customer_tab' or v_eid is null or v_reason is null or v_audit_id is null or payload?'user_id' or payload?'base_app_state_version' then perform public.raise_operational_rpc_error('invalid_payload','The normalized tab rejection payload is invalid.','{}'::jsonb); end if;
+  if jsonb_typeof(payload)<>'object' or v_org is null or v_mid is null or v_kind<>'rejectCustomerTab' or v_type<>'customer_tab' or v_eid is null or v_reason is null or v_audit_id is null or payload?'user_id' or payload?'base_app_state_version'
+    or jsonb_typeof(payload->'payload')<>'object'
+    or exists(select 1 from jsonb_object_keys(case when jsonb_typeof(payload)='object' then payload else '{}'::jsonb end) key where key not in ('organization_id','mutation_id','mutation_kind','label','entity_type','entity_id','client_created_at','payload'))
+    or exists(select 1 from jsonb_object_keys(case when jsonb_typeof(payload->'payload')='object' then payload->'payload' else '{}'::jsonb end) key where key not in ('effective_closed_at','reason','audit_log_id'))
+  then perform public.raise_operational_rpc_error('invalid_payload','The normalized tab rejection payload is invalid.','{}'::jsonb); end if;
   begin v_closed_at:=nullif(payload#>>'{payload,effective_closed_at}','')::timestamptz; exception when others then perform public.raise_operational_rpc_error('invalid_tab_timing','The tab rejection time is invalid.','{}'::jsonb); end;
   if v_closed_at is null or v_closed_at>clock_timestamp() then perform public.raise_operational_rpc_error('invalid_tab_timing','The tab rejection time is invalid.','{}'::jsonb); end if;
   v_role:=public.current_user_org_role(v_org);

@@ -35,7 +35,7 @@ Each completed item records commit SHA, command, timestamp, artifact path, and S
 
 ## 5. Gates
 
-- [x] Local TypeScript, lint (0 errors, 4 pre-existing warnings), 62-file/592-test suite, production/staging builds, 24-case operational Playwright discovery, and separate 30-load performance discovery pass without retries.
+- [x] Local TypeScript, lint (0 errors, 4 pre-existing warnings), 62-file/606-test suite, production/staging builds, 26-case operational Playwright discovery, and separate 30-load performance discovery pass without retries.
 - [ ] Reviewer approves exact candidate SHA.
 - [ ] Fail-closed staging preflight and flag-off SQL install pass.
 - [ ] Functional, edge, security, idempotency, race, recovery, realtime, parity, and performance suites pass.

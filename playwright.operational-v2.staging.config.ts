@@ -9,6 +9,7 @@ export default defineConfig({
   testDir: "./tests/e2e/staging",
   testMatch: [
     "operational-lifecycle-v2.e2e.ts",
+    "operational-lifecycle-v2-concurrency.e2e.ts",
     "release-a-hop-pause.e2e.ts",
     "release-a-inventory-matrix.e2e.ts",
     "release-a-report-exports.e2e.ts",
