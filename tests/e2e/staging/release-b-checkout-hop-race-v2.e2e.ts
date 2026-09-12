@@ -137,17 +137,18 @@ test.describe.serial("Release B admin checkout versus game-hop concurrency", () 
           payload: {
             organization_id: string;
             mutation_id: string;
-            payload: { session: { id: string }; auditLog: { id: string } };
+            entity_id: string;
+            payload: { effective_ended_at: string; audit_log_id: string };
           };
         };
         sessionId = checkoutIdentity.payload.payload.source_session_ids[0];
         expect(sessionId).toBeTruthy();
-        expect(hopIdentity.payload.payload.session.id).toBe(sessionId);
+        expect(hopIdentity.payload.entity_id).toBe(sessionId);
         const billId = checkoutIdentity.payload.payload.primary_bill.id;
         const checkoutMutationId = checkoutIdentity.payload.mutation_id;
         const hopMutationId = hopIdentity.payload.mutation_id;
         const checkoutAuditIds = checkoutIdentity.payload.payload.audit_logs.map((audit) => audit.id);
-        const hopAuditId = hopIdentity.payload.payload.auditLog.id;
+        const hopAuditId = hopIdentity.payload.payload.audit_log_id;
         expect(checkoutAuditIds.length).toBeGreaterThan(0);
         const checkoutActorId = authenticatedJwtSubject(capturedCheckout.headers);
         const hopActorId = authenticatedJwtSubject(capturedHop.headers);

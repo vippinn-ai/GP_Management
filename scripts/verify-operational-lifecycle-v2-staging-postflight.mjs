@@ -97,8 +97,12 @@ const verification = {
   postflightSha256: sha256(postflightText),
   manifestSha256: sha256(manifestText),
   appStateUnchanged: true,
+  appState: postflight.app_state,
   incompleteMutations: 0,
-  installedFunctions: [...installed].sort()
+  installedFunctions: [...installed].sort(),
+  installedFunctionDefinitionMd5: Object.fromEntries(
+    [...installedEntries.entries()].map(([name, entry]) => [name, entry.definition_md5])
+  )
   ,verifiedRollback: { path: verifiedRollbackPath, sha256: sha256(verifiedRollback), bytes: Buffer.byteLength(verifiedRollback) }
 };
 const outPath = path.join(path.dirname(manifestPath), "postflight-verification.json");

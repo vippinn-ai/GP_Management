@@ -58,9 +58,10 @@ type HopEnvelope = {
   payload: {
     organization_id: string;
     mutation_id: string;
+    entity_id: string;
     payload: {
-      session: { id: string; startedAt: string; endedAt: string };
-      auditLog: { id: string };
+      effective_ended_at: string;
+      audit_log_id: string;
     };
   };
 };
@@ -261,22 +262,21 @@ test.describe.serial("Release B receptionist and manager checkout-hop timing", (
         const checkoutMutationId = checkoutEnvelope.payload.mutation_id;
         const hopMutationId = hopEnvelope.payload.mutation_id;
         const checkoutAuditIds = checkoutEnvelope.payload.payload.audit_logs.map((audit) => audit.id);
-        const hopAuditId = hopEnvelope.payload.payload.auditLog.id;
-        expect(hopEnvelope.payload.payload.session.id).toBe(sessionId);
+        const hopAuditId = hopEnvelope.payload.payload.audit_log_id;
+        expect(hopEnvelope.payload.entity_id).toBe(sessionId);
         expect(checkoutEnvelope.payload.organization_id).toBe("org-primary");
         expect(hopEnvelope.payload.organization_id).toBe("org-primary");
         const checkoutSessionUpdate = checkoutEnvelope.payload.payload.session_updates.find((entry) => entry.id === sessionId);
         expect(checkoutSessionUpdate).toBeTruthy();
         expect(new Date(checkoutSessionUpdate!.startedAt).getTime()).toBe(new Date(beforeSession[0].started_at).getTime());
-        expect(new Date(hopEnvelope.payload.payload.session.startedAt).getTime()).toBe(new Date(beforeSession[0].started_at).getTime());
         expect(new Date(checkoutSessionUpdate!.endedAt).getTime()).not.toBe(
-          new Date(hopEnvelope.payload.payload.session.endedAt).getTime()
+          new Date(hopEnvelope.payload.payload.effective_ended_at).getTime()
         );
         expect(new Date(checkoutSessionUpdate!.endedAt).getTime()).toBeGreaterThan(
           new Date(checkoutSessionUpdate!.startedAt).getTime()
         );
-        expect(new Date(hopEnvelope.payload.payload.session.endedAt).getTime()).toBeGreaterThan(
-          new Date(hopEnvelope.payload.payload.session.startedAt).getTime()
+        expect(new Date(hopEnvelope.payload.payload.effective_ended_at).getTime()).toBeGreaterThan(
+          new Date(beforeSession[0].started_at).getTime()
         );
         evidence.commandPreflight = {
           sessionId,
@@ -289,8 +289,8 @@ test.describe.serial("Release B receptionist and manager checkout-hop timing", (
           normalizedEndedAt: beforeSession[0].ended_at,
           submittedCheckoutStartedAt: checkoutSessionUpdate!.startedAt,
           submittedCheckoutEndedAt: checkoutSessionUpdate!.endedAt,
-          submittedHopStartedAt: hopEnvelope.payload.payload.session.startedAt,
-          submittedHopEndedAt: hopEnvelope.payload.payload.session.endedAt,
+          authoritativeHopStartedAt: beforeSession[0].started_at,
+          submittedHopEndedAt: hopEnvelope.payload.payload.effective_ended_at,
           appStateVersionBefore: beforeAppState[0].version,
           captureCounts: { checkout: checkoutCommand.captureCount(), hop: hopCommand.captureCount() }
         };

@@ -145,10 +145,10 @@ test.describe.serial("Release A staging two-browser operational maintenance", ()
       await waitForSynced(page);
 
       await expect.poll(() => {
-        const checkout = rpcEvidence.findLast((entry) => entry.rpc === "commit_checkout_bill" && entry.status < 300);
+        const checkout = rpcEvidence.findLast((entry) => entry.rpc.startsWith("commit_checkout_bill") && entry.status < 300);
         return Boolean(checkout?.billId && hopSessionId && changedRowIds(checkout, "sessions").includes(hopSessionId));
       }).toBe(true);
-      const checkoutEvidence = rpcEvidence.findLast((entry) => entry.rpc === "commit_checkout_bill" && entry.status < 300);
+      const checkoutEvidence = rpcEvidence.findLast((entry) => entry.rpc.startsWith("commit_checkout_bill") && entry.status < 300);
       cleanupBillId = checkoutEvidence!.billId;
       cleanupBilled = true;
     }
@@ -192,7 +192,7 @@ test.describe.serial("Release A staging two-browser operational maintenance", ()
     } finally {
       sessionStarted = sessionStarted || rpcEvidence.some((entry) => entry.rpc === "start_session" && entry.status < 300);
       hopSessionId ??= rpcEvidence.findLast((entry) => entry.rpc.startsWith("hop_session") && entry.status < 300)?.entityId;
-      const committedCheckout = rpcEvidence.findLast((entry) => entry.rpc === "commit_checkout_bill" && entry.status < 300);
+      const committedCheckout = rpcEvidence.findLast((entry) => entry.rpc.startsWith("commit_checkout_bill") && entry.status < 300);
       if (hopSessionId && committedCheckout?.billId && changedRowIds(committedCheckout, "sessions").includes(hopSessionId)) {
         cleanupBillId = committedCheckout.billId;
         cleanupBilled = true;

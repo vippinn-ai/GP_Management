@@ -296,6 +296,32 @@ describe("normalized overlay collection merging", () => {
     ]);
     expect(merged.payments.find((entry) => entry.id === "payment-history")?.amount).toBe(25);
   });
+
+  it("never resurrects a terminal session across fifty stale hydration and realtime orderings", () => {
+    for (let index = 0; index < 50; index += 1) {
+      const base = createAppData();
+      const id = `session-overlap-${index}`;
+      const stale = { id, stationId: `station-${index}`, status: "active" } as never;
+      const terminal = {
+        id,
+        stationId: `station-${index}`,
+        status: "closed",
+        closeDisposition: index % 2 === 0 ? "hopped" : "billed",
+        ...(index % 2 === 0 ? {} : { closedBillId: `bill-${index}` })
+      } as never;
+      base.sessions = [stale];
+      const responseFirst = mergeNormalizedAppDataOverlay(
+        mergeNormalizedAppDataOverlay(base, { sessions: [terminal] }),
+        { sessions: [stale] }
+      );
+      const realtimeFirst = mergeNormalizedAppDataOverlay(
+        mergeNormalizedAppDataOverlay(base, { sessions: [stale] }),
+        { sessions: [terminal] }
+      );
+      expect(responseFirst.sessions).toEqual([expect.objectContaining({ id, status: "closed" })]);
+      expect(realtimeFirst.sessions).toEqual([expect.objectContaining({ id, status: "closed" })]);
+    }
+  });
 });
 
 describe("normalized bootstrap completeness", () => {
@@ -1341,6 +1367,54 @@ describe("app_state data gateway", () => {
         paymentIds: []
       },
       client
+    );
+  });
+
+  it("removes a deleted customer when the canonical compact lookup returns no row", async () => {
+    const baseSnapshot = createSnapshot(42);
+    baseSnapshot.appData.customers.push({
+      id: "customer-deleted",
+      name: "Old profile",
+      createdAt: "2026-09-01T08:00:00.000Z",
+      lastVisitAt: "2026-09-01T08:00:00.000Z"
+    });
+    let realtimeHandler: ((payload: { new: unknown }) => void) | undefined;
+    const channel = {
+      on: vi.fn((_kind, _config, handler) => {
+        realtimeHandler = handler;
+        return channel;
+      }),
+      subscribe: vi.fn((onStatus?: (status: string) => void) => {
+        onStatus?.("SUBSCRIBED");
+        return channel;
+      })
+    };
+    const client = { channel: vi.fn(() => channel), removeChannel: vi.fn() };
+    backendMocks.getSupabaseClient.mockReturnValue(client);
+    backendMocks.loadRemoteAppDataSnapshot.mockResolvedValue(baseSnapshot);
+    normalizedReadMocks.loadNormalizedAppDataOverlay.mockResolvedValueOnce({ appData: {}, organizationId: "org-primary" });
+    normalizedCustomerMocks.loadNormalizedCustomersByIds.mockResolvedValueOnce([]);
+    const gateway = createRemoteDataGateway({ ...DEFAULT_BACKEND_FEATURE_FLAGS, normalizedRealtime: true });
+    const onChange = vi.fn();
+
+    await gateway.loadAppDataSnapshot();
+    gateway.subscribeToAppData(onChange);
+    realtimeHandler?.({
+      new: {
+        organization_id: "org-primary",
+        id: "event-customer-delete",
+        event_type: "admin_data_changed",
+        entity_type: "customer",
+        entity_id: "customer-deleted",
+        created_at: "2026-09-12T08:00:00.000Z",
+        metadata: { mutation_id: "delete-customer-1", changed_rows: { customers: ["customer-deleted"] } }
+      }
+    });
+
+    await vi.waitFor(() => expect(onChange).toHaveBeenCalledTimes(1));
+    expect(onChange.mock.calls[0][0].refreshedSlices).toContain("customers");
+    expect(onChange.mock.calls[0][0].appData.customers).not.toContainEqual(
+      expect.objectContaining({ id: "customer-deleted" })
     );
   });
 

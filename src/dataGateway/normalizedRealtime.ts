@@ -26,6 +26,7 @@ export interface OperationalEventRow {
 export interface NormalizedRealtimeOverlay {
   appData: Partial<AppData>;
   refreshedSlices: string[];
+  removedCustomerIds: string[];
   appStateVersion?: number;
   sourceMutationId?: string;
   requiresFullRefresh: boolean;
@@ -197,6 +198,7 @@ export async function loadNormalizedRealtimeOverlay(
     return {
       appData,
       refreshedSlices: ["full_app_state"],
+      removedCustomerIds: [],
       appStateVersion,
       sourceMutationId,
       requiresFullRefresh: true
@@ -251,7 +253,7 @@ export async function loadNormalizedRealtimeOverlay(
     loadNormalizedStockMovementsByIds(event.organization_id, plan.stockMovementIds, client),
     loadNormalizedAuditLogsByIds(event.organization_id, plan.auditLogIds, client)
   ]);
-  if (customers.length > 0) {
+  if (plan.customerIds.length > 0) {
     appData.customers = customers;
     refreshedSlices.push("customers");
   }
@@ -267,6 +269,7 @@ export async function loadNormalizedRealtimeOverlay(
   return {
     appData,
     refreshedSlices,
+    removedCustomerIds: plan.customerIds.filter((id) => !customers.some((customer) => customer.id === id)),
     appStateVersion,
     sourceMutationId,
     requiresFullRefresh: false

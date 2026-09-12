@@ -110,6 +110,43 @@ describe("admin data change patches", () => {
     expect(adminDataChangePatchHasUnsupportedChanges(createAppData(), createAppData({ inventoryItems: [item] }))).toBe(false);
   });
 
+  it("updates only the reusable customer directory while retaining session, tab, and bill snapshots", () => {
+    const customer = { id: "customer-1", name: "Original", phone: "111", createdAt: "2026-09-01T08:00:00.000Z", lastVisitAt: "2026-09-01T08:00:00.000Z" };
+    const session = {
+      id: "session-1", stationId: "station-1", stationNameSnapshot: "Pool 1", mode: "timed" as const,
+      startedAt: "2026-09-01T08:00:00.000Z", status: "active" as const, customerId: customer.id,
+      customerName: "Original", customerPhone: "111", playMode: "group" as const, ltpEligible: false,
+      pricingSnapshot: [], items: [], comboApplications: [], pauseLogIds: []
+    };
+    const tab = {
+      id: "tab-1", customerId: customer.id, customerName: "Original", customerPhone: "111",
+      status: "open" as const, createdAt: "2026-09-01T08:00:00.000Z", items: [], comboApplications: []
+    };
+    const bill = {
+      id: "bill-1", billNumber: "BILL-QA-1", createdAt: "2026-09-01T09:00:00.000Z",
+      issuedAt: "2026-09-01T09:00:00.000Z", issuedByUserId: "admin-1", customerId: customer.id,
+      customerName: "Original", customerPhone: "111", subtotal: 0, totalDiscountAmount: 0,
+      billDiscountAmount: 0, roundOffEnabled: false, roundOffAmount: 0, total: 0,
+      amountPaid: 0, amountDue: 0, paymentMode: "cash" as const, status: "issued" as const,
+      lineDiscounts: [], lines: [], receiptType: "digital" as const
+    };
+    const base = createAppData({ customers: [customer], sessions: [session], customerTabs: [tab], bills: [bill] });
+    const next = createAppData({
+      customers: [{ ...customer, name: "Directory Only", phone: "222" }],
+      sessions: [session], customerTabs: [tab], bills: [bill]
+    });
+    const patch = buildAdminDataChangePatch({
+      baseAppData: base, nextAppData: next, baseVersion: 15, createdAt: "2026-09-01T10:00:00.000Z",
+      userId: "admin-1", mutationId: "admin-customer-1", actionLabel: "Saving customer profile..."
+    });
+
+    expect(adminDataChangePatchHasUnsupportedChanges(base, next)).toBe(false);
+    expect(patch.customers).toEqual([expect.objectContaining({ id: customer.id, name: "Directory Only", phone: "222" })]);
+    expect(next.sessions[0]).toMatchObject({ customerName: "Original", customerPhone: "111" });
+    expect(next.customerTabs[0]).toMatchObject({ customerName: "Original", customerPhone: "111" });
+    expect(next.bills[0]).toMatchObject({ customerName: "Original", customerPhone: "111" });
+  });
+
   it("captures inventory restocks with stock movements and audit logs", () => {
     const baseItem: InventoryItem = {
       id: "item-1",

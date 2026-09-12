@@ -104,6 +104,11 @@ function extractFunctionBody(source, name) {
   if (!match) throw new Error(`Unable to extract reviewed body for ${name}.`);
   return normalizeBody(match[1]);
 }
+function extractPgDefinitionBody(definition, name) {
+  const match = definition.match(/\bAS\s+(\$[A-Za-z0-9_]*\$)([\s\S]*?)\1\s*;?\s*$/i);
+  if (!match) throw new Error(`Unable to extract deployed body for ${name}.`);
+  return normalizeBody(match[2]);
+}
 const reviewedFunctions = {
   hop_session_v2: extractFunction(lifecycle, "hop_session_v2"),
   reject_session_v2: extractFunction(lifecycle, "reject_session_v2"),
@@ -115,6 +120,13 @@ const reviewedFunctions = {
 const expectedFunctionBodies = Object.fromEntries(Object.entries(reviewedFunctions).map(([name, definition]) => [name, {
   sha256: sha256(extractFunctionBody(definition, name))
 }]));
+const rollbackDefinitionGuards = REPLACED_FUNCTIONS.map((name) => {
+  const oldBodyMd5 = crypto.createHash("md5").update(extractPgDefinitionBody(deployedFunctions.get(name).definition, name)).digest("hex");
+  const installedBodyMd5 = crypto.createHash("md5").update(extractFunctionBody(reviewedFunctions[name], name)).digest("hex");
+  return `select md5(btrim(p.prosrc)) into actual_body_md5 from pg_proc p join pg_namespace n on n.oid=p.pronamespace
+  where n.nspname='public' and p.proname=${sqlLiteral(name)} and pg_get_function_identity_arguments(p.oid)='payload jsonb';
+  if actual_body_md5 not in (${sqlLiteral(oldBodyMd5)},${sqlLiteral(installedBodyMd5)}) then raise exception 'rollback refused unexpected definition drift for ${name}'; end if;`;
+}).join("\n  ");
 
 const oldDefinitionGuards = REPLACED_FUNCTIONS.map((name) => {
   const entry = deployedFunctions.get(name);
@@ -189,6 +201,21 @@ end $$;`,
 const rollback = [
   `-- Data-preserving definition rollback for ${runId}; disable VITE_BACKEND_OPERATIONAL_RPC_V2 first.`,
   "begin;",
+  `do $$
+declare actual_body_md5 text;
+begin
+  if coalesce(current_setting('app.settings.api_url', true), '') not like '%${EXPECTED_STAGING_PROJECT_REF}%'
+    then raise exception 'database-owned staging API URL identity drift'; end if;
+  if not exists(
+    select 1 from public.deployment_environment_identity
+    where environment='staging'
+      and project_ref=${sqlLiteral(EXPECTED_STAGING_PROJECT_REF)}
+      and identity_nonce=${sqlLiteral(preflight.environment_identity.identity_nonce)}::uuid
+  ) then raise exception 'database-derived staging identity drift'; end if;
+  if not exists(select 1 from public.organizations where id=${sqlLiteral(EXPECTED_ORGANIZATION_ID)})
+    then raise exception 'staging organization identity failed'; end if;
+  ${rollbackDefinitionGuards}
+end $$;`,
   ...REPLACED_FUNCTIONS.flatMap((name) => {
     const entry = deployedFunctions.get(name);
     return [

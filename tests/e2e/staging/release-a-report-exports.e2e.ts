@@ -23,7 +23,7 @@ test("normalized reports export complete CSV, Excel, and PDF files", async ({ pa
   const browserChunks: string[] = [];
   page.on("request", (request) => {
     const pathname = new URL(request.url()).pathname;
-    if (/(?:xlsx|jspdf)-[^/]+\.js$/i.test(pathname)) browserChunks.push(pathname);
+    if (/(?:xlsx|jspdf)[^/]*-[^/]+\.js$/i.test(pathname)) browserChunks.push(pathname);
   });
 
   try {
@@ -49,14 +49,14 @@ test("normalized reports export complete CSV, Excel, and PDF files", async ({ pa
     ]);
     const xlsxMs = performance.now() - xlsxStartedAt;
     expect(browserChunks.filter((path) => /xlsx-/i.test(path))).toHaveLength(1);
-    expect(browserChunks.filter((path) => /jspdf-/i.test(path))).toHaveLength(0);
+    expect(browserChunks.filter((path) => /jspdf[^/]*-/i.test(path))).toHaveLength(0);
     const pdfStartedAt = performance.now();
     const [pdfDownload] = await Promise.all([
       page.waitForEvent("download"),
       page.getByRole("button", { name: "Export PDF", exact: true }).click()
     ]);
     const pdfMs = performance.now() - pdfStartedAt;
-    expect(browserChunks.filter((path) => /jspdf-/i.test(path))).toHaveLength(1);
+    expect(browserChunks.filter((path) => /jspdf[^/]*-/i.test(path))).toHaveLength(1);
 
     expect(csvDownload.suggestedFilename()).toBe(`${fileStem}.csv`);
     expect(xlsxDownload.suggestedFilename()).toBe(`${fileStem}.xlsx`);
@@ -100,7 +100,7 @@ test("normalized reports export complete CSV, Excel, and PDF files", async ({ pa
 
 for (const exporter of [
   { name: "spreadsheet", route: "**/assets/xlsx-*.js", button: "Export Excel", error: "Unable to load the spreadsheet exporter" },
-  { name: "PDF", route: "**/assets/jspdf-*.js", button: "Export PDF", error: "Unable to load the PDF exporter" }
+  { name: "PDF", route: "**/assets/jspdf*.js", button: "Export PDF", error: "Unable to load the PDF exporter" }
 ] as const) {
   test(`a failed ${exporter.name} chunk is visible and succeeds after an explicit reload`, async ({ page }, testInfo) => {
     const errors = capturePageErrors(page);

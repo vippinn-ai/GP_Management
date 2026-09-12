@@ -15,6 +15,8 @@ import {
 
 const root = process.cwd();
 const args = process.argv.slice(2);
+const customerProfileOnly = args.includes("--customer-profile");
+const playwrightArgs = args.filter((entry) => entry !== "--customer-profile");
 const discoveryOnly = args.includes("--list") || args.includes("--help");
 const localEnv = parseEnvFile(path.join(root, ".env.e2e.local"));
 const stagingEnv = parseEnvFile(path.join(root, ".env.staging"));
@@ -32,9 +34,11 @@ for (const flag of [
 }
 env.E2E_BASE_URL = assertStagingBaseUrl(env.E2E_BASE_URL || STAGING_APP_URL);
 const generatedRunStamp = new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 12);
-env.E2E_RUN_ID = assertOperationalRunId(env.E2E_RUN_ID || `normops-${generatedRunStamp.slice(0, 8)}-${generatedRunStamp.slice(8)}-discovery`);
-env.E2E_ROLE_MATRIX = "release-b-receptionist-manager";
-env.E2E_ROLE_MATRIX_PHASE = "all";
+env.E2E_RUN_ID = assertOperationalRunId(env.E2E_RUN_ID || `normops-${generatedRunStamp.slice(0, 8)}-${generatedRunStamp.slice(8)}-${customerProfileOnly ? "customer-" : ""}discovery`);
+if (!customerProfileOnly) {
+  env.E2E_ROLE_MATRIX = "release-b-receptionist-manager";
+  env.E2E_ROLE_MATRIX_PHASE = "all";
+}
 if (!discoveryOnly) assertLiveCredentials(env);
 
 const evidenceRoot = path.join(root, "test-artifacts", "playwright");
@@ -49,6 +53,8 @@ let databaseManifest;
 let databaseManifestPath;
 let postflightVerification;
 let postflightVerificationPath;
+let transactionalProofManifest;
+let transactionalProofResult;
 if (!discoveryOnly) {
   if (!/^[a-f0-9]{64}$/i.test(env.E2E_EXPECTED_BUNDLE_SHA256 || "")) {
     throw new Error("Live staging E2E requires E2E_EXPECTED_BUNDLE_SHA256 from the approved candidate deployment.");
@@ -73,9 +79,40 @@ if (!discoveryOnly) {
   if (
     postflightVerification.projectRef !== STAGING_PROJECT_REF
     || postflightVerification.runId !== databaseManifest.runId
+    || postflightVerification.manifestSha256 !== actualManifestSha
     || postflightVerification.appStateUnchanged !== true
     || postflightVerification.incompleteMutations !== 0
   ) throw new Error("Database postflight verification is not the approved unchanged staging installation.");
+  if (!env.E2E_DB_PROOF_MANIFEST_PATH || !env.E2E_DB_PROOF_MANIFEST_SHA256 || !env.E2E_DB_PROOF_RESULT_PATH || !env.E2E_DB_PROOF_RESULT_SHA256) {
+    throw new Error("Live staging E2E requires immutable transactional proof manifest and result paths with SHA-256 values.");
+  }
+  const readBoundProof = (pathValue, shaValue, label) => {
+    const absolutePath = path.resolve(root, pathValue);
+    const content = fs.readFileSync(absolutePath, "utf8");
+    const actualSha = createHash("sha256").update(content).digest("hex");
+    if (actualSha !== shaValue.toLowerCase()) throw new Error(`${label} SHA-256 does not match.`);
+    return { absolutePath, sha256: actualSha, value: JSON.parse(content) };
+  };
+  transactionalProofManifest = readBoundProof(env.E2E_DB_PROOF_MANIFEST_PATH, env.E2E_DB_PROOF_MANIFEST_SHA256, "Transactional proof manifest");
+  transactionalProofResult = readBoundProof(env.E2E_DB_PROOF_RESULT_PATH, env.E2E_DB_PROOF_RESULT_SHA256, "Transactional proof result");
+  const proof = transactionalProofResult.value.evidence ?? transactionalProofResult.value?.[0]?.evidence ?? transactionalProofResult.value;
+  const proofPerformance = proof?.performance ?? {};
+  const performancePassed = ["hop_session_v2", "reject_session_v2", "reject_customer_tab_v2"].every((name) =>
+    proofPerformance[name]?.samples === 20
+      && Number(proofPerformance[name]?.p95_ms) < 2_000
+      && Number(proofPerformance[name]?.max_ms) < 5_000
+  );
+  if (
+    transactionalProofManifest.value.target?.projectRef !== STAGING_PROJECT_REF
+    || transactionalProofManifest.value.installManifest?.sha256 !== actualManifestSha
+    || transactionalProofManifest.value.postflightVerification?.sha256 !== postflightSha
+    || proof?.proof !== "passed"
+    || proof?.run_id !== transactionalProofManifest.value.runId
+    || proof?.project_ref !== STAGING_PROJECT_REF
+    || proof?.app_state_unchanged !== true
+    || proof?.rollback_required !== true
+    || !performancePassed
+  ) throw new Error("Transactional database proof is not bound to the approved staging installation.");
 }
 
 let deployedArtifact;
@@ -98,19 +135,25 @@ if (!discoveryOnly) {
 
 console.log(JSON.stringify({
   runner: "operational-v2-staging-playwright",
+  suite: customerProfileOnly ? "customer-profile-snapshot-parity" : "operational-lifecycle",
   baseUrl: env.E2E_BASE_URL,
   runId: env.E2E_RUN_ID,
   discoveryOnly,
   deployedArtifact,
   databaseManifest: databaseManifest ? { path: path.relative(root, databaseManifestPath), runId: databaseManifest.runId, sha256: env.E2E_DB_MANIFEST_SHA256 } : undefined,
   postflightVerification: postflightVerification ? { path: path.relative(root, postflightVerificationPath), sha256: env.E2E_DB_POSTFLIGHT_VERIFICATION_SHA256 } : undefined,
+  transactionalProof: transactionalProofManifest ? {
+    manifest: { path: path.relative(root, transactionalProofManifest.absolutePath), sha256: transactionalProofManifest.sha256 },
+    result: { path: path.relative(root, transactionalProofResult.absolutePath), sha256: transactionalProofResult.sha256 }
+  } : undefined,
   credentials: discoveryOnly ? "not-required" : "loaded-from-ignored-environment",
   productionAllowed: false,
   retries: 0
 }));
 
 const cliPath = path.join(root, "node_modules", "@playwright", "test", "cli.js");
-const result = spawnSync(process.execPath, [cliPath, "test", "--config=playwright.operational-v2.staging.config.ts", ...args], {
+const configPath = customerProfileOnly ? "playwright.customer-profile.staging.config.ts" : "playwright.operational-v2.staging.config.ts";
+const result = spawnSync(process.execPath, [cliPath, "test", `--config=${configPath}`, ...playwrightArgs], {
   cwd: root, env, stdio: "inherit", shell: false
 });
 
@@ -135,6 +178,10 @@ if (!discoveryOnly) {
     deployedArtifact,
     databaseManifest: { path: path.relative(root, databaseManifestPath), sha256: env.E2E_DB_MANIFEST_SHA256 },
     postflightVerification: { path: path.relative(root, postflightVerificationPath), sha256: env.E2E_DB_POSTFLIGHT_VERIFICATION_SHA256 },
+    transactionalProof: {
+      manifest: { path: path.relative(root, transactionalProofManifest.absolutePath), sha256: transactionalProofManifest.sha256 },
+      result: { path: path.relative(root, transactionalProofResult.absolutePath), sha256: transactionalProofResult.sha256 }
+    },
     files
   }, null, 2) + "\n", { encoding: "utf8", flag: "wx" });
 }

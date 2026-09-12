@@ -451,9 +451,16 @@ export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): 
       if (overlay.requiresFullRefresh) {
         throw new Error("A full-refresh event requires an explicit normalized restore.");
       }
+      const removedCustomerIds = new Set(overlay.removedCustomerIds);
+      const snapshotBeforeOverlay = removedCustomerIds.size > 0
+        ? {
+            ...lastSnapshot.appData,
+            customers: lastSnapshot.appData.customers.filter((customer) => !removedCustomerIds.has(customer.id))
+          }
+        : lastSnapshot.appData;
       lastSnapshot = {
         ...lastSnapshot,
-        appData: mergeNormalizedAppDataOverlay(lastSnapshot.appData, overlay.appData),
+        appData: mergeNormalizedAppDataOverlay(snapshotBeforeOverlay, overlay.appData),
         version: overlay.appStateVersion ?? lastSnapshot.version,
         sourceMutationId: overlay.sourceMutationId,
         sourceEventId: event.id,

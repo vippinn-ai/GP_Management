@@ -30,7 +30,7 @@ env.E2E_PERFORMANCE_SAMPLES = "30";
 if (!discoveryOnly && (!env.E2E_USER_A?.trim() || !env.E2E_PASSWORD_A?.trim())) {
   throw new Error("Performance E2E requires the staging-only browser A credentials.");
 }
-if (!discoveryOnly && !env.E2E_PERFORMANCE_PROFILE_ID?.trim()) {
+if (!discoveryOnly && !/^[a-z0-9][a-z0-9._-]{5,80}$/i.test(env.E2E_PERFORMANCE_PROFILE_ID?.trim() || "")) {
   throw new Error("Performance E2E requires a stable E2E_PERFORMANCE_PROFILE_ID describing the host and network window.");
 }
 
@@ -45,7 +45,27 @@ function readBoundJson(pathValue, shaValue, label) {
 
 let datasetManifest;
 let postflightVerification;
+let profileManifest;
+let baselineManifest;
+let databaseManifest;
 if (!discoveryOnly) {
+  profileManifest = readBoundJson(
+    env.E2E_PERFORMANCE_PROFILE_MANIFEST_PATH,
+    env.E2E_PERFORMANCE_PROFILE_MANIFEST_SHA256,
+    "Performance environment profile manifest"
+  );
+  if (
+    profileManifest.value.schemaVersion !== 1
+    || profileManifest.value.profileId !== env.E2E_PERFORMANCE_PROFILE_ID
+    || !profileManifest.value.expectedBrowserVersion
+    || !profileManifest.value.networkProfile
+    || profileManifest.value.cachePolicy !== "new-context-cold-cache-service-workers-blocked"
+    || profileManifest.value.viewport?.width !== 1440
+    || profileManifest.value.viewport?.height !== 900
+  ) throw new Error("Performance environment profile manifest is incomplete or incompatible.");
+  env.E2E_EXPECTED_BROWSER_VERSION = profileManifest.value.expectedBrowserVersion;
+  env.E2E_NETWORK_PROFILE = profileManifest.value.networkProfile;
+  env.E2E_PERFORMANCE_PROFILE_MANIFEST_SHA256 = profileManifest.sha256;
   datasetManifest = readBoundJson(
     env.E2E_PERFORMANCE_DATASET_MANIFEST_PATH,
     env.E2E_PERFORMANCE_DATASET_MANIFEST_SHA256,
@@ -55,15 +75,44 @@ if (!discoveryOnly) {
   if (dataset.expected_project_ref !== STAGING_PROJECT_REF && dataset.target?.projectRef !== STAGING_PROJECT_REF) {
     throw new Error("Performance dataset manifest is not for staging.");
   }
+  if (!Number.isInteger(dataset.app_state?.version) || !dataset.app_state?.md5) {
+    throw new Error("Performance dataset manifest lacks the compatibility app_state identity.");
+  }
+  if (dataset.open_sessions !== 0 || dataset.open_customer_tabs !== 0 || dataset.processing_financial_mutations !== 0 || dataset.processing_operational_mutations !== 0) {
+    throw new Error("Performance dataset does not have a clean staging operational floor.");
+  }
+  env.E2E_EXPECTED_APP_STATE_VERSION = String(dataset.app_state.version);
   if (mode === "candidate") {
+    databaseManifest = readBoundJson(
+      env.E2E_DB_MANIFEST_PATH,
+      env.E2E_DB_MANIFEST_SHA256,
+      "Candidate database install manifest"
+    );
+    if (databaseManifest.value.target?.projectRef !== STAGING_PROJECT_REF) {
+      throw new Error("Candidate database install manifest is not for staging.");
+    }
     postflightVerification = readBoundJson(
       env.E2E_DB_POSTFLIGHT_VERIFICATION_PATH,
       env.E2E_DB_POSTFLIGHT_VERIFICATION_SHA256,
       "Candidate database postflight verification"
     );
-    if (postflightVerification.value.projectRef !== STAGING_PROJECT_REF || postflightVerification.value.appStateUnchanged !== true) {
+    if (
+      postflightVerification.value.projectRef !== STAGING_PROJECT_REF
+      || postflightVerification.value.runId !== databaseManifest.value.runId
+      || postflightVerification.value.manifestSha256 !== databaseManifest.sha256
+      || postflightVerification.value.appStateUnchanged !== true
+      || postflightVerification.value.incompleteMutations !== 0
+    ) {
       throw new Error("Candidate database postflight verification is not an unchanged staging installation.");
     }
+    if (JSON.stringify(postflightVerification.value.appState) !== JSON.stringify(dataset.app_state)) {
+      throw new Error("Candidate postflight and performance dataset app_state identities differ.");
+    }
+    baselineManifest = readBoundJson(
+      env.E2E_PERFORMANCE_BASELINE_MANIFEST_PATH,
+      env.E2E_PERFORMANCE_BASELINE_MANIFEST_SHA256,
+      "Performance baseline evidence manifest"
+    );
   }
 }
 
@@ -96,7 +145,20 @@ if (!discoveryOnly) {
     if (!env.E2E_PERFORMANCE_BASELINE_PATH || !/^[a-f0-9]{64}$/i.test(env.E2E_PERFORMANCE_BASELINE_SHA256 || "")) {
       throw new Error("Candidate performance run requires the immutable baseline artifact and SHA-256.");
     }
+    const baselineAbsolutePath = path.resolve(root, env.E2E_PERFORMANCE_BASELINE_PATH);
+    const baselineEntry = baselineManifest.value.files?.find((entry) =>
+      path.resolve(root, entry.path) === baselineAbsolutePath
+    );
+    if (
+      baselineManifest.value.mode !== "baseline"
+      || baselineManifest.value.exitCode !== 0
+      || baselineManifest.value.deployedArtifact?.sha256 !== env.E2E_EXPECTED_BASELINE_BUNDLE_SHA256?.toLowerCase()
+      || baselineManifest.value.profileManifest?.sha256 !== profileManifest.sha256
+      || baselineManifest.value.datasetManifest?.sha256 !== datasetManifest.sha256
+      || baselineEntry?.sha256 !== env.E2E_PERFORMANCE_BASELINE_SHA256.toLowerCase()
+    ) throw new Error("Candidate baseline artifact is not transitively bound to its deployment, dataset, and environment profile.");
   }
+  env.E2E_DEPLOYED_BUNDLE_SHA256 = deployedArtifact.sha256;
 }
 
 console.log(JSON.stringify({
@@ -106,10 +168,12 @@ console.log(JSON.stringify({
   mode: env.E2E_PERFORMANCE_MODE,
   sampleCount: 30,
   profileId: env.E2E_PERFORMANCE_PROFILE_ID,
+  profileManifest: profileManifest ? { path: path.relative(root, profileManifest.absolutePath), sha256: profileManifest.sha256 } : undefined,
   discoveryOnly,
   deployedArtifact,
   datasetManifest: datasetManifest ? { path: path.relative(root, datasetManifest.absolutePath), sha256: datasetManifest.sha256 } : undefined,
   postflightVerification: postflightVerification ? { path: path.relative(root, postflightVerification.absolutePath), sha256: postflightVerification.sha256 } : undefined,
+  databaseManifest: databaseManifest ? { path: path.relative(root, databaseManifest.absolutePath), sha256: databaseManifest.sha256 } : undefined,
   productionAllowed: false,
   writesAllowed: false,
   workers: 1,
@@ -146,8 +210,10 @@ if (!discoveryOnly) {
     exitCode: result.status ?? 1,
     deployedArtifact,
     profileId: env.E2E_PERFORMANCE_PROFILE_ID,
+    profileManifest: { path: path.relative(root, profileManifest.absolutePath), sha256: profileManifest.sha256 },
     datasetManifest: { path: path.relative(root, datasetManifest.absolutePath), sha256: datasetManifest.sha256 },
     postflightVerification: postflightVerification ? { path: path.relative(root, postflightVerification.absolutePath), sha256: postflightVerification.sha256 } : undefined,
+    databaseManifest: databaseManifest ? { path: path.relative(root, databaseManifest.absolutePath), sha256: databaseManifest.sha256 } : undefined,
     baseline: mode === "candidate" ? {
       path: env.E2E_PERFORMANCE_BASELINE_PATH,
       sha256: env.E2E_PERFORMANCE_BASELINE_SHA256

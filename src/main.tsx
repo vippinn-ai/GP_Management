@@ -1,5 +1,4 @@
 import React from "react";
-import ReactDOM from "react-dom/client";
 import App from "./App";
 import { ErrorBoundary } from "./ErrorBoundary";
 import "./styles.css";
@@ -44,10 +43,20 @@ const app = (
   </ErrorBoundary>
 );
 
-ReactDOM.createRoot(document.getElementById("root")!).render(
-  <React.StrictMode>
-    {import.meta.env.VITE_PERFORMANCE_EVIDENCE === "true"
-      ? <React.Profiler id="bp-app" onRender={recordRenderEvidence}>{app}</React.Profiler>
-      : app}
-  </React.StrictMode>
-);
+async function mountApp() {
+  // The normal production renderer compiles Profiler callbacks out. Only the
+  // explicit staging evidence build imports React's profiling renderer; Vite
+  // removes this branch and its dependency from ordinary production builds.
+  const renderer = import.meta.env.VITE_PERFORMANCE_EVIDENCE === "true"
+    ? await import("react-dom/profiling")
+    : await import("react-dom/client");
+  renderer.createRoot(document.getElementById("root")!).render(
+    <React.StrictMode>
+      {import.meta.env.VITE_PERFORMANCE_EVIDENCE === "true"
+        ? <React.Profiler id="bp-app" onRender={recordRenderEvidence}>{app}</React.Profiler>
+        : app}
+    </React.StrictMode>
+  );
+}
+
+void mountApp();

@@ -134,19 +134,20 @@ test.describe.serial("Release B checkout versus rejection concurrency", () => {
           payload: {
             organization_id: string;
             mutation_id: string;
+            entity_id: string;
             payload: {
-              session: { id: string };
-              auditLog: { id: string };
+              effective_ended_at: string;
+              audit_log_id: string;
             };
           };
         };
         sessionId = checkoutIdentity.payload.payload.source_session_ids[0];
         expect(sessionId).toBeTruthy();
-        expect(rejectIdentity.payload.payload.session.id).toBe(sessionId);
+        expect(rejectIdentity.payload.entity_id).toBe(sessionId);
         const billId = checkoutIdentity.payload.payload.primary_bill.id;
         const checkoutMutationId = checkoutIdentity.payload.mutation_id;
         const rejectMutationId = rejectIdentity.payload.mutation_id;
-        const rejectAuditId = rejectIdentity.payload.payload.auditLog.id;
+        const rejectAuditId = rejectIdentity.payload.payload.audit_log_id;
         const checkoutAuditIds = checkoutIdentity.payload.payload.audit_logs.map((audit) => audit.id);
         expect(checkoutAuditIds.length).toBeGreaterThan(0);
         const checkoutActorId = authenticatedJwtSubject(capturedCheckout.headers);

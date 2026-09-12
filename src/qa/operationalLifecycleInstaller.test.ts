@@ -66,8 +66,61 @@ describe("operational lifecycle staging installer", () => {
     expect(fs.existsSync(path.join(outputDir, "staging-install.sql"))).toBe(true);
     expect(fs.existsSync(path.join(outputDir, "staging-rollback.sql"))).toBe(true);
     expect(fs.existsSync(path.join(outputDir, "manifest.json"))).toBe(true);
+    const rollback = fs.readFileSync(path.join(outputDir, "staging-rollback.sql"), "utf8");
+    expect(rollback).toContain("database-owned staging API URL identity drift");
+    expect(rollback).toContain("database-derived staging identity drift");
+    expect(rollback).toContain("rollback refused unexpected definition drift");
 
     const second = spawnSync(process.execPath, command, { cwd: root, encoding: "utf8" });
     expect(second.status).not.toBe(0);
+  });
+
+  it("binds a rollback-only transactional proof to the verified installed function definitions", () => {
+    const root = process.cwd();
+    const fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), "normops-proof-"));
+    cleanupPaths.push(fixtureDir);
+    const dbManifestPath = path.join(fixtureDir, "manifest.json");
+    const dbManifest = {
+      runId: "normops-20260912-2200-install-fixture",
+      target: { projectRef: "tkbdyzxwwbhkpztgjjxh", organizationId: "org-primary" }
+    };
+    const dbManifestText = JSON.stringify(dbManifest);
+    fs.writeFileSync(dbManifestPath, dbManifestText);
+    const dbManifestSha = crypto.createHash("sha256").update(dbManifestText).digest("hex");
+    const definitionHashes = Object.fromEntries(
+      ["hop_session_v2", "reject_session_v2", "reject_customer_tab_v2", "start_session", "open_customer_tab", "link_customer_tab_continuation"]
+        .map((name) => [name, crypto.createHash("md5").update(name).digest("hex")])
+    );
+    const verificationPath = path.join(fixtureDir, "verification.json");
+    const verification = {
+      runId: dbManifest.runId,
+      projectRef: "tkbdyzxwwbhkpztgjjxh",
+      manifestSha256: dbManifestSha,
+      appStateUnchanged: true,
+      incompleteMutations: 0,
+      installedFunctionDefinitionMd5: definitionHashes
+    };
+    const verificationText = JSON.stringify(verification);
+    fs.writeFileSync(verificationPath, verificationText);
+    const verificationSha = crypto.createHash("sha256").update(verificationText).digest("hex");
+    const proofRunId = `normops-20260912-2201-db-proof-${crypto.randomBytes(4).toString("hex")}`;
+    const proofPath = path.join(root, "test-artifacts", "sql", `${proofRunId}-operational-v2-transactional-proof.sql`);
+    const proofManifestPath = path.join(root, "test-artifacts", "sql", `${proofRunId}-operational-v2-transactional-proof-manifest.json`);
+    cleanupPaths.push(proofPath, proofManifestPath);
+
+    const result = spawnSync(process.execPath, [
+      path.join(root, "scripts", "build-operational-v2-transactional-proof.mjs"),
+      `--run-id=${proofRunId}`,
+      `--db-manifest=${dbManifestPath}`,
+      `--db-manifest-sha256=${dbManifestSha}`,
+      `--postflight-verification=${verificationPath}`,
+      `--postflight-verification-sha256=${verificationSha}`
+    ], { cwd: root, encoding: "utf8" });
+
+    expect(result.status, result.stderr).toBe(0);
+    const proof = fs.readFileSync(proofPath, "utf8");
+    expect(proof).toContain("installed function drift");
+    expect(proof).not.toContain("__INSTALLED_FUNCTION_GUARDS__");
+    expect(proof.trimEnd().endsWith("rollback;")).toBe(true);
   });
 });

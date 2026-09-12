@@ -911,6 +911,9 @@ export default function App() {
     if (snapshot.refreshedSlices?.includes("bills")) {
       setNormalizedBillRegisterRefreshSignal((previous) => previous + 1);
     }
+    if (snapshot.refreshedSlices?.includes("customers")) {
+      setNormalizedCustomerHistoryRefreshSignal((previous) => previous + 1);
+    }
     if (BACKEND_FEATURE_FLAGS.normalizedBootstrap && !snapshot.sourceEventId) {
       deferredDashboardContextLoadedRef.current = false;
       setDeferredDashboardContextRefreshSignal((previous) => previous + 1);
@@ -4778,7 +4781,22 @@ export default function App() {
         customer.id,
         `Updated customer profile: name ${formatAuditValue(previousName)} -> ${formatAuditValue(nextName)}; phone ${formatAuditValue(previousPhone)} -> ${formatAuditValue(nextPhone)}`
       );
-    }, () => setEditCustomerProfileDraft(null));
+    }, () => {
+      // Customer analytics reads from the normalized history overlay. Keep its
+      // directory row in sync with the confirmed admin mutation without
+      // rewriting immutable session/tab/bill snapshots.
+      if (normalizedCustomerHistoryReadsEnabled) {
+        setNormalizedCustomerHistoryState((previous) => previous.loaded
+          ? {
+              ...previous,
+              customers: previous.customers.map((customer) => customer.id === sourceCustomer.id
+                ? { ...customer, name: nextName, phone: nextPhone || undefined }
+                : customer)
+            }
+          : previous);
+      }
+      setEditCustomerProfileDraft(null);
+    });
   }
 
   function addItemToCustomerTab(customerTabId: string, option: SellableInventoryOption, sellAsPackOf?: number) {
