@@ -395,7 +395,7 @@ describe("operational lifecycle v2 Playwright and performance contract", () => {
     const builder = read("scripts/build-operational-v2-customer-profile-posttest.mjs");
     const verifier = read("scripts/verify-operational-v2-customer-profile-posttest.mjs");
     const spec = read("tests/e2e/staging/customer-profile-snapshot-parity.e2e.ts");
-    expect(sql).toContain("database-owned staging API URL identity failed");
+    expect(sql).toContain("physical database is not the approved staging cluster");
     expect(sql).toContain("compatibility_customers");
     expect(builder).toContain("expectedAppStateBefore");
     expect(verifier).toContain("customerCleanupProven");

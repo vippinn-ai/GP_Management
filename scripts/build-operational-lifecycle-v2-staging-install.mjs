@@ -3,6 +3,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 
 const EXPECTED_STAGING_PROJECT_REF = "tkbdyzxwwbhkpztgjjxh";
+const EXPECTED_STAGING_SYSTEM_IDENTIFIER = "7623125441096521075";
 const EXPECTED_ORGANIZATION_ID = "org-primary";
 const REPLACED_FUNCTIONS = ["start_session", "open_customer_tab", "link_customer_tab_continuation"];
 
@@ -61,9 +62,7 @@ const preflightPath = path.resolve(root, argument("preflight"));
 const preflightText = fs.readFileSync(preflightPath, "utf8");
 const preflight = readEvidence(preflightPath);
 if (preflight.expected_project_ref !== EXPECTED_STAGING_PROJECT_REF) throw new Error("Preflight project ref is not staging.");
-if (typeof preflight.api_url_setting !== "string" || !preflight.api_url_setting.includes(EXPECTED_STAGING_PROJECT_REF)) {
-  throw new Error("Preflight database API URL does not identify staging.");
-}
+if (preflight.system_identifier !== EXPECTED_STAGING_SYSTEM_IDENTIFIER) throw new Error("Preflight physical database is not staging.");
 if (preflight.environment_identity?.environment !== "staging" || preflight.environment_identity?.project_ref !== EXPECTED_STAGING_PROJECT_REF || !/^[0-9a-f-]{36}$/i.test(preflight.environment_identity?.identity_nonce || "")) {
   throw new Error("Preflight lacks the database-derived staging identity anchor.");
 }
@@ -179,8 +178,8 @@ from public.app_state where id='primary';`,
   `do $$
 declare actual_hash text; actual_owner text; actual_security_definer boolean; actual_volatility "char"; actual_config jsonb; actual_acl jsonb;
 begin
+  if current_database()<>'postgres' or (select system_identifier::text from pg_control_system())<>${sqlLiteral(EXPECTED_STAGING_SYSTEM_IDENTIFIER)} then raise exception 'physical database is not the approved staging cluster'; end if;
   if not exists(select 1 from public.deployment_environment_identity where environment='staging' and project_ref=${sqlLiteral(EXPECTED_STAGING_PROJECT_REF)} and identity_nonce=${sqlLiteral(preflight.environment_identity.identity_nonce)}::uuid) then raise exception 'database-derived staging identity drift'; end if;
-  if current_setting('app.settings.api_url', true) is null or position(${sqlLiteral(EXPECTED_STAGING_PROJECT_REF)} in current_setting('app.settings.api_url', true)) = 0 then raise exception 'database API URL does not identify the approved staging project'; end if;
   if not exists(select 1 from public.organizations where id=${sqlLiteral(EXPECTED_ORGANIZATION_ID)}) then raise exception 'staging organization identity failed'; end if;
   if (select count(*) from public.sessions where status<>'closed') <> 0 then raise exception 'staging has open sessions'; end if;
   if (select count(*) from public.customer_tabs where status='open') <> 0 then raise exception 'staging has open customer tabs'; end if;
@@ -229,8 +228,8 @@ const rollback = [
   `do $$
 declare actual_body_md5 text;
 begin
-  if coalesce(current_setting('app.settings.api_url', true), '') not like '%${EXPECTED_STAGING_PROJECT_REF}%'
-    then raise exception 'database-owned staging API URL identity drift'; end if;
+  if current_database()<>'postgres' or (select system_identifier::text from pg_control_system())<>${sqlLiteral(EXPECTED_STAGING_SYSTEM_IDENTIFIER)}
+    then raise exception 'physical database identity drift'; end if;
   if not exists(
     select 1 from public.deployment_environment_identity
     where environment='staging'
@@ -258,7 +257,7 @@ fs.writeFileSync(installPath, install, { encoding: "utf8", flag: "wx" });
 fs.writeFileSync(rollbackPath, rollback, { encoding: "utf8", flag: "wx" });
 const manifest = {
   runId,
-  target: { projectRef: EXPECTED_STAGING_PROJECT_REF, organizationId: EXPECTED_ORGANIZATION_ID },
+  target: { projectRef: EXPECTED_STAGING_PROJECT_REF, systemIdentifier: EXPECTED_STAGING_SYSTEM_IDENTIFIER, organizationId: EXPECTED_ORGANIZATION_ID },
   preflight: { path: preflightPath, sha256: sha256(preflightText) },
   environmentIdentity: preflight.environment_identity,
   sources: Object.fromEntries([lifecyclePath, datasetIdentityPath, startSessionPath, customerTabPath, linkContinuationPath, identityPath].map((file) => [path.relative(root, file), sha256(fs.readFileSync(file))])),

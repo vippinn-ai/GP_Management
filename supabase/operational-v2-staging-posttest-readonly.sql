@@ -3,8 +3,8 @@ begin isolation level repeatable read read only;
 
 do $$
 begin
-  if coalesce(current_setting('app.settings.api_url', true), '') not like '%tkbdyzxwwbhkpztgjjxh%'
-    then raise exception 'database-owned staging API URL identity failed'; end if;
+  if current_database() <> 'postgres' or (select system_identifier::text from pg_control_system()) <> '7623125441096521075'
+    then raise exception 'physical database is not the approved staging cluster'; end if;
   if not exists(select 1 from public.deployment_environment_identity where environment='staging' and project_ref='tkbdyzxwwbhkpztgjjxh')
     then raise exception 'database staging identity failed'; end if;
 end $$;

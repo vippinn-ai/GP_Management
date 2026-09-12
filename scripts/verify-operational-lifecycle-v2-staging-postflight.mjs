@@ -59,8 +59,8 @@ for (const [sourcePath, expectedSha] of Object.entries(manifest.sources ?? {})) 
 const installPath = verifyFile(manifest.artifacts.install, "Install artifact");
 const rollbackPath = verifyFile(manifest.artifacts.rollback, "Rollback artifact");
 if (preflight.expected_project_ref !== manifest.target.projectRef || postflight.expected_project_ref !== manifest.target.projectRef) throw new Error("Project identity changed.");
-for (const observed of [preflight.api_url_setting ?? preflight.database_api_url, postflight.database_api_url]) {
-  if (typeof observed !== "string" || !observed.includes(manifest.target.projectRef)) throw new Error("Database-owned API URL is not staging.");
+for (const observed of [preflight.system_identifier, postflight.system_identifier]) {
+  if (observed !== manifest.target.systemIdentifier) throw new Error("Physical database is not the manifest-bound staging cluster.");
 }
 for (const observed of [preflight.environment_identity, postflight.environment_identity]) {
   if (JSON.stringify(observed) !== JSON.stringify(manifest.environmentIdentity)) throw new Error("Database-derived environment identity changed.");
@@ -111,7 +111,7 @@ const definitionGuards = [...installedEntries.entries()].map(([name, entry]) => 
   then raise exception 'installed definition, owner, configuration, or ACL drift for ${name}'; end if;`;
 }).join("\n");
 const rollbackText = fs.readFileSync(rollbackPath, "utf8");
-const verifiedRollback = rollbackText.replace("begin;", `begin;\n\ndo $$\ndeclare actual_hash text; actual_owner text; actual_security_definer boolean; actual_volatility "char"; actual_config jsonb; actual_acl jsonb;\nbegin\n  if coalesce(current_setting('app.settings.api_url', true), '') not like '%${manifest.target.projectRef}%' then raise exception 'database-owned staging API URL identity drift'; end if;\n  if not exists(select 1 from public.deployment_environment_identity where environment='staging' and project_ref='${manifest.target.projectRef}' and identity_nonce='${manifest.environmentIdentity.identity_nonce}'::uuid) then raise exception 'database-derived staging identity drift'; end if;\n${definitionGuards}\nend $$;`);
+const verifiedRollback = rollbackText.replace("begin;", `begin;\n\ndo $$\ndeclare actual_hash text; actual_owner text; actual_security_definer boolean; actual_volatility "char"; actual_config jsonb; actual_acl jsonb;\nbegin\n  if current_database()<>'postgres' or (select system_identifier::text from pg_control_system())<>'${manifest.target.systemIdentifier}' then raise exception 'physical database identity drift'; end if;\n  if not exists(select 1 from public.deployment_environment_identity where environment='staging' and project_ref='${manifest.target.projectRef}' and identity_nonce='${manifest.environmentIdentity.identity_nonce}'::uuid) then raise exception 'database-derived staging identity drift'; end if;\n${definitionGuards}\nend $$;`);
 const verifiedRollbackPath = path.join(path.dirname(manifestPath), "staging-rollback-verified.sql");
 fs.writeFileSync(verifiedRollbackPath, verifiedRollback, { encoding: "utf8", flag: "wx" });
 

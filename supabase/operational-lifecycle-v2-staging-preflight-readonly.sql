@@ -3,11 +3,10 @@
 begin isolation level repeatable read read only;
 
 do $$
-declare incomplete_operational integer := 0;
+declare incomplete_operational integer := 0; system_id text := (select system_identifier::text from pg_control_system());
 begin
-  if current_setting('app.settings.api_url', true) is null
-    or position('tkbdyzxwwbhkpztgjjxh' in current_setting('app.settings.api_url', true)) = 0
-  then raise exception 'database API URL does not identify the approved staging project'; end if;
+  if current_database() <> 'postgres' or system_id <> '7623125441096521075'
+  then raise exception 'physical database is not the approved staging cluster'; end if;
   if not exists(select 1 from public.organizations where id='org-primary') then raise exception 'staging organization identity failed'; end if;
   if to_regclass('public.deployment_environment_identity') is null
     or not exists(select 1 from public.deployment_environment_identity where environment='staging' and project_ref='tkbdyzxwwbhkpztgjjxh')
@@ -77,8 +76,8 @@ with target_functions as (
 )
 select jsonb_build_object(
   'expected_project_ref', 'tkbdyzxwwbhkpztgjjxh',
+  'system_identifier', (select system_identifier::text from pg_control_system()),
   'environment_identity', (select jsonb_build_object('environment',environment,'project_ref',project_ref,'identity_nonce',identity_nonce) from public.deployment_environment_identity where environment='staging'),
-  'api_url_setting', current_setting('app.settings.api_url', true),
   'database', current_database(),
   'captured_at_utc', timezone('utc', clock_timestamp()),
   'organization_id', 'org-primary',

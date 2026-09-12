@@ -44,7 +44,7 @@ describe("operational lifecycle staging installer", () => {
     const preflightPath = path.join(fixtureDir, "preflight.json");
     fs.writeFileSync(preflightPath, JSON.stringify({
       expected_project_ref: "tkbdyzxwwbhkpztgjjxh",
-      api_url_setting: "https://tkbdyzxwwbhkpztgjjxh.supabase.co",
+      system_identifier: "7623125441096521075",
       environment_identity: { environment: "staging", project_ref: "tkbdyzxwwbhkpztgjjxh", identity_nonce: "12345678-1234-4123-8123-123456789abc" },
       organization_id: "org-primary",
       organization_exists: true,
@@ -68,7 +68,7 @@ describe("operational lifecycle staging installer", () => {
     expect(fs.existsSync(path.join(outputDir, "staging-rollback.sql"))).toBe(true);
     expect(fs.existsSync(path.join(outputDir, "manifest.json"))).toBe(true);
     const rollback = fs.readFileSync(path.join(outputDir, "staging-rollback.sql"), "utf8");
-    expect(rollback).toContain("database-owned staging API URL identity drift");
+    expect(rollback).toContain("physical database identity drift");
     expect(rollback).toContain("database-derived staging identity drift");
     expect(rollback).toContain("rollback refused unexpected definition drift");
     expect(rollback).toContain("aclexplode(coalesce(p.proacl,acldefault('f',p.proowner)))");
@@ -93,7 +93,7 @@ describe("operational lifecycle staging installer", () => {
     const dbManifestPath = path.join(fixtureDir, "manifest.json");
     const dbManifest = {
       runId: "normops-20260912-2200-install-fixture",
-      target: { projectRef: "tkbdyzxwwbhkpztgjjxh", organizationId: "org-primary" },
+      target: { projectRef: "tkbdyzxwwbhkpztgjjxh", systemIdentifier: "7623125441096521075", organizationId: "org-primary" },
       preflight: { path: preflightPath, sha256: preflightSha }
     };
     const dbManifestText = JSON.stringify(dbManifest);

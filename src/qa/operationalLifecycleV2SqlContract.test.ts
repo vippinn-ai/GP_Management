@@ -9,7 +9,7 @@ const startSessionSource = readFileSync(path.join(process.cwd(), "supabase/phase
 const linkContinuationSource = readFileSync(path.join(process.cwd(), "supabase/phase4-link-customer-tab-continuation-rpc.sql"), "utf8");
 const preflight = readFileSync(path.join(process.cwd(), "supabase/operational-lifecycle-v2-staging-preflight-readonly.sql"), "utf8");
 const postflight = readFileSync(path.join(process.cwd(), "supabase/operational-lifecycle-v2-staging-postflight-readonly.sql"), "utf8");
-const stagingApiUrlAnchor = readFileSync(path.join(process.cwd(), "supabase/operational-v2-staging-api-url-anchor.sql"), "utf8");
+const stagingEnvironmentIdentity = readFileSync(path.join(process.cwd(), "supabase/operational-v2-staging-environment-identity.sql"), "utf8");
 const installer = readFileSync(path.join(process.cwd(), "scripts/build-operational-lifecycle-v2-staging-install.mjs"), "utf8");
 const postflightVerifier = readFileSync(path.join(process.cwd(), "scripts/verify-operational-lifecycle-v2-staging-postflight.mjs"), "utf8");
 const transactionalProof = readFileSync(path.join(process.cwd(), "supabase/operational-lifecycle-v2-transactional-proof.sql"), "utf8");
@@ -99,17 +99,14 @@ describe("normalized lifecycle v2 SQL contract", () => {
     }
   });
 
-  it("bootstraps the missing hosted staging API URL with explicit conflict guards and no domain-row writes", () => {
-    expect(stagingApiUrlAnchor).toContain("https://supabase.com/dashboard/project/tkbdyzxwwbhkpztgjjxh/sql/new");
-    expect(stagingApiUrlAnchor).toContain("alter database postgres set \"app.settings.api_url\" to 'https://tkbdyzxwwbhkpztgjjxh.supabase.co'");
-    expect(stagingApiUrlAnchor).toContain("database already carries a different API URL identity");
-    expect(stagingApiUrlAnchor).toContain("existing_api_url <> 'https://tkbdyzxwwbhkpztgjjxh.supabase.co'");
-    expect(stagingApiUrlAnchor).toContain("database already carries a different environment identity");
-    expect(stagingApiUrlAnchor).toMatch(/organizations where id='org-primary' and active is true/i);
-    expect(stagingApiUrlAnchor).not.toContain("rrdwbxvuwrbxefarxnse");
-    expect(stagingApiUrlAnchor).not.toMatch(/\b(?:insert\s+into|update|delete\s+from|alter\s+table|drop\s+table|create\s+table)\s+public\./i);
-    expect(stagingApiUrlAnchor.indexOf("alter database postgres set")).toBeLessThan(stagingApiUrlAnchor.indexOf("select set_config"));
-    expect(stagingApiUrlAnchor).not.toMatch(/begin;[\s\S]*alter database postgres set/i);
+  it("atomically anchors the exact physical staging cluster and refuses lookalike databases", () => {
+    expect(stagingEnvironmentIdentity).toContain("system_identifier::text from pg_control_system()");
+    expect(stagingEnvironmentIdentity).toContain("system_id <> '7623125441096521075'");
+    expect(stagingEnvironmentIdentity).toContain("physical database is not the approved staging cluster");
+    expect(stagingEnvironmentIdentity).toMatch(/organizations where id='org-primary' and active is true/i);
+    expect(stagingEnvironmentIdentity).not.toContain("rrdwbxvuwrbxefarxnse");
+    expect(stagingEnvironmentIdentity).toMatch(/^begin;[\s\S]*commit;\s*$/im);
+    expect(stagingEnvironmentIdentity).not.toMatch(/alter database|set_config|app\.settings\.api_url/i);
   });
 
   it("binds continuation-chain actors to the authenticated principal", () => {
@@ -142,9 +139,9 @@ describe("normalized lifecycle v2 SQL contract", () => {
     expect(installer).toMatch(/actual_owner/i);
     expect(installer).toMatch(/actual_config/i);
     expect(installer).toMatch(/actual_acl/i);
-    expect(preflight).toContain("app.settings.api_url");
+    expect(preflight).toContain("system_identifier::text from pg_control_system()");
     expect(preflight).toContain("recoverable_hopped_sessions");
-    expect(postflight).toContain("app.settings.api_url");
+    expect(postflight).toContain("system_identifier::text from pg_control_system()");
     expect(installer).toMatch(/staging-rollback\.sql/i);
     expect(installer).toContain("aclexplode(coalesce(p.proacl,acldefault('f',p.proowner)))");
     expect(installer).toMatch(/flag:\s*"wx"/i);
@@ -152,7 +149,7 @@ describe("normalized lifecycle v2 SQL contract", () => {
     expect(postflight).toMatch(/operational_mutations_rls/i);
     expect(postflightVerifier).toMatch(/appStateUnchanged:\s*true/i);
     expect(postflightVerifier).toMatch(/Compatibility app_state .* changed/i);
-    expect(postflightVerifier).toContain("database-owned staging API URL identity drift");
+    expect(postflightVerifier).toContain("physical database identity drift");
     expect(postflightVerifier).toContain("installed definition, owner, configuration, or ACL drift");
     expect(postflight).toContain("acl_detail");
   });

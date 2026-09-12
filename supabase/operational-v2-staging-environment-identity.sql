@@ -1,13 +1,14 @@
--- One-time staging identity anchor. This refuses to initialize unless the
--- database's own Supabase API URL names project tkbdyzxwwbhkpztgjjxh.
+-- One-time staging identity anchor. The PostgreSQL system identifier is tied
+-- to this exact physical staging cluster and remains stable across restarts.
 begin;
 
 do $$
-declare api_url text := current_setting('app.settings.api_url', true);
+declare system_id text := (select system_identifier::text from pg_control_system());
 begin
-  if api_url is null or position('tkbdyzxwwbhkpztgjjxh' in api_url) = 0 then
-    raise exception 'database API URL does not identify the approved staging project';
-  end if;
+  if current_database() <> 'postgres' then raise exception 'staging identity requires the postgres database'; end if;
+  if system_id <> '7623125441096521075' then raise exception 'physical database is not the approved staging cluster'; end if;
+  if not exists(select 1 from public.organizations where id='org-primary' and active is true)
+  then raise exception 'staging organization identity failed'; end if;
 end $$;
 
 create table if not exists public.deployment_environment_identity (
