@@ -189,7 +189,23 @@ describe("operational lifecycle v2 Playwright and performance contract", () => {
     expect(spec).toContain("3_500");
     expect(spec).toContain("Deferred Inventory history must load without a remote error banner.");
     expect(spec).toContain("inventoryStockMovementCount");
+    expect(spec).toContain("inventoryStockMovementPages");
+    expect(spec).toContain("inventoryHistoryReadyMs");
+    expect(spec).toContain("inventoryHistoryReadyP95Ms");
+    expect(spec).toContain('toHaveCount(Math.min(10, expectedRecentStockMovements))');
     expect(spec).toContain("/rest/v1/stock_movements");
+    expect(spec).toContain("movementResponses.reduce");
+    expect(spec).toContain("[200, 206].includes(response.status)");
+    expect(spec).toContain("expectedRequestOffsets");
+    expect(spec).toContain("expectedRequestLimits");
+    expect(spec).toContain("expectedContentRanges");
+    expect(spec).toContain("parsePostgrestPageEvidence");
+    expect(spec).toContain("response.stockMovementHistoryPage === true");
+    expect(read("src/dataGateway/normalizedReads.ts")).toContain("request.range(offset, offset + pageLimit - 1)");
+    expect(read("src/dataGateway/normalizedReads.ts")).toContain('{ count: "exact" }');
+    expect(read("src/dataGateway/normalizedReads.ts")).toContain("changed while it was being loaded");
+    expect(read("src/dataGateway/normalizedReads.ts")).toContain("stable descending order");
+    expect(read("src/dataGateway/normalizedReads.ts")).toContain("const deadlineAt = Date.now() + NORMALIZED_READ_TIMEOUT_MS");
   });
 
   it("builds the performance dataset from a read-only exact staging snapshot and verified production-scale restore source", () => {

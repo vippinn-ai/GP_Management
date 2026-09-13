@@ -17,3 +17,8 @@ History/report/customer/audit data SHALL not block safe dashboard readiness and 
 #### Scenario: Dashboard becomes safely interactive
 - **WHEN** authenticated startup has restored configuration, catalog, combos, live operational entities, and buffered realtime changes
 - **THEN** writes become available without waiting for bill history, reports, customer history, stock-movement history, expense administration, or audit history
+
+#### Scenario: Deferred stock history exceeds one server response page
+- **WHEN** Inventory requests complete normalized stock-movement history containing more rows than the PostgREST response cap
+- **THEN** the application loads the complete requested history into canonical state through bounded, exact-count, deterministically ordered pages and renders the configured recent subset
+- **AND** any missing, drifting, overlapping, out-of-order, timed-out, or incomplete page produces a visible retryable read-only error without presenting partial history as complete

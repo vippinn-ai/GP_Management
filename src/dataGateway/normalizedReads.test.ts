@@ -1,9 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   buildNormalizedCatalogData,
   buildNormalizedComboData,
   buildNormalizedConfigData,
   buildNormalizedLiveData,
+  loadNormalizedStockMovements,
   mapNormalizedAuditLog
 } from "./normalizedReads";
 import { readFileSync } from "node:fs";
@@ -47,6 +48,255 @@ describe("normalized audit mapping", () => {
       },
       created_at: "2026-08-20T06:45:00.000Z"
     }).createdAt).toBe("2026-08-20T06:45:00.000Z");
+  });
+});
+
+describe("normalized stock-movement pagination", () => {
+  const movementRow = (id: string, movementAt: string) => ({
+    id,
+    item_id: "item-1",
+    type: "restock",
+    quantity: 1,
+    reason: null,
+    movement_at: movementAt,
+    user_id: "user-1",
+    related_bill_id: null,
+    raw_data: null,
+    created_at: movementAt
+  });
+
+  type MovementRow = ReturnType<typeof movementRow>;
+  type PageResult = {
+    data?: MovementRow[] | null | unknown;
+    count?: unknown;
+    error?: Error | null;
+    delayMs?: number;
+  };
+
+  const orderedRows = (count: number, idOffset = 0) => Array.from({ length: count }, (_, index) =>
+    movementRow(
+      `movement-${String(idOffset + index).padStart(5, "0")}`,
+      new Date(Date.parse("2026-09-13T23:59:59.999Z") - (idOffset + index)).toISOString()
+    ));
+
+  const pagesFor = (totalCount: number, requestedLimit = 5_000) => {
+    const rows = orderedRows(Math.min(totalCount, requestedLimit));
+    if (rows.length === 0) return [{ data: [], count: totalCount }];
+    const pages: PageResult[] = [];
+    for (let offset = 0; offset < rows.length; offset += 1_000) {
+      pages.push({ data: rows.slice(offset, offset + 1_000), count: totalCount });
+    }
+    return pages;
+  };
+
+  function pagedClient(pages: PageResult[]) {
+    const ranges: Array<[number, number]> = [];
+    const selectOptions: unknown[] = [];
+    const eqCalls: Array<[string, string]> = [];
+    const orderCalls: Array<[string, unknown]> = [];
+    const gteCalls: Array<[string, string]> = [];
+    const ltCalls: Array<[string, string]> = [];
+    let pageIndex = 0;
+    const client = {
+      from: vi.fn(() => {
+        const builder = {
+          select: vi.fn((_columns: string, options: unknown) => {
+            selectOptions.push(options);
+            return builder;
+          }),
+          eq: vi.fn((column: string, value: string) => {
+            eqCalls.push([column, value]);
+            return builder;
+          }),
+          order: vi.fn((column: string, options: unknown) => {
+            orderCalls.push([column, options]);
+            return builder;
+          }),
+          gte: vi.fn((column: string, value: string) => {
+            gteCalls.push([column, value]);
+            return builder;
+          }),
+          lt: vi.fn((column: string, value: string) => {
+            ltCalls.push([column, value]);
+            return builder;
+          }),
+          range: vi.fn((from: number, to: number) => {
+            ranges.push([from, to]);
+            const page = pages[pageIndex++];
+            const result: Record<string, unknown> = {
+              data: page && Object.hasOwn(page, "data") ? page.data : [],
+              error: page?.error ?? null
+            };
+            if (page && Object.hasOwn(page, "count")) result.count = page.count;
+            if ((page?.delayMs ?? 0) > 0) {
+              return new Promise((resolve) => setTimeout(() => resolve(result), page!.delayMs));
+            }
+            return Promise.resolve(result);
+          })
+        };
+        return builder;
+      })
+    };
+    return { client, ranges, selectOptions, eqCalls, orderCalls, gteCalls, ltCalls };
+  }
+
+  it.each([0, 999, 1_000, 1_001, 1_506])("loads %i rows through exact bounded pages", async (count) => {
+    const fake = pagedClient(pagesFor(count));
+
+    const result = await loadNormalizedStockMovements("org-primary", {
+      fromIso: "2026-08-01T00:00:00.000Z",
+      toIsoExclusive: "2026-09-14T00:00:00.000Z",
+      limit: 5_000
+    }, fake.client as never);
+
+    const expectedPageCount = Math.max(1, Math.ceil(count / 1_000));
+    expect(result).toHaveLength(count);
+    expect(fake.ranges).toEqual(Array.from({ length: expectedPageCount }, (_, index) => [index * 1_000, index * 1_000 + 999]));
+    expect(fake.selectOptions).toEqual(Array.from({ length: expectedPageCount }, () => ({ count: "exact" })));
+    expect(fake.eqCalls).toEqual(Array.from({ length: expectedPageCount }, () => ["organization_id", "org-primary"]));
+    expect(fake.orderCalls).toEqual(Array.from({ length: expectedPageCount }, () => [
+      ["movement_at", { ascending: false, nullsFirst: false }],
+      ["id", { ascending: false }]
+    ]).flat());
+    expect(fake.gteCalls).toEqual(Array.from({ length: expectedPageCount }, () => ["movement_at", "2026-08-01T00:00:00.000Z"]));
+    expect(fake.ltCalls).toEqual(Array.from({ length: expectedPageCount }, () => ["movement_at", "2026-09-14T00:00:00.000Z"]));
+  });
+
+  it("honors a smaller requested limit and clamps at the caller-safe 5,000-row ceiling", async () => {
+    const small = pagedClient(pagesFor(1_506, 25));
+    await expect(loadNormalizedStockMovements("org-primary", { limit: 25 }, small.client as never)).resolves.toHaveLength(25);
+    expect(small.ranges).toEqual([[0, 24]]);
+
+    const exactLimit = pagedClient(pagesFor(5_000));
+    await expect(loadNormalizedStockMovements("org-primary", { limit: 5_000 }, exactLimit.client as never)).resolves.toHaveLength(5_000);
+    expect(exactLimit.ranges).toEqual([[0, 999], [1_000, 1_999], [2_000, 2_999], [3_000, 3_999], [4_000, 4_999]]);
+    expect(exactLimit.client.from).toHaveBeenCalledTimes(5);
+    const overLimit = pagedClient(pagesFor(6_000));
+    await expect(loadNormalizedStockMovements("org-primary", { limit: 9_000 }, overLimit.client as never)).resolves.toHaveLength(5_000);
+    expect(overLimit.ranges).toEqual([[0, 999], [1_000, 1_999], [2_000, 2_999], [3_000, 3_999], [4_000, 4_999]]);
+    expect(overLimit.client.from).toHaveBeenCalledTimes(5);
+  });
+
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY])("rejects invalid limit %s", async (limit) => {
+    await expect(loadNormalizedStockMovements("org-primary", { limit }, pagedClient([]).client as never))
+      .rejects.toThrow("invalid row limit");
+  });
+
+  it.each([undefined, null, -1, 1.5, Number.NaN])("rejects missing or invalid exact count %s", async (count) => {
+    await expect(loadNormalizedStockMovements("org-primary", {}, pagedClient([{ data: [], count }]).client as never))
+      .rejects.toThrow("did not return an exact row count");
+  });
+
+  it("fails closed on count drift, unavailable data, duplicate IDs, short pages, and oversized pages", async () => {
+    const fullPage = orderedRows(1_000);
+    await expect(loadNormalizedStockMovements("org-primary", {}, pagedClient([
+      { data: fullPage, count: 1_001 },
+      { data: orderedRows(1, 1_000), count: 1_002 }
+    ]).client as never)).rejects.toThrow("changed while it was being loaded");
+    await expect(loadNormalizedStockMovements("org-primary", {}, pagedClient([
+      { data: null, count: 0 }
+    ]).client as never)).rejects.toThrow("Normalized data was unavailable");
+    await expect(loadNormalizedStockMovements("org-primary", {}, pagedClient([
+      { data: undefined, count: 0 }
+    ]).client as never)).rejects.toThrow("Normalized data was unavailable");
+    await expect(loadNormalizedStockMovements("org-primary", {}, pagedClient([
+      { data: { not: "an array" }, count: 0 }
+    ]).client as never)).rejects.toThrow("Normalized data was unavailable");
+    await expect(loadNormalizedStockMovements("org-primary", {}, pagedClient([
+      { data: [fullPage[0], fullPage[0]], count: 2 }
+    ]).client as never)).rejects.toThrow("overlapped while it was being loaded");
+    await expect(loadNormalizedStockMovements("org-primary", {}, pagedClient([
+      { data: fullPage, count: 1_001 },
+      { data: [fullPage.at(-1)!], count: 1_001 }
+    ]).client as never)).rejects.toThrow("overlapped while it was being loaded");
+    await expect(loadNormalizedStockMovements("org-primary", {}, pagedClient([
+      { data: orderedRows(999), count: 1_001 }
+    ]).client as never)).rejects.toThrow("ended before the expected row count");
+    await expect(loadNormalizedStockMovements("org-primary", {}, pagedClient([
+      { data: fullPage, count: 1_001 },
+      { data: [], count: 1_001 }
+    ]).client as never)).rejects.toThrow("ended before the expected row count");
+    await expect(loadNormalizedStockMovements("org-primary", {}, pagedClient([
+      { data: fullPage, count: 1_506 },
+      { data: orderedRows(505, 1_000), count: 1_506 }
+    ]).client as never)).rejects.toThrow("ended before the expected row count");
+    await expect(loadNormalizedStockMovements("org-primary", { limit: 2 }, pagedClient([
+      { data: orderedRows(3), count: 3 }
+    ]).client as never)).rejects.toThrow("exceeded the requested page size");
+  });
+
+  it("rejects invalid timestamps and ascending movement times", async () => {
+    await expect(loadNormalizedStockMovements("org-primary", {}, pagedClient([
+      { data: [movementRow("movement-1", "not-a-timestamp")], count: 1 }
+    ]).client as never)).rejects.toThrow("invalid timestamp");
+    await expect(loadNormalizedStockMovements("org-primary", {}, pagedClient([
+      { data: [
+        movementRow("movement-1", "2026-09-13T09:00:00.000Z"),
+        movementRow("movement-2", "2026-09-13T10:00:00.000Z")
+      ], count: 2 }
+    ]).client as never)).rejects.toThrow("stable descending order");
+    await expect(loadNormalizedStockMovements("org-primary", {}, pagedClient([
+      { data: [
+        movementRow("movement-1", null as never),
+        movementRow("movement-2", "2026-09-13T10:00:00.000Z")
+      ], count: 2 }
+    ]).client as never)).rejects.toThrow("stable descending order");
+    await expect(loadNormalizedStockMovements("org-primary", {}, pagedClient([
+      { data: [
+        movementRow("movement-a", "2026-09-13T10:00:00.000Z"),
+        movementRow("movement-z", "2026-09-13T10:00:00.000Z"),
+        movementRow("movement-null", null as never)
+      ], count: 3 }
+    ]).client as never)).resolves.toHaveLength(3);
+    await expect(loadNormalizedStockMovements("org-primary", {}, pagedClient([
+      { data: [
+        movementRow("movement-a", "2026-09-13T10:00:00.000001Z"),
+        movementRow("movement-z", "2026-09-13T15:30:00.000001+05:30")
+      ], count: 2 }
+    ]).client as never)).resolves.toHaveLength(2);
+    await expect(loadNormalizedStockMovements("org-primary", {}, pagedClient([
+      { data: [
+        movementRow("movement-1", "2026-09-13T10:00:00.000001Z"),
+        movementRow("movement-2", "2026-09-13T10:00:00.000002Z")
+      ], count: 2 }
+    ]).client as never)).rejects.toThrow("stable descending order");
+  });
+
+  it("rejects cross-page order violations and propagates first or later-page API failures", async () => {
+    const firstPage = orderedRows(1_000);
+    await expect(loadNormalizedStockMovements("org-primary", {}, pagedClient([
+      { data: firstPage, count: 1_001 },
+      { data: [movementRow("movement-newer", "2026-09-14T00:00:00.000Z")], count: 1_001 }
+    ]).client as never)).rejects.toThrow("stable descending order");
+    await expect(loadNormalizedStockMovements("org-primary", {}, pagedClient([
+      { data: [], count: 0, error: new Error("page one failed") }
+    ]).client as never)).rejects.toThrow("page one failed");
+    await expect(loadNormalizedStockMovements("org-primary", {}, pagedClient([
+      { data: firstPage, count: 1_001 },
+      { data: [], count: 1_001, error: new Error("page two failed") }
+    ]).client as never)).rejects.toThrow("page two failed");
+  });
+
+  it("rejects downward exact-count drift", async () => {
+    await expect(loadNormalizedStockMovements("org-primary", {}, pagedClient([
+      { data: orderedRows(1_000), count: 1_001 },
+      { data: orderedRows(1, 1_000), count: 1_000 }
+    ]).client as never)).rejects.toThrow("changed while it was being loaded");
+  });
+
+  it("enforces one 15-second deadline across all pages", async () => {
+    vi.useFakeTimers();
+    try {
+      const promise = loadNormalizedStockMovements("org-primary", {}, pagedClient([
+        { data: orderedRows(1_000), count: 1_001, delayMs: 10_000 },
+        { data: orderedRows(1, 1_000), count: 1_001, delayMs: 10_000 }
+      ]).client as never);
+      const rejection = expect(promise).rejects.toThrow("Unable to reach normalized data while loading normalized stock movements");
+      await vi.advanceTimersByTimeAsync(15_000);
+      await rejection;
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

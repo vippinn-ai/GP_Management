@@ -53,3 +53,9 @@ Events contain changed normalized IDs, mutation identity, duration, and released
 ## Rollback
 
 Disable the operational-v2 flag to return new target commands to retained v1 functions while normalized reads remain enabled. Keep v2 functions/table installed so evidence remains. A full compatibility-read rollback requires separately verified normalized-to-`app_state` reconstruction. Bundle and bootstrap units have independent frontend rollback commits/flags.
+
+## Deferred stock-movement pagination
+
+Inventory history remains outside the critical bootstrap graph. Its normalized reader requests at most five exact-count ranges of 1,000 rows, reapplies the organization/date filters and deterministic `movement_at desc nulls last, id desc` database order to every range, and enforces one 15-second wall-clock deadline across the complete read. It rejects missing or drifting counts, null data, duplicate IDs, non-monotonic movement timestamps, short/oversized/empty early pages, API failures, timeouts, and incomplete totals. The caller continues to reject a saturated 5,000-row result so partial history is never presented as complete. The client does not reinterpret PostgreSQL's secondary text order with JavaScript string comparison because their collations are not generally equivalent; executable query tests require both database order clauses on every page, while runtime overlap detection protects the page boundary.
+
+This bounded offset pagination is accepted only for the deferred, read-only, append-only stock-movement audit stream. Concurrent changes can shift offsets, so count drift, overlap, timestamp-order violations, and page-shape mismatches fail to the existing retryable read-only error instead of silently returning mixed history. It is not an authorization to use offset pagination for mutable financial or lifecycle state.

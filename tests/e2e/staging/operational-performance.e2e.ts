@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 import { gzipSync } from "node:zlib";
 import { expect, test, type Page, type Request, type Response } from "@playwright/test";
 import { attachJson, captureAuthenticatedRestRequests, credentials, signIn } from "./support/app";
+import { parsePostgrestPageEvidence } from "../../../src/qa/operationalPerformancePageEvidence";
 
 const runId = process.env.E2E_RUN_ID ?? "missing-run-id";
 const mode = process.env.E2E_PERFORMANCE_MODE === "baseline" ? "baseline" : "candidate";
@@ -29,6 +30,11 @@ type ResponseEvidence = {
   shell: boolean;
   appStateVersion?: number;
   jsonRowCount?: number;
+  stockMovementHistoryPage?: boolean;
+  requestOffset?: string;
+  requestLimit?: string;
+  contentRange?: string;
+  exactCountRequested?: boolean;
   javascript: boolean;
   gzipBytes: number;
 };
@@ -64,6 +70,15 @@ type LoadEvidence = {
   activePanelCommitDurationsMs: number[];
   idleRootCommits: number | null;
   inventoryStockMovementCount: number | null;
+  inventoryStockMovementPages: Array<{
+    status: number;
+    rowCount: number | null;
+    requestOffset: string | null;
+    requestLimit: string | null;
+    contentRange: string | null;
+    exactCountRequested: boolean;
+  }>;
+  inventoryHistoryReadyMs: number | null;
   inventoryRemoteErrorVisible: boolean | null;
 };
 
@@ -82,6 +97,9 @@ function summarize(loads: LoadEvidence[]) {
   const lcp = loads.map((entry) => entry.largestContentfulPaintMs).filter((value) => value > 0);
   const cls = loads.map((entry) => entry.cumulativeLayoutShift);
   const updateDurations = loads.flatMap((entry) => entry.activePanelCommitDurationsMs);
+  const inventoryHistoryDurations = loads
+    .map((entry) => entry.inventoryHistoryReadyMs)
+    .filter((value): value is number => value !== null);
   return {
     samples: safe.length,
     p50: percentile(safe, 0.5),
@@ -97,7 +115,9 @@ function summarize(loads: LoadEvidence[]) {
     lcpP75: percentile(lcp, 0.75),
     clsMax: Math.max(...cls),
     activePanelCommitP95Ms: percentile(updateDurations, 0.95),
-    activePanelCommitMaxMs: updateDurations.length > 0 ? Math.max(...updateDurations) : 0
+    activePanelCommitMaxMs: updateDurations.length > 0 ? Math.max(...updateDurations) : 0,
+    inventoryHistoryReadyP95Ms: percentile(inventoryHistoryDurations, 0.95),
+    inventoryHistoryReadyMaxMs: inventoryHistoryDurations.length > 0 ? Math.max(...inventoryHistoryDurations) : 0
   };
 }
 
@@ -186,12 +206,23 @@ async function collectResponseEvidence(response: Response, requestStarts: Map<Re
   const shell = url.origin === baseOrigin && !api;
   if (!api && !shell) return;
   const headers = await response.allHeaders();
+  const requestHeaders = response.request().headers();
   const contentLengthBytes = Number(headers["content-length"] ?? 0);
   let bodyBytes = 0;
   let gzipBytes = 0;
   let appStateVersion: number | undefined;
   let jsonRowCount: number | undefined;
   const javascript = shell && /\.js$/i.test(url.pathname);
+  const movementAtFilters = url.searchParams.getAll("movement_at");
+  const stockMovementHistoryPage = url.pathname.endsWith("/rest/v1/stock_movements")
+    && url.searchParams.get("organization_id") === "eq.org-primary"
+    && url.searchParams.get("order") === "movement_at.desc.nullslast,id.desc"
+    && movementAtFilters.some((value) => value.startsWith("gte."))
+    && movementAtFilters.some((value) => value.startsWith("lt."))
+    && !url.searchParams.has("id");
+  const stockMovementPageEvidence = stockMovementHistoryPage
+    ? parsePostgrestPageEvidence(response.url(), requestHeaders.prefer, headers["content-range"])
+    : undefined;
   if (api || javascript || (shell && contentLengthBytes === 0)) {
     try {
       const body = await response.body();
@@ -222,7 +253,12 @@ async function collectResponseEvidence(response: Response, requestStarts: Map<Re
     javascript,
     gzipBytes,
     appStateVersion,
-    jsonRowCount
+    jsonRowCount,
+    stockMovementHistoryPage,
+    requestOffset: stockMovementPageEvidence?.requestOffset ?? undefined,
+    requestLimit: stockMovementPageEvidence?.requestLimit ?? undefined,
+    contentRange: stockMovementPageEvidence?.contentRange ?? undefined,
+    exactCountRequested: stockMovementPageEvidence?.exactCountRequested
   });
 }
 
@@ -342,6 +378,8 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
     let activePanelCommitDurationsMs: number[] = [];
     let idleRootCommits: number | null = null;
     let inventoryStockMovementCount: number | null = null;
+    let inventoryStockMovementPages: LoadEvidence["inventoryStockMovementPages"] = [];
+    let inventoryHistoryReadyMs: number | null = null;
     let inventoryRemoteErrorVisible: boolean | null = null;
     if (mode === "candidate") {
       await coldPage.waitForLoadState("networkidle");
@@ -350,16 +388,50 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
       expect(renderEvidence, "Candidate staging build must enable VITE_PERFORMANCE_EVIDENCE=true.").not.toBeNull();
       const panelCommitOffset = renderEvidence!.updateActualDurationsMs.length;
       const inventoryResponseOffset = responses.length;
+      const inventoryHistoryStarted = performance.now();
       await coldPage.getByRole("button", { name: "Inventory", exact: true }).click();
       await expect(coldPage.getByRole("heading", { name: "Inventory Catalog", exact: true })).toBeVisible();
-      await coldPage.waitForLoadState("networkidle");
-      await coldPage.waitForTimeout(500);
       const expectedRecentStockMovements = Number(process.env.E2E_EXPECTED_RECENT_STOCK_MOVEMENTS);
       expect(Number.isInteger(expectedRecentStockMovements) && expectedRecentStockMovements >= 0 && expectedRecentStockMovements < 5_000).toBe(true);
-      await expect.poll(() => responses.slice(inventoryResponseOffset).filter((response) => response.path.endsWith("/rest/v1/stock_movements")).at(-1)?.jsonRowCount).toBe(expectedRecentStockMovements);
-      const inventoryResponse = responses.slice(inventoryResponseOffset).filter((response) => response.path.endsWith("/rest/v1/stock_movements")).at(-1);
-      expect(inventoryResponse?.status).toBe(200);
-      inventoryStockMovementCount = inventoryResponse?.jsonRowCount ?? null;
+      expect(expectedRecentStockMovements, "The frozen scale candidate requires its exact 1,506-row Inventory history shape.").toBe(1_506);
+      const inventoryMovementResponses = () => responses.slice(inventoryResponseOffset).filter((response) => response.stockMovementHistoryPage === true);
+      await expect.poll(() => {
+        const movementResponses = inventoryMovementResponses();
+        if (movementResponses.length === 0 || movementResponses.some((response) => !Number.isInteger(response.jsonRowCount))) return -1;
+        return movementResponses.reduce((total, response) => total + (response.jsonRowCount ?? 0), 0);
+      }).toBe(expectedRecentStockMovements);
+      const movementResponses = inventoryMovementResponses().sort((left, right) =>
+        Number(left.requestOffset ?? Number.MAX_SAFE_INTEGER) - Number(right.requestOffset ?? Number.MAX_SAFE_INTEGER));
+      const expectedPageRows = expectedRecentStockMovements === 0
+        ? [0]
+        : Array.from({ length: Math.ceil(expectedRecentStockMovements / 1_000) }, (_, index) =>
+          Math.min(1_000, expectedRecentStockMovements - index * 1_000));
+      const expectedRequestOffsets = expectedPageRows.map((_, index) => String(index * 1_000));
+      const expectedRequestLimits = expectedPageRows.map(() => "1000");
+      const expectedContentRanges = expectedPageRows.map((rowCount, index) => rowCount === 0
+        ? `*/${expectedRecentStockMovements}`
+        : `${index * 1_000}-${index * 1_000 + rowCount - 1}/${expectedRecentStockMovements}`);
+      expect(movementResponses).toHaveLength(expectedPageRows.length);
+      expect(movementResponses.map((response) => response.jsonRowCount)).toEqual(expectedPageRows);
+      expect(movementResponses.every((response) => [200, 206].includes(response.status))).toBe(true);
+      expect(movementResponses.every((response) => response.exactCountRequested === true)).toBe(true);
+      expect(movementResponses.map((response) => response.requestOffset)).toEqual(expectedRequestOffsets);
+      expect(movementResponses.map((response) => response.requestLimit)).toEqual(expectedRequestLimits);
+      expect(movementResponses.map((response) => response.contentRange)).toEqual(expectedContentRanges);
+      inventoryStockMovementCount = movementResponses.reduce((total, response) => total + (response.jsonRowCount ?? 0), 0);
+      inventoryStockMovementPages = movementResponses.map((response) => ({
+        status: response.status,
+        rowCount: response.jsonRowCount ?? null,
+        requestOffset: response.requestOffset ?? null,
+        requestLimit: response.requestLimit ?? null,
+        contentRange: response.contentRange ?? null,
+        exactCountRequested: response.exactCountRequested === true
+      }));
+      const recentMovementsSection = coldPage.getByRole("heading", { name: "Recent Movements", exact: true }).locator("..").locator("..");
+      await expect(recentMovementsSection.locator(".activity-row")).toHaveCount(Math.min(10, expectedRecentStockMovements));
+      inventoryHistoryReadyMs = performance.now() - inventoryHistoryStarted;
+      await coldPage.waitForLoadState("networkidle");
+      await coldPage.waitForTimeout(500);
       inventoryRemoteErrorVisible = await coldPage.locator(".remote-error-banner").isVisible();
       expect(inventoryRemoteErrorVisible, "Deferred Inventory history must load without a remote error banner.").toBe(false);
       activePanelCommitDurationsMs = await coldPage.evaluate((offset) => (
@@ -402,6 +474,8 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
       activePanelCommitDurationsMs,
       idleRootCommits,
       inventoryStockMovementCount,
+      inventoryStockMovementPages,
+      inventoryHistoryReadyMs,
       inventoryRemoteErrorVisible
     });
     await context.close();
@@ -447,6 +521,7 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
     ))).toBe(true);
     expect(loads.every((entry) => entry.idleRootCommits === 0)).toBe(true);
     expect(loads.every((entry) => entry.inventoryStockMovementCount === Number(process.env.E2E_EXPECTED_RECENT_STOCK_MOVEMENTS))).toBe(true);
+    expect(loads.every((entry) => entry.inventoryHistoryReadyMs !== null && entry.inventoryHistoryReadyMs <= 5_000)).toBe(true);
     expect(loads.every((entry) => entry.inventoryRemoteErrorVisible === false)).toBe(true);
     expect(summary.p95).toBeLessThanOrEqual(3_500);
     expect(summary.max).toBeLessThanOrEqual(5_000);
@@ -461,5 +536,7 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
     expect(summary.clsMax).toBeLessThanOrEqual(0.1);
     expect(summary.activePanelCommitP95Ms).toBeLessThan(16);
     expect(summary.activePanelCommitMaxMs).toBeLessThan(50);
+    expect(summary.inventoryHistoryReadyP95Ms).toBeLessThanOrEqual(2_000);
+    expect(summary.inventoryHistoryReadyMaxMs).toBeLessThanOrEqual(5_000);
   }
 });

@@ -34,6 +34,8 @@ import type {
 } from "../types";
 
 const NORMALIZED_READ_TIMEOUT_MS = 15_000;
+const NORMALIZED_READ_PAGE_SIZE = 1_000;
+const NORMALIZED_READ_MAX_PAGES = 5;
 
 interface OrganizationRow {
   id: string;
@@ -296,6 +298,7 @@ interface StockMovementRow {
 interface NormalizedQueryResult<T> {
   data: T | null;
   error: Error | { message: string } | null;
+  count?: number | null;
 }
 
 export interface NormalizedConfigData {
@@ -437,12 +440,16 @@ function toCustomerTabCloseDisposition(value: unknown): CustomerTab["closeDispos
   return value === "billed" || value === "rejected" ? value : undefined;
 }
 
-async function withNormalizedReadTimeout<T>(request: PromiseLike<T>, action: string): Promise<T> {
+async function withNormalizedReadTimeout<T>(
+  request: PromiseLike<T>,
+  action: string,
+  timeoutMs = NORMALIZED_READ_TIMEOUT_MS
+): Promise<T> {
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
     timeoutId = setTimeout(() => {
       reject(new Error(`Unable to reach normalized data while ${action}.`));
-    }, NORMALIZED_READ_TIMEOUT_MS);
+    }, timeoutMs);
   });
 
   try {
@@ -1094,6 +1101,27 @@ async function loadNormalizedConfigDataForOrganization(
   return buildNormalizedConfigData({ organization, inventoryCategories, stations, pricingRules });
 }
 
+function stockMovementInstantMicros(value: string | null): bigint | null {
+  if (value === null) return null;
+  const match = value.match(/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,6}))?(Z|[+-]\d{2}:\d{2})$/);
+  if (!match) throw new Error("Normalized stock-movement history returned an invalid timestamp.");
+  const wholeSecondMs = Date.parse(`${match[1]}.000${match[3]}`);
+  if (!Number.isFinite(wholeSecondMs)) throw new Error("Normalized stock-movement history returned an invalid timestamp.");
+  return BigInt(wholeSecondMs) * 1000n + BigInt((match[2] ?? "").padEnd(6, "0"));
+}
+
+function assertStockMovementOrder(previous: StockMovementRow | undefined, current: StockMovementRow) {
+  const currentInstant = stockMovementInstantMicros(current.movement_at);
+  if (!previous) return;
+  const previousInstant = stockMovementInstantMicros(previous.movement_at);
+  const timestampsOutOfOrder = previousInstant === null
+    ? currentInstant !== null
+    : currentInstant !== null && previousInstant < currentInstant;
+  if (timestampsOutOfOrder) {
+    throw new Error("Normalized stock-movement history was not returned in stable descending order.");
+  }
+}
+
 export async function loadNormalizedConfigData(client: SupabaseClient = getSupabaseClient()): Promise<NormalizedConfigData> {
   const organization = await loadNormalizedActiveOrganization(client);
   return loadNormalizedConfigDataForOrganization(organization, client);
@@ -1265,22 +1293,81 @@ export async function loadNormalizedStockMovements(
   query: NormalizedStockMovementQuery = {},
   client: SupabaseClient = getSupabaseClient()
 ): Promise<StockMovement[]> {
-  let request = client
-    .from("stock_movements")
-    .select("id, item_id, type, quantity, reason, movement_at, user_id, related_bill_id, raw_data, created_at")
-    .eq("organization_id", organizationId)
-    .order("movement_at", { ascending: false })
-    .order("id", { ascending: false })
-    .limit(Math.max(1, Math.min(5_000, Math.trunc(query.limit ?? 5_000))));
-
-  if (query.fromIso) {
-    request = request.gte("movement_at", query.fromIso);
+  const rawLimit = query.limit ?? 5_000;
+  if (!Number.isFinite(rawLimit)) {
+    throw new Error("Normalized stock-movement history received an invalid row limit.");
   }
-  if (query.toIsoExclusive) {
-    request = request.lt("movement_at", query.toIsoExclusive);
+  const requestedLimit = Math.max(1, Math.min(5_000, Math.trunc(rawLimit)));
+  const rows: StockMovementRow[] = [];
+  const rowIds = new Set<string>();
+  let expectedCount: number | undefined;
+  let offset = 0;
+  const deadlineAt = Date.now() + NORMALIZED_READ_TIMEOUT_MS;
+
+  for (let pageIndex = 0; rows.length < requestedLimit; pageIndex += 1) {
+    if (pageIndex >= NORMALIZED_READ_MAX_PAGES) {
+      throw new Error("Normalized stock-movement history exceeded the bounded pagination limit.");
+    }
+    const pageLimit = Math.min(NORMALIZED_READ_PAGE_SIZE, requestedLimit - rows.length);
+    let request = client
+      .from("stock_movements")
+      .select("id, item_id, type, quantity, reason, movement_at, user_id, related_bill_id, raw_data, created_at", { count: "exact" })
+      .eq("organization_id", organizationId)
+      .order("movement_at", { ascending: false, nullsFirst: false })
+      .order("id", { ascending: false });
+
+    if (query.fromIso) {
+      request = request.gte("movement_at", query.fromIso);
+    }
+    if (query.toIsoExclusive) {
+      request = request.lt("movement_at", query.toIsoExclusive);
+    }
+
+    const remainingMs = deadlineAt - Date.now();
+    if (remainingMs <= 0) {
+      throw new Error("Unable to reach normalized data while loading normalized stock movements.");
+    }
+    const result = await withNormalizedReadTimeout<NormalizedQueryResult<StockMovementRow[]>>(
+      request.range(offset, offset + pageLimit - 1),
+      "loading normalized stock movements",
+      remainingMs
+    );
+    if (result.error) throw result.error;
+    if (!Array.isArray(result.data)) {
+      throw new Error("Normalized data was unavailable while loading normalized stock movements.");
+    }
+    if (!Number.isInteger(result.count) || Number(result.count) < 0) {
+      throw new Error("Normalized stock-movement history did not return an exact row count.");
+    }
+    if (expectedCount === undefined) expectedCount = Number(result.count);
+    if (expectedCount !== Number(result.count)) {
+      throw new Error("Normalized stock-movement history changed while it was being loaded.");
+    }
+
+    const page = result.data;
+    if (page.length > pageLimit) {
+      throw new Error("Normalized stock-movement history exceeded the requested page size.");
+    }
+    const targetCount = Math.min(expectedCount, requestedLimit);
+    const expectedPageLength = Math.min(pageLimit, targetCount - rows.length);
+    if (page.length !== expectedPageLength) {
+      throw new Error("Normalized stock-movement history ended before the expected row count.");
+    }
+    for (const row of page) {
+      assertStockMovementOrder(rows.at(-1), row);
+      if (rowIds.has(row.id)) {
+        throw new Error("Normalized stock-movement history overlapped while it was being loaded.");
+      }
+      rowIds.add(row.id);
+      rows.push(row);
+    }
+    offset += page.length;
+    if (rows.length >= targetCount) break;
   }
 
-  const rows = await readMany<StockMovementRow>(request, "loading normalized stock movements");
+  if (expectedCount === undefined || rows.length !== Math.min(expectedCount, requestedLimit)) {
+    throw new Error("Normalized stock-movement history was incomplete.");
+  }
   return rows.map(mapNormalizedStockMovement);
 }
 
