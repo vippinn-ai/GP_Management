@@ -475,6 +475,7 @@ export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): 
   let preparedAtomicBootstrapGeneration: number | null = null;
   let atomicBootstrapAttempt: ReturnType<NonNullable<RemoteDataGateway["loadAuthenticatedAppDataSnapshot"]>> | null = null;
   let atomicAttemptGeneration = 0;
+  let atomicFailure: Error | null = null;
 
   const clearScheduledTeardown = () => {
     if (scheduledTeardownId !== null) {
@@ -511,6 +512,7 @@ export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): 
 
   const invalidateAtomicAttempt = () => {
     atomicAttemptGeneration += 1;
+    atomicFailure = null;
     resetRealtimeAttempt();
     preparedAtomicBootstrap = null;
     preparedAtomicBootstrapGeneration = null;
@@ -520,6 +522,7 @@ export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): 
   const failAtomicAttemptUntilManualReset = (error: Error) => {
     atomicAttemptGeneration += 1;
     resetRealtimeAttempt();
+    atomicFailure = error;
     const failedPreparation = Promise.reject<{ status: "no-session" } | { status: "session"; userId: string }>(error);
     const failedAttempt = Promise.reject<Awaited<ReturnType<NonNullable<RemoteDataGateway["loadAuthenticatedAppDataSnapshot"]>>>>(error);
     void failedPreparation.catch(() => undefined);
@@ -592,6 +595,7 @@ export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): 
 
   const ensureRealtimeReady = () => {
     if (!_flags.normalizedRealtime) return Promise.resolve();
+    if (_flags.atomicBootstrap && atomicFailure) return Promise.reject(atomicFailure);
     if (realtimeReadyPromise) return realtimeReadyPromise;
     clearScheduledTeardown();
     const client = getSupabaseClient();
@@ -603,7 +607,9 @@ export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): 
         if (settled || generation !== realtimeGeneration) return;
         settled = true;
         realtimeReadyReject = null;
-        reject(new Error("Normalized realtime subscription did not become ready within 10 seconds."));
+        const error = new Error("Normalized realtime subscription did not become ready within 10 seconds.");
+        if (_flags.atomicBootstrap) failAtomicAttemptUntilManualReset(error);
+        reject(error);
       }, 10_000);
       realtimeReadyReject = (error) => {
         if (settled) return;
@@ -665,7 +671,9 @@ export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): 
             settled = true;
             realtimeReadyReject = null;
             globalThis.clearTimeout(timeoutId);
-            reject(new Error(`Normalized realtime subscription failed before bootstrap (${status}).`));
+            const error = new Error(`Normalized realtime subscription failed before bootstrap (${status}).`);
+            if (_flags.atomicBootstrap) failAtomicAttemptUntilManualReset(error);
+            reject(error);
           }
         }
       );
@@ -696,7 +704,11 @@ export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): 
       return { status: "session" as const, userId };
     })();
     preparedAtomicBootstrap = preparation.catch((error) => {
-      if (attemptGeneration === atomicAttemptGeneration) resetRealtimeAttempt();
+      if (attemptGeneration === atomicAttemptGeneration) {
+        failAtomicAttemptUntilManualReset(
+          error instanceof Error ? error : new Error("Unable to prepare atomic operational bootstrap.")
+        );
+      }
       throw error;
     });
     const currentPreparation = preparedAtomicBootstrap;
@@ -789,15 +801,16 @@ export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): 
         };
       } catch (error) {
         if (attemptGeneration === atomicAttemptGeneration) {
+          const normalizedError = error instanceof Error ? error : new Error("Unable to load atomic operational bootstrap.");
           recordStartupBootstrapTelemetry({
             appData: {},
             source: "normalized_bootstrap",
             startedAt,
             status: "error",
-            errorMessage: error instanceof Error ? error.message : "Unable to load atomic operational bootstrap.",
+            errorMessage: normalizedError.message,
             skippedFullAppStateData: true
           });
-          resetRealtimeAttempt();
+          failAtomicAttemptUntilManualReset(normalizedError);
         }
         throw error;
       } finally {
@@ -810,6 +823,7 @@ export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): 
 
   const scheduleAuthenticatedBootstrapCancellation = () => {
     clearScheduledTeardown();
+    if (atomicFailure) return;
     scheduledTeardownId = globalThis.setTimeout(() => {
       scheduledTeardownId = null;
       invalidateAtomicAttempt();
@@ -880,7 +894,10 @@ export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): 
       if (_flags.normalizedRealtime) {
         realtimeSnapshotListener = onChange;
         realtimeErrorListener = onError ?? null;
-        void ensureRealtimeReady().catch((error) => {
+        const readiness = ensureRealtimeReady();
+        const listenerGeneration = realtimeGeneration;
+        void readiness.catch((error) => {
+          if (listenerGeneration !== realtimeGeneration || realtimeErrorListener !== (onError ?? null)) return;
           const normalizedError = error instanceof Error ? error : new Error("Unable to prepare normalized realtime.");
           console.warn("Unable to prepare normalized realtime.", normalizedError);
           realtimeErrorListener?.(normalizedError);

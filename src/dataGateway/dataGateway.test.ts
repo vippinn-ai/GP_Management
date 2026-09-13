@@ -1443,12 +1443,82 @@ describe("app_state data gateway", () => {
     realtimeStatuses[0]("SUBSCRIBED");
     await expect(initialLoad).resolves.toMatchObject({ status: "active", snapshot: { version: 44 } });
     const onError = vi.fn();
-    gateway.subscribeToAppData(vi.fn(), onError);
+    const dispose = gateway.subscribeToAppData(vi.fn(), onError);
 
     realtimeStatuses[0]("CHANNEL_ERROR");
     expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining("manual retry") }));
+    dispose();
+    const remountError = vi.fn();
+    gateway.subscribeToAppData(vi.fn(), remountError);
+    await vi.waitFor(() => expect(remountError).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining("manual retry") })));
     await expect(gateway.prepareAuthenticatedBootstrap?.()).rejects.toThrow(/manual retry/i);
     await expect(gateway.loadAuthenticatedAppDataSnapshot?.()).rejects.toThrow(/manual retry/i);
+    expect(client.auth.getSession).toHaveBeenCalledTimes(1);
+    expect(client.channel).toHaveBeenCalledTimes(1);
+    expect(client.rpc).toHaveBeenCalledTimes(1);
+
+    gateway.resetAuthenticatedBootstrapAttempt?.();
+    const freshLoad = gateway.loadAuthenticatedAppDataSnapshot?.();
+    await vi.waitFor(() => expect(realtimeStatuses).toHaveLength(2));
+    realtimeStatuses[1]("SUBSCRIBED");
+    await expect(freshLoad).resolves.toMatchObject({ status: "active", snapshot: { version: 44 } });
+    expect(client.auth.getSession).toHaveBeenCalledTimes(2);
+    expect(client.channel).toHaveBeenCalledTimes(2);
+    expect(client.rpc).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps an atomic RPC failure across subscribe remounts until manual reset", async () => {
+    const realtimeStatuses: Array<(status: string) => void> = [];
+    const channels = Array.from({ length: 2 }, () => {
+      const channel = {
+        on: vi.fn(() => channel),
+        subscribe: vi.fn((callback: (status: string) => void) => {
+          realtimeStatuses.push(callback);
+          return channel;
+        })
+      };
+      return channel;
+    });
+    const client = {
+      auth: { getSession: vi.fn().mockResolvedValue({ data: { session: { user: { id: "user-1" } } }, error: null }) },
+      channel: vi.fn()
+        .mockImplementationOnce(() => channels[0])
+        .mockImplementationOnce(() => channels[1]),
+      removeChannel: vi.fn(),
+      rpc: vi.fn()
+        .mockResolvedValueOnce({ data: null, error: new Error("Bootstrap RPC failed.") })
+        .mockResolvedValueOnce({ data: { actor: "user-1" }, error: null })
+    };
+    backendMocks.getSupabaseClient.mockReturnValue(client);
+    normalizedReadMocks.buildOperationalBootstrapRpcResult.mockReturnValue({
+      status: "active",
+      actorId: "user-1",
+      profile: { id: "user-1", name: "Admin", username: "admin", role: "admin", active: true },
+      organization: { id: "org-primary", name: "BreakPerfect", businessProfile: { name: "BreakPerfect" } },
+      version: 44,
+      appData: createAppData()
+    });
+    const gateway = createRemoteDataGateway({
+      ...DEFAULT_BACKEND_FEATURE_FLAGS,
+      atomicBootstrap: true,
+      normalizedBootstrap: true,
+      normalizedRealtime: true
+    });
+
+    const failedLoad = gateway.loadAuthenticatedAppDataSnapshot?.();
+    await vi.waitFor(() => expect(realtimeStatuses).toHaveLength(1));
+    realtimeStatuses[0]("SUBSCRIBED");
+    await expect(failedLoad).rejects.toThrow("Bootstrap RPC failed.");
+
+    const firstError = vi.fn();
+    const firstDispose = gateway.subscribeToAppData(vi.fn(), firstError);
+    await vi.waitFor(() => expect(firstError).toHaveBeenCalledWith(expect.objectContaining({ message: "Bootstrap RPC failed." })));
+    firstDispose();
+    const remountError = vi.fn();
+    gateway.subscribeToAppData(vi.fn(), remountError);
+    await vi.waitFor(() => expect(remountError).toHaveBeenCalledWith(expect.objectContaining({ message: "Bootstrap RPC failed." })));
+    await expect(gateway.prepareAuthenticatedBootstrap?.()).rejects.toThrow("Bootstrap RPC failed.");
+    await expect(gateway.loadAuthenticatedAppDataSnapshot?.()).rejects.toThrow("Bootstrap RPC failed.");
     expect(client.auth.getSession).toHaveBeenCalledTimes(1);
     expect(client.channel).toHaveBeenCalledTimes(1);
     expect(client.rpc).toHaveBeenCalledTimes(1);
