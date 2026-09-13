@@ -5,7 +5,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { gzipSync } from "node:zlib";
 import { AUXILIARY_IDENTITY_TABLES, SCALE_RPC, SCALE_TABLES, SHAPE_COUNT_KEYS } from "./operational-performance-scale-fixture-lib.mjs";
-import { sameJsonValue } from "./json-value-equality.mjs";
+import { sameAppStateIdentity, sameJsonValue } from "./json-value-equality.mjs";
 import {
   assertOperationalRunId,
   assertStagingBaseUrl,
@@ -202,7 +202,7 @@ if (!discoveryOnly) {
     ) {
       throw new Error("Candidate database postflight verification is not an unchanged staging installation.");
     }
-    if (!sameJsonValue(postflightVerification.value.appState, scaleFixtureVerification.value.appStateBefore)) {
+    if (!sameAppStateIdentity(postflightVerification.value.appState, scaleFixtureVerification.value.appStateBefore)) {
       throw new Error("Candidate postflight and performance scale fixture before-state identities differ.");
     }
     baselineManifest = readBoundJson(
