@@ -5,6 +5,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { gzipSync } from "node:zlib";
 import { AUXILIARY_IDENTITY_TABLES, SCALE_RPC, SCALE_TABLES, SHAPE_COUNT_KEYS } from "./operational-performance-scale-fixture-lib.mjs";
+import { sameJsonValue } from "./json-value-equality.mjs";
 import {
   assertOperationalRunId,
   assertStagingBaseUrl,
@@ -164,9 +165,9 @@ if (!discoveryOnly) {
     || scaleFixtureVerification.value.mode !== "apply"
     || scaleFixtureVerification.value.runId !== scaleFixtureManifest.value.runId
     || scaleFixtureVerification.value.manifest?.sha256 !== scaleFixtureManifest.sha256
-    || JSON.stringify(scaleFixtureVerification.value.appStateAfter) !== JSON.stringify(dataset.app_state)
+    || !sameJsonValue(scaleFixtureVerification.value.appStateAfter, dataset.app_state)
     || datasetManifest.value.scaleFixture?.identityRpc !== SCALE_RPC
-    || JSON.stringify(dataset.shape_counts) !== JSON.stringify(scaleFixtureManifest.value.plan?.shape?.targetCounts)
+    || !sameJsonValue(dataset.shape_counts, scaleFixtureManifest.value.plan?.shape?.targetCounts)
   ) throw new Error("Performance scale fixture lineage is incomplete or does not match the dataset.");
   for (const [key, minimum] of Object.entries(scaleFixtureManifest.value.plan?.appState?.targetCounts ?? {})) {
     if (!Number.isInteger(dataset.app_state_collection_counts?.[key]) || dataset.app_state_collection_counts[key] < minimum) {
@@ -201,7 +202,7 @@ if (!discoveryOnly) {
     ) {
       throw new Error("Candidate database postflight verification is not an unchanged staging installation.");
     }
-    if (JSON.stringify(postflightVerification.value.appState) !== JSON.stringify(scaleFixtureVerification.value.appStateBefore)) {
+    if (!sameJsonValue(postflightVerification.value.appState, scaleFixtureVerification.value.appStateBefore)) {
       throw new Error("Candidate postflight and performance scale fixture before-state identities differ.");
     }
     baselineManifest = readBoundJson(

@@ -165,6 +165,11 @@ describe("operational lifecycle v2 Playwright and performance contract", () => {
     expect(runner).toContain("E2E_PERFORMANCE_DATASET_MANIFEST_SHA256");
     expect(runner).toContain("scaleSource?.restoreManifest?.sha256");
     expect(runner).toContain("scaleSource?.restoreDrill?.sha256");
+    expect(runner).toContain('import { sameJsonValue } from "./json-value-equality.mjs"');
+    expect(runner).toContain("!sameJsonValue(dataset.shape_counts, scaleFixtureManifest.value.plan?.shape?.targetCounts)");
+    expect(runner).toContain("!sameJsonValue(scaleFixtureVerification.value.appStateAfter, dataset.app_state)");
+    expect(runner).toContain("!sameJsonValue(postflightVerification.value.appState, scaleFixtureVerification.value.appStateBefore)");
+    expect(runner).not.toContain("JSON.stringify(dataset.shape_counts) !== JSON.stringify(scaleFixtureManifest.value.plan?.shape?.targetCounts)");
     expect(runner).toContain("E2E_EXPECTED_DATASET_IDENTITY");
     expect(runner).toContain("E2E_EXPECTED_RECENT_STOCK_MOVEMENTS");
     expect(runner).toContain("dataset.shape_counts");
