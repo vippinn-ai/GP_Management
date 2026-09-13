@@ -28,6 +28,7 @@ type ResponseEvidence = {
   api: boolean;
   shell: boolean;
   appStateVersion?: number;
+  jsonRowCount?: number;
   javascript: boolean;
   gzipBytes: number;
 };
@@ -62,6 +63,8 @@ type LoadEvidence = {
   renderEvidence: RenderEvidence | null;
   activePanelCommitDurationsMs: number[];
   idleRootCommits: number | null;
+  inventoryStockMovementCount: number | null;
+  inventoryRemoteErrorVisible: boolean | null;
 };
 
 function percentile(values: number[], percentileValue: number) {
@@ -187,6 +190,7 @@ async function collectResponseEvidence(response: Response, requestStarts: Map<Re
   let bodyBytes = 0;
   let gzipBytes = 0;
   let appStateVersion: number | undefined;
+  let jsonRowCount: number | undefined;
   const javascript = shell && /\.js$/i.test(url.pathname);
   if (api || javascript || (shell && contentLengthBytes === 0)) {
     try {
@@ -197,6 +201,10 @@ async function collectResponseEvidence(response: Response, requestStarts: Map<Re
         const parsed = JSON.parse(body.toString("utf8"));
         const row = Array.isArray(parsed) ? parsed[0] : parsed;
         if (Number.isInteger(row?.version)) appStateVersion = row.version;
+      }
+      if (url.pathname.endsWith("/rest/v1/stock_movements")) {
+        const parsed = JSON.parse(body.toString("utf8"));
+        if (Array.isArray(parsed)) jsonRowCount = parsed.length;
       }
     } catch {
       bodyBytes = contentLengthBytes;
@@ -213,7 +221,8 @@ async function collectResponseEvidence(response: Response, requestStarts: Map<Re
     shell,
     javascript,
     gzipBytes,
-    appStateVersion
+    appStateVersion,
+    jsonRowCount
   });
 }
 
@@ -232,7 +241,8 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
   const restBase = `${capturedUrl.origin}${capturedUrl.pathname.slice(0, capturedUrl.pathname.indexOf(restMarker))}${restMarker}`;
   const expectedDatasetIdentity = JSON.parse(process.env.E2E_EXPECTED_DATASET_IDENTITY ?? "null") as Record<string, unknown> | null;
   if (!expectedDatasetIdentity) throw new Error("Performance dataset identity is missing.");
-  const identityResponse = await page.request.post(`${restBase}/rpc/get_operational_performance_dataset_identity`, {
+  const identityRpc = process.env.E2E_PERFORMANCE_DATASET_RPC?.trim() || "get_operational_performance_dataset_identity";
+  const identityResponse = await page.request.post(`${restBase}/rpc/${identityRpc}`, {
     headers: { apikey: captured.headers.apikey, authorization: captured.headers.authorization, "content-type": "application/json" },
     data: { payload: { organization_id: "org-primary" } }
   });
@@ -331,16 +341,27 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
     let renderEvidence: RenderEvidence | null = null;
     let activePanelCommitDurationsMs: number[] = [];
     let idleRootCommits: number | null = null;
+    let inventoryStockMovementCount: number | null = null;
+    let inventoryRemoteErrorVisible: boolean | null = null;
     if (mode === "candidate") {
       await coldPage.waitForLoadState("networkidle");
       await coldPage.waitForTimeout(500);
       renderEvidence = await coldPage.evaluate(() => (globalThis as typeof globalThis & { __BP_RENDER_EVIDENCE__?: RenderEvidence }).__BP_RENDER_EVIDENCE__ ?? null);
       expect(renderEvidence, "Candidate staging build must enable VITE_PERFORMANCE_EVIDENCE=true.").not.toBeNull();
       const panelCommitOffset = renderEvidence!.updateActualDurationsMs.length;
+      const inventoryResponseOffset = responses.length;
       await coldPage.getByRole("button", { name: "Inventory", exact: true }).click();
       await expect(coldPage.getByRole("heading", { name: "Inventory Catalog", exact: true })).toBeVisible();
       await coldPage.waitForLoadState("networkidle");
       await coldPage.waitForTimeout(500);
+      const expectedRecentStockMovements = Number(process.env.E2E_EXPECTED_RECENT_STOCK_MOVEMENTS);
+      expect(Number.isInteger(expectedRecentStockMovements) && expectedRecentStockMovements >= 0 && expectedRecentStockMovements < 5_000).toBe(true);
+      await expect.poll(() => responses.slice(inventoryResponseOffset).filter((response) => response.path.endsWith("/rest/v1/stock_movements")).at(-1)?.jsonRowCount).toBe(expectedRecentStockMovements);
+      const inventoryResponse = responses.slice(inventoryResponseOffset).filter((response) => response.path.endsWith("/rest/v1/stock_movements")).at(-1);
+      expect(inventoryResponse?.status).toBe(200);
+      inventoryStockMovementCount = inventoryResponse?.jsonRowCount ?? null;
+      inventoryRemoteErrorVisible = await coldPage.locator(".remote-error-banner").isVisible();
+      expect(inventoryRemoteErrorVisible, "Deferred Inventory history must load without a remote error banner.").toBe(false);
       activePanelCommitDurationsMs = await coldPage.evaluate((offset) => (
         globalThis as typeof globalThis & { __BP_RENDER_EVIDENCE__?: RenderEvidence }
       ).__BP_RENDER_EVIDENCE__?.updateActualDurationsMs.slice(offset) ?? [], panelCommitOffset);
@@ -379,7 +400,9 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
       cumulativeLayoutShift: webVitals.cumulativeLayoutShift,
       renderEvidence,
       activePanelCommitDurationsMs,
-      idleRootCommits
+      idleRootCommits,
+      inventoryStockMovementCount,
+      inventoryRemoteErrorVisible
     });
     await context.close();
   }
@@ -423,6 +446,8 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
       response.status === 204 || response.status === 304 || response.bodyBytes > 0 || response.contentLengthBytes > 0
     ))).toBe(true);
     expect(loads.every((entry) => entry.idleRootCommits === 0)).toBe(true);
+    expect(loads.every((entry) => entry.inventoryStockMovementCount === Number(process.env.E2E_EXPECTED_RECENT_STOCK_MOVEMENTS))).toBe(true);
+    expect(loads.every((entry) => entry.inventoryRemoteErrorVisible === false)).toBe(true);
     expect(summary.p95).toBeLessThanOrEqual(3_500);
     expect(summary.max).toBeLessThanOrEqual(5_000);
     expect(summary.p95).toBeLessThanOrEqual(baseline!.summary.p95 * 0.6);

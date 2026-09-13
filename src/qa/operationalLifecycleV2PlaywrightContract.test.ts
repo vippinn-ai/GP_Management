@@ -166,6 +166,8 @@ describe("operational lifecycle v2 Playwright and performance contract", () => {
     expect(runner).toContain("scaleSource?.restoreManifest?.sha256");
     expect(runner).toContain("scaleSource?.restoreDrill?.sha256");
     expect(runner).toContain("E2E_EXPECTED_DATASET_IDENTITY");
+    expect(runner).toContain("E2E_EXPECTED_RECENT_STOCK_MOVEMENTS");
+    expect(runner).toContain("dataset.shape_counts");
     expect(runner).toContain("E2E_DB_POSTFLIGHT_VERIFICATION_SHA256");
     expect(runner).toContain("E2E_PERFORMANCE_PROFILE_MANIFEST_SHA256");
     expect(runner).toContain("E2E_PERFORMANCE_BASELINE_MANIFEST_SHA256");
@@ -180,6 +182,9 @@ describe("operational lifecycle v2 Playwright and performance contract", () => {
     expect(spec).toContain("baseline.deployedBundleSha256");
     expect(spec).toContain("summary.p95");
     expect(spec).toContain("3_500");
+    expect(spec).toContain("Deferred Inventory history must load without a remote error banner.");
+    expect(spec).toContain("inventoryStockMovementCount");
+    expect(spec).toContain("/rest/v1/stock_movements");
   });
 
   it("builds the performance dataset from a read-only exact staging snapshot and verified production-scale restore source", () => {
@@ -188,13 +193,58 @@ describe("operational lifecycle v2 Playwright and performance contract", () => {
     expect(sql).toContain("repeatable read read only");
     expect(sql.trimEnd().endsWith("rollback;")).toBe(true);
     expect(sql).toContain("public_counts");
+    expect(sql).toContain("identity_nonce");
+    expect(sql).toContain("recoverable_hopped_sessions");
+    expect(sql).toContain("shape_counts");
+    expect(sql).toContain("qa_performance_scale");
+    expect(sql).toContain("qaPerformanceScaleFixture");
     expect(builder).toContain("Restore artifact ${entry.name} failed integrity validation.");
     expect(builder).toContain("restoreFile.value.baselineEvidence?.sha256 !== productionFile.sha256");
     expect(builder).toContain('readBound("restore-drill"');
+    expect(builder).toContain('replace(/^\\uFEFF/, "")');
     expect(builder).toContain("restoreDrill.sourceManifest?.sha256 !== restoreFile.sha256");
     expect(builder).toContain("Disposable restore drill count differs");
     expect(builder).toContain("Staging dataset is below the production logical scale");
+    expect(builder).toContain("Staging dataset workload-shape identity is incomplete.");
+    expect(builder).toContain('readBound("fixture-manifest"');
+    expect(builder).toContain('readBound("fixture-verification"');
+    expect(builder).toContain("plannedCleanup");
     expect(builder).toContain('flag: "wx"');
+  });
+
+  it("provides a guarded synthetic scale fixture and a two-state performance identity chain", () => {
+    const fixtureBuilder = read("scripts/build-operational-performance-scale-fixture.mjs");
+    const fixtureLibrary = read("scripts/operational-performance-scale-fixture-lib.mjs");
+    const fixtureVerifier = read("scripts/verify-operational-performance-scale-fixture.mjs");
+    const runner = read("scripts/run-operational-performance-staging-e2e.mjs");
+    for (const marker of [
+      "7623125441096521075",
+      "f9bc0aed-b6c4-410f-ba2a-572522d03869",
+      "qa_performance_scale",
+      "qaPerformanceScaleFixture",
+      "automaticRetryAllowed:false",
+      'flag:"wx"'
+    ]) expect(fixtureBuilder + fixtureLibrary).toContain(marker);
+    expect(fixtureLibrary).toContain("scaled dataset drift prevents cleanup");
+    expect(fixtureLibrary).toContain("disable trigger app_state_set_updated_at");
+    expect(fixtureLibrary).toContain("enable trigger app_state_set_updated_at");
+    expect(fixtureLibrary).toContain("assertSafeGeneratedSql");
+    expect(fixtureLibrary).toContain("drop schema ${SCALE_SCHEMA};");
+    expect(fixtureLibrary).toContain('sql.includes("drop schema qa_performance_scale cascade")');
+    expect(fixtureLibrary).toContain("AUXILIARY_IDENTITY_TABLES");
+    expect(fixtureLibrary).toContain("scale fixture identity RPC already exists");
+    expect(fixtureLibrary).toContain("estimateRepresentativeAppStateUpperBoundBytes");
+    expect(fixtureLibrary).toContain("runtimeExactSizeGuard");
+    expect(fixtureLibrary).toContain("shape_counts");
+    expect(fixtureLibrary).toContain("aclexplode");
+    expect(fixtureLibrary).not.toContain("has_function_privilege('public'");
+    expect(fixtureLibrary).not.toContain("to_jsonb(a)");
+    expect(fixtureVerifier).toContain('mode==="apply"');
+    expect(fixtureVerifier).toContain("Applied fixture workload-shape counts differ from the manifest.");
+    expect(fixtureBuilder).toContain("Scale fixture packages must be generated from a clean committed worktree.");
+    expect(runner).toContain("scaleFixtureVerification.value.appStateBefore");
+    expect(runner).toContain("scaleFixtureVerification.value.appStateAfter");
+    expect(runner).toContain("E2E_PERFORMANCE_DATASET_RPC = SCALE_RPC");
   });
 
   it("keeps the database proof on the approved strict latency budget", () => {

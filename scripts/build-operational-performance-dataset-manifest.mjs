@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
+import { AUXILIARY_IDENTITY_TABLES, SCALE_TABLES, SHAPE_COUNT_KEYS } from "./operational-performance-scale-fixture-lib.mjs";
 
 const root = process.cwd();
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
@@ -16,21 +17,36 @@ function readBound(name, label) {
   const bytes = fs.readFileSync(filePath);
   const actualSha = sha256(bytes);
   if (actualSha !== expectedSha) throw new Error(`${label} SHA-256 does not match.`);
-  return { path: filePath, sha256: actualSha, value: JSON.parse(bytes.toString("utf8")) };
+  const text = bytes.toString("utf8").replace(/^\uFEFF/, "");
+  return { path: filePath, sha256: actualSha, value: JSON.parse(text) };
 }
 const unwrap = (value) => value.evidence ?? value?.[0]?.evidence ?? value;
+const canonicalize = (value) => Array.isArray(value)
+  ? value.map(canonicalize)
+  : value && typeof value === "object"
+    ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonicalize(value[key])]))
+    : value;
+const same = (left, right) => JSON.stringify(canonicalize(left)) === JSON.stringify(canonicalize(right));
 const runId = argument("run-id");
 if (!/^normops-\d{8}-\d{4}-dataset-[a-z0-9-]+$/i.test(runId)) throw new Error("Use --run-id=normops-YYYYMMDD-HHMM-dataset-<suffix>.");
 const snapshotFile = readBound("snapshot", "Staging dataset snapshot");
 const restoreFile = readBound("restore-manifest", "Production-scale restore manifest");
 const restoreDrillFile = readBound("restore-drill", "Production-scale disposable restore drill");
 const productionFile = readBound("production-baseline", "Production scale baseline");
+const fixtureManifestFile = readBound("fixture-manifest", "Performance scale fixture manifest");
+const fixtureVerificationFile = readBound("fixture-verification", "Performance scale fixture verification");
 const snapshot = unwrap(snapshotFile.value);
 const production = productionFile.value;
 const restoreDrill = restoreDrillFile.value;
+const rpcAcl = snapshot.scale_fixture_rpc?.acl;
+const validRpcAcl = Array.isArray(rpcAcl)
+  && rpcAcl.length === 2
+  && ["authenticated", "postgres"].every((grantee) => rpcAcl.some((entry) => entry.grantee === grantee && entry.privilege === "EXECUTE" && entry.grantable === false))
+  && rpcAcl.every((entry) => ["authenticated", "postgres"].includes(entry.grantee) && entry.privilege === "EXECUTE" && entry.grantable === false);
 if (
   snapshot.schema_version !== 1
   || snapshot.expected_project_ref !== "tkbdyzxwwbhkpztgjjxh"
+  || snapshot.identity_nonce !== "f9bc0aed-b6c4-410f-ba2a-572522d03869"
   || snapshot.organization_id !== "org-primary"
   || snapshot.transaction_read_only !== true
   || !Number.isInteger(snapshot.app_state?.version)
@@ -39,14 +55,39 @@ if (
   || !/^[0-9a-f]{32}$/.test(snapshot.app_state?.md5 ?? "")
   || snapshot.open_sessions !== 0
   || snapshot.open_customer_tabs !== 0
+  || snapshot.recoverable_hopped_sessions !== 0
   || snapshot.processing_financial_mutations !== 0
   || snapshot.processing_operational_mutations !== 0
+  || snapshot.scale_fixture_absent !== false
+  || snapshot.scale_fixture_key_absent !== false
+  || snapshot.scale_fixture_rpc_absent !== false
+  || snapshot.scale_fixture_rpc?.owner !== "postgres"
+  || snapshot.scale_fixture_rpc?.security_definer !== true
+  || snapshot.scale_fixture_rpc?.volatility !== "s"
+  || !same(snapshot.scale_fixture_rpc?.search_path, ["search_path=public"])
+  || !validRpcAcl
+  || !/^[0-9a-f]{32}$/.test(snapshot.scale_fixture_rpc?.body_md5 ?? "")
+  || !/^[0-9a-f]{32}$/.test(snapshot.scale_fixture_rpc?.definition_md5 ?? "")
+  || snapshot.scale_fixture_rpc?.authenticated_execute !== true
+  || snapshot.scale_fixture_rpc?.anon_execute !== false
+  || snapshot.scale_fixture_rpc?.public_execute !== false
+  || !same(snapshot.shape_counts, fixtureManifestFile.value.plan?.shape?.targetCounts)
 ) throw new Error("Staging dataset snapshot is not a clean, read-only, identity-bound state.");
-const expectedFingerprintTables = ["audit_logs", "bill_lines", "bills", "customer_tabs", "customers", "operational_events", "payments", "sessions", "stock_movements"];
+if (
+  JSON.stringify(Object.keys(snapshot.shape_counts ?? {}).sort()) !== JSON.stringify(SHAPE_COUNT_KEYS)
+  || Object.values(snapshot.shape_counts ?? {}).some((value) => !Number.isInteger(value) || value < 0)
+) throw new Error("Staging dataset workload-shape identity is incomplete.");
+const expectedFingerprintTables = SCALE_TABLES;
 if (
   JSON.stringify(Object.keys(snapshot.public_fingerprints ?? {}).sort()) !== JSON.stringify(expectedFingerprintTables)
   || Object.values(snapshot.public_fingerprints ?? {}).some((value) => !/^[0-9a-f]{32}$/.test(value))
 ) throw new Error("Staging dataset snapshot content fingerprints are incomplete.");
+if (
+  JSON.stringify(Object.keys(snapshot.auxiliary_counts ?? {}).sort()) !== JSON.stringify(AUXILIARY_IDENTITY_TABLES)
+  || JSON.stringify(Object.keys(snapshot.auxiliary_fingerprints ?? {}).sort()) !== JSON.stringify(AUXILIARY_IDENTITY_TABLES)
+  || Object.values(snapshot.auxiliary_counts ?? {}).some((value) => !Number.isInteger(value) || value < 0)
+  || Object.values(snapshot.auxiliary_fingerprints ?? {}).some((value) => !/^[0-9a-f]{32}$/.test(value))
+) throw new Error("Staging dataset auxiliary-state identity is incomplete.");
 const expectedRestoreFiles = ["public-auth-storage-data.sql", "public-schema.sql", "roles.sql"];
 if (
   restoreFile.value.schemaVersion !== 1
@@ -76,7 +117,7 @@ if (
   || production.databaseBaseline.appState?.dataSelected !== false
 ) throw new Error("Production scale baseline lacks a safe compatibility-document identity.");
 const productionCounts = production.databaseBaseline.publicCounts ?? {};
-const requiredScaleCounts = ["sessions", "customer_tabs", "bills", "bill_lines", "payments", "customers", "audit_logs", "operational_events", "stock_movements"];
+const requiredScaleCounts = SCALE_TABLES;
 const requiredDrillChecks = ["targetGuardPassed", "backupHashesPassed", "managedRolesPassed", "publicCountsPassed", "financialTotalsPassed", "managedSchemaCountsPassed", "timestampsPassed", "appStateIdentityPassed", "appStateBytesNonZero", "emptyFloorPassed"];
 if (
   restoreDrill.schemaVersion !== 1
@@ -90,6 +131,24 @@ if (
   || restoreDrill.restoredBaseline?.app_state?.data_hash !== production.databaseBaseline.appState.dataHashSha256
   || restoreDrill.restoredBaseline?.app_state?.data_selected !== false
 ) throw new Error("Disposable production-backup restore drill is missing, failed, or not bound to the selected source evidence.");
+if (
+  fixtureManifestFile.value.operation !== "staging-operational-performance-scale-fixture"
+  || fixtureManifestFile.value.target?.projectRef !== "tkbdyzxwwbhkpztgjjxh"
+  || fixtureManifestFile.value.productionAllowed !== false
+  || fixtureVerificationFile.value.status !== "passed"
+  || fixtureVerificationFile.value.mode !== "apply"
+  || fixtureVerificationFile.value.runId !== fixtureManifestFile.value.runId
+  || fixtureVerificationFile.value.manifest?.sha256 !== fixtureManifestFile.sha256
+  || fixtureVerificationFile.value.snapshot?.sha256 !== snapshotFile.sha256
+  || fixtureVerificationFile.value.scaleApplied !== true
+  || !same(fixtureVerificationFile.value.appStateAfter, snapshot.app_state)
+  || !same(fixtureManifestFile.value.plan?.targetCounts, snapshot.public_counts)
+) throw new Error("Performance scale fixture lineage does not match the selected staging snapshot.");
+for (const [key, minimum] of Object.entries(fixtureManifestFile.value.plan?.appState?.targetCounts ?? {})) {
+  if (!Number.isInteger(snapshot.app_state_collection_counts?.[key]) || snapshot.app_state_collection_counts[key] < minimum) {
+    throw new Error(`Staging app_state collection ${key} is below the production-shaped minimum.`);
+  }
+}
 for (const table of requiredScaleCounts) {
   if (Number(restoreDrill.restoredBaseline?.public_counts?.[table]) !== Number(productionCounts[table])) {
     throw new Error(`Disposable restore drill count differs from the production baseline for ${table}.`);
@@ -115,6 +174,12 @@ const manifest = {
     restoreManifest: { path: path.relative(root, restoreFile.path), sha256: restoreFile.sha256 },
     restoreDrill: { path: path.relative(root, restoreDrillFile.path), sha256: restoreDrillFile.sha256, targetProjectRef: restoreDrill.targetProjectRef },
     productionBaseline: { path: path.relative(root, productionFile.path), sha256: productionFile.sha256 }
+  },
+  scaleFixture: {
+    manifest: { path: path.relative(root, fixtureManifestFile.path), sha256: fixtureManifestFile.sha256, runId: fixtureManifestFile.value.runId },
+    verification: { path: path.relative(root, fixtureVerificationFile.path), sha256: fixtureVerificationFile.sha256 },
+    plannedCleanup: fixtureManifestFile.value.artifacts?.["cleanup.sql"],
+    identityRpc: fixtureManifestFile.value.fixture?.identityRpc
   },
   source: { path: path.relative(root, sourcePath), sha256: sha256(source) },
   verifiedRestoreFiles: restoreFile.value.files.map((entry) => ({ name: entry.name, bytes: entry.bytes, sha256: entry.sha256 })),

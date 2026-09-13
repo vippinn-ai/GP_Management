@@ -4,6 +4,7 @@ import os from "node:os";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { gzipSync } from "node:zlib";
+import { AUXILIARY_IDENTITY_TABLES, SCALE_RPC, SCALE_TABLES, SHAPE_COUNT_KEYS } from "./operational-performance-scale-fixture-lib.mjs";
 import {
   assertOperationalRunId,
   assertStagingBaseUrl,
@@ -50,6 +51,8 @@ let postflightVerification;
 let profileManifest;
 let baselineManifest;
 let databaseManifest;
+let scaleFixtureManifest;
+let scaleFixtureVerification;
 if (!discoveryOnly) {
   profileManifest = readBoundJson(
     env.E2E_PERFORMANCE_PROFILE_MANIFEST_PATH,
@@ -79,6 +82,11 @@ if (!discoveryOnly) {
     "Performance dataset manifest"
   );
   const dataset = datasetManifest.value.snapshot ?? datasetManifest.value.evidence ?? datasetManifest.value;
+  const rpcAcl = dataset.scale_fixture_rpc?.acl;
+  const validRpcAcl = Array.isArray(rpcAcl)
+    && rpcAcl.length === 2
+    && ["authenticated", "postgres"].every((grantee) => rpcAcl.some((entry) => entry.grantee === grantee && entry.privilege === "EXECUTE" && entry.grantable === false))
+    && rpcAcl.every((entry) => ["authenticated", "postgres"].includes(entry.grantee) && entry.privilege === "EXECUTE" && entry.grantable === false);
   if (dataset.expected_project_ref !== STAGING_PROJECT_REF && dataset.target?.projectRef !== STAGING_PROJECT_REF) {
     throw new Error("Performance dataset manifest is not for staging.");
   }
@@ -94,31 +102,82 @@ if (!discoveryOnly) {
     || !datasetManifest.value.scaleSource?.productionBaseline?.sha256
     || !dataset.public_counts
     || !dataset.public_fingerprints
+    || !dataset.auxiliary_counts
+    || !dataset.auxiliary_fingerprints
+    || !dataset.app_state_collection_counts
+    || !dataset.shape_counts
+    || dataset.scale_fixture_rpc?.owner !== "postgres"
+    || dataset.scale_fixture_rpc?.security_definer !== true
+    || dataset.scale_fixture_rpc?.volatility !== "s"
+    || JSON.stringify(dataset.scale_fixture_rpc?.search_path) !== JSON.stringify(["search_path=public"])
+    || !validRpcAcl
+    || !/^[0-9a-f]{32}$/.test(dataset.scale_fixture_rpc?.body_md5 ?? "")
+    || !/^[0-9a-f]{32}$/.test(dataset.scale_fixture_rpc?.definition_md5 ?? "")
+    || dataset.scale_fixture_rpc?.authenticated_execute !== true
+    || dataset.scale_fixture_rpc?.anon_execute !== false
+    || dataset.scale_fixture_rpc?.public_execute !== false
   ) throw new Error("Performance dataset manifest lacks immutable snapshot or production-scale restore lineage.");
-  const allowedDatasetTables = [
-    "audit_logs", "bill_lines", "bills", "combos", "customer_tab_items", "customer_tabs", "customers",
-    "inventory_items", "operational_events", "payments", "session_items", "session_pause_logs", "sessions",
-    "stations", "stock_movements"
-  ];
+  const allowedDatasetTables = SCALE_TABLES;
   if (
     JSON.stringify(Object.keys(dataset.public_counts).sort()) !== JSON.stringify(allowedDatasetTables)
     || Object.values(dataset.public_counts).some((value) => !Number.isInteger(value) || value < 0)
   ) throw new Error("Performance dataset contains an unsafe table set or invalid row count.");
-  const allowedFingerprintTables = ["audit_logs", "bill_lines", "bills", "customer_tabs", "customers", "operational_events", "payments", "sessions", "stock_movements"];
+  const allowedFingerprintTables = SCALE_TABLES;
   if (
     JSON.stringify(Object.keys(dataset.public_fingerprints).sort()) !== JSON.stringify(allowedFingerprintTables)
     || Object.values(dataset.public_fingerprints).some((value) => !/^[0-9a-f]{32}$/.test(value))
   ) throw new Error("Performance dataset contains an invalid content-fingerprint set.");
+  if (
+    JSON.stringify(Object.keys(dataset.auxiliary_counts).sort()) !== JSON.stringify(AUXILIARY_IDENTITY_TABLES)
+    || JSON.stringify(Object.keys(dataset.auxiliary_fingerprints).sort()) !== JSON.stringify(AUXILIARY_IDENTITY_TABLES)
+    || Object.values(dataset.auxiliary_counts).some((value) => !Number.isInteger(value) || value < 0)
+    || Object.values(dataset.auxiliary_fingerprints).some((value) => !/^[0-9a-f]{32}$/.test(value))
+  ) throw new Error("Performance dataset contains an invalid auxiliary-state identity.");
+  if (
+    JSON.stringify(Object.keys(dataset.shape_counts).sort()) !== JSON.stringify(SHAPE_COUNT_KEYS)
+    || Object.values(dataset.shape_counts).some((value) => !Number.isInteger(value) || value < 0)
+  ) throw new Error("Performance dataset contains an invalid workload-shape identity.");
   env.E2E_EXPECTED_DATASET_IDENTITY = JSON.stringify({
     organization_id: "org-primary",
     app_state: dataset.app_state,
     public_counts: dataset.public_counts,
-    public_fingerprints: dataset.public_fingerprints
+    public_fingerprints: dataset.public_fingerprints,
+    auxiliary_counts: dataset.auxiliary_counts,
+    auxiliary_fingerprints: dataset.auxiliary_fingerprints,
+    shape_counts: dataset.shape_counts,
+    scale_fixture_rpc: dataset.scale_fixture_rpc
   });
   if (dataset.open_sessions !== 0 || dataset.open_customer_tabs !== 0 || dataset.processing_financial_mutations !== 0 || dataset.processing_operational_mutations !== 0) {
     throw new Error("Performance dataset does not have a clean staging operational floor.");
   }
   env.E2E_EXPECTED_APP_STATE_VERSION = String(dataset.app_state.version);
+  env.E2E_EXPECTED_RECENT_STOCK_MOVEMENTS = String(dataset.shape_counts.recent_stock_movements);
+  const fixtureManifestEntry = datasetManifest.value.scaleFixture?.manifest;
+  const fixtureVerificationEntry = datasetManifest.value.scaleFixture?.verification;
+  scaleFixtureManifest = readBoundJson(fixtureManifestEntry?.path, fixtureManifestEntry?.sha256, "Performance scale fixture manifest");
+  scaleFixtureVerification = readBoundJson(fixtureVerificationEntry?.path, fixtureVerificationEntry?.sha256, "Performance scale fixture verification");
+  if (
+    scaleFixtureManifest.value.operation !== "staging-operational-performance-scale-fixture"
+    || scaleFixtureManifest.value.runId !== fixtureManifestEntry?.runId
+    || scaleFixtureManifest.value.productionAllowed !== false
+    || scaleFixtureVerification.value.status !== "passed"
+    || scaleFixtureVerification.value.mode !== "apply"
+    || scaleFixtureVerification.value.runId !== scaleFixtureManifest.value.runId
+    || scaleFixtureVerification.value.manifest?.sha256 !== scaleFixtureManifest.sha256
+    || JSON.stringify(scaleFixtureVerification.value.appStateAfter) !== JSON.stringify(dataset.app_state)
+    || datasetManifest.value.scaleFixture?.identityRpc !== SCALE_RPC
+    || JSON.stringify(dataset.shape_counts) !== JSON.stringify(scaleFixtureManifest.value.plan?.shape?.targetCounts)
+  ) throw new Error("Performance scale fixture lineage is incomplete or does not match the dataset.");
+  for (const [key, minimum] of Object.entries(scaleFixtureManifest.value.plan?.appState?.targetCounts ?? {})) {
+    if (!Number.isInteger(dataset.app_state_collection_counts?.[key]) || dataset.app_state_collection_counts[key] < minimum) {
+      throw new Error(`Performance dataset app_state collection ${key} is below its production-shaped minimum.`);
+    }
+  }
+  const cleanupEntry = datasetManifest.value.scaleFixture?.plannedCleanup;
+  if (!cleanupEntry?.path || !/^[a-f0-9]{64}$/i.test(cleanupEntry.sha256 ?? "")) throw new Error("Performance dataset lacks a planned exact cleanup artifact.");
+  const cleanupBytes = fs.readFileSync(path.resolve(root, cleanupEntry.path));
+  if (createHash("sha256").update(cleanupBytes).digest("hex") !== cleanupEntry.sha256) throw new Error("Performance scale cleanup artifact SHA-256 does not match.");
+  env.E2E_PERFORMANCE_DATASET_RPC = SCALE_RPC;
   if (mode === "candidate") {
     databaseManifest = readBoundJson(
       env.E2E_DB_MANIFEST_PATH,
@@ -142,8 +201,8 @@ if (!discoveryOnly) {
     ) {
       throw new Error("Candidate database postflight verification is not an unchanged staging installation.");
     }
-    if (JSON.stringify(postflightVerification.value.appState) !== JSON.stringify(dataset.app_state)) {
-      throw new Error("Candidate postflight and performance dataset app_state identities differ.");
+    if (JSON.stringify(postflightVerification.value.appState) !== JSON.stringify(scaleFixtureVerification.value.appStateBefore)) {
+      throw new Error("Candidate postflight and performance scale fixture before-state identities differ.");
     }
     baselineManifest = readBoundJson(
       env.E2E_PERFORMANCE_BASELINE_MANIFEST_PATH,

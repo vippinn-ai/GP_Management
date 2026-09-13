@@ -194,6 +194,8 @@
     "verify:db:staging:operational-v2:proof-postrollback": "node scripts/verify-operational-v2-proof-postrollback.mjs",
     "build:evidence:staging:operational-performance-profile": "node scripts/create-operational-performance-profile.mjs",
     "build:evidence:staging:operational-performance-dataset": "node scripts/build-operational-performance-dataset-manifest.mjs",
+    "build:db:staging:operational-performance-scale": "node scripts/build-operational-performance-scale-fixture.mjs",
+    "verify:db:staging:operational-performance-scale": "node scripts/verify-operational-performance-scale-fixture.mjs",
     "build:db:staging:operational-v2:posttest": "node scripts/build-operational-v2-posttest-reconciliation.mjs",
     "verify:db:staging:operational-v2:posttest": "node scripts/verify-operational-v2-posttest-reconciliation.mjs",
     "build:db:staging:operational-v2:customer-profile-posttest": "node scripts/build-operational-v2-customer-profile-posttest.mjs",
