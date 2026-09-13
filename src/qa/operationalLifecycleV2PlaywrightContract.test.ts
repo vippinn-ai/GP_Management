@@ -185,6 +185,7 @@ describe("operational lifecycle v2 Playwright and performance contract", () => {
     expect(spec).toContain("baseline.browserVersion !== browserVersion");
     expect(spec).toContain("PERFORMANCE_METRIC_VERSION = 2");
     expect(spec).toContain("requestStartedByBrowserMark");
+    expect(spec).toContain("requestStartedByBrowserMarkAfterCompletion");
     expect(spec).toContain("settledResourceEvidence");
     expect(spec).toContain("CRITICAL_RESOURCE_TIMING_SETTLE_TIMEOUT_MS");
     expect(spec).toContain("missingExpectedCriticalResourceKeys");

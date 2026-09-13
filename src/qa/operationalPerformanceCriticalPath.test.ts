@@ -6,6 +6,7 @@ import {
   INVENTORY_RENDER_POLL_INTERVAL_MS,
   missingExpectedCriticalResourceKeys,
   requestStartedByBrowserMark,
+  requestStartedByBrowserMarkAfterCompletion,
   selectCriticalEvidence,
   sumCriticalShellTransferBytes,
   type CriticalResourceTiming,
@@ -42,6 +43,43 @@ describe("browser-domain operational performance evidence", () => {
     expect(requestStartedByBrowserMark(0, 10_000, 400)).toBeNull();
     expect(requestStartedByBrowserMark(10_400, Number.NaN, 400)).toBeNull();
     expect(requestStartedByBrowserMark(10_400, 10_000, -1)).toBeNull();
+  });
+
+  it("re-reads an initially unavailable request start only after that same request completes", async () => {
+    const readStart = vi.fn()
+      .mockReturnValueOnce(0)
+      .mockReturnValueOnce(10_400);
+    await expect(requestStartedByBrowserMarkAfterCompletion(
+      readStart,
+      Promise.resolve(),
+      10_000,
+      400
+    )).resolves.toBe(true);
+    expect(readStart).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not wait or re-read when request timing is already valid", async () => {
+    const readStart = vi.fn().mockReturnValue(10_401);
+    let completed = false;
+    const completion = new Promise<void>((resolve) => setTimeout(() => {
+      completed = true;
+      resolve();
+    }, 10));
+    await expect(requestStartedByBrowserMarkAfterCompletion(readStart, completion, 10_000, 400)).resolves.toBe(false);
+    expect(readStart).toHaveBeenCalledTimes(1);
+    expect(completed).toBe(false);
+    await completion;
+  });
+
+  it("remains fail-closed when request timing is invalid after completion", async () => {
+    const readStart = vi.fn().mockReturnValue(0);
+    await expect(requestStartedByBrowserMarkAfterCompletion(
+      readStart,
+      Promise.resolve(),
+      10_000,
+      400
+    )).resolves.toBeNull();
+    expect(readStart).toHaveBeenCalledTimes(2);
   });
 
   it("includes requests before and exactly at the browser mark but excludes post-safe history despite delayed observation", () => {

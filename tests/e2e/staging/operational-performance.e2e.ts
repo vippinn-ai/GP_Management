@@ -11,7 +11,7 @@ import {
   installVisibleReadyObserver,
   INVENTORY_RENDER_POLL_INTERVAL_MS,
   missingExpectedCriticalResourceKeys,
-  requestStartedByBrowserMark,
+  requestStartedByBrowserMarkAfterCompletion,
   selectCriticalEvidence,
   sumCriticalShellTransferBytes
 } from "../../../src/qa/operationalPerformanceCriticalPath";
@@ -424,15 +424,20 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
     const safeInteractiveMs = mode === "candidate" ? browserBoundary.safeMark : -1;
     const timingErrors: string[] = [];
     const expectedCriticalRequestKeys = new Set<string>();
-    const criticalRequestTasks = [...responseTasks.entries()].flatMap(([request, completion]) => {
-      const startedByReady = requestStartedByBrowserMark(request.timing().startTime, browserBoundary.timeOrigin, visibleReadyMs);
+    const criticalRequestTasks = [...responseTasks.entries()].map(async ([request, completion]) => {
+      const startedByReady = await requestStartedByBrowserMarkAfterCompletion(
+        () => request.timing().startTime,
+        completion,
+        browserBoundary.timeOrigin,
+        visibleReadyMs
+      );
       if (startedByReady === null) {
         timingErrors.push(`Request ${requestKeys.get(request) ?? "missing-request-correlation"} has invalid browser timing.`);
-        return [completion];
+        return;
       }
-      if (!startedByReady) return [];
+      if (!startedByReady) return;
       expectedCriticalRequestKeys.add(requestKeys.get(request) ?? "missing-request-correlation");
-      return [completion];
+      await completion;
     });
     await Promise.all(criticalRequestTasks);
     const { marks, resources } = await settledResourceEvidence(coldPage, baseOrigin, expectedCriticalRequestKeys);

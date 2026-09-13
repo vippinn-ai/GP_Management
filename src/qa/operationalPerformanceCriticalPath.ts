@@ -81,6 +81,26 @@ export function requestStartedByBrowserMark(
   return requestStartEpochMs <= pageTimeOriginEpochMs + safeInteractiveMarkMs;
 }
 
+export async function requestStartedByBrowserMarkAfterCompletion(
+  readRequestStartEpochMs: () => number,
+  completion: Promise<void>,
+  pageTimeOriginEpochMs: number,
+  safeInteractiveMarkMs: number
+): Promise<boolean | null> {
+  const initial = requestStartedByBrowserMark(
+    readRequestStartEpochMs(),
+    pageTimeOriginEpochMs,
+    safeInteractiveMarkMs
+  );
+  if (initial !== null) return initial;
+  await completion;
+  return requestStartedByBrowserMark(
+    readRequestStartEpochMs(),
+    pageTimeOriginEpochMs,
+    safeInteractiveMarkMs
+  );
+}
+
 export function missingExpectedCriticalResourceKeys(
   resources: ReadonlyArray<Pick<CriticalResourceTiming, "requestKey">>,
   expectedCriticalRequestKeys: ReadonlySet<string>
