@@ -183,7 +183,16 @@ describe("operational lifecycle v2 Playwright and performance contract", () => {
     expect(runner).toContain("profileManifest.value.hostFingerprint !== currentHostFingerprint");
     expect(runner).toContain("profileManifest.value.browserChannel");
     expect(spec).toContain("baseline.browserVersion !== browserVersion");
-    expect(spec).toContain("organizationResponse.requestStartMs");
+    expect(spec).toContain("PERFORMANCE_METRIC_VERSION = 2");
+    expect(spec).toContain("requestStartedByBrowserMark");
+    expect(spec).toContain("startMinusSafeMs");
+    expect(spec).toContain("criticalEvidenceErrors");
+    expect(spec).toContain("bp-baseline-interactive-observed");
+    expect(spec).toContain("sumCriticalShellTransferBytes");
+    expect(spec).toContain("largestContentfulPaintElement");
+    expect(spec).toContain("inventoryNetworkCompleteMs");
+    expect(spec).toContain("intervals: [25]");
+    expect(spec).toContain("expect.soft");
     expect(spec).toContain("baseline.deployedBundleSha256");
     expect(spec).toContain("summary.p95");
     expect(spec).toContain("3_500");
@@ -206,6 +215,23 @@ describe("operational lifecycle v2 Playwright and performance contract", () => {
     expect(read("src/dataGateway/normalizedReads.ts")).toContain("changed while it was being loaded");
     expect(read("src/dataGateway/normalizedReads.ts")).toContain("stable descending order");
     expect(read("src/dataGateway/normalizedReads.ts")).toContain("const deadlineAt = Date.now() + NORMALIZED_READ_TIMEOUT_MS");
+  });
+
+  it("keeps the profiling renderer on the initial graph and renders one responsive Inventory catalog layout", () => {
+    const main = read("src/main.tsx");
+    const vite = read("vite.config.ts");
+    const app = read("src/App.tsx");
+    const inventory = read("src/panels/InventoryPanel.tsx");
+    expect(main).toContain('import { createRoot } from "react-dom/client"');
+    expect(main).not.toContain('await import("react-dom/profiling")');
+    expect(main).toContain("preloadShellImage(brandLogo)");
+    expect(vite).toContain('{ find: "react-dom/client", replacement: "react-dom/profiling" }');
+    expect(app).toContain('lazy(() => import("./panels/InventoryPanel")');
+    expect(app).toContain("<Suspense fallback=");
+    expect(inventory).toContain('COMPACT_INVENTORY_MEDIA_QUERY = "(max-width: 720px)"');
+    expect(inventory).toContain("!compactInventoryLayout && <div className=\"table-wrap inventory-table-wrap\"");
+    expect(inventory).toContain("compactInventoryLayout && <div className=\"inventory-mobile-list\"");
+    expect(inventory).toContain("catalogPresentationById");
   });
 
   it("builds the performance dataset from a read-only exact staging snapshot and verified production-scale restore source", () => {

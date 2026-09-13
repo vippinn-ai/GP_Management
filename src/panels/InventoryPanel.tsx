@@ -1,4 +1,4 @@
-import { type FormEvent, useEffect, useState } from "react";
+import { type FormEvent, useEffect, useMemo, useState } from "react";
 import type {
   InventoryItem,
   InventoryReportFilterState,
@@ -39,6 +39,14 @@ interface InventoryArchiveDraft {
   itemId: string;
   reason: string;
   remainingStock: number;
+}
+
+const COMPACT_INVENTORY_MEDIA_QUERY = "(max-width: 720px)";
+
+function initialCompactInventoryLayout() {
+  return typeof window !== "undefined" && typeof window.matchMedia === "function"
+    ? window.matchMedia(COMPACT_INVENTORY_MEDIA_QUERY).matches
+    : false;
 }
 
 function createBlankSaleVariant(defaultPrice: number): SaleVariant {
@@ -220,12 +228,21 @@ export function InventoryPanel(props: {
     itemForm, editItemForm, useCustomItemCategory, customItemCategory,
     useCustomEditItemCategory, customEditItemCategory, inventoryAction,
     inventoryItemSearch, inventoryArchiveView, filteredInventoryItems, inventoryCategoryOptions,
-    canEditInventory, isManagerReadOnly, inventoryReport, inventoryReportFilter, comboDraft
+    canEditInventory, isManagerReadOnly, inventoryReport, inventoryReportFilter, comboDraft,
+    getAvailableStock, getInventoryState
   } = props;
   const [inventoryPanelView, setInventoryPanelView] = useState<InventoryPanelView>("catalog");
+  const [compactInventoryLayout, setCompactInventoryLayout] = useState(initialCompactInventoryLayout);
   useEffect(() => {
     props.onInventoryPanelViewChange(inventoryPanelView);
   }, [inventoryPanelView, props.onInventoryPanelViewChange]);
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return;
+    const media = window.matchMedia(COMPACT_INVENTORY_MEDIA_QUERY);
+    const updateLayout = () => setCompactInventoryLayout(media.matches);
+    media.addEventListener("change", updateLayout);
+    return () => media.removeEventListener("change", updateLayout);
+  }, []);
   const isItemFormCigarette = itemForm.category === "Cigarettes";
   const isEditItemFormCigarette = editItemForm?.category === "Cigarettes";
   const isArchivedView = inventoryArchiveView === "archived";
@@ -234,6 +251,15 @@ export function InventoryPanel(props: {
   const archiveDraftItem = props.inventoryArchiveDraft
     ? props.inventoryItems.find((item) => item.id === props.inventoryArchiveDraft?.itemId) ?? null
     : null;
+  const catalogPresentationById = useMemo(() => new Map(filteredInventoryItems.map((item) => {
+    const availableStock = getAvailableStock(item);
+    return [item.id, {
+      availableStock,
+      reservedStock: item.stockQty - availableStock,
+      state: getInventoryState(item),
+      categoryImage: getCategoryImage(item.category)
+    }] as const;
+  })), [filteredInventoryItems, getAvailableStock, getInventoryState]);
 
   function formatArchivedAt(item: InventoryItem) {
     return item.archivedAt ? new Date(item.archivedAt).toLocaleString() : "Archived";
@@ -846,7 +872,7 @@ export function InventoryPanel(props: {
               onChange={(event) => props.onInventoryItemSearchChange(event.target.value)}
               placeholder={`Search ${isArchivedView ? "archived" : "active"} items by name or category`}
             />
-            <div className="table-wrap inventory-table-wrap">
+            {!compactInventoryLayout && <div className="table-wrap inventory-table-wrap">
               <table>
                 <thead>
                   <tr><th>Item</th><th>Category</th><th>Type</th><th>Price</th><th>Stock</th><th>Threshold</th><th>Status</th><th>{isArchivedView ? "Archived" : "Barcode"}</th>{canEditInventory && <th />}</tr>
@@ -860,13 +886,14 @@ export function InventoryPanel(props: {
                     </tr>
                   )}
                   {filteredInventoryItems.map((item) => {
-                    const state = props.getInventoryState(item);
+                    const presentation = catalogPresentationById.get(item.id)!;
+                    const { availableStock, state, categoryImage } = presentation;
                     return (
                       <tr key={item.id}>
                         <td>{item.name}</td>
                         <td>
-                          {getCategoryImage(item.category) ? (
-                            <img src={getCategoryImage(item.category)} alt="" className="category-icon-img" />
+                          {categoryImage ? (
+                            <img src={categoryImage} alt="" className="category-icon-img" />
                           ) : (
                             <span className={`category-icon${item.category === "Cigarettes" ? " category-icon--cigarettes" : ""}`}>{getCategoryIcon(item.category)}</span>
                           )}
@@ -875,15 +902,15 @@ export function InventoryPanel(props: {
                         <td>{item.isReusable ? "Reusable" : `Consumable${(item.saleVariants ?? []).length > 0 ? ` · ${(item.saleVariants ?? []).length} variant${(item.saleVariants ?? []).length !== 1 ? "s" : ""}` : ""}`}</td>
                         <td>{currency(item.price)}</td>
                         <td>
-                          {props.getAvailableStock(item)}
-                          {item.stockQty !== props.getAvailableStock(item) && (
+                          {availableStock}
+                          {item.stockQty !== availableStock && (
                             <span className="muted" style={{ fontSize: "0.8em", marginLeft: "0.4em" }}>
-                              ({item.stockQty - props.getAvailableStock(item)} in sessions)
+                              ({item.stockQty - availableStock} in sessions)
                             </span>
                           )}
                           {item.cigarettePack && (
                             <span className="muted" style={{ fontSize: "0.8em", marginLeft: "0.4em" }}>
-                              (~{Math.floor(props.getAvailableStock(item) / item.cigarettePack.size)} packs + {props.getAvailableStock(item) % item.cigarettePack.size} loose)
+                              (~{Math.floor(availableStock / item.cigarettePack.size)} packs + {availableStock % item.cigarettePack.size} loose)
                             </span>
                           )}
                         </td>
@@ -920,16 +947,13 @@ export function InventoryPanel(props: {
                   })}
                 </tbody>
               </table>
-            </div>
-            <div className="inventory-mobile-list">
+            </div>}
+            {compactInventoryLayout && <div className="inventory-mobile-list">
               {filteredInventoryItems.length === 0 && (
                 <div className="empty-state">No {isArchivedView ? "archived" : "active"} inventory items match this search.</div>
               )}
               {filteredInventoryItems.map((item) => {
-                const state = props.getInventoryState(item);
-                const availableStock = props.getAvailableStock(item);
-                const reservedStock = item.stockQty - availableStock;
-                const categoryImage = getCategoryImage(item.category);
+                const { state, availableStock, reservedStock, categoryImage } = catalogPresentationById.get(item.id)!;
                 return (
                   <article key={item.id} className="inventory-mobile-card">
                     <div className="inventory-mobile-card-head">
@@ -990,7 +1014,7 @@ export function InventoryPanel(props: {
                   </article>
                 );
               })}
-            </div>
+            </div>}
           </div>
         </div>
 

@@ -68,7 +68,9 @@ The full-table fingerprint helper is staging-only test instrumentation and is no
 - Initial JS <=1,000 KB minified and <=300 KB gzip; cold shell <=450 KB; no jsPDF/XLSX in entry; first export <=2 s.
 - Critical bootstrap waterfall depth <=3, payload <=750 KB and >=60% smaller than baseline; no full `app_state.data` read.
 - 30 cold authenticated loads: safe-interactive p95 <=3.5 s, max <=5 s, and >=40% faster than baseline. Login LCP p75 <=2.5 s, CLS <=0.1.
+- Baseline and candidate evidence must use performance metric version 2. Readiness, request cutoff, dependency depth, and response end use one browser clock; Playwright observation delay is diagnostic only. Critical resources and responses are joined by hashed URL occurrence and fail closed on missing/duplicate/invalid timing. API payload is decoded bytes, cold shell is browser-reported transferred bytes including navigation, and JavaScript decoded/gzip sizes remain separate. All budget failures are emitted in the same completed evidence result.
 - No root commits attributable to the one-second clock after the runtime unit; active-panel commit p95 <16 ms and max <50 ms.
 - Deferred Inventory history must return the frozen 1,506-row scale shape as exact-count URL pages `offset=0&limit=1000` and `offset=1000&limit=1000`, response bodies `1000 + 506`, contiguous `Content-Range` totals of 1,506, and only HTTP 200/206. Persist each sanitized page plus click-to-history-ready duration; require Inventory history p95 <=2 s and max <=5 s with no failed request or remote-error banner.
+- Inventory network-complete and rendered-ready timing use 25 ms event polling rather than the default coarse assertion schedule; both values are retained so network delay is not confused with React render delay.
 
 Every case is passed, failed, blocked, or not run. Any required blocked/not-run case is NO-GO unless the approved spec explicitly narrows it with recorded risk acceptance.

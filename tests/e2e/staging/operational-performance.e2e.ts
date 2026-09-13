@@ -4,13 +4,24 @@ import { gzipSync } from "node:zlib";
 import { expect, test, type Page, type Request, type Response } from "@playwright/test";
 import { attachJson, captureAuthenticatedRestRequests, credentials, signIn } from "./support/app";
 import { parsePostgrestPageEvidence } from "../../../src/qa/operationalPerformancePageEvidence";
+import {
+  measureBootstrapDependencyDepth,
+  requestStartedByBrowserMark,
+  selectCriticalEvidence,
+  sumCriticalShellTransferBytes
+} from "../../../src/qa/operationalPerformanceCriticalPath";
 
 const runId = process.env.E2E_RUN_ID ?? "missing-run-id";
 const mode = process.env.E2E_PERFORMANCE_MODE === "baseline" ? "baseline" : "candidate";
 const sampleCount = Number(process.env.E2E_PERFORMANCE_SAMPLES ?? 30);
+const PERFORMANCE_METRIC_VERSION = 2;
 
 type ResourceEvidence = {
+  requestKey: string;
   path: string;
+  api: boolean;
+  shell: boolean;
+  javascript: boolean;
   initiatorType: string;
   startTime: number;
   responseEnd: number;
@@ -20,9 +31,11 @@ type ResourceEvidence = {
 };
 
 type ResponseEvidence = {
+  requestKey: string;
   path: string;
   requestStartMs: number;
   responseEndMs: number;
+  startMinusSafeMs?: number;
   status: number;
   bodyBytes: number;
   contentLengthBytes: number;
@@ -51,6 +64,7 @@ type RenderEvidence = {
 type LoadEvidence = {
   sample: number;
   safeInteractiveMs: number;
+  playwrightObservedSafeInteractiveMs: number;
   bootstrapMarks: Record<string, number>;
   criticalResources: ResourceEvidence[];
   criticalResponses: ResponseEvidence[];
@@ -65,6 +79,8 @@ type LoadEvidence = {
   requestedHistoryBeforeSafeInteractive: boolean;
   bootstrapDependencyDepth: number | null;
   largestContentfulPaintMs: number;
+  largestContentfulPaintElement: string;
+  largestContentfulPaintResourcePath: string;
   cumulativeLayoutShift: number;
   renderEvidence: RenderEvidence | null;
   activePanelCommitDurationsMs: number[];
@@ -79,7 +95,10 @@ type LoadEvidence = {
     exactCountRequested: boolean;
   }>;
   inventoryHistoryReadyMs: number | null;
+  inventoryNetworkCompleteMs: number | null;
   inventoryRemoteErrorVisible: boolean | null;
+  criticalEvidenceErrors: string[];
+  postSafeResponses: Array<{ path: string; startMinusSafeMs: number; status: number }>;
 };
 
 function percentile(values: number[], percentileValue: number) {
@@ -129,7 +148,7 @@ function readBaseline(browserVersion: string) {
   const actualSha = crypto.createHash("sha256").update(bytes).digest("hex");
   if (actualSha !== expectedSha) throw new Error("Performance baseline SHA-256 does not match.");
   const baseline = JSON.parse(bytes.toString("utf8"));
-  if (baseline.mode !== "baseline" || baseline.sampleCount !== sampleCount || !baseline.summary?.p95 || !baseline.summary?.criticalApiBytesP95) {
+  if (baseline.metricVersion !== PERFORMANCE_METRIC_VERSION || baseline.mode !== "baseline" || baseline.sampleCount !== sampleCount || !baseline.summary?.p95 || !baseline.summary?.criticalApiBytesP95) {
     throw new Error("Performance baseline shape or sample count is incompatible.");
   }
   if (baseline.datasetManifestSha256 !== process.env.E2E_PERFORMANCE_DATASET_MANIFEST_SHA256?.toLowerCase()) {
@@ -151,42 +170,21 @@ function readBaseline(browserVersion: string) {
   return { path: baselinePath, sha256: actualSha, summary: baseline.summary };
 }
 
-function measureBootstrapDependencyDepth(responses: ResponseEvidence[]): number {
-  const apiResponses = responses
-    .filter((entry) => entry.api && entry.status < 400)
-    .sort((left, right) => left.requestStartMs - right.requestStartMs);
-  const organizationResponse = apiResponses.find((entry) => /\/rest\/v1\/organizations$/.test(entry.path));
-  if (!organizationResponse) {
-    throw new Error("Candidate bootstrap did not request the active organization.");
-  }
-  // The profile lookup precedes normalized bootstrap by design. Measure the
-  // critical bootstrap graph from organization resolution onward so the gate
-  // cannot be inflated by pre-bootstrap authentication, while every REST/RPC
-  // request in the actual normalized graph remains included dynamically.
-  const bootstrapResponses = apiResponses.filter(
-    (entry) => entry.requestStartMs + 2 >= organizationResponse.requestStartMs
-  );
-  const depths: number[] = [];
-  bootstrapResponses.forEach((_entry, index) => {
-    let depth = 1;
-    for (let previous = 0; previous < index; previous += 1) {
-      if (bootstrapResponses[previous].responseEndMs <= bootstrapResponses[index].requestStartMs + 2) {
-        depth = Math.max(depth, depths[previous] + 1);
-      }
-    }
-    depths.push(depth);
-  });
-  return depths.length > 0 ? Math.max(...depths) : 0;
+function nextCorrelationKey(url: string, occurrences: Map<string, number>) {
+  const occurrence = occurrences.get(url) ?? 0;
+  occurrences.set(url, occurrence + 1);
+  return `${crypto.createHash("sha256").update(url).digest("hex")}:${occurrence}`;
 }
 
-async function resourceEvidence(page: Page): Promise<{ marks: Record<string, number>; resources: ResourceEvidence[] }> {
-  return page.evaluate(() => {
-    const allowedMarks = ["bp-bootstrap-requested", "bp-realtime-ready", "bp-critical-snapshot-ready", "bp-critical-catchup-ready", "bp-safe-interactive"];
+async function resourceEvidence(page: Page, baseOrigin: string): Promise<{ marks: Record<string, number>; resources: ResourceEvidence[] }> {
+  const rawEvidence = await page.evaluate(() => {
+    const allowedMarks = ["bp-bootstrap-requested", "bp-realtime-ready", "bp-critical-snapshot-ready", "bp-critical-catchup-ready", "bp-safe-interactive", "bp-baseline-interactive-observed"];
     const marks = Object.fromEntries(allowedMarks.map((name) => [name, performance.getEntriesByName(name, "mark").at(-1)?.startTime ?? -1]));
-    const resources = performance.getEntriesByType("resource").map((raw) => {
-      const entry = raw as PerformanceResourceTiming;
+    const resources = [...performance.getEntriesByType("navigation"), ...performance.getEntriesByType("resource")].map((raw) => {
+      const entry = raw as PerformanceResourceTiming | PerformanceNavigationTiming;
       const url = new URL(entry.name);
       return {
+        url: entry.name,
         path: `${url.hostname}${url.pathname}`,
         initiatorType: entry.initiatorType,
         startTime: entry.startTime,
@@ -198,9 +196,25 @@ async function resourceEvidence(page: Page): Promise<{ marks: Record<string, num
     });
     return { marks, resources };
   });
+  const occurrences = new Map<string, number>();
+  return {
+    marks: rawEvidence.marks,
+    resources: rawEvidence.resources.map(({ url, ...entry }) => {
+      const parsed = new URL(url);
+      const api = /\/(?:rest|auth)\/v1\//.test(parsed.pathname);
+      const shell = parsed.origin === baseOrigin && !api;
+      return {
+        ...entry,
+        requestKey: nextCorrelationKey(url, occurrences),
+        api,
+        shell,
+        javascript: shell && /\.js$/i.test(parsed.pathname)
+      };
+    })
+  };
 }
 
-async function collectResponseEvidence(response: Response, requestStarts: Map<Request, number>, started: number, baseOrigin: string, sink: ResponseEvidence[]) {
+async function collectResponseEvidence(response: Response, requestKeys: Map<Request, string>, baseOrigin: string, sink: ResponseEvidence[]) {
   const url = new URL(response.url());
   const api = /\/(?:rest|auth)\/v1\//.test(url.pathname);
   const shell = url.origin === baseOrigin && !api;
@@ -213,6 +227,7 @@ async function collectResponseEvidence(response: Response, requestStarts: Map<Re
   let appStateVersion: number | undefined;
   let jsonRowCount: number | undefined;
   const javascript = shell && /\.js$/i.test(url.pathname);
+  const requestTiming = response.request().timing();
   const movementAtFilters = url.searchParams.getAll("movement_at");
   const stockMovementHistoryPage = url.pathname.endsWith("/rest/v1/stock_movements")
     && url.searchParams.get("organization_id") === "eq.org-primary"
@@ -242,9 +257,10 @@ async function collectResponseEvidence(response: Response, requestStarts: Map<Re
     }
   }
   sink.push({
+    requestKey: requestKeys.get(response.request()) ?? "missing-request-correlation",
     path: `${url.hostname}${url.pathname}`,
-    requestStartMs: requestStarts.get(response.request()) ?? performance.now() - started,
-    responseEndMs: performance.now() - started,
+    requestStartMs: requestTiming.startTime,
+    responseEndMs: requestTiming.responseEnd >= 0 ? requestTiming.startTime + requestTiming.responseEnd : Number.NaN,
     status: response.status(),
     bodyBytes,
     contentLengthBytes,
@@ -299,10 +315,20 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
       serviceWorkers: "block"
     });
     await context.addInitScript(() => {
-      const target = globalThis as typeof globalThis & { __BP_WEB_VITALS__?: { largestContentfulPaintMs: number; cumulativeLayoutShift: number } };
-      target.__BP_WEB_VITALS__ = { largestContentfulPaintMs: 0, cumulativeLayoutShift: 0 };
+      const target = globalThis as typeof globalThis & { __BP_WEB_VITALS__?: { largestContentfulPaintMs: number; largestContentfulPaintElement: string; largestContentfulPaintResourcePath: string; cumulativeLayoutShift: number } };
+      target.__BP_WEB_VITALS__ = { largestContentfulPaintMs: 0, largestContentfulPaintElement: "", largestContentfulPaintResourcePath: "", cumulativeLayoutShift: 0 };
       new PerformanceObserver((list) => {
-        for (const entry of list.getEntries()) target.__BP_WEB_VITALS__!.largestContentfulPaintMs = entry.startTime;
+        for (const raw of list.getEntries()) {
+          const entry = raw as PerformanceEntry & { element?: Element; url?: string };
+          target.__BP_WEB_VITALS__!.largestContentfulPaintMs = entry.startTime;
+          target.__BP_WEB_VITALS__!.largestContentfulPaintElement = entry.element
+            ? `${entry.element.tagName.toLowerCase()}${entry.element.id ? `#${entry.element.id}` : ""}${[...entry.element.classList].slice(0, 3).map((value) => `.${value}`).join("")}`
+            : "";
+          if (entry.url) {
+            const url = new URL(entry.url);
+            target.__BP_WEB_VITALS__!.largestContentfulPaintResourcePath = `${url.hostname}${url.pathname}`;
+          }
+        }
       }).observe({ type: "largest-contentful-paint", buffered: true });
       new PerformanceObserver((list) => {
         for (const entry of list.getEntries()) {
@@ -315,7 +341,8 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
     const started = performance.now();
     const failedRequestPaths: string[] = [];
     const requests = new Map<Request, string>();
-    const requestStarts = new Map<Request, number>();
+    const requestKeys = new Map<Request, string>();
+    const requestUrlOccurrences = new Map<string, number>();
     const responses: ResponseEvidence[] = [];
     const responseTasks = new Map<Request, Promise<void>>();
     const responseResolvers = new Map<Request, () => void>();
@@ -326,7 +353,7 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
       const url = new URL(request.url());
       const path = `${url.hostname}${url.pathname}`;
       requests.set(request, path);
-      requestStarts.set(request, performance.now() - started);
+      requestKeys.set(request, nextCorrelationKey(request.url(), requestUrlOccurrences));
       if (/\/(?:rest|auth)\/v1\//.test(url.pathname) || url.origin === baseOrigin) {
         responseTasks.set(request, new Promise<void>((resolve) => responseResolvers.set(request, resolve)));
       }
@@ -337,7 +364,7 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
       requestedExportChunk ||= /(?:xlsx|jspdf)[^/]*-[^/]+\.js$/i.test(url.pathname);
     });
     coldPage.on("response", (response) => {
-      const task = collectResponseEvidence(response, requestStarts, started, baseOrigin, responses);
+      const task = collectResponseEvidence(response, requestKeys, baseOrigin, responses);
       void task.finally(() => responseResolvers.get(response.request())?.());
     });
     coldPage.on("requestfailed", (request) => {
@@ -350,15 +377,27 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
     if (mode === "candidate") {
       await expect(coldPage.locator('[data-app-safe-interactive="true"]')).toBeVisible();
       await expect.poll(() => coldPage.evaluate(() => performance.getEntriesByName("bp-safe-interactive", "mark").length)).toBe(1);
+    } else {
+      await coldPage.evaluate(() => performance.mark("bp-baseline-interactive-observed"));
     }
-    const safeInteractiveMs = performance.now() - started;
-    const browserCutoff = await coldPage.evaluate(() => performance.now());
-    const criticalRequestTasks = [...responseTasks.entries()]
-      .filter(([request]) => (requestStarts.get(request) ?? Number.POSITIVE_INFINITY) <= safeInteractiveMs)
-      .map(([, completion]) => completion);
+    const playwrightObservedSafeInteractiveMs = performance.now() - started;
+    const browserBoundary = await coldPage.evaluate((markName) => ({
+      timeOrigin: performance.timeOrigin,
+      safeMark: performance.getEntriesByName(markName, "mark").at(-1)?.startTime ?? -1
+    }), mode === "candidate" ? "bp-safe-interactive" : "bp-baseline-interactive-observed");
+    const safeInteractiveMs = browserBoundary.safeMark;
+    const timingErrors: string[] = [];
+    const criticalRequestTasks = [...responseTasks.entries()].flatMap(([request, completion]) => {
+      const startedBySafe = requestStartedByBrowserMark(request.timing().startTime, browserBoundary.timeOrigin, safeInteractiveMs);
+      if (startedBySafe === null) {
+        timingErrors.push(`Request ${requestKeys.get(request) ?? "missing-request-correlation"} has invalid browser timing.`);
+        return [completion];
+      }
+      return startedBySafe ? [completion] : [];
+    });
     await Promise.all(criticalRequestTasks);
-    const { marks, resources } = await resourceEvidence(coldPage);
-    const safeMark = mode === "candidate" ? marks["bp-safe-interactive"] : browserCutoff;
+    const { marks, resources } = await resourceEvidence(coldPage, baseOrigin);
+    const safeMark = safeInteractiveMs;
     if (mode === "candidate") {
       expect(safeMark).toBeGreaterThanOrEqual(0);
       for (const mark of ["bp-bootstrap-requested", "bp-realtime-ready", "bp-critical-snapshot-ready", "bp-critical-catchup-ready"]) {
@@ -366,11 +405,21 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
         expect(marks[mark]).toBeLessThanOrEqual(safeMark);
       }
     }
-    const criticalResources = resources.filter((entry) => entry.startTime <= safeMark);
-    const criticalResponses = responses.filter((entry) => entry.requestStartMs <= safeInteractiveMs);
+    const criticalSelection = selectCriticalEvidence(resources, responses, safeMark);
+    const criticalResources = criticalSelection.criticalResources;
+    const resourceByKey = new Map(criticalResources.map((entry) => [entry.requestKey, entry]));
+    const criticalResponses = criticalSelection.criticalResponses.map((entry) => {
+      const resource = resourceByKey.get(entry.requestKey)!;
+      return {
+        ...entry,
+        requestStartMs: resource.startTime,
+        responseEndMs: resource.responseEnd,
+        startMinusSafeMs: resource.startTime - safeMark
+      };
+    });
     const criticalPaths = criticalResources.map((entry) => entry.path);
     const requestedHistoryBeforeSafeInteractive = criticalPaths.some((path) =>
-      /\/rest\/v1\/(?:bills|bill_lines|payments|expenses|audit_logs|stock_movements|customers)(?:$|\/)/.test(path)
+      /\/rest\/v1\/(?:bills|bill_lines|bill_discounts|bill_line_discounts|payments|expenses|audit_logs|stock_movements|customers)(?:$|\/)/.test(path)
       || /\/rest\/v1\/rpc\/(?:.*report.*|.*customer.*history.*|.*customer.*search.*)(?:$|\/)/.test(path)
     );
 
@@ -380,6 +429,7 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
     let inventoryStockMovementCount: number | null = null;
     let inventoryStockMovementPages: LoadEvidence["inventoryStockMovementPages"] = [];
     let inventoryHistoryReadyMs: number | null = null;
+    let inventoryNetworkCompleteMs: number | null = null;
     let inventoryRemoteErrorVisible: boolean | null = null;
     if (mode === "candidate") {
       await coldPage.waitForLoadState("networkidle");
@@ -395,11 +445,12 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
       expect(Number.isInteger(expectedRecentStockMovements) && expectedRecentStockMovements >= 0 && expectedRecentStockMovements < 5_000).toBe(true);
       expect(expectedRecentStockMovements, "The frozen scale candidate requires its exact 1,506-row Inventory history shape.").toBe(1_506);
       const inventoryMovementResponses = () => responses.slice(inventoryResponseOffset).filter((response) => response.stockMovementHistoryPage === true);
-      await expect.poll(() => {
-        const movementResponses = inventoryMovementResponses();
-        if (movementResponses.length === 0 || movementResponses.some((response) => !Number.isInteger(response.jsonRowCount))) return -1;
-        return movementResponses.reduce((total, response) => total + (response.jsonRowCount ?? 0), 0);
-      }).toBe(expectedRecentStockMovements);
+       await expect.poll(() => {
+         const movementResponses = inventoryMovementResponses();
+         if (movementResponses.length === 0 || movementResponses.some((response) => !Number.isInteger(response.jsonRowCount))) return -1;
+         return movementResponses.reduce((total, response) => total + (response.jsonRowCount ?? 0), 0);
+       }, { intervals: [25], timeout: 5_000 }).toBe(expectedRecentStockMovements);
+       inventoryNetworkCompleteMs = performance.now() - inventoryHistoryStarted;
       const movementResponses = inventoryMovementResponses().sort((left, right) =>
         Number(left.requestOffset ?? Number.MAX_SAFE_INTEGER) - Number(right.requestOffset ?? Number.MAX_SAFE_INTEGER));
       const expectedPageRows = expectedRecentStockMovements === 0
@@ -446,15 +497,23 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
       await coldPage.waitForLoadState("networkidle");
       await coldPage.waitForTimeout(500);
     }
-    const webVitals = await coldPage.evaluate(() => (globalThis as typeof globalThis & { __BP_WEB_VITALS__?: { largestContentfulPaintMs: number; cumulativeLayoutShift: number } }).__BP_WEB_VITALS__ ?? { largestContentfulPaintMs: 0, cumulativeLayoutShift: 0 });
+    await Promise.all(responseTasks.values());
+    const postSafeResponses = responses.flatMap((entry) => {
+      const startMinusSafeMs = entry.requestStartMs - browserBoundary.timeOrigin - safeMark;
+      return Number.isFinite(startMinusSafeMs) && startMinusSafeMs > 0
+        ? [{ path: entry.path, startMinusSafeMs, status: entry.status }]
+        : [];
+    });
+    const webVitals = await coldPage.evaluate(() => (globalThis as typeof globalThis & { __BP_WEB_VITALS__?: { largestContentfulPaintMs: number; largestContentfulPaintElement: string; largestContentfulPaintResourcePath: string; cumulativeLayoutShift: number } }).__BP_WEB_VITALS__ ?? { largestContentfulPaintMs: 0, largestContentfulPaintElement: "", largestContentfulPaintResourcePath: "", cumulativeLayoutShift: 0 });
 
     const criticalApiBytes = criticalResponses.filter((entry) => entry.api).reduce((total, entry) => total + (entry.bodyBytes || entry.contentLengthBytes), 0);
-    const coldShellBytes = criticalResponses.filter((entry) => entry.shell).reduce((total, entry) => total + (entry.contentLengthBytes || entry.bodyBytes), 0);
+    const coldShellBytes = sumCriticalShellTransferBytes(criticalResources);
     const initialJavascriptBytes = criticalResponses.filter((entry) => entry.javascript).reduce((total, entry) => total + entry.bodyBytes, 0);
     const initialJavascriptGzipBytes = criticalResponses.filter((entry) => entry.javascript).reduce((total, entry) => total + entry.gzipBytes, 0);
     loads.push({
       sample,
       safeInteractiveMs,
+      playwrightObservedSafeInteractiveMs,
       bootstrapMarks: marks,
       criticalResources,
       criticalResponses,
@@ -467,8 +526,10 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
       requestedFullAppStateData,
       requestedExportChunk,
       requestedHistoryBeforeSafeInteractive,
-      bootstrapDependencyDepth: mode === "candidate" ? measureBootstrapDependencyDepth(criticalResponses) : null,
+      bootstrapDependencyDepth: mode === "candidate" ? measureBootstrapDependencyDepth(criticalResources, criticalResponses) : null,
       largestContentfulPaintMs: webVitals.largestContentfulPaintMs,
+      largestContentfulPaintElement: webVitals.largestContentfulPaintElement,
+      largestContentfulPaintResourcePath: webVitals.largestContentfulPaintResourcePath,
       cumulativeLayoutShift: webVitals.cumulativeLayoutShift,
       renderEvidence,
       activePanelCommitDurationsMs,
@@ -476,7 +537,10 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
       inventoryStockMovementCount,
       inventoryStockMovementPages,
       inventoryHistoryReadyMs,
-      inventoryRemoteErrorVisible
+      inventoryNetworkCompleteMs,
+      inventoryRemoteErrorVisible,
+      criticalEvidenceErrors: [...timingErrors, ...criticalSelection.errors],
+      postSafeResponses
     });
     await context.close();
   }
@@ -484,6 +548,7 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
   const summary = summarize(loads);
   const baseline = mode === "candidate" ? readBaseline(browser.version()) : undefined;
   const result = {
+    metricVersion: PERFORMANCE_METRIC_VERSION,
     runId,
     mode,
     sampleCount,
@@ -502,41 +567,42 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
   };
   await attachJson(testInfo, "operational-performance-evidence", result);
 
-  expect(loads.every((entry) => entry.failedRequestPaths.length === 0)).toBe(true);
-  expect(loads.every((entry) => !entry.requestedExportChunk)).toBe(true);
+  expect.soft(loads.every((entry) => entry.failedRequestPaths.length === 0)).toBe(true);
+  expect.soft(loads.every((entry) => entry.criticalEvidenceErrors.length === 0)).toBe(true);
+  expect.soft(loads.every((entry) => !entry.requestedExportChunk)).toBe(true);
   const expectedAppStateVersion = Number(process.env.E2E_EXPECTED_APP_STATE_VERSION);
-  expect(Number.isInteger(expectedAppStateVersion)).toBe(true);
-  expect(loads.every((entry) => {
+  expect.soft(Number.isInteger(expectedAppStateVersion)).toBe(true);
+  expect.soft(loads.every((entry) => {
     const identities = entry.criticalResponses.filter((response) => response.path.endsWith("/rest/v1/app_state"));
     return identities.length > 0 && identities.every((response) => response.appStateVersion === expectedAppStateVersion);
   })).toBe(true);
   if (mode === "candidate") {
-    expect(loads.every((entry) => !entry.requestedFullAppStateData)).toBe(true);
-    expect(loads.every((entry) => !entry.requestedHistoryBeforeSafeInteractive)).toBe(true);
-    expect(loads.every((entry) => entry.bootstrapDependencyDepth !== null && entry.bootstrapDependencyDepth <= 3)).toBe(true);
-    expect(loads.every((entry) => entry.criticalApiBytes > 0)).toBe(true);
-    expect(loads.every((entry) => entry.coldShellBytes > 0)).toBe(true);
-    expect(loads.every((entry) => entry.criticalResponses.every((response) =>
+    expect.soft(loads.every((entry) => !entry.requestedFullAppStateData)).toBe(true);
+    expect.soft(loads.every((entry) => !entry.requestedHistoryBeforeSafeInteractive)).toBe(true);
+    expect.soft(loads.every((entry) => entry.bootstrapDependencyDepth !== null && entry.bootstrapDependencyDepth <= 3)).toBe(true);
+    expect.soft(loads.every((entry) => entry.criticalApiBytes > 0)).toBe(true);
+    expect.soft(loads.every((entry) => entry.coldShellBytes > 0)).toBe(true);
+    expect.soft(loads.every((entry) => entry.criticalResponses.every((response) =>
       response.status === 204 || response.status === 304 || response.bodyBytes > 0 || response.contentLengthBytes > 0
     ))).toBe(true);
-    expect(loads.every((entry) => entry.idleRootCommits === 0)).toBe(true);
-    expect(loads.every((entry) => entry.inventoryStockMovementCount === Number(process.env.E2E_EXPECTED_RECENT_STOCK_MOVEMENTS))).toBe(true);
-    expect(loads.every((entry) => entry.inventoryHistoryReadyMs !== null && entry.inventoryHistoryReadyMs <= 5_000)).toBe(true);
-    expect(loads.every((entry) => entry.inventoryRemoteErrorVisible === false)).toBe(true);
-    expect(summary.p95).toBeLessThanOrEqual(3_500);
-    expect(summary.max).toBeLessThanOrEqual(5_000);
-    expect(summary.p95).toBeLessThanOrEqual(baseline!.summary.p95 * 0.6);
-    expect(summary.criticalApiBytesP95).toBeLessThanOrEqual(750 * 1024);
-    expect(summary.criticalApiBytesP95).toBeLessThanOrEqual(baseline!.summary.criticalApiBytesP95 * 0.4);
-    expect(summary.coldShellBytesP95).toBeLessThanOrEqual(450 * 1024);
-    expect(summary.initialJavascriptBytesMax).toBeLessThanOrEqual(1_000 * 1024);
-    expect(summary.initialJavascriptGzipBytesMax).toBeLessThanOrEqual(300 * 1024);
-    expect(summary.lcpP75).toBeGreaterThan(0);
-    expect(summary.lcpP75).toBeLessThanOrEqual(2_500);
-    expect(summary.clsMax).toBeLessThanOrEqual(0.1);
-    expect(summary.activePanelCommitP95Ms).toBeLessThan(16);
-    expect(summary.activePanelCommitMaxMs).toBeLessThan(50);
-    expect(summary.inventoryHistoryReadyP95Ms).toBeLessThanOrEqual(2_000);
-    expect(summary.inventoryHistoryReadyMaxMs).toBeLessThanOrEqual(5_000);
+    expect.soft(loads.every((entry) => entry.idleRootCommits === 0)).toBe(true);
+    expect.soft(loads.every((entry) => entry.inventoryStockMovementCount === Number(process.env.E2E_EXPECTED_RECENT_STOCK_MOVEMENTS))).toBe(true);
+    expect.soft(loads.every((entry) => entry.inventoryHistoryReadyMs !== null && entry.inventoryHistoryReadyMs <= 5_000)).toBe(true);
+    expect.soft(loads.every((entry) => entry.inventoryRemoteErrorVisible === false)).toBe(true);
+    expect.soft(summary.p95).toBeLessThanOrEqual(3_500);
+    expect.soft(summary.max).toBeLessThanOrEqual(5_000);
+    expect.soft(summary.p95).toBeLessThanOrEqual(baseline!.summary.p95 * 0.6);
+    expect.soft(summary.criticalApiBytesP95).toBeLessThanOrEqual(750 * 1024);
+    expect.soft(summary.criticalApiBytesP95).toBeLessThanOrEqual(baseline!.summary.criticalApiBytesP95 * 0.4);
+    expect.soft(summary.coldShellBytesP95).toBeLessThanOrEqual(450 * 1024);
+    expect.soft(summary.initialJavascriptBytesMax).toBeLessThanOrEqual(1_000 * 1024);
+    expect.soft(summary.initialJavascriptGzipBytesMax).toBeLessThanOrEqual(300 * 1024);
+    expect.soft(summary.lcpP75).toBeGreaterThan(0);
+    expect.soft(summary.lcpP75).toBeLessThanOrEqual(2_500);
+    expect.soft(summary.clsMax).toBeLessThanOrEqual(0.1);
+    expect.soft(summary.activePanelCommitP95Ms).toBeLessThan(16);
+    expect.soft(summary.activePanelCommitMaxMs).toBeLessThan(50);
+    expect.soft(summary.inventoryHistoryReadyP95Ms).toBeLessThanOrEqual(2_000);
+    expect.soft(summary.inventoryHistoryReadyMaxMs).toBeLessThanOrEqual(5_000);
   }
 });

@@ -1,4 +1,4 @@
-import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useClock } from "./hooks/useClock";
 import { useAppSync, type RemoteRestoreState } from "./hooks/useAppSync";
 import { Modal } from "./components/Modal";
@@ -9,15 +9,7 @@ import { MetricCard, TodayMetricCard } from "./components/MetricCard";
 import { NumericInput } from "./components/NumericInput";
 import { CustomerAutocompleteFields, type CustomerAutocompleteSuggestionProps } from "./components/CustomerAutocompleteFields";
 import { SellableInventoryPicker } from "./components/SellableInventoryPicker";
-import { UsersPanel } from "./panels/UsersPanel";
-import { SettingsPanel } from "./panels/SettingsPanel";
-import { InventoryPanel } from "./panels/InventoryPanel";
-import { CustomersPanel } from "./panels/CustomersPanel";
-import { ReportsPanel } from "./panels/ReportsPanel";
-import { SalePanel } from "./panels/SalePanel";
 import { DashboardPanel } from "./panels/DashboardPanel";
-import { BillRegisterPanel } from "./panels/BillRegisterPanel";
-import { ActivityPanel } from "./panels/ActivityPanel";
 import { useActivityFeed } from "./hooks/useActivityFeed";
 import brandLogo from "../Branding/Logo.optimized.png";
 import {
@@ -87,6 +79,7 @@ import {
   estimateCheckoutPayloadBytes,
   recordCheckoutTelemetrySample
 } from "./checkoutTelemetry";
+
 import { runQaControlledNormalizedRead } from "./qa/normalizedReadFailure";
 import type {
   AppData,
@@ -228,6 +221,15 @@ import {
   type OperationalMutationKind,
   type OperationalMutationPayload
 } from "./operationalSync";
+
+const ActivityPanel = lazy(() => import("./panels/ActivityPanel").then((module) => ({ default: module.ActivityPanel })));
+const BillRegisterPanel = lazy(() => import("./panels/BillRegisterPanel").then((module) => ({ default: module.BillRegisterPanel })));
+const CustomersPanel = lazy(() => import("./panels/CustomersPanel").then((module) => ({ default: module.CustomersPanel })));
+const InventoryPanel = lazy(() => import("./panels/InventoryPanel").then((module) => ({ default: module.InventoryPanel })));
+const ReportsPanel = lazy(() => import("./panels/ReportsPanel").then((module) => ({ default: module.ReportsPanel })));
+const SalePanel = lazy(() => import("./panels/SalePanel").then((module) => ({ default: module.SalePanel })));
+const SettingsPanel = lazy(() => import("./panels/SettingsPanel").then((module) => ({ default: module.SettingsPanel })));
+const UsersPanel = lazy(() => import("./panels/UsersPanel").then((module) => ({ default: module.UsersPanel })));
 
 type PostHopContinuationMode = "gaming" | "consumables";
 type SessionItemFormState = Record<string, { sellableOptionId: string; quantity: number; sellAsPackOf?: number }>;
@@ -7969,6 +7971,7 @@ export default function App() {
           </div>
         )}
 
+        <Suspense fallback={<div className="panel"><div className="empty-state">Loading section...</div></div>}>
         {activeTab === "dashboard" && (
           <DashboardPanel
             stations={stations}
@@ -8369,6 +8372,7 @@ export default function App() {
             onToggleUserActive={toggleUserActive}
           />
         )}
+        </Suspense>
       </main>
 
       {showStartSessionModal && (
