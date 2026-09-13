@@ -20,6 +20,9 @@ describe("sameJsonValue", () => {
   it("still rejects changed values, types, and array order", () => {
     expect(sameJsonValue({ count: 1 }, { count: 2 })).toBe(false);
     expect(sameJsonValue({ count: 1 }, { count: "1" })).toBe(false);
+    expect(sameJsonValue({ count: 1 }, {})).toBe(false);
+    expect(sameJsonValue({ count: 1 }, { count: 1, extra: true })).toBe(false);
+    expect(sameJsonValue({ value: null }, {})).toBe(false);
     expect(sameJsonValue({ order: ["a", "b"] }, { order: ["b", "a"] })).toBe(false);
   });
 });
