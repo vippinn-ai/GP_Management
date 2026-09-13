@@ -1199,6 +1199,45 @@ describe("app_state data gateway", () => {
     expect(client.rpc).not.toHaveBeenCalled();
   });
 
+  it("reuses a failed atomic preparation until an explicit manual reset", async () => {
+    let realtimeStatus: ((status: string) => void) | undefined;
+    const channel = {
+      on: vi.fn(() => channel),
+      subscribe: vi.fn((callback: (status: string) => void) => {
+        realtimeStatus = callback;
+        return channel;
+      })
+    };
+    const client = {
+      auth: {
+        getSession: vi.fn()
+          .mockRejectedValueOnce(new Error("Session lookup failed."))
+          .mockResolvedValueOnce({ data: { session: { user: { id: "user-1" } } }, error: null })
+      },
+      channel: vi.fn(() => channel),
+      removeChannel: vi.fn(),
+      rpc: vi.fn()
+    };
+    backendMocks.getSupabaseClient.mockReturnValue(client);
+    const gateway = createRemoteDataGateway({
+      ...DEFAULT_BACKEND_FEATURE_FLAGS,
+      atomicBootstrap: true,
+      normalizedBootstrap: true,
+      normalizedRealtime: true
+    });
+
+    await expect(gateway.prepareAuthenticatedBootstrap?.()).rejects.toThrow("Session lookup failed.");
+    await expect(gateway.prepareAuthenticatedBootstrap?.()).rejects.toThrow("Session lookup failed.");
+    expect(client.auth.getSession).toHaveBeenCalledTimes(1);
+
+    gateway.resetAuthenticatedBootstrapAttempt?.();
+    const freshPreparation = gateway.prepareAuthenticatedBootstrap?.();
+    await vi.waitFor(() => expect(channel.subscribe).toHaveBeenCalledTimes(1));
+    realtimeStatus?.("SUBSCRIBED");
+    await expect(freshPreparation).resolves.toEqual({ status: "session", userId: "user-1" });
+    expect(client.auth.getSession).toHaveBeenCalledTimes(2);
+  });
+
   it("shares one session, channel, buffer, and RPC across concurrent atomic bootstrap callers", async () => {
     let realtimeHandler: ((payload: { new: unknown }) => void) | undefined;
     let realtimeStatus: ((status: string) => void) | undefined;

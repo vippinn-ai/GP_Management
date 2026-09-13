@@ -356,6 +356,46 @@ begin
 end;
 $$;
 
+do $acl$
+declare
+  function_owner text;
+  grantee_name text;
+begin
+  select pg_get_userbyid(p.proowner)
+  into strict function_owner
+  from pg_proc p
+  join pg_namespace n on n.oid = p.pronamespace
+  where n.nspname = 'public'
+    and p.proname = 'load_operational_bootstrap_v2'
+    and pg_get_function_identity_arguments(p.oid) = '';
+
+  for grantee_name in
+    select distinct case when acl.grantee = 0 then 'PUBLIC' else pg_get_userbyid(acl.grantee) end
+    from pg_proc p
+    join pg_namespace n on n.oid = p.pronamespace
+    cross join lateral aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) acl
+    where n.nspname = 'public'
+      and p.proname = 'load_operational_bootstrap_v2'
+      and pg_get_function_identity_arguments(p.oid) = ''
+  loop
+    if grantee_name = 'PUBLIC' then
+      execute 'revoke all privileges on function public.load_operational_bootstrap_v2() from public';
+    else
+      execute format(
+        'revoke all privileges on function public.load_operational_bootstrap_v2() from %I',
+        grantee_name
+      );
+    end if;
+  end loop;
+
+  execute format(
+    'grant execute on function public.load_operational_bootstrap_v2() to %I',
+    function_owner
+  );
+end;
+$acl$;
+
 revoke all on function public.load_operational_bootstrap_v2() from public;
 revoke all on function public.load_operational_bootstrap_v2() from anon;
+revoke all on function public.load_operational_bootstrap_v2() from service_role;
 grant execute on function public.load_operational_bootstrap_v2() to authenticated;

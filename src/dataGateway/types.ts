@@ -180,6 +180,7 @@ export interface AdminDataChangeCommitResult {
 export interface RemoteDataGateway {
   prepareAuthenticatedBootstrap?(): Promise<AuthenticatedBootstrapPreparation>;
   loadAuthenticatedAppDataSnapshot?(): Promise<AuthenticatedAppDataSnapshotResult>;
+  resetAuthenticatedBootstrapAttempt?(): void;
   scheduleAuthenticatedBootstrapCancellation?(): void;
   loadAppDataSnapshot(options?: { organization?: RemoteOrganization }): Promise<RemoteAppDataSnapshot>;
   saveAppData(

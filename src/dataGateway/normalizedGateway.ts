@@ -641,17 +641,17 @@ export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): 
     })();
     preparedAtomicBootstrap = preparation.catch((error) => {
       resetRealtimeAttempt();
-      preparedAtomicBootstrap = null;
-      atomicBootstrapAttempt = null;
       throw error;
     });
     const currentPreparation = preparedAtomicBootstrap;
-    void currentPreparation.then((result) => {
-      if (result.status === "no-session" && preparedAtomicBootstrap === currentPreparation) {
-        preparedAtomicBootstrap = null;
-        atomicBootstrapAttempt = null;
-      }
-    });
+    void currentPreparation
+      .then((result) => {
+        if (result.status === "no-session" && preparedAtomicBootstrap === currentPreparation) {
+          preparedAtomicBootstrap = null;
+          atomicBootstrapAttempt = null;
+        }
+      })
+      .catch(() => undefined);
     return preparedAtomicBootstrap;
   };
 
@@ -732,8 +732,6 @@ export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): 
           skippedFullAppStateData: true
         });
         resetRealtimeAttempt();
-        preparedAtomicBootstrap = null;
-        atomicBootstrapAttempt = null;
         throw error;
       } finally {
         bootstrapInFlight = false;
@@ -751,6 +749,11 @@ export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): 
       preparedAtomicBootstrap = null;
       atomicBootstrapAttempt = null;
     }, 0);
+  };
+  const resetAuthenticatedBootstrapAttempt = () => {
+    resetRealtimeAttempt();
+    preparedAtomicBootstrap = null;
+    atomicBootstrapAttempt = null;
   };
   const gateway: RemoteDataGateway = {
     async loadAppDataSnapshot(options) {
@@ -832,6 +835,7 @@ export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): 
   if (_flags.atomicBootstrap) {
     gateway.prepareAuthenticatedBootstrap = prepareAuthenticatedBootstrap;
     gateway.loadAuthenticatedAppDataSnapshot = loadAuthenticatedAppDataSnapshot;
+    gateway.resetAuthenticatedBootstrapAttempt = resetAuthenticatedBootstrapAttempt;
     gateway.scheduleAuthenticatedBootstrapCancellation = scheduleAuthenticatedBootstrapCancellation;
   }
   if (_flags.rpcOperationalWrites) {

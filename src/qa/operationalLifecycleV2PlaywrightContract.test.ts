@@ -202,6 +202,8 @@ describe("operational lifecycle v2 Playwright and performance contract", () => {
       spec.indexOf('if (mode === "candidate")', commonCriticalResponseGateIndex)
     );
     expect(spec).toContain("bp-visible-dashboard-ready");
+    expect(spec).toContain('expect(marks["bp-realtime-requested"]).toBeLessThan(marks["bp-app-module-ready"])');
+    expect(spec).toContain("bootstrapRpcResponseCount === 1");
     expect(spec).toContain("installVisibleReadyObserver");
     expect(spec).not.toContain("bp-baseline-interactive-observed");
     expect(spec).toContain("sumCriticalShellTransferBytes");

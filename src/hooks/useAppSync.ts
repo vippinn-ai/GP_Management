@@ -99,6 +99,7 @@ export function useAppSync(params: {
     dataGateway = defaultRemoteDataGateway
   } = params;
   const remoteRestoreStateRef = useRef(remoteRestoreState);
+  const lastAtomicResetSignalRef = useRef(0);
   remoteRestoreStateRef.current = remoteRestoreState;
 
   useEffect(() => {
@@ -111,6 +112,10 @@ export function useAppSync(params: {
 
     const authenticatedSnapshotLoader = dataGateway.loadAuthenticatedAppDataSnapshot;
     if (authenticatedSnapshotLoader) {
+      if (restoreRetrySignal > 0 && lastAtomicResetSignalRef.current !== restoreRetrySignal) {
+        dataGateway.resetAuthenticatedBootstrapAttempt?.();
+        lastAtomicResetSignalRef.current = restoreRetrySignal;
+      }
       void (async () => {
         let preparedUserId: string | null = null;
         try {
@@ -278,11 +283,14 @@ export function useAppSync(params: {
     if (remoteRestoreState !== "stale-cache" && remoteRestoreState !== "blocked") {
       return;
     }
+    if (dataGateway.loadAuthenticatedAppDataSnapshot) {
+      return;
+    }
     const retryTimer = window.setTimeout(() => {
       setRestoreRetrySignal((previous) => previous + 1);
     }, restoreRetryDelayMs);
     return () => window.clearTimeout(retryTimer);
-  }, [backendConfigured, online, remoteRestoreState, restoreRetryDelayMs, setRestoreRetrySignal]);
+  }, [backendConfigured, dataGateway, online, remoteRestoreState, restoreRetryDelayMs, setRestoreRetrySignal]);
 
   useEffect(() => {
     if (!backendConfigured || !activeUserId) {

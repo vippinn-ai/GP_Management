@@ -62,6 +62,8 @@ Independent entities share no global lock. A failure rolls back every write.
 
 Events contain changed normalized IDs, mutation identity, duration, and released continuations; no full entity or `app_state` version is required. Stale unrelated compatibility drift does not block v2. A closed target returns a stable conflict with no partial writes. A lost response is recovered only by same-ID replay. Hydration failure remains explicit and recoverable; it never causes a new-ID automatic retry.
 
+The atomic startup attempt is also single-shot. A failed or ambiguous session, realtime, RPC, mapping, or catch-up promise remains cached and cannot be retried by a timer, remount, or StrictMode effect adoption. Only an explicit user retry signal tears down the prior channel and creates one fresh attempt; the same retry signal is consumed once. When the atomic flag is off, the build uses the retained static application entry so this optimization adds no default-off chunk waterfall.
+
 ## Rollback
 
 Disable the operational-v2 flag to return new target commands to retained v1 functions while normalized reads remain enabled. Keep v2 functions/table installed so evidence remains. A full compatibility-read rollback requires separately verified normalized-to-`app_state` reconstruction. Bundle and bootstrap units have independent frontend rollback commits/flags.

@@ -5,6 +5,10 @@ do $$
 declare
   actor_id uuid;
   payload jsonb;
+  function_owner text;
+  function_security_definer boolean;
+  function_volatility "char";
+  function_config text[];
   expected_keys text[] := array[
     'contract_version','status','actor_id','organization_id','actor_profile','organization',
     'app_state_metadata','profiles','inventory_categories','stations','pricing_rules','inventory_items',
@@ -36,6 +40,36 @@ begin
     is distinct from (select array_agg(key order by key) from unnest(expected_keys) as keys(key))
   then raise exception 'bootstrap response keys mismatch'; end if;
   if octet_length(payload::text) > 160992 then raise exception 'bootstrap payload exceeded byte budget'; end if;
+  select pg_get_userbyid(p.proowner), p.prosecdef, p.provolatile, p.proconfig
+  into strict function_owner, function_security_definer, function_volatility, function_config
+  from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+  where n.nspname = 'public' and p.proname = 'load_operational_bootstrap_v2'
+    and pg_get_function_identity_arguments(p.oid) = '';
+  if function_security_definer is distinct from true
+    or function_volatility is distinct from 's'
+    or to_jsonb(function_config) is distinct from '["search_path=pg_catalog","statement_timeout=5s"]'::jsonb
+    or (select count(*) from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+      cross join lateral aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) acl
+      where n.nspname = 'public' and p.proname = 'load_operational_bootstrap_v2'
+        and pg_get_function_identity_arguments(p.oid) = '') <> 2
+    or exists (select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+      cross join lateral aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) acl
+      where n.nspname = 'public' and p.proname = 'load_operational_bootstrap_v2'
+        and pg_get_function_identity_arguments(p.oid) = ''
+        and (case when acl.grantee = 0 then 'PUBLIC' else pg_get_userbyid(acl.grantee) end
+          not in (function_owner, 'authenticated')
+          or acl.privilege_type <> 'EXECUTE' or acl.is_grantable))
+    or not exists (select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+      cross join lateral aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) acl
+      where n.nspname = 'public' and p.proname = 'load_operational_bootstrap_v2'
+        and pg_get_function_identity_arguments(p.oid) = ''
+        and pg_get_userbyid(acl.grantee) = function_owner and acl.privilege_type = 'EXECUTE' and not acl.is_grantable)
+    or not exists (select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+      cross join lateral aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) acl
+      where n.nspname = 'public' and p.proname = 'load_operational_bootstrap_v2'
+        and pg_get_function_identity_arguments(p.oid) = ''
+        and pg_get_userbyid(acl.grantee) = 'authenticated' and acl.privilege_type = 'EXECUTE' and not acl.is_grantable)
+  then raise exception 'bootstrap owner, security mode, configuration, or exact ACL mismatch'; end if;
   perform set_config('normops.bootstrap_postflight_payload', payload::text, true);
 end $$;
 
@@ -52,13 +86,24 @@ select jsonb_build_object(
   'captured_at_utc', timezone('utc', clock_timestamp()),
   'function', (select jsonb_build_object(
     'definition_md5', md5(pg_get_functiondef(oid)),
-    'body_md5', md5(btrim(prosrc)),
+    'body_md5', md5(regexp_replace(btrim(prosrc, E' \t\n\r'), E'\\r\\n?', E'\\n', 'g')),
+    'owner', pg_get_userbyid(proowner),
     'security_definer', prosecdef,
     'volatility', provolatile,
     'config', proconfig,
     'public_execute', has_function_privilege('public', oid, 'execute'),
     'anon_execute', has_function_privilege('anon', oid, 'execute'),
-    'authenticated_execute', has_function_privilege('authenticated', oid, 'execute')
+    'service_role_execute', has_function_privilege('service_role', oid, 'execute'),
+    'authenticated_execute', has_function_privilege('authenticated', oid, 'execute'),
+    'acl_detail', (
+      select jsonb_agg(jsonb_build_object(
+        'grantor', case when acl.grantor = 0 then 'PUBLIC' else pg_get_userbyid(acl.grantor) end,
+        'grantee', case when acl.grantee = 0 then 'PUBLIC' else pg_get_userbyid(acl.grantee) end,
+        'privilege_type', acl.privilege_type,
+        'is_grantable', acl.is_grantable
+      ) order by acl.grantee, acl.privilege_type)
+      from aclexplode(coalesce(proacl, acldefault('f', proowner))) acl
+    )
   ) from target),
   'payload', (select jsonb_build_object(
     'bytes', octet_length(value::text),

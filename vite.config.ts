@@ -6,17 +6,26 @@ import { getBackendResourceHints } from "./src/backendResourceHints";
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "VITE_");
   const performanceEvidenceEnabled = env.VITE_PERFORMANCE_EVIDENCE === "true";
+  const atomicBootstrapEnabled = env.VITE_BACKEND_ATOMIC_BOOTSTRAP === "true";
   const backendResourceHints = getBackendResourceHints(env.VITE_SUPABASE_URL);
   return {
     plugins: [
       {
         name: "backend-resource-hints",
-        transformIndexHtml() {
-          return backendResourceHints.map((hint) => ({
-            tag: "link",
-            attrs: hint,
-            injectTo: "head-prepend" as const
-          }));
+        transformIndexHtml: {
+          order: "pre",
+          handler(html) {
+            return {
+              html: atomicBootstrapEnabled
+                ? html
+                : html.replace('/src/main.tsx', '/src/main-legacy.tsx'),
+              tags: backendResourceHints.map((hint) => ({
+                tag: "link",
+                attrs: hint,
+                injectTo: "head-prepend" as const
+              }))
+            };
+          }
         }
       },
       react()

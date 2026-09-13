@@ -16,6 +16,7 @@ describe("operational bootstrap v2 SQL contract", () => {
     expect(sql).toMatch(/set statement_timeout = '5s'/i);
     expect(sql).toMatch(/revoke all on function public\.load_operational_bootstrap_v2\(\) from public/i);
     expect(sql).toMatch(/revoke all on function public\.load_operational_bootstrap_v2\(\) from anon/i);
+    expect(sql).toMatch(/revoke all on function public\.load_operational_bootstrap_v2\(\) from service_role/i);
     expect(sql).toMatch(/grant execute on function public\.load_operational_bootstrap_v2\(\) to authenticated/i);
     expect(body).toMatch(/auth\.uid\(\)/i);
     expect(body).not.toMatch(/\b(insert|update|delete|merge|truncate|execute)\b/i);
@@ -74,6 +75,8 @@ describe("operational bootstrap staging controls", () => {
     expect(preflight).toContain("deployment_environment_identity");
     expect(preflight).toContain("pg_get_functiondef(oid)");
     expect(preflight).toContain("acl_detail");
+    expect(preflight).toContain("'installer_role', current_user");
+    expect(preflight).toContain("regexp_replace(btrim(prosrc, E' \\t\\n\\r')");
     expect(preflight).toContain("current_user_has_org_access(text)");
     expect(preflight).toContain("relrowsecurity");
     expect(preflight.trimEnd()).toMatch(/rollback;$/i);
@@ -85,6 +88,8 @@ describe("operational bootstrap staging controls", () => {
     expect(postflight).toContain("bootstrap response keys mismatch");
     expect(postflight).toContain("octet_length(payload::text) > 160992");
     expect(postflight).toContain("has_function_privilege('anon'");
+    expect(postflight).toContain("'service_role_execute'");
+    expect(postflight).toContain("not in (function_owner, 'authenticated')");
     expect(postflight).toContain("has_function_privilege('authenticated'");
     expect(postflight.trimEnd()).toMatch(/rollback;$/i);
   });
@@ -93,7 +98,10 @@ describe("operational bootstrap staging controls", () => {
     expect(installer).toContain("bootstrap function definition, owner, configuration, or ACL changed after preflight");
     expect(installer).toContain("unexpected bootstrap function appeared after preflight");
     expect(installer).toContain("bootstrap install changed app_state");
-    expect(installer).toContain("rollback refused unexpected bootstrap definition drift");
+    expect(installer).toContain("realtime publication, RLS policy, or access helper changed after preflight");
+    expect(installer).toContain("rollback refused unexpected bootstrap definition, owner, configuration, ACL, or security drift");
+    expect(installer).toContain("Source worktree must be clean before staging artifacts are built.");
+    expect(installer).toContain('const sourceCommit = argument("source-commit")');
     expect(installer).toContain("previous.definition.trim() + \";\"");
     expect(installer).toContain("drop function public.${FUNCTION}();");
     expect(installer).toContain('flag: "wx"');

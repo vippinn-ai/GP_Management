@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -17,7 +18,34 @@ const sha256 = (value) => crypto.createHash("sha256").update(value).digest("hex"
 const md5 = (value) => crypto.createHash("md5").update(value).digest("hex");
 const sqlLiteral = (value) => `'${String(value).replaceAll("'", "''")}'`;
 const quoteRole = (role) => role === "PUBLIC" ? "public" : `"${String(role).replaceAll('"', '""')}"`;
-const normalizeBody = (body) => body.replaceAll("\r\n", "\n").trim();
+const normalizeBody = (body) => body.replaceAll("\r\n", "\n").replaceAll("\r", "\n").trim();
+const normalizedBodySql = (expression) => `md5(regexp_replace(btrim(${expression}, E' \\t\\n\\r'), E'\\\\r\\\\n?', E'\\\\n', 'g'))`;
+
+function applicableSelectPolicy(policy) {
+  const command = String(policy.command ?? "").toUpperCase();
+  const roles = Array.isArray(policy.roles) ? policy.roles.map((role) => String(role).toLowerCase()) : [];
+  return (command === "SELECT" || command === "ALL")
+    && roles.some((role) => role === "authenticated" || role === "public" || role === "anon");
+}
+
+function tenantScopedAuthenticatedPolicy(policy) {
+  const roles = Array.isArray(policy.roles) ? policy.roles.map((role) => String(role).toLowerCase()).sort() : [];
+  const normalizedUsing = String(policy.using ?? "")
+    .toLowerCase()
+    .replaceAll(/\s+/g, "")
+    .replace(/^\((.*)\)$/, "$1");
+  return roles.length === 1
+    && roles[0] === "authenticated"
+    && normalizedUsing === "current_user_has_org_access(organization_id)";
+}
+
+function gitOutput(root, args) {
+  return execFileSync("git", ["-c", `safe.directory=${root}`, ...args], {
+    cwd: root,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"]
+  }).trim();
+}
 
 function readEvidence(filePath) {
   const parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
@@ -62,7 +90,12 @@ end $acl$;`];
 
 const root = process.cwd();
 const runId = argument("run-id");
+const sourceCommit = argument("source-commit");
 if (!/^normops-\d{8}-\d{4}-[a-z0-9-]+$/i.test(runId)) throw new Error("Run id must match normops-YYYYMMDD-HHMM-<slug>.");
+if (!/^[0-9a-f]{40}$/i.test(sourceCommit)) throw new Error("Source commit must be an exact 40-character Git SHA.");
+const actualHead = gitOutput(root, ["rev-parse", "HEAD"]);
+if (actualHead !== sourceCommit) throw new Error(`Source commit ${sourceCommit} does not match HEAD ${actualHead}.`);
+if (gitOutput(root, ["status", "--porcelain"]) !== "") throw new Error("Source worktree must be clean before staging artifacts are built.");
 const preflightPath = path.resolve(root, argument("preflight"));
 const preflightText = fs.readFileSync(preflightPath, "utf8");
 const preflight = readEvidence(preflightPath);
@@ -76,24 +109,28 @@ if (preflight.organization_id !== "org-primary") throw new Error("Preflight orga
 if (preflight.open_sessions !== 0 || preflight.open_customer_tabs !== 0) throw new Error("Staging operational floor is not clean.");
 if (preflight.processing_financial_mutations !== 0 || preflight.processing_operational_mutations !== 0) throw new Error("Staging has an incomplete mutation.");
 if (!Number.isInteger(preflight.app_state?.version) || !/^[0-9a-f]{32}$/i.test(preflight.app_state?.md5 ?? "")) throw new Error("Preflight app_state evidence is incomplete.");
+if (!preflight.installer_role || typeof preflight.installer_role !== "string") throw new Error("Preflight installer role is missing.");
 if (preflight.realtime_security?.rls_enabled !== true || !Array.isArray(preflight.realtime_security?.policies)) throw new Error("Preflight realtime RLS evidence is incomplete.");
 if (preflight.realtime_security.published !== true) throw new Error("Operational events is not published to staging realtime.");
-if (!preflight.realtime_security.policies.some((policy) =>
-  String(policy.command).toUpperCase() === "SELECT"
-  && Array.isArray(policy.roles)
-  && policy.roles.includes("authenticated")
-  && /current_user_has_org_access\s*\(\s*organization_id\s*\)/i.test(policy.using ?? "")
-)) throw new Error("Operational events RLS does not prove tenant-scoped authenticated reads.");
+const applicablePolicies = preflight.realtime_security.policies.filter(applicableSelectPolicy);
+if (applicablePolicies.length === 0 || applicablePolicies.some((policy) => !tenantScopedAuthenticatedPolicy(policy))) {
+  throw new Error("Operational events SELECT policies do not prove an exact tenant-scoped authenticated-only policy set.");
+}
+if (!/^[0-9a-f]{32}$/i.test(preflight.realtime_security?.access_helper_md5 ?? "")
+  || md5(preflight.realtime_security?.access_helper_definition ?? "") !== preflight.realtime_security.access_helper_md5) {
+  throw new Error("Realtime organization access helper evidence is incomplete or inconsistent.");
+}
 if (!/organization_members[\s\S]*membership\.active = true/i.test(preflight.realtime_security?.access_helper_definition ?? "")) {
   throw new Error("Realtime organization access helper does not prove active membership.");
 }
 
 const previous = preflight.target_function ?? null;
 if (previous) {
-  if (!previous.definition || md5(previous.definition) !== previous.definition_md5 || !previous.owner || !Array.isArray(previous.acl_detail)) {
+  if (!previous.definition || md5(previous.definition) !== previous.definition_md5 || !previous.owner || !previous.owner_name
+    || !Array.isArray(previous.acl_detail) || md5(extractDeployedBody(previous.definition)) !== previous.body_md5) {
     throw new Error("Preflight target function evidence is incomplete or inconsistent.");
   }
-  const ownerName = previous.owner.replaceAll('"', "");
+  const ownerName = previous.owner_name;
   if (previous.acl_detail.some((grant) => grant.grantor !== ownerName || grant.privilege_type !== "EXECUTE")) {
     throw new Error("Preflight target function has an unsupported ACL grantor or privilege.");
   }
@@ -102,6 +139,8 @@ if (previous) {
 const reviewedPath = path.join(root, "supabase", "operational-bootstrap-v2.sql");
 const reviewed = fs.readFileSync(reviewedPath, "utf8").trim();
 const reviewedBodyMd5 = md5(extractReviewedBody(reviewed));
+const expectedInstalledOwner = previous?.owner_name ?? preflight.installer_role;
+const expectedInstalledConfig = ["search_path=pg_catalog", "statement_timeout=5s"];
 const outDir = path.join(root, "test-artifacts", "operational-bootstrap-v2", runId);
 const installPath = path.join(outDir, "staging-install.sql");
 const rollbackPath = path.join(outDir, "staging-rollback.sql");
@@ -136,6 +175,63 @@ const commonIdentityGuard = `if current_database() <> 'postgres' or (select syst
       and identity_nonce = ${sqlLiteral(preflight.environment_identity.identity_nonce)}::uuid)
     then raise exception 'staging database identity drift'; end if;`;
 
+const capturedRealtimeSecurity = {
+  rls_enabled: preflight.realtime_security.rls_enabled,
+  published: preflight.realtime_security.published,
+  policies: preflight.realtime_security.policies,
+  access_helper_md5: preflight.realtime_security.access_helper_md5
+};
+const realtimeSecurityGuard = `select jsonb_build_object(
+    'rls_enabled', c.relrowsecurity,
+    'published', exists (
+      select 1 from pg_publication_tables
+      where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'operational_events'
+    ),
+    'policies', coalesce((
+      select jsonb_agg(jsonb_build_object(
+        'name', policyname, 'roles', roles, 'command', cmd, 'using', qual, 'check', with_check
+      ) order by policyname)
+      from pg_policies
+      where schemaname = 'public' and tablename = 'operational_events'
+    ), '[]'::jsonb),
+    'access_helper_md5', md5(pg_get_functiondef('public.current_user_has_org_access(text)'::regprocedure))
+  ) into actual_realtime_security
+  from pg_class c join pg_namespace n on n.oid = c.relnamespace
+  where n.nspname = 'public' and c.relname = 'operational_events';
+  if actual_realtime_security is distinct from ${sqlLiteral(JSON.stringify(capturedRealtimeSecurity))}::jsonb
+    then raise exception 'realtime publication, RLS policy, or access helper changed after preflight'; end if;`;
+
+function installedStateGuard(message) {
+  return `select ${normalizedBodySql("p.prosrc")}, pg_get_userbyid(p.proowner), p.prosecdef,
+    p.provolatile, to_jsonb(p.proconfig)
+  into body_md5, actual_owner_name, actual_security_definer, actual_volatility, actual_config
+  from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+  where n.nspname = 'public' and p.proname = '${FUNCTION}' and pg_get_function_identity_arguments(p.oid) = '';
+  if body_md5 is distinct from ${sqlLiteral(reviewedBodyMd5)}
+    or actual_owner_name is distinct from ${sqlLiteral(expectedInstalledOwner)}
+    or actual_security_definer is distinct from true
+    or actual_volatility is distinct from 's'
+    or actual_config is distinct from ${sqlLiteral(JSON.stringify(expectedInstalledConfig))}::jsonb
+    or (select count(*) from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+      cross join lateral aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) acl
+      where n.nspname = 'public' and p.proname = '${FUNCTION}' and pg_get_function_identity_arguments(p.oid) = '') <> 2
+    or exists (select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+      cross join lateral aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) acl
+      where n.nspname = 'public' and p.proname = '${FUNCTION}' and pg_get_function_identity_arguments(p.oid) = ''
+        and (case when acl.grantee = 0 then 'PUBLIC' else pg_get_userbyid(acl.grantee) end
+          not in (actual_owner_name, 'authenticated')
+          or acl.privilege_type <> 'EXECUTE' or acl.is_grantable))
+    or not exists (select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+      cross join lateral aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) acl
+      where n.nspname = 'public' and p.proname = '${FUNCTION}' and pg_get_function_identity_arguments(p.oid) = ''
+        and pg_get_userbyid(acl.grantee) = actual_owner_name and acl.privilege_type = 'EXECUTE' and not acl.is_grantable)
+    or not exists (select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+      cross join lateral aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) acl
+      where n.nspname = 'public' and p.proname = '${FUNCTION}' and pg_get_function_identity_arguments(p.oid) = ''
+        and pg_get_userbyid(acl.grantee) = 'authenticated' and acl.privilege_type = 'EXECUTE' and not acl.is_grantable)
+  then raise exception '${message}'; end if;`;
+}
+
 const install = [`-- Preflight-bound atomic bootstrap staging install: ${runId}`,
   "begin;",
   `create temp table bootstrap_install_app_state on commit drop as
@@ -143,25 +239,21 @@ select version, md5(data::text) data_md5, octet_length(data::text) data_bytes, u
 from public.app_state where id = 'primary';`,
   `do $$
 declare actual_definition_md5 text; actual_owner text; actual_security_definer boolean;
-  actual_volatility "char"; actual_config jsonb; actual_acl jsonb;
+  actual_volatility "char"; actual_config jsonb; actual_acl jsonb; actual_realtime_security jsonb;
 begin
   ${commonIdentityGuard}
   if (select version from bootstrap_install_app_state) is distinct from ${preflight.app_state.version}
     or (select data_md5 from bootstrap_install_app_state) is distinct from ${sqlLiteral(preflight.app_state.md5)}
     then raise exception 'app_state changed after preflight'; end if;
+  ${realtimeSecurityGuard}
   ${priorGuard}
 end $$;`,
   reviewed,
   `do $$
-declare body_md5 text;
+declare body_md5 text; actual_owner_name text; actual_security_definer boolean;
+  actual_volatility "char"; actual_config jsonb;
 begin
-  select md5(btrim(p.prosrc)) into body_md5 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-  where n.nspname = 'public' and p.proname = '${FUNCTION}' and pg_get_function_identity_arguments(p.oid) = '';
-  if body_md5 is distinct from ${sqlLiteral(reviewedBodyMd5)} then raise exception 'installed bootstrap body mismatch'; end if;
-  if has_function_privilege('public', 'public.${FUNCTION}()', 'execute')
-    or has_function_privilege('anon', 'public.${FUNCTION}()', 'execute')
-    or not has_function_privilege('authenticated', 'public.${FUNCTION}()', 'execute')
-    then raise exception 'installed bootstrap ACL mismatch'; end if;
+  ${installedStateGuard("installed bootstrap definition, owner, configuration, or exact ACL mismatch")}
   if exists (select 1 from public.app_state a cross join bootstrap_install_app_state b where a.id = 'primary'
     and (a.version, md5(a.data::text), octet_length(a.data::text), a.updated_at, a.updated_by)
       is distinct from (b.version, b.data_md5, b.data_bytes, b.updated_at, b.updated_by))
@@ -169,16 +261,50 @@ begin
 end $$;`,
   "commit;", ""].join("\n\n");
 
-const rollbackGuard = `select md5(btrim(p.prosrc)) into body_md5 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-  where n.nspname = 'public' and p.proname = '${FUNCTION}' and pg_get_function_identity_arguments(p.oid) = '';
-  if body_md5 is distinct from ${sqlLiteral(reviewedBodyMd5)} then raise exception 'rollback refused unexpected bootstrap definition drift'; end if;`;
 const restore = previous
-  ? [previous.definition.trim() + ";", `alter function public.${FUNCTION}() owner to ${previous.owner};`, ...restoreAcl(previous)]
+  ? [
+      previous.definition.trim() + ";",
+      `alter function public.${FUNCTION}() owner to ${previous.owner};`,
+      `set local role ${previous.owner};`,
+      ...restoreAcl(previous),
+      "reset role;"
+    ]
   : [`drop function public.${FUNCTION}();`];
+const restoredStateGuard = previous
+  ? `do $$ declare body_md5 text; actual_owner text; actual_security_definer boolean;
+      actual_volatility "char"; actual_config jsonb; actual_acl jsonb;
+    begin
+      select ${normalizedBodySql("p.prosrc")}, quote_ident(pg_get_userbyid(p.proowner)), p.prosecdef,
+        p.provolatile, to_jsonb(p.proconfig), (
+          select jsonb_agg(jsonb_build_object(
+            'grantor', case when acl.grantor = 0 then 'PUBLIC' else pg_get_userbyid(acl.grantor) end,
+            'grantee', case when acl.grantee = 0 then 'PUBLIC' else pg_get_userbyid(acl.grantee) end,
+            'privilege_type', acl.privilege_type, 'is_grantable', acl.is_grantable
+          ) order by acl.grantee, acl.privilege_type)
+          from aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) acl
+        )
+      into strict body_md5, actual_owner, actual_security_definer, actual_volatility, actual_config, actual_acl
+      from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+      where n.nspname = 'public' and p.proname = '${FUNCTION}' and pg_get_function_identity_arguments(p.oid) = '';
+      if body_md5 is distinct from ${sqlLiteral(previous.body_md5)}
+        or actual_owner is distinct from ${sqlLiteral(previous.owner)}
+        or actual_security_definer is distinct from ${previous.security_definer === true ? "true" : "false"}
+        or actual_volatility is distinct from ${sqlLiteral(previous.volatility)}
+        or actual_config is distinct from ${sqlLiteral(JSON.stringify(previous.config ?? null))}::jsonb
+        or actual_acl is distinct from ${sqlLiteral(JSON.stringify(previous.acl_detail))}::jsonb
+      then raise exception 'rollback failed to restore the exact prior bootstrap function'; end if;
+    end $$;`
+  : `do $$ begin
+      if to_regprocedure('public.${FUNCTION}()') is not null
+        then raise exception 'rollback failed to remove the bootstrap function'; end if;
+    end $$;`;
 const rollback = [`-- Exact definition rollback for ${runId}; disable VITE_BACKEND_ATOMIC_BOOTSTRAP first.`,
   "begin;",
-  `do $$ declare body_md5 text; begin ${commonIdentityGuard} ${rollbackGuard} end $$;`,
+  `do $$ declare body_md5 text; actual_owner_name text; actual_security_definer boolean;
+    actual_volatility "char"; actual_config jsonb; actual_realtime_security jsonb;
+  begin ${commonIdentityGuard} ${realtimeSecurityGuard} ${installedStateGuard("rollback refused unexpected bootstrap definition, owner, configuration, ACL, or security drift")} end $$;`,
   ...restore,
+  restoredStateGuard,
   "commit;", ""].join("\n\n");
 
 fs.mkdirSync(outDir, { recursive: true });
@@ -189,7 +315,7 @@ const manifest = {
   environment: "staging",
   projectRef: EXPECTED_PROJECT_REF,
   systemIdentifier: EXPECTED_SYSTEM_IDENTIFIER,
-  sourceCommit: process.env.SOURCE_COMMIT ?? null,
+  sourceCommit,
   preflight: { path: path.relative(root, preflightPath), sha256: sha256(preflightText) },
   reviewedSql: { path: path.relative(root, reviewedPath), sha256: sha256(reviewed), bodyMd5: reviewedBodyMd5 },
   previousFunctionExisted: Boolean(previous),

@@ -241,6 +241,44 @@ describe("useAppSync session restore", () => {
     expect(backendMocks.resolveRemoteSessionProfile).not.toHaveBeenCalled();
   });
 
+  it("never automatically retries a failed atomic attempt and resets only for manual retry", async () => {
+    vi.useFakeTimers();
+    const atomicSnapshot = snapshot("Atomic after manual retry", 45);
+    atomicSnapshot.source = "normalized_bootstrap";
+    const gateway: RemoteDataGateway = {
+      prepareAuthenticatedBootstrap: vi.fn().mockResolvedValue({ status: "session", userId: "user-1" }),
+      loadAuthenticatedAppDataSnapshot: vi.fn()
+        .mockRejectedValueOnce(new Error("Atomic bootstrap failed."))
+        .mockResolvedValueOnce({
+          status: "active",
+          profile: activeProfile,
+          organization: { id: "org-primary", name: "BreakPerfect", businessProfile: {} },
+          snapshot: atomicSnapshot
+        }),
+      resetAuthenticatedBootstrapAttempt: vi.fn(),
+      scheduleAuthenticatedBootstrapCancellation: vi.fn(),
+      loadAppDataSnapshot: vi.fn(),
+      saveAppData: vi.fn(),
+      subscribeToAppData: vi.fn(() => () => undefined)
+    };
+
+    render(<Harness initialAppData={createAppData("Cached atomic")} hasCachedAppData dataGateway={gateway} />);
+    await flushPromises();
+    expect(screen.getByTestId("restore-state")).toHaveTextContent("stale-cache");
+
+    act(() => vi.advanceTimersByTime(10_000));
+    await flushPromises();
+    expect(gateway.loadAuthenticatedAppDataSnapshot).toHaveBeenCalledTimes(1);
+    expect(gateway.resetAuthenticatedBootstrapAttempt).not.toHaveBeenCalled();
+
+    act(() => fireEvent.click(screen.getByText("manual retry")));
+    await flushPromises();
+    expect(gateway.resetAuthenticatedBootstrapAttempt).toHaveBeenCalledTimes(1);
+    expect(gateway.loadAuthenticatedAppDataSnapshot).toHaveBeenCalledTimes(2);
+    expect(screen.getByTestId("restore-state")).toHaveTextContent("ready");
+    expect(screen.getByTestId("business-name")).toHaveTextContent("Atomic after manual retry");
+  });
+
   it("does not invoke the atomic snapshot loader when preparation finds no session", async () => {
     const gateway: RemoteDataGateway = {
       prepareAuthenticatedBootstrap: vi.fn().mockResolvedValue({ status: "no-session" }),

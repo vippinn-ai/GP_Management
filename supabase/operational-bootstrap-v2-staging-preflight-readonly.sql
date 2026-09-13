@@ -26,8 +26,9 @@ with target_function as (
   select jsonb_build_object(
     'definition', pg_get_functiondef(oid),
     'definition_md5', md5(pg_get_functiondef(oid)),
-    'body_md5', md5(btrim(prosrc)),
+    'body_md5', md5(regexp_replace(btrim(prosrc, E' \t\n\r'), E'\\r\\n?', E'\\n', 'g')),
     'owner', quote_ident(pg_get_userbyid(proowner)),
+    'owner_name', pg_get_userbyid(proowner),
     'security_definer', prosecdef,
     'volatility', provolatile,
     'config', to_jsonb(proconfig),
@@ -79,6 +80,7 @@ select jsonb_build_object(
     from public.deployment_environment_identity where environment = 'staging'
   ),
   'captured_at_utc', timezone('utc', clock_timestamp()),
+  'installer_role', current_user,
   'organization_id', 'org-primary',
   'open_sessions', (select count(*) from public.sessions where organization_id = 'org-primary' and status <> 'closed'),
   'open_customer_tabs', (select count(*) from public.customer_tabs where organization_id = 'org-primary' and status = 'open'),

@@ -15,6 +15,7 @@ afterEach(() => {
 });
 
 function fixture(targetFunction: unknown = null) {
+  const accessHelperDefinition = "select 1 from public.organization_members membership where membership.active = true";
   return {
     evidence: {
       expected_project_ref: "tkbdyzxwwbhkpztgjjxh",
@@ -24,6 +25,7 @@ function fixture(targetFunction: unknown = null) {
         project_ref: "tkbdyzxwwbhkpztgjjxh",
         identity_nonce: "11111111-2222-4333-8444-555555555555"
       },
+      installer_role: "postgres",
       organization_id: "org-primary",
       open_sessions: 0,
       open_customer_tabs: 0,
@@ -38,12 +40,38 @@ function fixture(targetFunction: unknown = null) {
           name: "operational_events_select",
           roles: ["authenticated"],
           command: "SELECT",
-          using: "current_user_has_org_access(organization_id)"
+          using: "current_user_has_org_access(organization_id)",
+          check: null
         }],
-        access_helper_definition: "select 1 from public.organization_members membership where membership.active = true"
+        access_helper_definition: accessHelperDefinition,
+        access_helper_md5: md5(accessHelperDefinition)
       }
     }
   };
+}
+
+function createCleanSourceRepo(sourceText = fs.readFileSync(path.join(root, "supabase", "operational-bootstrap-v2.sql"), "utf8")) {
+  const sourceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "bp-bootstrap-source-"));
+  fs.mkdirSync(path.join(sourceRoot, "supabase"), { recursive: true });
+  fs.writeFileSync(path.join(sourceRoot, "supabase", "operational-bootstrap-v2.sql"), sourceText);
+  fs.writeFileSync(path.join(sourceRoot, ".gitignore"), "test-artifacts/\n");
+  execFileSync("git", ["init"], { cwd: sourceRoot, stdio: "pipe" });
+  execFileSync("git", ["config", "user.email", "bootstrap-test@example.invalid"], { cwd: sourceRoot });
+  execFileSync("git", ["config", "user.name", "Bootstrap Test"], { cwd: sourceRoot });
+  execFileSync("git", ["add", "."], { cwd: sourceRoot });
+  execFileSync("git", ["commit", "-m", "fixture"], { cwd: sourceRoot, stdio: "pipe" });
+  const commit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: sourceRoot, encoding: "utf8" }).trim();
+  createdPaths.push(sourceRoot);
+  return { sourceRoot, commit };
+}
+
+function runBuilder(sourceRoot: string, commit: string, runId: string, preflightPath: string) {
+  return execFileSync(process.execPath, [
+    path.join(root, "scripts", "build-operational-bootstrap-v2-staging-install.mjs"),
+    `--run-id=${runId}`,
+    `--preflight=${preflightPath}`,
+    `--source-commit=${commit}`
+  ], { cwd: sourceRoot, stdio: "pipe" });
 }
 
 describe("atomic bootstrap staging installer builder", () => {
@@ -53,14 +81,10 @@ describe("atomic bootstrap staging installer builder", () => {
     const preflightPath = path.join(fixtureDir, "preflight.json");
     fs.writeFileSync(preflightPath, JSON.stringify(fixture()));
     createdPaths.push(fixtureDir);
-    const outputDir = path.join(root, "test-artifacts", "operational-bootstrap-v2", runId);
-    createdPaths.push(outputDir);
+    const { sourceRoot, commit } = createCleanSourceRepo();
+    const outputDir = path.join(sourceRoot, "test-artifacts", "operational-bootstrap-v2", runId);
 
-    execFileSync(process.execPath, [
-      path.join(root, "scripts", "build-operational-bootstrap-v2-staging-install.mjs"),
-      `--run-id=${runId}`,
-      `--preflight=${preflightPath}`
-    ], { cwd: root, env: { ...process.env, SOURCE_COMMIT: "test-sha" } });
+    runBuilder(sourceRoot, commit, runId, preflightPath);
 
     const install = fs.readFileSync(path.join(outputDir, "staging-install.sql"), "utf8");
     const rollback = fs.readFileSync(path.join(outputDir, "staging-rollback.sql"), "utf8");
@@ -69,9 +93,13 @@ describe("atomic bootstrap staging installer builder", () => {
     expect(install).toContain("create or replace function public.load_operational_bootstrap_v2()");
     expect(install).toContain("bootstrap install changed app_state");
     expect(rollback).toContain("drop function public.load_operational_bootstrap_v2();");
-    expect(rollback).toContain("rollback refused unexpected bootstrap definition drift");
+    expect(rollback).toContain("rollback refused unexpected bootstrap definition, owner, configuration, ACL, or security drift");
     expect(manifest.previousFunctionExisted).toBe(false);
-    expect(manifest.sourceCommit).toBe("test-sha");
+    expect(manifest.sourceCommit).toBe(commit);
+    expect(install).toContain("realtime publication, RLS policy, or access helper changed after preflight");
+    expect(install).toContain("exact ACL mismatch");
+    expect(install).toContain("regexp_replace(btrim(p.prosrc, E' \\t\\n\\r')");
+    expect(rollback).toContain("owner, configuration, ACL, or security drift");
     expect(manifest.install.sha256).toBe(sha256(install));
     expect(manifest.rollback.sha256).toBe(sha256(rollback));
   });
@@ -84,12 +112,61 @@ describe("atomic bootstrap staging installer builder", () => {
     invalid.evidence.realtime_security.access_helper_definition = "select true";
     fs.writeFileSync(preflightPath, JSON.stringify(invalid));
     createdPaths.push(fixtureDir);
+    const { sourceRoot, commit } = createCleanSourceRepo();
 
-    expect(() => execFileSync(process.execPath, [
-      path.join(root, "scripts", "build-operational-bootstrap-v2-staging-install.mjs"),
-      `--run-id=${runId}`,
-      `--preflight=${preflightPath}`
-    ], { cwd: root, stdio: "pipe" })).toThrow();
+    expect(() => runBuilder(sourceRoot, commit, runId, preflightPath)).toThrow();
+  });
+
+  it("fails closed when an additional permissive SELECT policy can apply", () => {
+    const runId = `normops-20260914-${String(Date.now()).slice(-4)}-bootstrap-policy`;
+    const fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), "bp-bootstrap-preflight-policy-"));
+    const preflightPath = path.join(fixtureDir, "preflight.json");
+    const invalid = fixture() as { evidence: { realtime_security: { policies: unknown[] } } };
+    invalid.evidence.realtime_security.policies.push({
+      name: "permissive_public_select",
+      roles: ["PUBLIC"],
+      command: "SELECT",
+      using: "true"
+    });
+    fs.writeFileSync(preflightPath, JSON.stringify(invalid));
+    createdPaths.push(fixtureDir);
+    const { sourceRoot, commit } = createCleanSourceRepo();
+
+    expect(() => runBuilder(sourceRoot, commit, runId, preflightPath)).toThrow();
+  });
+
+  it("requires an exact clean source commit", () => {
+    const runId = `normops-20260914-${String(Date.now()).slice(-4)}-bootstrap-dirty`;
+    const fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), "bp-bootstrap-preflight-dirty-"));
+    const preflightPath = path.join(fixtureDir, "preflight.json");
+    fs.writeFileSync(preflightPath, JSON.stringify(fixture()));
+    createdPaths.push(fixtureDir);
+    const { sourceRoot, commit } = createCleanSourceRepo();
+    fs.appendFileSync(path.join(sourceRoot, "supabase", "operational-bootstrap-v2.sql"), "\n-- dirty\n");
+
+    expect(() => runBuilder(sourceRoot, commit, runId, preflightPath)).toThrow();
+  });
+
+  it("produces one canonical reviewed body hash for LF, CRLF, and lone-CR transport", () => {
+    const fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), "bp-bootstrap-preflight-newlines-"));
+    const preflightPath = path.join(fixtureDir, "preflight.json");
+    fs.writeFileSync(preflightPath, JSON.stringify(fixture()));
+    createdPaths.push(fixtureDir);
+    const source = fs.readFileSync(path.join(root, "supabase", "operational-bootstrap-v2.sql"), "utf8")
+      .replaceAll("\r\n", "\n")
+      .replaceAll("\r", "\n");
+
+    const hashes = [source, source.replaceAll("\n", "\r\n"), source.replaceAll("\n", "\r")].map((variant, index) => {
+      const { sourceRoot, commit } = createCleanSourceRepo(variant);
+      const runId = `normops-20260914-${String(Date.now()).slice(-4)}-newline-${index}`;
+      runBuilder(sourceRoot, commit, runId, preflightPath);
+      return JSON.parse(fs.readFileSync(
+        path.join(sourceRoot, "test-artifacts", "operational-bootstrap-v2", runId, "manifest.json"),
+        "utf8"
+      )).reviewedSql.bodyMd5;
+    });
+
+    expect(new Set(hashes).size).toBe(1);
   });
 
   it("preserves an exact prior definition, owner, and ACL in the rollback artifact", () => {
@@ -99,6 +176,7 @@ describe("atomic bootstrap staging installer builder", () => {
       definition_md5: md5(definition),
       body_md5: md5("begin return '{}'::jsonb; end;"),
       owner: "\"postgres\"",
+      owner_name: "postgres",
       security_definer: false,
       volatility: "v",
       config: null,
@@ -109,19 +187,18 @@ describe("atomic bootstrap staging installer builder", () => {
     const preflightPath = path.join(fixtureDir, "preflight.json");
     fs.writeFileSync(preflightPath, JSON.stringify(fixture(prior)));
     createdPaths.push(fixtureDir);
-    const outputDir = path.join(root, "test-artifacts", "operational-bootstrap-v2", runId);
-    createdPaths.push(outputDir);
+    const { sourceRoot, commit } = createCleanSourceRepo();
+    const outputDir = path.join(sourceRoot, "test-artifacts", "operational-bootstrap-v2", runId);
 
-    execFileSync(process.execPath, [
-      path.join(root, "scripts", "build-operational-bootstrap-v2-staging-install.mjs"),
-      `--run-id=${runId}`,
-      `--preflight=${preflightPath}`
-    ], { cwd: root });
+    runBuilder(sourceRoot, commit, runId, preflightPath);
 
     const rollback = fs.readFileSync(path.join(outputDir, "staging-rollback.sql"), "utf8");
     expect(rollback).toContain(definition);
     expect(rollback).toContain('alter function public.load_operational_bootstrap_v2() owner to "postgres";');
+    expect(rollback).toContain('set local role "postgres";');
+    expect(rollback).toContain("reset role;");
     expect(rollback).toContain("grant execute on function public.load_operational_bootstrap_v2() to \"authenticated\";");
+    expect(rollback).toContain("rollback failed to restore the exact prior bootstrap function");
     expect(rollback).not.toContain("drop function public.load_operational_bootstrap_v2();");
   });
 });

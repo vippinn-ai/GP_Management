@@ -76,6 +76,7 @@ type LoadEvidence = {
   criticalResources: ResourceEvidence[];
   criticalResponses: ResponseEvidence[];
   criticalRequestCount: number;
+  bootstrapRpcResponseCount: number;
   criticalApiBytes: number;
   coldShellBytes: number;
   initialJavascriptBytes: number;
@@ -496,6 +497,7 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
       }
       expect(marks["bp-app-module-requested"]).toBeLessThan(marks["bp-app-module-ready"]);
       expect(marks["bp-session-requested"]).toBeLessThanOrEqual(marks["bp-realtime-requested"]);
+      expect(marks["bp-realtime-requested"]).toBeLessThan(marks["bp-app-module-ready"]);
       expect(marks["bp-realtime-ready"]).toBeLessThanOrEqual(marks["bp-bootstrap-rpc-requested"]);
       expect(marks["bp-bootstrap-rpc-requested"]).toBeLessThan(marks["bp-bootstrap-rpc-response"]);
       expect(marks["bp-bootstrap-rpc-response"]).toBeLessThanOrEqual(marks["bp-bootstrap-mapped"]);
@@ -603,6 +605,9 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
       await coldPage.waitForTimeout(500);
     }
     await Promise.all(responseTasks.values());
+    const bootstrapRpcResponseCount = responses.filter((entry) =>
+      entry.path.endsWith("/rest/v1/rpc/load_operational_bootstrap_v2")
+    ).length;
     const postSafeResponses = responses.flatMap((entry) => {
       const postSafeBoundary = mode === "candidate" ? safeInteractiveMs : comparisonReadyMark;
       const startMinusSafeMs = entry.requestStartMs - browserBoundary.timeOrigin - postSafeBoundary;
@@ -628,6 +633,7 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
       criticalResources,
       criticalResponses,
       criticalRequestCount: criticalResources.length,
+      bootstrapRpcResponseCount,
       criticalApiBytes,
       coldShellBytes,
       initialJavascriptBytes,
@@ -707,6 +713,7 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
       && /\/assets\/InventoryPanel-[^/]+\.js$/.test(response.path)
     ))).toBe(true);
     expect.soft(loads.every((entry) => entry.bootstrapDependencyDepth !== null && entry.bootstrapDependencyDepth <= 2)).toBe(true);
+    expect.soft(loads.every((entry) => entry.bootstrapRpcResponseCount === 1)).toBe(true);
     expect.soft(loads.every((entry) => {
       const bootstrapCalls = entry.criticalResponses.filter((response) =>
         response.path.endsWith("/rest/v1/rpc/load_operational_bootstrap_v2")
