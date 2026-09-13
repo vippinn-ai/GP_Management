@@ -109,7 +109,7 @@ export function useAppSync(params: {
     setRemoteLoading(true);
     setRemoteRestoreState(restoreRetrySignal > 0 ? "retrying" : "checking");
 
-    resolveRemoteSessionProfile()
+    resolveRemoteSessionProfile({ includeOrganization: !allowFullAppDataPersist })
       .then(async (sessionResult) => {
         if (cancelled) {
           return;
@@ -144,7 +144,7 @@ export function useAppSync(params: {
           // this restore becomes writable.
           setActiveUserId(sessionResult.profile.id);
           setActiveTab("dashboard");
-          const snapshot = await dataGateway.loadAppDataSnapshot();
+          const snapshot = await dataGateway.loadAppDataSnapshot({ organization: sessionResult.organization });
           if (cancelled) {
             return;
           }

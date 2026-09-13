@@ -225,7 +225,8 @@ import {
 const ActivityPanel = lazy(() => import("./panels/ActivityPanel").then((module) => ({ default: module.ActivityPanel })));
 const BillRegisterPanel = lazy(() => import("./panels/BillRegisterPanel").then((module) => ({ default: module.BillRegisterPanel })));
 const CustomersPanel = lazy(() => import("./panels/CustomersPanel").then((module) => ({ default: module.CustomersPanel })));
-const InventoryPanel = lazy(() => import("./panels/InventoryPanel").then((module) => ({ default: module.InventoryPanel })));
+const loadInventoryPanel = () => import("./panels/InventoryPanel").then((module) => ({ default: module.InventoryPanel }));
+const InventoryPanel = lazy(loadInventoryPanel);
 const ReportsPanel = lazy(() => import("./panels/ReportsPanel").then((module) => ({ default: module.ReportsPanel })));
 const SalePanel = lazy(() => import("./panels/SalePanel").then((module) => ({ default: module.SalePanel })));
 const SettingsPanel = lazy(() => import("./panels/SettingsPanel").then((module) => ({ default: module.SettingsPanel })));
@@ -1657,6 +1658,13 @@ export default function App() {
       && typeof performance.mark === "function"
     ) {
       performance.mark("bp-safe-interactive");
+      const preload = () => { void loadInventoryPanel(); };
+      if (typeof window.requestIdleCallback === "function") {
+        const idleId = window.requestIdleCallback(preload, { timeout: 1_500 });
+        return () => window.cancelIdleCallback(idleId);
+      }
+      const timerId = window.setTimeout(preload, 1);
+      return () => window.clearTimeout(timerId);
     }
   }, [activeUser, remoteLoading, remoteRestoreState]);
 
@@ -7835,6 +7843,8 @@ export default function App() {
               type="button"
               className={`nav-button ${activeTab === tab.id ? "is-active" : ""}`}
               onClick={() => setActiveTab(tab.id)}
+              onMouseEnter={tab.id === "inventory" ? () => { void loadInventoryPanel(); } : undefined}
+              onFocus={tab.id === "inventory" ? () => { void loadInventoryPanel(); } : undefined}
             >
               {tab.label}
             </button>

@@ -376,7 +376,7 @@ function deriveStartupCustomers(appData: Partial<AppData>): Customer[] {
   return Array.from(customersById.values()).sort((left, right) => right.lastVisitAt.localeCompare(left.lastVisitAt));
 }
 
-async function loadNormalizedBootstrapSnapshot(): Promise<RemoteAppDataSnapshot> {
+async function loadNormalizedBootstrapSnapshot(options?: Parameters<RemoteDataGateway["loadAppDataSnapshot"]>[0]): Promise<RemoteAppDataSnapshot> {
   const startedAt = Date.now();
   try {
     const client = getSupabaseClient();
@@ -388,7 +388,8 @@ async function loadNormalizedBootstrapSnapshot(): Promise<RemoteAppDataSnapshot>
         normalizedCatalogReads: true,
         normalizedComboReads: true,
         normalizedLiveReads: true,
-        client
+        client,
+        organization: options?.organization
       })
     ]);
     const startupAppData = {
@@ -552,7 +553,7 @@ export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): 
     return realtimeReadyPromise;
   };
   const gateway: RemoteDataGateway = {
-    async loadAppDataSnapshot() {
+    async loadAppDataSnapshot(options) {
       markBootstrapPerformance("bp-bootstrap-requested");
       bootstrapInFlight = true;
       try {
@@ -566,7 +567,7 @@ export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): 
           throw error;
         }
         if (_flags.normalizedBootstrap) {
-          lastSnapshot = await loadNormalizedBootstrapSnapshot();
+          lastSnapshot = await loadNormalizedBootstrapSnapshot(options);
           markBootstrapPerformance("bp-critical-snapshot-ready");
         } else {
           const snapshot = await appStateRemoteDataGateway.loadAppDataSnapshot();

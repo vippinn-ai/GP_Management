@@ -1,4 +1,4 @@
-import type { RemoteAppDataSnapshot, SaveRemoteTelemetryOptions } from "../backend";
+import type { RemoteAppDataSnapshot, RemoteOrganization, SaveRemoteTelemetryOptions } from "../backend";
 import type { OperationalMutation } from "../operationalSync";
 import type {
   AppData,
@@ -178,7 +178,7 @@ export interface AdminDataChangeCommitResult {
 }
 
 export interface RemoteDataGateway {
-  loadAppDataSnapshot(): Promise<RemoteAppDataSnapshot>;
+  loadAppDataSnapshot(options?: { organization?: RemoteOrganization }): Promise<RemoteAppDataSnapshot>;
   saveAppData(
     appData: AppData,
     activeUserId: string,

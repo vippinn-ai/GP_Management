@@ -53,6 +53,12 @@ export interface RemoteProfile {
   tabPermissions?: import("./types").TabId[] | null;
 }
 
+export interface RemoteOrganization {
+  id: string;
+  name: string;
+  businessProfile: Record<string, unknown> | null;
+}
+
 export type RemoteAppDataSnapshotSource = "app_state" | "normalized_bootstrap";
 
 export interface RemoteAppDataSnapshot {
@@ -77,7 +83,7 @@ export interface SaveRemoteTelemetryOptions {
 
 export type RemoteSessionProfileResult =
   | { status: "no-session" }
-  | { status: "active"; profile: RemoteProfile }
+  | { status: "active"; profile: RemoteProfile; organization?: RemoteOrganization }
   | { status: "inactive-or-missing"; userId: string }
   | { status: "profile-unreachable"; userId: string; error: Error };
 
@@ -199,7 +205,7 @@ export async function fetchCurrentProfile(): Promise<RemoteProfile | null> {
   return result.status === "active" ? result.profile : null;
 }
 
-export async function resolveRemoteSessionProfile(): Promise<RemoteSessionProfileResult> {
+export async function resolveRemoteSessionProfile(options: { includeOrganization?: boolean } = {}): Promise<RemoteSessionProfileResult> {
   const supabase = getSupabase();
   const {
     data: { session }
@@ -209,7 +215,7 @@ export async function resolveRemoteSessionProfile(): Promise<RemoteSessionProfil
     return { status: "no-session" };
   }
   try {
-    const { data, error } = await withRemoteTimeout(
+    const profileRequest = withRemoteTimeout(
       supabase
         .from("profiles")
         .select("id, name, username, role, active, tabPermissions:tab_permissions")
@@ -217,13 +223,37 @@ export async function resolveRemoteSessionProfile(): Promise<RemoteSessionProfil
         .maybeSingle(),
       "loading your profile"
     );
+    const organizationRequest = options.includeOrganization
+      ? withRemoteTimeout(
+          supabase
+            .from("organizations")
+            .select("id, name, businessProfile:business_profile")
+            .eq("active", true)
+            .order("created_at", { ascending: true })
+            .limit(1)
+            .maybeSingle(),
+          "loading your organization"
+        )
+      : Promise.resolve({ data: null, error: null });
+    const [{ data, error }, organizationResult] = await Promise.all([profileRequest, organizationRequest]);
     if (error) {
       return { status: "profile-unreachable", userId: authUserId, error };
     }
     if (!data || !data.active) {
       return { status: "inactive-or-missing", userId: authUserId };
     }
-    return { status: "active", profile: data as RemoteProfile };
+    if (options.includeOrganization && (organizationResult.error || !organizationResult.data)) {
+      return {
+        status: "profile-unreachable",
+        userId: authUserId,
+        error: new Error("Unable to load your organization.")
+      };
+    }
+    return {
+      status: "active",
+      profile: data as RemoteProfile,
+      organization: organizationResult.data as RemoteOrganization | null ?? undefined
+    };
   } catch (error) {
     return {
       status: "profile-unreachable",

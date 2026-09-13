@@ -9,6 +9,8 @@ export interface CriticalResourceTiming {
   transferSize: number;
 }
 
+export const INVENTORY_RENDER_POLL_INTERVAL_MS = 25;
+
 export interface CriticalResponseTiming {
   requestKey: string;
   path: string;
@@ -22,6 +24,44 @@ export interface CriticalEvidenceSelection<
   criticalResources: TResource[];
   criticalResponses: TResponse[];
   errors: string[];
+}
+
+export interface VisibleReadyObserverOptions {
+  markName: string;
+  headingText: string;
+}
+
+export function installVisibleReadyObserver(options: VisibleReadyObserverOptions): void {
+  const { markName, headingText } = options;
+  let frameId: number | null = null;
+  let observer: MutationObserver | null = null;
+
+  const alreadyMarked = () => performance.getEntriesByName(markName, "mark").length > 0;
+  const findVisibleHeading = () => Array.from(document.querySelectorAll("h1, h2, h3")).find((element) => {
+    if (element.textContent?.trim() !== headingText) return false;
+    const style = globalThis.getComputedStyle(element);
+    const bounds = element.getBoundingClientRect();
+    return style.display !== "none"
+      && style.visibility !== "hidden"
+      && style.opacity !== "0"
+      && bounds.width > 0
+      && bounds.height > 0;
+  });
+  const inspect = () => {
+    frameId = null;
+    if (alreadyMarked() || !findVisibleHeading()) return;
+    performance.mark(markName);
+    observer?.disconnect();
+  };
+  const scheduleInspection = () => {
+    if (alreadyMarked() || frameId !== null) return;
+    frameId = globalThis.requestAnimationFrame(inspect);
+  };
+
+  observer = new MutationObserver(scheduleInspection);
+  observer.observe(document, { childList: true, subtree: true, attributes: true });
+  document.addEventListener("DOMContentLoaded", scheduleInspection, { once: true });
+  scheduleInspection();
 }
 
 export function requestStartedByBrowserMark(
@@ -43,14 +83,31 @@ export function requestStartedByBrowserMark(
 export function selectCriticalEvidence<
   TResource extends CriticalResourceTiming,
   TResponse extends CriticalResponseTiming
->(resources: TResource[], responses: TResponse[], safeInteractiveMarkMs: number): CriticalEvidenceSelection<TResource, TResponse> {
+>(
+  resources: TResource[],
+  responses: TResponse[],
+  safeInteractiveMarkMs: number,
+  expectedCriticalRequestKeys: ReadonlySet<string> = new Set()
+): CriticalEvidenceSelection<TResource, TResponse> {
   const errors: string[] = [];
   if (!Number.isFinite(safeInteractiveMarkMs) || safeInteractiveMarkMs < 0) {
     return { criticalResources: [], criticalResponses: [], errors: ["Safe-interactive browser mark is invalid."] };
   }
 
-  const criticalResources = resources.filter((entry) => entry.startTime <= safeInteractiveMarkMs);
+  const validResources = resources.filter((entry) => {
+    const timingValid = Number.isFinite(entry.startTime)
+      && entry.startTime >= 0
+      && Number.isFinite(entry.responseEnd)
+      && entry.responseEnd >= entry.startTime
+      && Number.isFinite(entry.transferSize)
+      && entry.transferSize >= 0;
+    if (!timingValid) errors.push(`Resource ${entry.requestKey} has invalid browser timing or transfer evidence.`);
+    return timingValid;
+  });
+  const criticalResources = validResources.filter((entry) => entry.startTime <= safeInteractiveMarkMs);
   const criticalKeys = new Set(criticalResources.filter((entry) => entry.api || entry.shell).map((entry) => entry.requestKey));
+  const resourceCounts = new Map<string, number>();
+  criticalResources.forEach((entry) => resourceCounts.set(entry.requestKey, (resourceCounts.get(entry.requestKey) ?? 0) + 1));
   const responseCounts = new Map<string, number>();
   responses.forEach((entry) => responseCounts.set(entry.requestKey, (responseCounts.get(entry.requestKey) ?? 0) + 1));
 
@@ -60,6 +117,15 @@ export function selectCriticalEvidence<
   }
   for (const [requestKey, count] of responseCounts) {
     if (count > 1) errors.push(`Response correlation key ${requestKey} is duplicated ${count} times.`);
+  }
+  for (const [requestKey, count] of resourceCounts) {
+    if (count > 1) errors.push(`Resource correlation key ${requestKey} is duplicated ${count} times.`);
+  }
+  for (const requestKey of expectedCriticalRequestKeys) {
+    const resourceCount = resourceCounts.get(requestKey) ?? 0;
+    const responseCount = responseCounts.get(requestKey) ?? 0;
+    if (resourceCount !== 1) errors.push(`Expected critical request ${requestKey} has ${resourceCount} correlated resources.`);
+    if (responseCount !== 1) errors.push(`Expected critical request ${requestKey} has ${responseCount} correlated responses.`);
   }
 
   return {

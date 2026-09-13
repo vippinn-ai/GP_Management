@@ -4,8 +4,11 @@ import { gzipSync } from "node:zlib";
 import { expect, test, type Page, type Request, type Response } from "@playwright/test";
 import { attachJson, captureAuthenticatedRestRequests, credentials, signIn } from "./support/app";
 import { parsePostgrestPageEvidence } from "../../../src/qa/operationalPerformancePageEvidence";
+import { readDecodedResponseBody } from "../../../src/qa/operationalPerformanceResponseEvidence";
 import {
   measureBootstrapDependencyDepth,
+  installVisibleReadyObserver,
+  INVENTORY_RENDER_POLL_INTERVAL_MS,
   requestStartedByBrowserMark,
   selectCriticalEvidence,
   sumCriticalShellTransferBytes
@@ -38,6 +41,7 @@ type ResponseEvidence = {
   startMinusSafeMs?: number;
   status: number;
   bodyBytes: number;
+  evidenceError?: string;
   contentLengthBytes: number;
   api: boolean;
   shell: boolean;
@@ -63,6 +67,7 @@ type RenderEvidence = {
 
 type LoadEvidence = {
   sample: number;
+  visibleReadyMs: number;
   safeInteractiveMs: number;
   playwrightObservedSafeInteractiveMs: number;
   bootstrapMarks: Record<string, number>;
@@ -108,7 +113,8 @@ function percentile(values: number[], percentileValue: number) {
 }
 
 function summarize(loads: LoadEvidence[]) {
-  const safe = loads.map((entry) => entry.safeInteractiveMs);
+  const visibleReady = loads.map((entry) => entry.visibleReadyMs);
+  const safe = loads.map((entry) => entry.safeInteractiveMs).filter((value) => value >= 0);
   const payloads = loads.map((entry) => entry.criticalApiBytes);
   const shells = loads.map((entry) => entry.coldShellBytes);
   const initialJs = loads.map((entry) => entry.initialJavascriptBytes);
@@ -120,12 +126,14 @@ function summarize(loads: LoadEvidence[]) {
     .map((entry) => entry.inventoryHistoryReadyMs)
     .filter((value): value is number => value !== null);
   return {
-    samples: safe.length,
-    p50: percentile(safe, 0.5),
-    p75: percentile(safe, 0.75),
-    p95: percentile(safe, 0.95),
-    max: Math.max(...safe),
-    mean: safe.reduce((total, value) => total + value, 0) / safe.length,
+    samples: visibleReady.length,
+    p50: percentile(visibleReady, 0.5),
+    p75: percentile(visibleReady, 0.75),
+    p95: percentile(visibleReady, 0.95),
+    max: Math.max(...visibleReady),
+    mean: visibleReady.reduce((total, value) => total + value, 0) / visibleReady.length,
+    safeInteractiveP95: percentile(safe, 0.95),
+    safeInteractiveMax: safe.length > 0 ? Math.max(...safe) : 0,
     criticalApiBytesP95: percentile(payloads, 0.95),
     criticalApiBytesMax: Math.max(...payloads),
     coldShellBytesP95: percentile(shells, 0.95),
@@ -178,7 +186,7 @@ function nextCorrelationKey(url: string, occurrences: Map<string, number>) {
 
 async function resourceEvidence(page: Page, baseOrigin: string): Promise<{ marks: Record<string, number>; resources: ResourceEvidence[] }> {
   const rawEvidence = await page.evaluate(() => {
-    const allowedMarks = ["bp-bootstrap-requested", "bp-realtime-ready", "bp-critical-snapshot-ready", "bp-critical-catchup-ready", "bp-safe-interactive", "bp-baseline-interactive-observed"];
+    const allowedMarks = ["bp-bootstrap-requested", "bp-realtime-ready", "bp-critical-snapshot-ready", "bp-critical-catchup-ready", "bp-safe-interactive", "bp-visible-dashboard-ready"];
     const marks = Object.fromEntries(allowedMarks.map((name) => [name, performance.getEntriesByName(name, "mark").at(-1)?.startTime ?? -1]));
     const resources = [...performance.getEntriesByType("navigation"), ...performance.getEntriesByType("resource")].map((raw) => {
       const entry = raw as PerformanceResourceTiming | PerformanceNavigationTiming;
@@ -224,6 +232,7 @@ async function collectResponseEvidence(response: Response, requestKeys: Map<Requ
   const contentLengthBytes = Number(headers["content-length"] ?? 0);
   let bodyBytes = 0;
   let gzipBytes = 0;
+  let evidenceError: string | undefined;
   let appStateVersion: number | undefined;
   let jsonRowCount: number | undefined;
   const javascript = shell && /\.js$/i.test(url.pathname);
@@ -239,21 +248,23 @@ async function collectResponseEvidence(response: Response, requestKeys: Map<Requ
     ? parsePostgrestPageEvidence(response.url(), requestHeaders.prefer, headers["content-range"])
     : undefined;
   if (api || javascript || (shell && contentLengthBytes === 0)) {
-    try {
-      const body = await response.body();
-      bodyBytes = body.byteLength;
-      if (javascript) gzipBytes = gzipSync(body).byteLength;
+    const requiresJson = url.pathname.endsWith("/rest/v1/app_state") || url.pathname.endsWith("/rest/v1/stock_movements");
+    const decoded = await readDecodedResponseBody(() => response.body(), requiresJson);
+    bodyBytes = decoded.bodyBytes;
+    evidenceError = decoded.error;
+    if (!decoded.error && decoded.body) {
+      if (javascript) gzipBytes = gzipSync(decoded.body).byteLength;
       if (url.pathname.endsWith("/rest/v1/app_state")) {
-        const parsed = JSON.parse(body.toString("utf8"));
+        const parsed = decoded.parsedJson;
         const row = Array.isArray(parsed) ? parsed[0] : parsed;
-        if (Number.isInteger(row?.version)) appStateVersion = row.version;
+        if (row && typeof row === "object" && Number.isInteger((row as { version?: unknown }).version)) {
+          appStateVersion = (row as { version: number }).version;
+        }
       }
       if (url.pathname.endsWith("/rest/v1/stock_movements")) {
-        const parsed = JSON.parse(body.toString("utf8"));
+        const parsed = decoded.parsedJson;
         if (Array.isArray(parsed)) jsonRowCount = parsed.length;
       }
-    } catch {
-      bodyBytes = contentLengthBytes;
     }
   }
   sink.push({
@@ -263,6 +274,7 @@ async function collectResponseEvidence(response: Response, requestKeys: Map<Requ
     responseEndMs: requestTiming.responseEnd >= 0 ? requestTiming.startTime + requestTiming.responseEnd : Number.NaN,
     status: response.status(),
     bodyBytes,
+    evidenceError,
     contentLengthBytes,
     api,
     shell,
@@ -337,6 +349,10 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
         }
       }).observe({ type: "layout-shift", buffered: true });
     });
+    await context.addInitScript(installVisibleReadyObserver, {
+      markName: "bp-visible-dashboard-ready",
+      headingText: "Live Dashboard"
+    });
     const coldPage = await context.newPage();
     const started = performance.now();
     const failedRequestPaths: string[] = [];
@@ -374,38 +390,42 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
 
     await coldPage.goto("/", { waitUntil: "domcontentloaded" });
     await expect(coldPage.getByRole("heading", { name: "Live Dashboard", exact: true })).toBeVisible();
+    await expect.poll(() => coldPage.evaluate(() => performance.getEntriesByName("bp-visible-dashboard-ready", "mark").length)).toBe(1);
     if (mode === "candidate") {
       await expect(coldPage.locator('[data-app-safe-interactive="true"]')).toBeVisible();
       await expect.poll(() => coldPage.evaluate(() => performance.getEntriesByName("bp-safe-interactive", "mark").length)).toBe(1);
-    } else {
-      await coldPage.evaluate(() => performance.mark("bp-baseline-interactive-observed"));
     }
     const playwrightObservedSafeInteractiveMs = performance.now() - started;
-    const browserBoundary = await coldPage.evaluate((markName) => ({
+    const browserBoundary = await coldPage.evaluate(() => ({
       timeOrigin: performance.timeOrigin,
-      safeMark: performance.getEntriesByName(markName, "mark").at(-1)?.startTime ?? -1
-    }), mode === "candidate" ? "bp-safe-interactive" : "bp-baseline-interactive-observed");
-    const safeInteractiveMs = browserBoundary.safeMark;
+      visibleReadyMark: performance.getEntriesByName("bp-visible-dashboard-ready", "mark").at(-1)?.startTime ?? -1,
+      safeMark: performance.getEntriesByName("bp-safe-interactive", "mark").at(-1)?.startTime ?? -1
+    }));
+    const visibleReadyMs = browserBoundary.visibleReadyMark;
+    const safeInteractiveMs = mode === "candidate" ? browserBoundary.safeMark : -1;
     const timingErrors: string[] = [];
+    const expectedCriticalRequestKeys = new Set<string>();
     const criticalRequestTasks = [...responseTasks.entries()].flatMap(([request, completion]) => {
-      const startedBySafe = requestStartedByBrowserMark(request.timing().startTime, browserBoundary.timeOrigin, safeInteractiveMs);
-      if (startedBySafe === null) {
+      const startedByReady = requestStartedByBrowserMark(request.timing().startTime, browserBoundary.timeOrigin, visibleReadyMs);
+      if (startedByReady === null) {
         timingErrors.push(`Request ${requestKeys.get(request) ?? "missing-request-correlation"} has invalid browser timing.`);
         return [completion];
       }
-      return startedBySafe ? [completion] : [];
+      if (!startedByReady) return [];
+      expectedCriticalRequestKeys.add(requestKeys.get(request) ?? "missing-request-correlation");
+      return [completion];
     });
     await Promise.all(criticalRequestTasks);
     const { marks, resources } = await resourceEvidence(coldPage, baseOrigin);
-    const safeMark = safeInteractiveMs;
+    const comparisonReadyMark = visibleReadyMs;
     if (mode === "candidate") {
-      expect(safeMark).toBeGreaterThanOrEqual(0);
+      expect(safeInteractiveMs).toBeGreaterThanOrEqual(0);
       for (const mark of ["bp-bootstrap-requested", "bp-realtime-ready", "bp-critical-snapshot-ready", "bp-critical-catchup-ready"]) {
         expect(marks[mark]).toBeGreaterThanOrEqual(0);
-        expect(marks[mark]).toBeLessThanOrEqual(safeMark);
+        expect(marks[mark]).toBeLessThanOrEqual(safeInteractiveMs);
       }
     }
-    const criticalSelection = selectCriticalEvidence(resources, responses, safeMark);
+    const criticalSelection = selectCriticalEvidence(resources, responses, comparisonReadyMark, expectedCriticalRequestKeys);
     const criticalResources = criticalSelection.criticalResources;
     const resourceByKey = new Map(criticalResources.map((entry) => [entry.requestKey, entry]));
     const criticalResponses = criticalSelection.criticalResponses.map((entry) => {
@@ -414,13 +434,15 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
         ...entry,
         requestStartMs: resource.startTime,
         responseEndMs: resource.responseEnd,
-        startMinusSafeMs: resource.startTime - safeMark
+        startMinusSafeMs: resource.startTime - comparisonReadyMark
       };
     });
-    const criticalPaths = criticalResources.map((entry) => entry.path);
-    const requestedHistoryBeforeSafeInteractive = criticalPaths.some((path) =>
+    const deferredHistoryPath = (path: string) =>
       /\/rest\/v1\/(?:bills|bill_lines|bill_discounts|bill_line_discounts|payments|expenses|audit_logs|stock_movements|customers)(?:$|\/)/.test(path)
-      || /\/rest\/v1\/rpc\/(?:.*report.*|.*customer.*history.*|.*customer.*search.*)(?:$|\/)/.test(path)
+      || /\/rest\/v1\/rpc\/(?:.*report.*|.*customer.*history.*|.*customer.*search.*)(?:$|\/)/.test(path);
+    const deferralBoundary = mode === "candidate" ? safeInteractiveMs : comparisonReadyMark;
+    const requestedHistoryBeforeSafeInteractive = resources.some((entry) =>
+      entry.startTime <= deferralBoundary && deferredHistoryPath(entry.path)
     );
 
     let renderEvidence: RenderEvidence | null = null;
@@ -449,7 +471,7 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
          const movementResponses = inventoryMovementResponses();
          if (movementResponses.length === 0 || movementResponses.some((response) => !Number.isInteger(response.jsonRowCount))) return -1;
          return movementResponses.reduce((total, response) => total + (response.jsonRowCount ?? 0), 0);
-       }, { intervals: [25], timeout: 5_000 }).toBe(expectedRecentStockMovements);
+       }, { intervals: [INVENTORY_RENDER_POLL_INTERVAL_MS], timeout: 5_000 }).toBe(expectedRecentStockMovements);
        inventoryNetworkCompleteMs = performance.now() - inventoryHistoryStarted;
       const movementResponses = inventoryMovementResponses().sort((left, right) =>
         Number(left.requestOffset ?? Number.MAX_SAFE_INTEGER) - Number(right.requestOffset ?? Number.MAX_SAFE_INTEGER));
@@ -479,7 +501,10 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
         exactCountRequested: response.exactCountRequested === true
       }));
       const recentMovementsSection = coldPage.getByRole("heading", { name: "Recent Movements", exact: true }).locator("..").locator("..");
-      await expect(recentMovementsSection.locator(".activity-row")).toHaveCount(Math.min(10, expectedRecentStockMovements));
+      await expect.poll(
+        () => recentMovementsSection.locator(".activity-row").count(),
+        { intervals: [INVENTORY_RENDER_POLL_INTERVAL_MS], timeout: 5_000 }
+      ).toBe(Math.min(10, expectedRecentStockMovements));
       inventoryHistoryReadyMs = performance.now() - inventoryHistoryStarted;
       await coldPage.waitForLoadState("networkidle");
       await coldPage.waitForTimeout(500);
@@ -499,19 +524,24 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
     }
     await Promise.all(responseTasks.values());
     const postSafeResponses = responses.flatMap((entry) => {
-      const startMinusSafeMs = entry.requestStartMs - browserBoundary.timeOrigin - safeMark;
+      const postSafeBoundary = mode === "candidate" ? safeInteractiveMs : comparisonReadyMark;
+      const startMinusSafeMs = entry.requestStartMs - browserBoundary.timeOrigin - postSafeBoundary;
       return Number.isFinite(startMinusSafeMs) && startMinusSafeMs > 0
         ? [{ path: entry.path, startMinusSafeMs, status: entry.status }]
         : [];
     });
     const webVitals = await coldPage.evaluate(() => (globalThis as typeof globalThis & { __BP_WEB_VITALS__?: { largestContentfulPaintMs: number; largestContentfulPaintElement: string; largestContentfulPaintResourcePath: string; cumulativeLayoutShift: number } }).__BP_WEB_VITALS__ ?? { largestContentfulPaintMs: 0, largestContentfulPaintElement: "", largestContentfulPaintResourcePath: "", cumulativeLayoutShift: 0 });
 
-    const criticalApiBytes = criticalResponses.filter((entry) => entry.api).reduce((total, entry) => total + (entry.bodyBytes || entry.contentLengthBytes), 0);
+    const responseEvidenceErrors = criticalResponses.flatMap((entry) => entry.evidenceError
+      ? [`Critical response ${entry.requestKey} has invalid decoded-body evidence (${entry.evidenceError}).`]
+      : []);
+    const criticalApiBytes = criticalResponses.filter((entry) => entry.api).reduce((total, entry) => total + entry.bodyBytes, 0);
     const coldShellBytes = sumCriticalShellTransferBytes(criticalResources);
     const initialJavascriptBytes = criticalResponses.filter((entry) => entry.javascript).reduce((total, entry) => total + entry.bodyBytes, 0);
     const initialJavascriptGzipBytes = criticalResponses.filter((entry) => entry.javascript).reduce((total, entry) => total + entry.gzipBytes, 0);
     loads.push({
       sample,
+      visibleReadyMs,
       safeInteractiveMs,
       playwrightObservedSafeInteractiveMs,
       bootstrapMarks: marks,
@@ -539,7 +569,7 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
       inventoryHistoryReadyMs,
       inventoryNetworkCompleteMs,
       inventoryRemoteErrorVisible,
-      criticalEvidenceErrors: [...timingErrors, ...criticalSelection.errors],
+      criticalEvidenceErrors: [...timingErrors, ...criticalSelection.errors, ...responseEvidenceErrors],
       postSafeResponses
     });
     await context.close();
@@ -579,18 +609,30 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
   if (mode === "candidate") {
     expect.soft(loads.every((entry) => !entry.requestedFullAppStateData)).toBe(true);
     expect.soft(loads.every((entry) => !entry.requestedHistoryBeforeSafeInteractive)).toBe(true);
+    expect.soft(loads.every((entry) => entry.postSafeResponses.some((response) =>
+      response.status >= 200
+      && response.status < 400
+      && /\/rest\/v1\/(?:bills|payments|expenses|audit_logs)(?:$|\/)/.test(response.path)
+    ))).toBe(true);
+    expect.soft(loads.every((entry) => entry.postSafeResponses.some((response) =>
+      response.status >= 200
+      && response.status < 400
+      && /\/assets\/InventoryPanel-[^/]+\.js$/.test(response.path)
+    ))).toBe(true);
     expect.soft(loads.every((entry) => entry.bootstrapDependencyDepth !== null && entry.bootstrapDependencyDepth <= 3)).toBe(true);
     expect.soft(loads.every((entry) => entry.criticalApiBytes > 0)).toBe(true);
     expect.soft(loads.every((entry) => entry.coldShellBytes > 0)).toBe(true);
     expect.soft(loads.every((entry) => entry.criticalResponses.every((response) =>
-      response.status === 204 || response.status === 304 || response.bodyBytes > 0 || response.contentLengthBytes > 0
+      response.status >= 200
+      && response.status < 400
+      && (response.status === 204 || response.status === 304 || response.bodyBytes > 0)
     ))).toBe(true);
     expect.soft(loads.every((entry) => entry.idleRootCommits === 0)).toBe(true);
     expect.soft(loads.every((entry) => entry.inventoryStockMovementCount === Number(process.env.E2E_EXPECTED_RECENT_STOCK_MOVEMENTS))).toBe(true);
     expect.soft(loads.every((entry) => entry.inventoryHistoryReadyMs !== null && entry.inventoryHistoryReadyMs <= 5_000)).toBe(true);
     expect.soft(loads.every((entry) => entry.inventoryRemoteErrorVisible === false)).toBe(true);
-    expect.soft(summary.p95).toBeLessThanOrEqual(3_500);
-    expect.soft(summary.max).toBeLessThanOrEqual(5_000);
+    expect.soft(summary.safeInteractiveP95).toBeLessThanOrEqual(3_500);
+    expect.soft(summary.safeInteractiveMax).toBeLessThanOrEqual(5_000);
     expect.soft(summary.p95).toBeLessThanOrEqual(baseline!.summary.p95 * 0.6);
     expect.soft(summary.criticalApiBytesP95).toBeLessThanOrEqual(750 * 1024);
     expect.soft(summary.criticalApiBytesP95).toBeLessThanOrEqual(baseline!.summary.criticalApiBytesP95 * 0.4);

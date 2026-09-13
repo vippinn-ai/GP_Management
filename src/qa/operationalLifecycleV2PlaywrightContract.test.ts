@@ -187,11 +187,13 @@ describe("operational lifecycle v2 Playwright and performance contract", () => {
     expect(spec).toContain("requestStartedByBrowserMark");
     expect(spec).toContain("startMinusSafeMs");
     expect(spec).toContain("criticalEvidenceErrors");
-    expect(spec).toContain("bp-baseline-interactive-observed");
+    expect(spec).toContain("bp-visible-dashboard-ready");
+    expect(spec).toContain("installVisibleReadyObserver");
+    expect(spec).not.toContain("bp-baseline-interactive-observed");
     expect(spec).toContain("sumCriticalShellTransferBytes");
     expect(spec).toContain("largestContentfulPaintElement");
     expect(spec).toContain("inventoryNetworkCompleteMs");
-    expect(spec).toContain("intervals: [25]");
+    expect(spec).toContain("intervals: [INVENTORY_RENDER_POLL_INTERVAL_MS]");
     expect(spec).toContain("expect.soft");
     expect(spec).toContain("baseline.deployedBundleSha256");
     expect(spec).toContain("summary.p95");
@@ -201,7 +203,7 @@ describe("operational lifecycle v2 Playwright and performance contract", () => {
     expect(spec).toContain("inventoryStockMovementPages");
     expect(spec).toContain("inventoryHistoryReadyMs");
     expect(spec).toContain("inventoryHistoryReadyP95Ms");
-    expect(spec).toContain('toHaveCount(Math.min(10, expectedRecentStockMovements))');
+    expect(spec).toContain('recentMovementsSection.locator(".activity-row").count()');
     expect(spec).toContain("/rest/v1/stock_movements");
     expect(spec).toContain("movementResponses.reduce");
     expect(spec).toContain("[200, 206].includes(response.status)");
@@ -226,7 +228,9 @@ describe("operational lifecycle v2 Playwright and performance contract", () => {
     expect(main).not.toContain('await import("react-dom/profiling")');
     expect(main).toContain("preloadShellImage(brandLogo)");
     expect(vite).toContain('{ find: "react-dom/client", replacement: "react-dom/profiling" }');
-    expect(app).toContain('lazy(() => import("./panels/InventoryPanel")');
+    expect(app).toContain('const loadInventoryPanel = () => import("./panels/InventoryPanel")');
+    expect(app).toContain("lazy(loadInventoryPanel)");
+    expect(app).toContain("window.requestIdleCallback(preload");
     expect(app).toContain("<Suspense fallback=");
     expect(inventory).toContain('COMPACT_INVENTORY_MEDIA_QUERY = "(max-width: 720px)"');
     expect(inventory).toContain("!compactInventoryLayout && <div className=\"table-wrap inventory-table-wrap\"");

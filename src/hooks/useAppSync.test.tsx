@@ -192,6 +192,22 @@ describe("useAppSync session restore", () => {
     expect(screen.getByTestId("remote-error")).toBeEmptyDOMElement();
   });
 
+  it("resolves the normalized organization beside the profile and reuses it without another startup lookup", async () => {
+    const organization = { id: "org-primary", name: "BreakPerfect", businessProfile: { name: "BreakPerfect" } };
+    const gateway: RemoteDataGateway = {
+      loadAppDataSnapshot: vi.fn().mockResolvedValue(snapshot("Normalized", 4)),
+      saveAppData: vi.fn().mockResolvedValue(5),
+      subscribeToAppData: vi.fn(() => () => undefined)
+    };
+    backendMocks.resolveRemoteSessionProfile.mockResolvedValue({ status: "active", profile: activeProfile, organization });
+
+    render(<Harness allowFullAppDataPersist={false} dataGateway={gateway} />);
+
+    await waitFor(() => expect(screen.getByTestId("restore-state")).toHaveTextContent("ready"));
+    expect(backendMocks.resolveRemoteSessionProfile).toHaveBeenCalledWith({ includeOrganization: true });
+    expect(gateway.loadAppDataSnapshot).toHaveBeenCalledWith({ organization });
+  });
+
   it("keeps a valid session on cached read-only data when app data load times out", async () => {
     backendMocks.resolveRemoteSessionProfile.mockResolvedValue(activeSessionResult());
     backendMocks.loadRemoteAppDataSnapshot.mockRejectedValue(new Error("App data timeout."));

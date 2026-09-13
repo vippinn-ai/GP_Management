@@ -1,5 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { getSupabaseClient } from "../backend";
+import { getSupabaseClient, type RemoteOrganization } from "../backend";
 import { rememberNormalizedOrganizationId } from "./normalizedOrganization";
 import type {
   AppData,
@@ -1669,6 +1669,7 @@ export async function loadNormalizedAppDataOverlay(params: {
   normalizedComboReads: boolean;
   normalizedLiveReads?: boolean;
   client?: SupabaseClient;
+  organization?: RemoteOrganization;
 }): Promise<{ organizationId?: string; appData: Partial<AppData> }> {
   const client = params.client ?? getSupabaseClient();
   const overlay: Partial<AppData> = {};
@@ -1677,7 +1678,16 @@ export async function loadNormalizedAppDataOverlay(params: {
     params.normalizedCatalogReads ||
     params.normalizedComboReads ||
     Boolean(params.normalizedLiveReads);
-  const organization = needsOrganization ? await loadNormalizedActiveOrganization(client) : undefined;
+  const organization = needsOrganization
+    ? params.organization
+      ? {
+          id: params.organization.id,
+          name: params.organization.name,
+          business_profile: params.organization.businessProfile
+        }
+      : await loadNormalizedActiveOrganization(client)
+    : undefined;
+  if (organization) rememberNormalizedOrganizationId(organization.id);
   const organizationId = organization?.id;
 
   const [configData, catalogData, comboData, liveData] = organization
