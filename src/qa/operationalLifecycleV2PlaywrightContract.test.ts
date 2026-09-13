@@ -206,6 +206,7 @@ describe("operational lifecycle v2 Playwright and performance contract", () => {
     expect(spec).not.toContain("bp-baseline-interactive-observed");
     expect(spec).toContain("sumCriticalShellTransferBytes");
     expect(spec).toContain("largestContentfulPaintElement");
+    expect(spec).toContain('largestContentfulPaintResourcePath = "";');
     expect(spec).toContain("inventoryNetworkCompleteMs");
     expect(spec).toContain("intervals: [INVENTORY_RENDER_POLL_INTERVAL_MS]");
     expect(spec).toContain("expect.soft");
@@ -215,6 +216,10 @@ describe("operational lifecycle v2 Playwright and performance contract", () => {
     expect(spec).toContain("Deferred Inventory history must load without a remote error banner.");
     expect(spec).toContain("inventoryStockMovementCount");
     expect(spec).toContain("inventoryStockMovementPages");
+    expect(spec).toContain("bodyBytes: response.bodyBytes");
+    expect(spec).toContain("inventoryStockMovementBytesP95");
+    expect(spec).toContain("inventoryStockMovementBytesMax");
+    expect(spec).toContain("Number.isFinite(response.bodyBytes) && response.bodyBytes >= 0");
     expect(spec).toContain("inventoryHistoryReadyMs");
     expect(spec).toContain("inventoryHistoryReadyP95Ms");
     expect(spec).toContain('recentMovementsSection.locator(".activity-row").count()');

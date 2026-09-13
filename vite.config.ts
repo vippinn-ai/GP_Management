@@ -1,11 +1,26 @@
 import { configDefaults, defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 import { loadEnv } from "vite";
+import { getBackendResourceHints } from "./src/backendResourceHints";
 
 export default defineConfig(({ mode }) => {
-  const performanceEvidenceEnabled = loadEnv(mode, process.cwd(), "VITE_PERFORMANCE_EVIDENCE").VITE_PERFORMANCE_EVIDENCE === "true";
+  const env = loadEnv(mode, process.cwd(), "VITE_");
+  const performanceEvidenceEnabled = env.VITE_PERFORMANCE_EVIDENCE === "true";
+  const backendResourceHints = getBackendResourceHints(env.VITE_SUPABASE_URL);
   return {
-    plugins: [react()],
+    plugins: [
+      {
+        name: "backend-resource-hints",
+        transformIndexHtml() {
+          return backendResourceHints.map((hint) => ({
+            tag: "link",
+            attrs: hint,
+            injectTo: "head-prepend" as const
+          }));
+        }
+      },
+      react()
+    ],
     resolve: {
       alias: performanceEvidenceEnabled
         ? [{ find: "react-dom/client", replacement: "react-dom/profiling" }]

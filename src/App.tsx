@@ -81,6 +81,7 @@ import {
 } from "./checkoutTelemetry";
 
 import { runQaControlledNormalizedRead } from "./qa/normalizedReadFailure";
+import { buildClientInventoryReportForActiveView } from "./inventoryReportActivation";
 import type {
   AppData,
   AppliedDiscount,
@@ -155,7 +156,6 @@ import {
   getArchivedInventoryItems,
   getInventoryItemOpenUsage,
   getInventoryReportRange,
-  filterInventoryReportModel,
   getInventoryQuantityMap,
   getLineStockQuantity,
   getCombosForStation,
@@ -182,7 +182,6 @@ import {
   getCustomerTabContinuationCandidates,
   getPendingBillsForCustomer as findPendingBillsForCustomer,
   getPendingReceivableGroups,
-  buildInventoryReportModel,
   getUnbilledHoppedSessionsForCustomer,
   hasHoppedSessionContinuationTerminalEvidence,
   isHoppedSessionContinuationRecoverable,
@@ -519,6 +518,12 @@ export default function App() {
   const [inventoryArchiveView, setInventoryArchiveView] = useState<InventoryArchiveView>("active");
   const [inventoryArchiveDraft, setInventoryArchiveDraft] = useState<InventoryArchiveDraft | null>(null);
   const [activeInventoryPanelView, setActiveInventoryPanelView] = useState<InventoryPanelView>("catalog");
+  const navigateToTab = useCallback((nextTab: TabId) => {
+    if (nextTab !== "inventory") {
+      setActiveInventoryPanelView("catalog");
+    }
+    setActiveTab(nextTab);
+  }, []);
   const [inventoryReportSearch, setInventoryReportSearch] = useState("");
   const [debouncedInventoryReportSearch, setDebouncedInventoryReportSearch] = useState("");
   const [comboDraft, setComboDraft] = useState<ComboPackage>(() => createComboDraft());
@@ -1098,7 +1103,7 @@ export default function App() {
     setRemoteSaving,
     setRemoteRestoreState,
     setRestoreRetrySignal,
-    setActiveTab,
+    setActiveTab: navigateToTab,
     applyRemoteSnapshot: applyRemoteSnapshotWithPending
   });
 
@@ -1341,16 +1346,31 @@ export default function App() {
   const resolvedInventoryReportRange = getInventoryReportRange(inventoryReportFilter, now);
   const inventoryReportFromDate = resolvedInventoryReportRange.from <= resolvedInventoryReportRange.to ? resolvedInventoryReportRange.from : resolvedInventoryReportRange.to;
   const inventoryReportToDate = resolvedInventoryReportRange.from <= resolvedInventoryReportRange.to ? resolvedInventoryReportRange.to : resolvedInventoryReportRange.from;
-  const clientInventoryReportModel = buildInventoryReportModel(
-    appData.inventoryItems,
-    appData.stockMovements,
-    appData.sessions,
-    appData.customerTabs,
-    appData.bills,
-    inventoryReportFromDate,
-    inventoryReportToDate
+  const clientInventoryReportModel = useMemo(
+    () => buildClientInventoryReportForActiveView({
+      active: activeTab === "inventory" && activeInventoryPanelView === "report",
+      inventoryItems: appData.inventoryItems,
+      stockMovements: appData.stockMovements,
+      sessions: appData.sessions,
+      customerTabs: appData.customerTabs,
+      bills: appData.bills,
+      fromDate: inventoryReportFromDate,
+      toDate: inventoryReportToDate,
+      search: inventoryReportSearch
+    }),
+    [
+      activeInventoryPanelView,
+      activeTab,
+      appData.bills,
+      appData.customerTabs,
+      appData.inventoryItems,
+      appData.sessions,
+      appData.stockMovements,
+      inventoryReportFromDate,
+      inventoryReportSearch,
+      inventoryReportToDate
+    ]
   );
-  const filteredClientInventoryReportModel = filterInventoryReportModel(clientInventoryReportModel, inventoryReportSearch);
   const inventoryReportQueryKey = useMemo(
     () =>
       JSON.stringify({
@@ -1369,7 +1389,7 @@ export default function App() {
     inventoryReportSummaryState.dataQueryKey === inventoryReportQueryKey;
   const inventoryReportModel = inventoryReportDataReady
     ? inventoryReportSummaryState.data!
-    : filteredClientInventoryReportModel;
+    : clientInventoryReportModel;
   const normalizedReportDataReady =
     normalizedReportReadsEnabled &&
     normalizedReportState.loaded &&
@@ -1651,9 +1671,9 @@ export default function App() {
       return;
     }
     if (!canAccessTab(activeTab)) {
-      setActiveTab(visibleTabs[0]?.id ?? "dashboard");
+      navigateToTab(visibleTabs[0]?.id ?? "dashboard");
     }
-  }, [activeTab, activeUser, canAccessTab, visibleTabs]);
+  }, [activeTab, activeUser, canAccessTab, navigateToTab, visibleTabs]);
 
   useEffect(() => {
     if (
@@ -3558,7 +3578,7 @@ export default function App() {
         setLoginError("");
         setRemoteError("");
         setRemoteRestoreState("ready");
-        setActiveTab("dashboard");
+        navigateToTab("dashboard");
       }).catch((error: unknown) => {
         setLoginError(error instanceof Error ? error.message : "Invalid username or password.");
       });
@@ -3575,7 +3595,7 @@ export default function App() {
       }
       setLoginError("");
       setActiveUserId(matched.id);
-      setActiveTab("dashboard");
+      navigateToTab("dashboard");
     })();
   }
 
@@ -3726,7 +3746,7 @@ export default function App() {
     setShowStartSessionModal(false);
     setSelectedReceiptBillId(null);
     setBillRegisterFocus({ token: Date.now(), search });
-    setActiveTab("bills");
+    navigateToTab("bills");
   }
 
   async function doStartSessionDirect(draftValue: StartSessionDraft = startSessionDraft) {
@@ -4406,7 +4426,7 @@ export default function App() {
       customerName: tab.customerName,
       customerPhone: tab.customerPhone ?? ""
     });
-    setActiveTab("sale");
+    navigateToTab("sale");
     setShowStartSessionModal(false);
     setPostHopTabLinkDraft(null);
     setLastHoppedSessionId(null);
@@ -4522,7 +4542,7 @@ export default function App() {
             setDashboardCustomerTabDraft({ customerId: undefined, customerName: "", customerPhone: "" });
           }
           if (options?.switchToSale) {
-            setActiveTab("sale");
+            navigateToTab("sale");
           }
           options?.onSuccess?.();
         });
@@ -4540,7 +4560,7 @@ export default function App() {
         setDashboardCustomerTabDraft({ customerId: undefined, customerName: "", customerPhone: "" });
       }
       if (options?.switchToSale) {
-        setActiveTab("sale");
+        navigateToTab("sale");
       }
       options?.onSuccess?.();
       return;
@@ -4639,7 +4659,7 @@ export default function App() {
         setDashboardCustomerTabDraft({ customerId: undefined, customerName: "", customerPhone: "" });
       }
       if (options?.switchToSale) {
-        setActiveTab("sale");
+        navigateToTab("sale");
       }
       options?.onSuccess?.();
     };
@@ -5035,7 +5055,7 @@ export default function App() {
       customerName: tab.customerName,
       customerPhone: tab.customerPhone ?? ""
     });
-    setActiveTab("sale");
+    navigateToTab("sale");
   }
 
   function beginCustomerTabCheckoutById(customerTabId: string) {
@@ -6656,7 +6676,7 @@ export default function App() {
       return;
     }
     setComboDraft(cloneValue(combo));
-    setActiveTab("inventory");
+    navigateToTab("inventory");
   }
 
   function toggleComboActive(comboId: string) {
@@ -7855,7 +7875,7 @@ export default function App() {
               key={tab.id}
               type="button"
               className={`nav-button ${activeTab === tab.id ? "is-active" : ""}`}
-              onClick={() => setActiveTab(tab.id)}
+              onClick={() => navigateToTab(tab.id)}
               onMouseEnter={tab.id === "inventory" ? () => { void loadInventoryPanel(); } : undefined}
               onFocus={tab.id === "inventory" ? () => { void loadInventoryPanel(); } : undefined}
             >
@@ -8003,7 +8023,7 @@ export default function App() {
             recentActivity={dashboardActivity.items}
             activityLoading={dashboardActivity.loading}
             activityError={dashboardActivity.error}
-            onShowAllActivity={canAccessTab("activity") ? () => setActiveTab("activity") : undefined}
+            onShowAllActivity={canAccessTab("activity") ? () => navigateToTab("activity") : undefined}
             onRefreshActivity={() => void dashboardActivity.reload()}
             customers={appData.customers}
             customerAutocompleteSuggestions={customerAutocompleteSuggestions}
@@ -8128,6 +8148,7 @@ export default function App() {
             inventoryReportToDate={inventoryReportToDate}
             inventoryReportRangeLabel={resolvedInventoryReportRange.label}
             inventoryReportSearch={inventoryReportSearch}
+            inventoryPanelView={activeInventoryPanelView}
             inventoryReportBackend={
               inventoryReportReadsEnabled
                 ? {

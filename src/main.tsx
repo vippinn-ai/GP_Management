@@ -1,6 +1,5 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
-import { preconnect, prefetchDNS } from "react-dom";
 import App from "./App";
 import { ErrorBoundary } from "./ErrorBoundary";
 import brandLogo from "../Branding/Logo.optimized.png";
@@ -55,12 +54,6 @@ function preloadShellImage(href: string) {
 }
 
 function mountApp() {
-  const backendUrl = import.meta.env.VITE_SUPABASE_URL?.trim();
-  if (backendUrl) {
-    const backendOrigin = new URL(backendUrl).origin;
-    prefetchDNS(backendOrigin);
-    preconnect(backendOrigin, { crossOrigin: "anonymous" });
-  }
   preloadShellImage(brandLogo);
   createRoot(document.getElementById("root")!).render(
     <React.StrictMode>

@@ -50,7 +50,7 @@ function createCatalogProps() {
     activeInventoryCount: 1, archivedInventoryCount: 0, inventoryArchiveDraft: null,
     inventoryReport: { summary: { added: 0, deducted: 0, manualAdjustments: 0, reversals: 0, netChange: 0, reserved: 0, touchedItems: 0 }, rows: [], details: [], detailsTruncated: false },
     inventoryReportFilter: { preset: "today" }, inventoryReportFromDate: "2026-09-13", inventoryReportToDate: "2026-09-13",
-    inventoryReportRangeLabel: "Today", inventoryReportSearch: "", combos: [],
+    inventoryReportRangeLabel: "Today", inventoryReportSearch: "", inventoryPanelView: "catalog", combos: [],
     comboDraft: { id: "", name: "", type: "game", active: true, stationIds: [], price: 0, includedMinutes: 60, fixedItems: [], choiceGroups: [], createdAt: "2026-09-13T00:00:00.000Z", updatedAt: "2026-09-13T00:00:00.000Z" },
     stations: [], sellableOptions: [], filteredInventoryItems: [item], inventoryCategoryOptions: ["Beverages"],
     canEditInventory: true, isManagerReadOnly: false, getInventoryState: vi.fn(() => "in_stock"),
@@ -106,6 +106,7 @@ describe("InventoryPanel normalized report reads", () => {
       inventoryReportToDate: "2026-08-20",
       inventoryReportRangeLabel: "Today",
       inventoryReportSearch: "",
+      inventoryPanelView: "report",
       inventoryReportBackend: {
         enabled: true,
         ready: true,
@@ -165,13 +166,28 @@ describe("InventoryPanel normalized report reads", () => {
     } as unknown as Parameters<typeof InventoryPanel>[0];
 
     render(<InventoryPanel {...props} />);
-    fireEvent.click(screen.getByRole("button", { name: "Inventory Report" }));
 
     expect(screen.getByText(/Inventory report data is temporarily unavailable/)).toBeInTheDocument();
     expect(screen.queryByText("Stock Deducted")).not.toBeInTheDocument();
     expect(screen.queryByText("STALE STOCK ROW")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
     expect(onRefresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("requests a controlled report-view transition synchronously and renders it after the parent update", () => {
+    const { props } = createCatalogProps();
+    const rendered = render(<InventoryPanel {...props} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Inventory Report" }));
+    expect(props.onInventoryPanelViewChange).toHaveBeenCalledWith("report");
+    expect(screen.queryByRole("heading", { name: "Inventory Report" })).not.toBeInTheDocument();
+
+    rendered.rerender(<InventoryPanel {...props} inventoryPanelView="report" />);
+    expect(screen.getByRole("heading", { name: "Inventory Report" })).toBeVisible();
+
+    rendered.unmount();
+    render(<InventoryPanel {...props} inventoryPanelView="report" />);
+    expect(screen.getByRole("heading", { name: "Inventory Report" })).toBeVisible();
   });
 
   it("renders exactly the desktop table initially and preserves its item action", () => {

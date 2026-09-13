@@ -93,6 +93,7 @@ type LoadEvidence = {
   activePanelCommitDurationsMs: number[];
   idleRootCommits: number | null;
   inventoryStockMovementCount: number | null;
+  inventoryStockMovementBytes: number | null;
   inventoryStockMovementPages: Array<{
     status: number;
     rowCount: number | null;
@@ -100,6 +101,7 @@ type LoadEvidence = {
     requestLimit: string | null;
     contentRange: string | null;
     exactCountRequested: boolean;
+    bodyBytes: number;
   }>;
   inventoryHistoryReadyMs: number | null;
   inventoryNetworkCompleteMs: number | null;
@@ -127,6 +129,9 @@ function summarize(loads: LoadEvidence[]) {
   const inventoryHistoryDurations = loads
     .map((entry) => entry.inventoryHistoryReadyMs)
     .filter((value): value is number => value !== null);
+  const inventoryStockMovementBytes = loads
+    .map((entry) => entry.inventoryStockMovementBytes)
+    .filter((value): value is number => value !== null);
   return {
     samples: visibleReady.length,
     p50: percentile(visibleReady, 0.5),
@@ -146,7 +151,9 @@ function summarize(loads: LoadEvidence[]) {
     activePanelCommitP95Ms: percentile(updateDurations, 0.95),
     activePanelCommitMaxMs: updateDurations.length > 0 ? Math.max(...updateDurations) : 0,
     inventoryHistoryReadyP95Ms: percentile(inventoryHistoryDurations, 0.95),
-    inventoryHistoryReadyMaxMs: inventoryHistoryDurations.length > 0 ? Math.max(...inventoryHistoryDurations) : 0
+    inventoryHistoryReadyMaxMs: inventoryHistoryDurations.length > 0 ? Math.max(...inventoryHistoryDurations) : 0,
+    inventoryStockMovementBytesP95: percentile(inventoryStockMovementBytes, 0.95),
+    inventoryStockMovementBytesMax: inventoryStockMovementBytes.length > 0 ? Math.max(...inventoryStockMovementBytes) : 0
   };
 }
 
@@ -355,6 +362,7 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
           target.__BP_WEB_VITALS__!.largestContentfulPaintElement = entry.element
             ? `${entry.element.tagName.toLowerCase()}${entry.element.id ? `#${entry.element.id}` : ""}${[...entry.element.classList].slice(0, 3).map((value) => `.${value}`).join("")}`
             : "";
+          target.__BP_WEB_VITALS__!.largestContentfulPaintResourcePath = "";
           if (entry.url) {
             const url = new URL(entry.url);
             target.__BP_WEB_VITALS__!.largestContentfulPaintResourcePath = `${url.hostname}${url.pathname}`;
@@ -480,6 +488,7 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
     let activePanelCommitDurationsMs: number[] = [];
     let idleRootCommits: number | null = null;
     let inventoryStockMovementCount: number | null = null;
+    let inventoryStockMovementBytes: number | null = null;
     let inventoryStockMovementPages: LoadEvidence["inventoryStockMovementPages"] = [];
     let inventoryHistoryReadyMs: number | null = null;
     let inventoryNetworkCompleteMs: number | null = null;
@@ -522,14 +531,17 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
       expect(movementResponses.map((response) => response.requestOffset)).toEqual(expectedRequestOffsets);
       expect(movementResponses.map((response) => response.requestLimit)).toEqual(expectedRequestLimits);
       expect(movementResponses.map((response) => response.contentRange)).toEqual(expectedContentRanges);
+      expect(movementResponses.every((response) => Number.isFinite(response.bodyBytes) && response.bodyBytes >= 0)).toBe(true);
       inventoryStockMovementCount = movementResponses.reduce((total, response) => total + (response.jsonRowCount ?? 0), 0);
+      inventoryStockMovementBytes = movementResponses.reduce((total, response) => total + response.bodyBytes, 0);
       inventoryStockMovementPages = movementResponses.map((response) => ({
         status: response.status,
         rowCount: response.jsonRowCount ?? null,
         requestOffset: response.requestOffset ?? null,
         requestLimit: response.requestLimit ?? null,
         contentRange: response.contentRange ?? null,
-        exactCountRequested: response.exactCountRequested === true
+        exactCountRequested: response.exactCountRequested === true,
+        bodyBytes: response.bodyBytes
       }));
       const recentMovementsSection = coldPage.getByRole("heading", { name: "Recent Movements", exact: true }).locator("..").locator("..");
       await expect.poll(
@@ -596,6 +608,7 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
       activePanelCommitDurationsMs,
       idleRootCommits,
       inventoryStockMovementCount,
+      inventoryStockMovementBytes,
       inventoryStockMovementPages,
       inventoryHistoryReadyMs,
       inventoryNetworkCompleteMs,
@@ -656,6 +669,7 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
     expect.soft(loads.every((entry) => entry.coldShellBytes > 0)).toBe(true);
     expect.soft(loads.every((entry) => entry.idleRootCommits === 0)).toBe(true);
     expect.soft(loads.every((entry) => entry.inventoryStockMovementCount === Number(process.env.E2E_EXPECTED_RECENT_STOCK_MOVEMENTS))).toBe(true);
+    expect.soft(loads.every((entry) => entry.inventoryStockMovementBytes !== null && Number.isFinite(entry.inventoryStockMovementBytes) && entry.inventoryStockMovementBytes > 0)).toBe(true);
     expect.soft(loads.every((entry) => entry.inventoryHistoryReadyMs !== null && entry.inventoryHistoryReadyMs <= 5_000)).toBe(true);
     expect.soft(loads.every((entry) => entry.inventoryRemoteErrorVisible === false)).toBe(true);
     expect.soft(summary.safeInteractiveP95).toBeLessThanOrEqual(3_500);

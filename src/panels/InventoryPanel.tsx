@@ -185,6 +185,7 @@ export function InventoryPanel(props: {
   inventoryReportToDate: string;
   inventoryReportRangeLabel: string;
   inventoryReportSearch: string;
+  inventoryPanelView: InventoryPanelView;
   inventoryReportBackend?: InventoryReportBackendStatus;
   combos: ComboPackage[];
   comboDraft: ComboPackage;
@@ -228,14 +229,10 @@ export function InventoryPanel(props: {
     itemForm, editItemForm, useCustomItemCategory, customItemCategory,
     useCustomEditItemCategory, customEditItemCategory, inventoryAction,
     inventoryItemSearch, inventoryArchiveView, filteredInventoryItems, inventoryCategoryOptions,
-    canEditInventory, isManagerReadOnly, inventoryReport, inventoryReportFilter, comboDraft,
+    canEditInventory, isManagerReadOnly, inventoryReport, inventoryReportFilter, inventoryPanelView, comboDraft,
     getAvailableStock, getInventoryState
   } = props;
-  const [inventoryPanelView, setInventoryPanelView] = useState<InventoryPanelView>("catalog");
   const [compactInventoryLayout, setCompactInventoryLayout] = useState(initialCompactInventoryLayout);
-  useEffect(() => {
-    props.onInventoryPanelViewChange(inventoryPanelView);
-  }, [inventoryPanelView, props.onInventoryPanelViewChange]);
   useEffect(() => {
     if (typeof window.matchMedia !== "function") return;
     const media = window.matchMedia(COMPACT_INVENTORY_MEDIA_QUERY);
@@ -306,7 +303,7 @@ export function InventoryPanel(props: {
   }
 
   function changeInventoryPanelView(nextView: InventoryPanelView) {
-    setInventoryPanelView(nextView);
+    props.onInventoryPanelViewChange(nextView);
   }
 
   function inventoryReportBackendMessage() {
