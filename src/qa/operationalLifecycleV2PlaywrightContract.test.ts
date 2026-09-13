@@ -198,6 +198,8 @@ describe("operational lifecycle v2 Playwright and performance contract", () => {
     expect(sql).toContain("shape_counts");
     expect(sql).toContain("qa_performance_scale");
     expect(sql).toContain("qaPerformanceScaleFixture");
+    expect(sql).toContain("md5(replace(replace(prosrc,chr(13)||chr(10),chr(10)),chr(13),chr(10)))");
+    expect(sql).toContain("md5(replace(replace(pg_get_functiondef(to_regprocedure('public.get_operational_performance_scale_identity(jsonb)')),chr(13)||chr(10),chr(10)),chr(13),chr(10)))");
     expect(builder).toContain("Restore artifact ${entry.name} failed integrity validation.");
     expect(builder).toContain("restoreFile.value.baselineEvidence?.sha256 !== productionFile.sha256");
     expect(builder).toContain('readBound("restore-drill"');

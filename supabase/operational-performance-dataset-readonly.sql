@@ -65,8 +65,8 @@ select jsonb_build_object(
     'authenticated_execute',has_function_privilege('authenticated','public.get_operational_performance_scale_identity(jsonb)','execute'),
     'anon_execute',has_function_privilege('anon','public.get_operational_performance_scale_identity(jsonb)','execute'),
     'public_execute',(select exists(select 1 from aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) acl where acl.grantee=0 and acl.privilege_type='EXECUTE') from pg_proc p where p.oid=to_regprocedure('public.get_operational_performance_scale_identity(jsonb)')),
-    'body_md5',(select md5(prosrc) from pg_proc where oid=to_regprocedure('public.get_operational_performance_scale_identity(jsonb)')),
-    'definition_md5',(select md5(pg_get_functiondef(to_regprocedure('public.get_operational_performance_scale_identity(jsonb)')))
+    'body_md5',(select md5(replace(replace(prosrc,chr(13)||chr(10),chr(10)),chr(13),chr(10))) from pg_proc where oid=to_regprocedure('public.get_operational_performance_scale_identity(jsonb)')),
+    'definition_md5',(select md5(replace(replace(pg_get_functiondef(to_regprocedure('public.get_operational_performance_scale_identity(jsonb)')),chr(13)||chr(10),chr(10)),chr(13),chr(10)))
   )) end),
   'auxiliary_counts',jsonb_build_object(
     'activity_events',(select count(*) from public.activity_events where organization_id='org-primary'),
