@@ -20,8 +20,13 @@ end $$;
 -- from the verified staging installation. An unbound source file must fail.
 __INSTALLED_FUNCTION_GUARDS__
 
+do $$
+begin
+  perform id from public.app_state where id='primary' for update;
+end $$;
+
 create temp table qa_app_state_original on commit drop as
-select data,version,updated_at,updated_by from public.app_state where id='primary';
+select data,version,updated_at,updated_by,ctid::text row_ctid from public.app_state where id='primary';
 
 create or replace function pg_temp.qa_assert(ok boolean, message text)
 returns void language plpgsql as $$
@@ -77,8 +82,10 @@ select
   timezone('utc', now()) - interval '1 minute' proof_end_at,
   state.version app_state_version,
   md5(state.data::text) app_state_md5,
+  octet_length(state.data::text) app_state_bytes,
   state.updated_at app_state_updated_at,
-  state.updated_by app_state_updated_by
+  state.updated_by app_state_updated_by,
+  state.ctid::text app_state_ctid
 from public.organization_members member
 join public.profiles profile_row on profile_row.id = member.user_id and profile_row.active
 join public.app_state state on state.id = 'primary'
@@ -600,8 +607,15 @@ insert into public.customer_tabs(organization_id,id,customer_name,status,opened_
 select c.organization_id,c.run_id||'-small-tab-'||lpad(sample::text,2,'0'),'QA Small Tab','open',timezone('utc',now())-interval '10 minutes','[]'::jsonb,jsonb_build_object('qaRunId',c.run_id)
 from qa_context c cross join generate_series(1,10) sample;
 
+select pg_temp.qa_assert((select state.version=c.app_state_version and md5(state.data::text)=c.app_state_md5 and octet_length(state.data::text)=c.app_state_bytes and state.updated_at=c.app_state_updated_at and state.updated_by is not distinct from c.app_state_updated_by and state.ctid::text=c.app_state_ctid from public.app_state state cross join qa_context c where state.id='primary'), 'Operational v2 changed app_state during original compatibility-document cases.');
+
 update public.app_state set data=jsonb_build_object('sessions','[]'::jsonb,'sessionPauseLogs','[]'::jsonb,'customerTabs','[]'::jsonb,'auditLogs','[]'::jsonb)
 where id='primary';
+
+create temp table qa_app_state_small on commit drop as
+select data,version,updated_at,updated_by,ctid::text row_ctid from public.app_state where id='primary';
+
+select pg_temp.qa_assert((select small.row_ctid<>original.row_ctid and md5(small.data::text)<>md5(original.data::text) and octet_length(small.data::text)<>octet_length(original.data::text) and small.updated_at<>original.updated_at and small.version=original.version and small.updated_by is not distinct from original.updated_by from qa_app_state_small small cross join qa_app_state_original original), 'Proof fixture did not establish a distinct small compatibility document.');
 
 do $$
 declare c qa_context%rowtype; sample integer; started timestamptz;
@@ -619,6 +633,8 @@ begin
     insert into qa_performance values('reject_customer_tab_v2',sample,extract(epoch from clock_timestamp()-started)*1000,'v2','small');
   end loop;
 end $$;
+
+select pg_temp.qa_assert((select state.version=small.version and md5(state.data::text)=md5(small.data::text) and octet_length(state.data::text)=octet_length(small.data::text) and state.updated_at=small.updated_at and state.updated_by is not distinct from small.updated_by and state.ctid::text=small.row_ctid from public.app_state state cross join qa_app_state_small small where state.id='primary'), 'Operational v2 changed app_state during small compatibility-document cases.');
 
 update public.app_state state set data=original.data,version=original.version,updated_at=original.updated_at,updated_by=original.updated_by
 from qa_app_state_original original where state.id='primary';
@@ -699,7 +715,7 @@ select pg_temp.qa_assert((select count(*)=60 from public.audit_logs a cross join
 select pg_temp.qa_assert((select count(*)=1 from public.session_pause_logs p cross join qa_context c where p.organization_id=c.organization_id and p.id=c.run_id||'-pause' and p.resumed_at is not null), 'Paused rejection did not close the canonical pause.');
 select pg_temp.qa_assert((select count(*)=2 from public.sessions s cross join qa_context c where s.organization_id=c.organization_id and s.id in (c.hop_session_id,c.reject_session_id) and s.status='closed'), 'Session lifecycle results are not closed.');
 select pg_temp.qa_assert((select count(*)=1 from public.customer_tabs t cross join qa_context c where t.organization_id=c.organization_id and t.id=c.reject_tab_id and t.status='closed'), 'Tab rejection result is not closed.');
-select pg_temp.qa_assert((select state.version=c.app_state_version and md5(state.data::text)=c.app_state_md5 and state.updated_at=c.app_state_updated_at and state.updated_by is not distinct from c.app_state_updated_by from public.app_state state cross join qa_context c where state.id='primary'), 'Operational v2 changed app_state.');
+select pg_temp.qa_assert((select state.version=c.app_state_version and md5(state.data::text)=c.app_state_md5 and octet_length(state.data::text)=c.app_state_bytes and state.updated_by is not distinct from c.app_state_updated_by from public.app_state state cross join qa_context c where state.id='primary'), 'Proof fixture failed to restore app_state data, version, or actor.');
 
 select jsonb_build_object(
   'proof','passed',
@@ -722,8 +738,11 @@ select jsonb_build_object(
     join (select case_name,percentile_cont(0.95) within group(order by duration_ms) p95_ms from qa_performance where implementation='v2' and dataset_size='small' group by case_name) small using(case_name)
     join (select case_name,percentile_cont(0.95) within group(order by duration_ms) p95_ms from qa_performance where implementation='v1' and dataset_size='large' group by case_name) legacy using(case_name)
   ) comparison),
-  'app_state',(select jsonb_build_object('version',version,'bytes',octet_length(data::text),'md5',md5(data::text),'updated_at',updated_at,'updated_by',updated_by) from public.app_state where id='primary'),
-  'app_state_unchanged',true,
+  'original_app_state',(select jsonb_build_object('version',version,'bytes',octet_length(data::text),'md5',md5(data::text),'updated_at',updated_at,'updated_by',updated_by,'row_ctid',row_ctid) from qa_app_state_original),
+  'pre_rollback_app_state',(select jsonb_build_object('version',version,'bytes',octet_length(data::text),'md5',md5(data::text),'updated_at',updated_at,'updated_by',updated_by,'row_ctid',ctid::text) from public.app_state where id='primary'),
+  'v2_app_state_unchanged',true,
+  'app_state_compatibility_fields_restored',true,
+  'fixture_app_state_touched',(select small.row_ctid<>original.row_ctid and md5(small.data::text)<>md5(original.data::text) and octet_length(small.data::text)<>octet_length(original.data::text) and small.updated_at<>original.updated_at from qa_app_state_small small cross join qa_app_state_original original),
   'rollback_required',true,
   'captured_at_utc',timezone('utc',clock_timestamp())
 ) as evidence

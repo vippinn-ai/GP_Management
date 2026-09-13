@@ -140,7 +140,9 @@ if (!discoveryOnly) {
     || proof?.proof !== "passed"
     || proof?.run_id !== transactionalProofManifest.value.runId
     || proof?.project_ref !== STAGING_PROJECT_REF
-    || proof?.app_state_unchanged !== true
+    || proof?.v2_app_state_unchanged !== true
+    || proof?.app_state_compatibility_fields_restored !== true
+    || proof?.fixture_app_state_touched !== true
     || proof?.rollback_required !== true
     || proofRollbackVerification.value.status !== "passed"
     || proofRollbackVerification.value.rollbackProven !== true

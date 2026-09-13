@@ -220,7 +220,16 @@ describe("normalized lifecycle v2 SQL contract", () => {
     expect(transactionalProof).toContain("original_sqlstate = RETURNED_SQLSTATE");
     expect(transactionalProof).toContain("qa_error_code('not-json', '23502') = '23502'");
     expect(transactionalProof).toContain("a.id not like c.run_id||'-v1-audit-%'");
-    expect(transactionalProof).toContain("Operational v2 changed app_state");
+    expect(transactionalProof).toContain("Operational v2 changed app_state during original compatibility-document cases");
+    expect(transactionalProof).toContain("Operational v2 changed app_state during small compatibility-document cases");
+    expect(transactionalProof).toContain("ctid::text app_state_ctid");
+    expect(transactionalProof).toContain("ctid::text row_ctid");
+    expect(transactionalProof).toContain("v2_app_state_unchanged");
+    expect(transactionalProof).toContain("app_state_compatibility_fields_restored");
+    expect(transactionalProof).toContain("fixture_app_state_touched");
+    expect(transactionalProof).not.toContain("'fixture_app_state_touched',true");
+    expect(transactionalProof).not.toContain("'app_state_unchanged',true");
+    expect(transactionalProof).not.toContain("state.updated_at=c.app_state_updated_at and state.updated_by is not distinct from c.app_state_updated_by from public.app_state state cross join qa_context c where state.id='primary'), 'Operational v2 changed app_state.'");
     expect(transactionalProof).toMatch(/rollback;\s*$/i);
     expect(transactionalProof).not.toMatch(/\bcommit\s*;/i);
     expect(transactionalProofBuilder).toContain('flag: "wx"');
@@ -243,5 +252,42 @@ describe("normalized lifecycle v2 SQL contract", () => {
 
     expect(audits.filter(matchesV2Audit)).toHaveLength(93);
     expect([...audits, { id: `${runId}-audit-neg-leaked`, action: "session_rejected" }].filter(matchesV2Audit)).toHaveLength(94);
+  });
+
+  it("detects same-value app_state rewrites with the physical tuple checkpoint", () => {
+    const before = { version: 735, md5: "same", bytes: 1_045_421, updatedAt: "transaction-now", updatedBy: "actor", ctid: "(1,1)" };
+    const afterNoOpUpdate = { ...before, ctid: "(1,2)" };
+    const sameLogicalAndPhysicalState = (left: typeof before, right: typeof before) =>
+      left.version === right.version && left.md5 === right.md5 && left.bytes === right.bytes
+      && left.updatedAt === right.updatedAt && left.updatedBy === right.updatedBy && left.ctid === right.ctid;
+
+    expect(sameLogicalAndPhysicalState(before, before)).toBe(true);
+    expect(sameLogicalAndPhysicalState(before, afterNoOpUpdate)).toBe(false);
+  });
+
+  it("places v2 invariance checkpoints around both proof-controlled compatibility documents", () => {
+    const rowLock = transactionalProof.indexOf("perform id from public.app_state where id='primary' for update;");
+    const originalSnapshot = transactionalProof.indexOf("create temp table qa_app_state_original");
+    const largeLoop = transactionalProof.indexOf("for sample in 1..20 loop");
+    const largeLoopEnd = transactionalProof.indexOf("end $$;", largeLoop);
+    const originalCheck = transactionalProof.indexOf("Operational v2 changed app_state during original compatibility-document cases");
+    const firstFixtureWrite = transactionalProof.indexOf("update public.app_state set data=jsonb_build_object");
+    const smallSnapshot = transactionalProof.indexOf("create temp table qa_app_state_small");
+    const smallLoop = transactionalProof.indexOf("for sample in 1..10 loop");
+    const smallLoopEnd = transactionalProof.indexOf("end $$;", smallLoop);
+    const smallCheck = transactionalProof.indexOf("Operational v2 changed app_state during small compatibility-document cases");
+    const firstRestore = transactionalProof.indexOf("update public.app_state state set data=original.data");
+
+    expect(rowLock).toBeGreaterThan(-1);
+    expect(originalSnapshot).toBeGreaterThan(rowLock);
+    expect(largeLoop).toBeGreaterThan(originalSnapshot);
+    expect(largeLoopEnd).toBeGreaterThan(largeLoop);
+    expect(originalCheck).toBeGreaterThan(largeLoopEnd);
+    expect(originalCheck).toBeLessThan(firstFixtureWrite);
+    expect(smallSnapshot).toBeGreaterThan(firstFixtureWrite);
+    expect(smallSnapshot).toBeLessThan(smallLoop);
+    expect(smallLoopEnd).toBeGreaterThan(smallLoop);
+    expect(smallCheck).toBeGreaterThan(smallLoopEnd);
+    expect(smallCheck).toBeLessThan(firstRestore);
   });
 });
