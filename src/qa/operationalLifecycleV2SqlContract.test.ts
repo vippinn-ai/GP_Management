@@ -52,8 +52,24 @@ describe("normalized lifecycle v2 SQL contract", () => {
   it("returns the application error contract for non-object envelopes without invoking object iterators on arrays", () => {
     for (const name of ["hop_session_v2", "reject_session_v2", "reject_customer_tab_v2"]) {
       const functionBody = body(name);
+      expect(functionBody).toMatch(/jsonb_typeof\(payload\)\s+is\s+distinct\s+from\s+'object'/i);
+      expect(functionBody).toMatch(/jsonb_typeof\(payload->'payload'\)\s+is\s+distinct\s+from\s+'object'/i);
       expect(functionBody).toContain("case when jsonb_typeof(payload)='object' then payload else '{}'::jsonb end");
       expect(functionBody).toContain("case when jsonb_typeof(payload->'payload')='object' then payload->'payload' else '{}'::jsonb end");
+    }
+  });
+
+  it("rejects omitted and empty lifecycle discriminators with null-safe SQL guards", () => {
+    for (const [name, kindVariable, expectedKind, typeVariable, expectedType] of [
+      ["hop_session_v2", "v_mutation_kind", "hopSession", "v_entity_type", "session"],
+      ["reject_session_v2", "v_mutation_kind", "rejectSession", "v_entity_type", "session"],
+      ["reject_customer_tab_v2", "v_kind", "rejectCustomerTab", "v_type", "customer_tab"]
+    ] as const) {
+      const functionBody = body(name);
+      expect(functionBody).toMatch(new RegExp(`${kindVariable}\\s+is\\s+distinct\\s+from\\s+'${expectedKind}'`, "i"));
+      expect(functionBody).toMatch(new RegExp(`${typeVariable}\\s+is\\s+distinct\\s+from\\s+'${expectedType}'`, "i"));
+      expect(functionBody).toMatch(new RegExp(`${kindVariable}\\s+text\\s*:=\\s*nullif\\(payload->>'mutation_kind',\\s*''\\)`, "i"));
+      expect(functionBody).toMatch(new RegExp(`${typeVariable}\\s+text\\s*:=\\s*nullif\\(payload->>'entity_type',\\s*''\\)`, "i"));
     }
   });
 
@@ -171,10 +187,24 @@ describe("normalized lifecycle v2 SQL contract", () => {
       "missing-mutation-id",
       "missing-mutation-kind",
       "missing-entity-type",
+      "empty-hop-mutation-kind",
+      "empty-hop-entity-type",
+      "missing-reject-session-mutation-kind",
+      "missing-reject-session-entity-type",
+      "empty-reject-session-mutation-kind",
+      "empty-reject-session-entity-type",
+      "missing-reject-tab-mutation-kind",
+      "missing-reject-tab-entity-type",
+      "empty-reject-tab-mutation-kind",
+      "empty-reject-tab-entity-type",
       "same-id-different-kind",
       "same-id-different-entity",
       "same-id-different-audit"
     ]) expect(transactionalProof).toContain(proofCase);
+    expect(transactionalProof.match(/pg_temp\.qa_expect_rpc_error\('/g)).toHaveLength(48);
+    expect(transactionalProof).toContain("insert into qa_negative_results values('unsupported-role'");
+    expect(transactionalProof).toContain("original_sqlstate = RETURNED_SQLSTATE");
+    expect(transactionalProof).toContain("qa_error_code('not-json', '23502') = '23502'");
     expect(transactionalProof).toContain("Operational v2 changed app_state");
     expect(transactionalProof).toMatch(/rollback;\s*$/i);
     expect(transactionalProof).not.toMatch(/\bcommit\s*;/i);

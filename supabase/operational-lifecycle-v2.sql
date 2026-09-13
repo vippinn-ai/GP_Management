@@ -53,10 +53,10 @@ declare
   v_result jsonb;
   v_duration numeric;
 begin
-  if jsonb_typeof(payload) <> 'object' or v_organization_id is null or v_mutation_id is null
-    or v_mutation_kind <> 'hopSession' or v_entity_type <> 'session' or v_entity_id is null
+  if jsonb_typeof(payload) is distinct from 'object' or v_organization_id is null or v_mutation_id is null
+    or v_mutation_kind is distinct from 'hopSession' or v_entity_type is distinct from 'session' or v_entity_id is null
     or v_audit_log_id is null or payload ? 'user_id' or payload ? 'base_app_state_version'
-    or jsonb_typeof(payload->'payload') <> 'object'
+    or jsonb_typeof(payload->'payload') is distinct from 'object'
     or exists (select 1 from jsonb_object_keys(case when jsonb_typeof(payload)='object' then payload else '{}'::jsonb end) key where key not in ('organization_id','mutation_id','mutation_kind','label','entity_type','entity_id','client_created_at','payload'))
     or exists (select 1 from jsonb_object_keys(case when jsonb_typeof(payload->'payload')='object' then payload->'payload' else '{}'::jsonb end) key where key not in ('effective_ended_at','audit_log_id'))
   then
@@ -232,10 +232,10 @@ declare
   v_result jsonb;
   v_duration numeric;
 begin
-  if jsonb_typeof(payload) <> 'object' or v_organization_id is null or v_mutation_id is null
-    or v_mutation_kind <> 'rejectSession' or v_entity_type <> 'session' or v_entity_id is null
+  if jsonb_typeof(payload) is distinct from 'object' or v_organization_id is null or v_mutation_id is null
+    or v_mutation_kind is distinct from 'rejectSession' or v_entity_type is distinct from 'session' or v_entity_id is null
     or v_audit_log_id is null or v_reason is null or payload ? 'user_id' or payload ? 'base_app_state_version'
-    or jsonb_typeof(payload->'payload') <> 'object'
+    or jsonb_typeof(payload->'payload') is distinct from 'object'
     or exists (select 1 from jsonb_object_keys(case when jsonb_typeof(payload)='object' then payload else '{}'::jsonb end) key where key not in ('organization_id','mutation_id','mutation_kind','label','entity_type','entity_id','client_created_at','payload'))
     or exists (select 1 from jsonb_object_keys(case when jsonb_typeof(payload->'payload')='object' then payload->'payload' else '{}'::jsonb end) key where key not in ('effective_ended_at','reason','audit_log_id'))
   then perform public.raise_operational_rpc_error('invalid_payload', 'The normalized session rejection payload is invalid.', '{}'::jsonb); end if;
@@ -300,8 +300,8 @@ declare
   v_audit_id text := nullif(payload#>>'{payload,audit_log_id}',''); v_fp text; v_existing public.operational_mutations%rowtype; v_tab public.customer_tabs%rowtype;
   v_released jsonb; v_event text := 'event-'||gen_random_uuid()::text; v_message text; v_changed jsonb; v_result jsonb; v_duration numeric;
 begin
-  if jsonb_typeof(payload)<>'object' or v_org is null or v_mid is null or v_kind<>'rejectCustomerTab' or v_type<>'customer_tab' or v_eid is null or v_reason is null or v_audit_id is null or payload?'user_id' or payload?'base_app_state_version'
-    or jsonb_typeof(payload->'payload')<>'object'
+  if jsonb_typeof(payload) is distinct from 'object' or v_org is null or v_mid is null or v_kind is distinct from 'rejectCustomerTab' or v_type is distinct from 'customer_tab' or v_eid is null or v_reason is null or v_audit_id is null or payload?'user_id' or payload?'base_app_state_version'
+    or jsonb_typeof(payload->'payload') is distinct from 'object'
     or exists(select 1 from jsonb_object_keys(case when jsonb_typeof(payload)='object' then payload else '{}'::jsonb end) key where key not in ('organization_id','mutation_id','mutation_kind','label','entity_type','entity_id','client_created_at','payload'))
     or exists(select 1 from jsonb_object_keys(case when jsonb_typeof(payload->'payload')='object' then payload->'payload' else '{}'::jsonb end) key where key not in ('effective_closed_at','reason','audit_log_id'))
   then perform public.raise_operational_rpc_error('invalid_payload','The normalized tab rejection payload is invalid.','{}'::jsonb); end if;

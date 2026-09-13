@@ -47,11 +47,15 @@ const summaryPath = path.join(evidenceRoot, `summary-${env.E2E_RUN_ID}.json`);
 const evidenceManifestPath = path.join(evidenceRoot, `evidence-manifest-${env.E2E_RUN_ID}.json`);
 const REQUIRED_NEGATIVE_CASES = [
   "actor-spoof", "anonymous-actor", "audit-collision", "billed-session-target", "billed-tab-target",
-  "closed-tab-target", "compatibility-version-authority", "empty-reason", "end-before-open-pause",
+  "closed-tab-target", "compatibility-version-authority", "empty-hop-entity-type", "empty-hop-mutation-kind",
+  "empty-reason", "empty-reject-session-entity-type", "empty-reject-session-mutation-kind",
+  "empty-reject-tab-entity-type", "empty-reject-tab-mutation-kind", "end-before-open-pause",
   "foreign-open-pause", "future-session-time", "inactive-actor", "malformed-session-time",
   "malformed-tab-time", "missing-audit", "missing-canonical-start", "missing-entity",
   "missing-entity-type", "missing-mutation-id", "missing-mutation-kind", "missing-open-pause",
   "missing-organization", "missing-session-target", "missing-tab-target", "multiple-open-pauses",
+  "missing-reject-session-entity-type", "missing-reject-session-mutation-kind",
+  "missing-reject-tab-entity-type", "missing-reject-tab-mutation-kind",
   "nested-array", "outer-inner-mismatch", "rejected-session-target", "root-array",
   "same-id-different-audit", "same-id-different-entity", "same-id-different-intent",
   "same-id-different-kind", "session-end-before-start", "tab-before-open", "unsupported-role",

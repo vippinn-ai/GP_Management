@@ -39,10 +39,25 @@ describe("operational lifecycle v2 Playwright and performance contract", () => {
     expect(runner).toContain("rollbackProven");
     expect(runner).toContain("REQUIRED_NEGATIVE_CASES");
     expect(runner).toContain("Object.keys(proofNegativeCases).sort()");
+    const negativeMatrixSource = runner.match(/const REQUIRED_NEGATIVE_CASES = \[([\s\S]*?)\]\.sort\(\);/)?.[1];
+    expect(negativeMatrixSource).toBeDefined();
+    const requiredNegativeCases = [...negativeMatrixSource!.matchAll(/"([^"]+)"/g)].map((match) => match[1]);
+    expect(requiredNegativeCases).toHaveLength(49);
+    expect(new Set(requiredNegativeCases).size).toBe(49);
     for (const negativeCase of [
       "missing-mutation-id",
       "missing-mutation-kind",
       "missing-entity-type",
+      "empty-hop-mutation-kind",
+      "empty-hop-entity-type",
+      "missing-reject-session-mutation-kind",
+      "missing-reject-session-entity-type",
+      "empty-reject-session-mutation-kind",
+      "empty-reject-session-entity-type",
+      "missing-reject-tab-mutation-kind",
+      "missing-reject-tab-entity-type",
+      "empty-reject-tab-mutation-kind",
+      "empty-reject-tab-entity-type",
       "same-id-different-kind",
       "same-id-different-entity",
       "same-id-different-audit"

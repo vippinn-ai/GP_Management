@@ -31,6 +31,7 @@ Reusable suite ownership:
 ## Negative, security, idempotency
 
 - Missing/wrong organization/kind/type/entity/audit; outer-inner mismatch; malformed JSON/arrays; empty reason.
+- Omitted and empty-string mutation kind/entity type for all three lifecycle RPCs return `invalid_payload`; the proof helper preserves the original PostgreSQL SQLSTATE when exception detail is not JSON.
 - Future/end-before-start/malformed timestamp; missing canonical start; missing/foreign/multiple open pause; audit collision.
 - Missing/closed/billed/rejected/wrong-organization target.
 - Anonymous, inactive, wrong organization, unsupported role, actor spoof, and forbidden compatibility-version authority.

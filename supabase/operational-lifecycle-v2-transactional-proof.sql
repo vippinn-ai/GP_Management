@@ -35,21 +35,35 @@ create temp table qa_negative_results (
   observed_code text not null
 ) on commit drop;
 
+create or replace function pg_temp.qa_error_code(error_detail text, original_sqlstate text)
+returns text language plpgsql immutable as $$
+declare parsed_detail jsonb;
+begin
+  if error_detail is null then return original_sqlstate; end if;
+  begin parsed_detail := error_detail::jsonb;
+  exception when others then return original_sqlstate;
+  end;
+  return coalesce(parsed_detail->>'code', original_sqlstate);
+end $$;
+
 create or replace function pg_temp.qa_expect_rpc_error(case_name text, rpc_name text, rpc_payload jsonb, expected_code text)
 returns void language plpgsql as $$
-declare error_detail text; observed_code text; failed boolean := false;
+declare error_detail text; original_sqlstate text; observed_code text; failed boolean := false;
 begin
   begin
     execute format('select public.%I($1)', rpc_name) using rpc_payload;
   exception when others then
     failed := true;
-    get stacked diagnostics error_detail = PG_EXCEPTION_DETAIL;
-    begin observed_code := error_detail::jsonb->>'code'; exception when others then observed_code := sqlstate; end;
+    get stacked diagnostics error_detail = PG_EXCEPTION_DETAIL, original_sqlstate = RETURNED_SQLSTATE;
+    observed_code := pg_temp.qa_error_code(error_detail, original_sqlstate);
   end;
   perform pg_temp.qa_assert(failed, case_name || ' unexpectedly succeeded.');
   perform pg_temp.qa_assert(observed_code = expected_code, case_name || ' returned ' || coalesce(observed_code,'null') || ' instead of ' || expected_code || '.');
   insert into qa_negative_results values(case_name, expected_code, observed_code);
 end $$;
+
+select pg_temp.qa_assert(pg_temp.qa_error_code('not-json', '23502') = '23502', 'Proof helper masked a non-JSON SQLSTATE.');
+select pg_temp.qa_assert(pg_temp.qa_error_code('{"code":"invalid_payload"}', 'P0001') = 'invalid_payload', 'Proof helper ignored an application error code.');
 
 create temp table qa_context on commit drop as
 select
@@ -354,6 +368,12 @@ begin
   perform pg_temp.qa_expect_rpc_error('missing-entity-type','hop_session_v2',jsonb_build_object(
     'organization_id',c.organization_id,'mutation_id',c.run_id||'-neg-missing-type','mutation_kind','hopSession','entity_id',c.collision_session_id,
     'payload',jsonb_build_object('effective_ended_at',ended,'audit_log_id',c.run_id||'-audit-neg-missing-type')),'invalid_payload');
+  perform pg_temp.qa_expect_rpc_error('empty-hop-mutation-kind','hop_session_v2',jsonb_build_object(
+    'organization_id',c.organization_id,'mutation_id',c.run_id||'-neg-empty-hop-kind','mutation_kind','','entity_type','session','entity_id',c.collision_session_id,
+    'payload',jsonb_build_object('effective_ended_at',ended,'audit_log_id',c.run_id||'-audit-neg-empty-hop-kind')),'invalid_payload');
+  perform pg_temp.qa_expect_rpc_error('empty-hop-entity-type','hop_session_v2',jsonb_build_object(
+    'organization_id',c.organization_id,'mutation_id',c.run_id||'-neg-empty-hop-type','mutation_kind','hopSession','entity_type','','entity_id',c.collision_session_id,
+    'payload',jsonb_build_object('effective_ended_at',ended,'audit_log_id',c.run_id||'-audit-neg-empty-hop-type')),'invalid_payload');
   perform pg_temp.qa_expect_rpc_error('wrong-kind','hop_session_v2',jsonb_build_object(
     'organization_id',c.organization_id,'mutation_id',c.run_id||'-neg-kind','mutation_kind','rejectSession','entity_type','session','entity_id',c.collision_session_id,
     'payload',jsonb_build_object('effective_ended_at',ended,'audit_log_id',c.run_id||'-audit-neg-kind')),'invalid_payload');
@@ -393,6 +413,18 @@ begin
   perform pg_temp.qa_expect_rpc_error('missing-open-pause','reject_session_v2',jsonb_build_object(
     'organization_id',c.organization_id,'mutation_id',c.run_id||'-neg-no-pause','mutation_kind','rejectSession','entity_type','session','entity_id',c.run_id||'-paused-no-log',
     'payload',jsonb_build_object('effective_ended_at',ended,'reason','QA invalid pause','audit_log_id',c.run_id||'-audit-neg-no-pause')),'invalid_pause_state');
+  perform pg_temp.qa_expect_rpc_error('missing-reject-session-mutation-kind','reject_session_v2',jsonb_build_object(
+    'organization_id',c.organization_id,'mutation_id',c.run_id||'-neg-missing-reject-session-kind','entity_type','session','entity_id',c.collision_session_id,
+    'payload',jsonb_build_object('effective_ended_at',ended,'reason','QA missing kind','audit_log_id',c.run_id||'-audit-neg-missing-reject-session-kind')),'invalid_payload');
+  perform pg_temp.qa_expect_rpc_error('missing-reject-session-entity-type','reject_session_v2',jsonb_build_object(
+    'organization_id',c.organization_id,'mutation_id',c.run_id||'-neg-missing-reject-session-type','mutation_kind','rejectSession','entity_id',c.collision_session_id,
+    'payload',jsonb_build_object('effective_ended_at',ended,'reason','QA missing type','audit_log_id',c.run_id||'-audit-neg-missing-reject-session-type')),'invalid_payload');
+  perform pg_temp.qa_expect_rpc_error('empty-reject-session-mutation-kind','reject_session_v2',jsonb_build_object(
+    'organization_id',c.organization_id,'mutation_id',c.run_id||'-neg-empty-reject-session-kind','mutation_kind','','entity_type','session','entity_id',c.collision_session_id,
+    'payload',jsonb_build_object('effective_ended_at',ended,'reason','QA empty kind','audit_log_id',c.run_id||'-audit-neg-empty-reject-session-kind')),'invalid_payload');
+  perform pg_temp.qa_expect_rpc_error('empty-reject-session-entity-type','reject_session_v2',jsonb_build_object(
+    'organization_id',c.organization_id,'mutation_id',c.run_id||'-neg-empty-reject-session-type','mutation_kind','rejectSession','entity_type','','entity_id',c.collision_session_id,
+    'payload',jsonb_build_object('effective_ended_at',ended,'reason','QA empty type','audit_log_id',c.run_id||'-audit-neg-empty-reject-session-type')),'invalid_payload');
   perform pg_temp.qa_expect_rpc_error('foreign-open-pause','reject_session_v2',jsonb_build_object(
     'organization_id',c.organization_id,'mutation_id',c.run_id||'-neg-foreign-pause','mutation_kind','rejectSession','entity_type','session','entity_id',c.run_id||'-foreign-pause-target',
     'payload',jsonb_build_object('effective_ended_at',ended,'reason','QA foreign pause','audit_log_id',c.run_id||'-audit-neg-foreign-pause')),'invalid_pause_state');
@@ -417,6 +449,18 @@ begin
   perform pg_temp.qa_expect_rpc_error('missing-tab-target','reject_customer_tab_v2',jsonb_build_object(
     'organization_id',c.organization_id,'mutation_id',c.run_id||'-neg-missing-tab','mutation_kind','rejectCustomerTab','entity_type','customer_tab','entity_id',c.run_id||'-tab-does-not-exist',
     'payload',jsonb_build_object('effective_closed_at',ended,'reason','QA missing','audit_log_id',c.run_id||'-audit-neg-missing-tab')),'customer_tab_not_open');
+  perform pg_temp.qa_expect_rpc_error('missing-reject-tab-mutation-kind','reject_customer_tab_v2',jsonb_build_object(
+    'organization_id',c.organization_id,'mutation_id',c.run_id||'-neg-missing-reject-tab-kind','entity_type','customer_tab','entity_id',c.reject_tab_id,
+    'payload',jsonb_build_object('effective_closed_at',ended,'reason','QA missing kind','audit_log_id',c.run_id||'-audit-neg-missing-reject-tab-kind')),'invalid_payload');
+  perform pg_temp.qa_expect_rpc_error('missing-reject-tab-entity-type','reject_customer_tab_v2',jsonb_build_object(
+    'organization_id',c.organization_id,'mutation_id',c.run_id||'-neg-missing-reject-tab-type','mutation_kind','rejectCustomerTab','entity_id',c.reject_tab_id,
+    'payload',jsonb_build_object('effective_closed_at',ended,'reason','QA missing type','audit_log_id',c.run_id||'-audit-neg-missing-reject-tab-type')),'invalid_payload');
+  perform pg_temp.qa_expect_rpc_error('empty-reject-tab-mutation-kind','reject_customer_tab_v2',jsonb_build_object(
+    'organization_id',c.organization_id,'mutation_id',c.run_id||'-neg-empty-reject-tab-kind','mutation_kind','','entity_type','customer_tab','entity_id',c.reject_tab_id,
+    'payload',jsonb_build_object('effective_closed_at',ended,'reason','QA empty kind','audit_log_id',c.run_id||'-audit-neg-empty-reject-tab-kind')),'invalid_payload');
+  perform pg_temp.qa_expect_rpc_error('empty-reject-tab-entity-type','reject_customer_tab_v2',jsonb_build_object(
+    'organization_id',c.organization_id,'mutation_id',c.run_id||'-neg-empty-reject-tab-type','mutation_kind','rejectCustomerTab','entity_type','','entity_id',c.reject_tab_id,
+    'payload',jsonb_build_object('effective_closed_at',ended,'reason','QA empty type','audit_log_id',c.run_id||'-audit-neg-empty-reject-tab-type')),'invalid_payload');
   perform pg_temp.qa_expect_rpc_error('closed-tab-target','reject_customer_tab_v2',jsonb_build_object(
     'organization_id',c.organization_id,'mutation_id',c.run_id||'-neg-closed-tab','mutation_kind','rejectCustomerTab','entity_type','customer_tab','entity_id',c.run_id||'-closed-tab',
     'payload',jsonb_build_object('effective_closed_at',ended,'reason','QA closed','audit_log_id',c.run_id||'-audit-neg-closed-tab')),'customer_tab_not_open');
@@ -469,9 +513,13 @@ end $$;
 select pg_temp.qa_assert(
   (select array_agg(case_name order by case_name) from qa_negative_results) = array[
     'actor-spoof','anonymous-actor','audit-collision','billed-session-target','billed-tab-target','closed-tab-target',
-    'compatibility-version-authority','empty-reason','end-before-open-pause','foreign-open-pause','future-session-time',
+    'compatibility-version-authority','empty-hop-entity-type','empty-hop-mutation-kind','empty-reason',
+    'empty-reject-session-entity-type','empty-reject-session-mutation-kind','empty-reject-tab-entity-type',
+    'empty-reject-tab-mutation-kind','end-before-open-pause','foreign-open-pause','future-session-time',
     'inactive-actor','malformed-session-time','malformed-tab-time','missing-audit','missing-canonical-start','missing-entity',
     'missing-entity-type','missing-mutation-id','missing-mutation-kind','missing-open-pause','missing-organization',
+    'missing-reject-session-entity-type','missing-reject-session-mutation-kind','missing-reject-tab-entity-type',
+    'missing-reject-tab-mutation-kind',
     'missing-session-target','missing-tab-target','multiple-open-pauses','nested-array','outer-inner-mismatch',
     'rejected-session-target','root-array','same-id-different-audit','same-id-different-entity',
     'same-id-different-intent','same-id-different-kind','session-end-before-start','tab-before-open','unsupported-role',
