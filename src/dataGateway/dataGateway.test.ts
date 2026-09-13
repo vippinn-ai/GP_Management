@@ -1334,6 +1334,135 @@ describe("app_state data gateway", () => {
     );
   });
 
+  it("replays buffered atomic events in order and suppresses duplicate event IDs", async () => {
+    let realtimeHandler: ((payload: { new: unknown }) => void) | undefined;
+    let realtimeStatus: ((status: string) => void) | undefined;
+    const channel = {
+      on: vi.fn((_kind, _config, handler: (payload: { new: unknown }) => void) => {
+        realtimeHandler = handler;
+        return channel;
+      }),
+      subscribe: vi.fn((callback: (status: string) => void) => {
+        realtimeStatus = callback;
+        return channel;
+      })
+    };
+    const client = {
+      auth: { getSession: vi.fn().mockResolvedValue({ data: { session: { user: { id: "user-1" } } }, error: null }) },
+      channel: vi.fn(() => channel),
+      removeChannel: vi.fn(),
+      rpc: vi.fn().mockResolvedValue({ data: { actor: "user-1" }, error: null })
+    };
+    backendMocks.getSupabaseClient.mockReturnValue(client);
+    normalizedReadMocks.buildOperationalBootstrapRpcResult.mockReturnValue({
+      status: "active",
+      actorId: "user-1",
+      profile: { id: "user-1", name: "Admin", username: "admin", role: "admin", active: true },
+      organization: { id: "org-primary", name: "BreakPerfect", businessProfile: { name: "BreakPerfect" } },
+      version: 44,
+      appData: createAppData()
+    });
+    normalizedReadMocks.loadNormalizedLiveDataByIds.mockImplementation(async (
+      _organizationId: string,
+      ids: { sessionIds: string[]; customerTabIds: string[] }
+    ) => ({
+      sessions: ids.sessionIds.map((id) => ({ id, stationId: `station-${id}`, status: "active" })),
+      sessionPauseLogs: [],
+      customerTabs: []
+    }));
+    const gateway = createRemoteDataGateway({
+      ...DEFAULT_BACKEND_FEATURE_FLAGS,
+      atomicBootstrap: true,
+      normalizedBootstrap: true,
+      normalizedRealtime: true
+    });
+
+    const loading = gateway.loadAuthenticatedAppDataSnapshot?.();
+    await vi.waitFor(() => expect(realtimeHandler).toBeTypeOf("function"));
+    const event = (id: string, sessionId: string, createdAt: string) => ({
+      organization_id: "org-primary",
+      id,
+      event_type: "session_updated",
+      entity_type: "session",
+      entity_id: sessionId,
+      created_at: createdAt,
+      metadata: { changed_rows: { sessions: [sessionId] } }
+    });
+    realtimeHandler?.({ new: event("event-1", "session-1", "2026-09-14T04:10:00.000Z") });
+    realtimeHandler?.({ new: event("event-2", "session-2", "2026-09-14T04:10:01.000Z") });
+    realtimeHandler?.({ new: event("event-1", "session-1", "2026-09-14T04:10:00.000Z") });
+    realtimeStatus?.("SUBSCRIBED");
+
+    await expect(loading).resolves.toMatchObject({
+      status: "active",
+      snapshot: {
+        sourceEventId: "event-2",
+        appData: { sessions: [expect.objectContaining({ id: "session-1" }), expect.objectContaining({ id: "session-2" })] }
+      }
+    });
+    expect(normalizedReadMocks.loadNormalizedLiveDataByIds).toHaveBeenCalledTimes(2);
+    expect(normalizedReadMocks.loadNormalizedLiveDataByIds.mock.calls.map((call) => call[1].sessionIds)).toEqual([
+      ["session-1"],
+      ["session-2"]
+    ]);
+    expect(client.auth.getSession).toHaveBeenCalledTimes(1);
+    expect(client.channel).toHaveBeenCalledTimes(1);
+    expect(client.rpc).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails closed when the atomic pre-snapshot event buffer exceeds its bound", async () => {
+    let realtimeHandler: ((payload: { new: unknown }) => void) | undefined;
+    let realtimeStatus: ((status: string) => void) | undefined;
+    const channel = {
+      on: vi.fn((_kind, _config, handler: (payload: { new: unknown }) => void) => {
+        realtimeHandler = handler;
+        return channel;
+      }),
+      subscribe: vi.fn((callback: (status: string) => void) => {
+        realtimeStatus = callback;
+        return channel;
+      })
+    };
+    const client = {
+      auth: { getSession: vi.fn().mockResolvedValue({ data: { session: { user: { id: "user-1" } } }, error: null }) },
+      channel: vi.fn(() => channel),
+      removeChannel: vi.fn(),
+      rpc: vi.fn()
+    };
+    backendMocks.getSupabaseClient.mockReturnValue(client);
+    const gateway = createRemoteDataGateway({
+      ...DEFAULT_BACKEND_FEATURE_FLAGS,
+      atomicBootstrap: true,
+      normalizedBootstrap: true,
+      normalizedRealtime: true
+    });
+
+    const loading = gateway.loadAuthenticatedAppDataSnapshot?.();
+    await vi.waitFor(() => expect(realtimeHandler).toBeTypeOf("function"));
+    for (let index = 0; index <= 1_000; index += 1) {
+      realtimeHandler?.({
+        new: {
+          organization_id: "org-primary",
+          id: `overflow-event-${index}`,
+          event_type: "session_updated",
+          entity_type: "session",
+          entity_id: `session-${index}`,
+          created_at: "2026-09-14T04:20:00.000Z",
+          metadata: { changed_rows: { sessions: [`session-${index}`] } }
+        }
+      });
+    }
+    realtimeStatus?.("SUBSCRIBED");
+
+    await expect(loading).rejects.toThrow("Normalized realtime bootstrap buffer exceeded its safe limit.");
+    await expect(gateway.prepareAuthenticatedBootstrap?.()).rejects.toThrow("Normalized realtime bootstrap buffer exceeded its safe limit.");
+    await expect(gateway.loadAuthenticatedAppDataSnapshot?.()).rejects.toThrow("Normalized realtime bootstrap buffer exceeded its safe limit.");
+    expect(client.auth.getSession).toHaveBeenCalledTimes(1);
+    expect(client.channel).toHaveBeenCalledTimes(1);
+    expect(client.rpc).not.toHaveBeenCalled();
+    expect(client.removeChannel).toHaveBeenCalledWith(channel);
+  });
+
   it("cannot publish a late account-A RPC after logout and an account-B bootstrap", async () => {
     const realtimeStatuses: Array<(status: string) => void> = [];
     let resolveAccountA!: (value: { data: unknown; error: null }) => void;
@@ -1689,17 +1818,34 @@ describe("app_state data gateway", () => {
   });
 
   it("rejects rather than hanging when an unadopted preparation is cancelled before SUBSCRIBED", async () => {
-    const channel = {
-      on: vi.fn().mockReturnThis(),
-      subscribe: vi.fn().mockReturnThis()
-    };
+    const realtimeStatuses: Array<(status: string) => void> = [];
+    const channels = Array.from({ length: 2 }, () => {
+      const channel = {
+        on: vi.fn(() => channel),
+        subscribe: vi.fn((callback: (status: string) => void) => {
+          realtimeStatuses.push(callback);
+          return channel;
+        })
+      };
+      return channel;
+    });
     const client = {
       auth: { getSession: vi.fn().mockResolvedValue({ data: { session: { user: { id: "user-1" } } }, error: null }) },
-      channel: vi.fn(() => channel),
+      channel: vi.fn()
+        .mockImplementationOnce(() => channels[0])
+        .mockImplementationOnce(() => channels[1]),
       removeChannel: vi.fn(),
-      rpc: vi.fn()
+      rpc: vi.fn().mockResolvedValue({ data: { actor: "user-1" }, error: null })
     };
     backendMocks.getSupabaseClient.mockReturnValue(client);
+    normalizedReadMocks.buildOperationalBootstrapRpcResult.mockReturnValue({
+      status: "active",
+      actorId: "user-1",
+      profile: { id: "user-1", name: "Admin", username: "admin", role: "admin", active: true },
+      organization: { id: "org-primary", name: "BreakPerfect", businessProfile: { name: "BreakPerfect" } },
+      version: 44,
+      appData: createAppData()
+    });
     const gateway = createRemoteDataGateway({
       ...DEFAULT_BACKEND_FEATURE_FLAGS,
       atomicBootstrap: true,
@@ -1709,12 +1855,20 @@ describe("app_state data gateway", () => {
 
     const preparation = gateway.prepareAuthenticatedBootstrap?.();
     const rejected = expect(preparation).rejects.toThrow("Normalized realtime preparation was superseded.");
-    await vi.waitFor(() => expect(channel.subscribe).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(realtimeStatuses).toHaveLength(1));
     gateway.scheduleAuthenticatedBootstrapCancellation?.();
 
     await rejected;
-    expect(client.removeChannel).toHaveBeenCalledWith(channel);
+    expect(client.removeChannel).toHaveBeenCalledWith(channels[0]);
     expect(client.rpc).not.toHaveBeenCalled();
+
+    const freshLoad = gateway.loadAuthenticatedAppDataSnapshot?.();
+    await vi.waitFor(() => expect(realtimeStatuses).toHaveLength(2));
+    realtimeStatuses[1]("SUBSCRIBED");
+    await expect(freshLoad).resolves.toMatchObject({ status: "active", snapshot: { version: 44 } });
+    expect(client.auth.getSession).toHaveBeenCalledTimes(2);
+    expect(client.channel).toHaveBeenCalledTimes(2);
+    expect(client.rpc).toHaveBeenCalledTimes(1);
   });
 
   it("waits for confirmed realtime subscription before starting the bootstrap snapshot", async () => {
