@@ -381,6 +381,8 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
     const responses: ResponseEvidence[] = [];
     const responseTasks = new Map<Request, Promise<void>>();
     const responseResolvers = new Map<Request, () => void>();
+    const requestLifecycleTasks = new Map<Request, Promise<void>>();
+    const requestLifecycleResolvers = new Map<Request, () => void>();
     let requestedFullAppStateData = false;
     let requestedExportChunk = false;
 
@@ -391,6 +393,7 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
       requestKeys.set(request, nextCorrelationKey(request.url(), requestUrlOccurrences));
       if (/\/(?:rest|auth)\/v1\//.test(url.pathname) || url.origin === baseOrigin) {
         responseTasks.set(request, new Promise<void>((resolve) => responseResolvers.set(request, resolve)));
+        requestLifecycleTasks.set(request, new Promise<void>((resolve) => requestLifecycleResolvers.set(request, resolve)));
       }
       if (url.pathname.includes("/rest/v1/app_state")) {
         const select = url.searchParams.get("select") ?? "";
@@ -402,9 +405,13 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
       const task = collectResponseEvidence(response, requestKeys, baseOrigin, responses);
       void task.finally(() => responseResolvers.get(response.request())?.());
     });
+    coldPage.on("requestfinished", (request) => {
+      requestLifecycleResolvers.get(request)?.();
+    });
     coldPage.on("requestfailed", (request) => {
       failedRequestPaths.push(requests.get(request) ?? "unknown");
       responseResolvers.get(request)?.();
+      requestLifecycleResolvers.get(request)?.();
     });
 
     await coldPage.goto("/", { waitUntil: "domcontentloaded" });
@@ -424,10 +431,10 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
     const safeInteractiveMs = mode === "candidate" ? browserBoundary.safeMark : -1;
     const timingErrors: string[] = [];
     const expectedCriticalRequestKeys = new Set<string>();
-    const criticalRequestTasks = [...responseTasks.entries()].map(async ([request, completion]) => {
+    const criticalRequestTasks = [...responseTasks.entries()].map(async ([request, responseEvidenceCompletion]) => {
       const startedByReady = await requestStartedByBrowserMarkAfterCompletion(
         () => request.timing().startTime,
-        completion,
+        requestLifecycleTasks.get(request)!,
         browserBoundary.timeOrigin,
         visibleReadyMs
       );
@@ -437,7 +444,7 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
       }
       if (!startedByReady) return;
       expectedCriticalRequestKeys.add(requestKeys.get(request) ?? "missing-request-correlation");
-      await completion;
+      await responseEvidenceCompletion;
     });
     await Promise.all(criticalRequestTasks);
     const { marks, resources } = await settledResourceEvidence(coldPage, baseOrigin, expectedCriticalRequestKeys);

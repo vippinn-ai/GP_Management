@@ -46,15 +46,25 @@ describe("browser-domain operational performance evidence", () => {
   });
 
   it("re-reads an initially unavailable request start only after that same request completes", async () => {
-    const readStart = vi.fn()
-      .mockReturnValueOnce(0)
-      .mockReturnValueOnce(10_400);
-    await expect(requestStartedByBrowserMarkAfterCompletion(
+    let completed = false;
+    let finishRequest!: () => void;
+    const completion = new Promise<void>((resolve) => {
+      finishRequest = () => {
+        completed = true;
+        resolve();
+      };
+    });
+    const readStart = vi.fn(() => completed ? 10_400 : 0);
+    const classification = requestStartedByBrowserMarkAfterCompletion(
       readStart,
-      Promise.resolve(),
+      completion,
       10_000,
       400
-    )).resolves.toBe(true);
+    );
+    await Promise.resolve();
+    expect(readStart).toHaveBeenCalledTimes(1);
+    finishRequest();
+    await expect(classification).resolves.toBe(true);
     expect(readStart).toHaveBeenCalledTimes(2);
   });
 

@@ -186,6 +186,10 @@ describe("operational lifecycle v2 Playwright and performance contract", () => {
     expect(spec).toContain("PERFORMANCE_METRIC_VERSION = 2");
     expect(spec).toContain("requestStartedByBrowserMark");
     expect(spec).toContain("requestStartedByBrowserMarkAfterCompletion");
+    expect(spec).toContain('coldPage.on("requestfinished"');
+    expect(spec).toContain("requestLifecycleTasks.get(request)!");
+    expect(spec).toContain("requestLifecycleResolvers.get(request)?.();");
+    expect(spec.indexOf('coldPage.on("requestfinished"')).toBeGreaterThan(spec.indexOf('coldPage.on("response"'));
     expect(spec).toContain("settledResourceEvidence");
     expect(spec).toContain("CRITICAL_RESOURCE_TIMING_SETTLE_TIMEOUT_MS");
     expect(spec).toContain("missingExpectedCriticalResourceKeys");
