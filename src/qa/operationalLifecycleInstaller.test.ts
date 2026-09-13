@@ -94,7 +94,7 @@ describe("operational lifecycle staging installer", () => {
       "get_operational_performance_dataset_identity", "start_session", "open_customer_tab", "link_customer_tab_continuation"
     ];
     const functions = names.map((name) => {
-      const definition = `CREATE OR REPLACE FUNCTION public.${name}(payload jsonb) RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path TO 'public' AS $function$ BEGIN RETURN jsonb_build_object('old','${name}'); END $function$`;
+      const definition = `CREATE OR REPLACE FUNCTION public.${name}(payload jsonb) RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path TO 'public' AS $function$\r\nBEGIN\r\n  RETURN jsonb_build_object('old','${name}');\r\nEND\r\n$function$`;
       return {
         name,
         definition,
@@ -165,6 +165,15 @@ describe("operational lifecycle staging installer", () => {
     }
     expect(install).toContain("md5(pg_get_functiondef(p.oid))");
     expect(rollback).toContain("md5(pg_get_functiondef(p.oid))");
+    expect(install).toContain("md5(btrim(replace(p.prosrc,chr(13)||chr(10),chr(10)), E' \\t\\n\\r'))");
+    expect(rollback).toContain("md5(btrim(replace(p.prosrc,chr(13)||chr(10),chr(10)), E' \\t\\n\\r'))");
+    const crlfBody = functions.find((entry) => entry.name === "start_session")!.definition.match(/AS \$function\$([\s\S]*?)\$function\$/i)![1];
+    const canonicalBodyMd5 = crypto.createHash("md5").update(crlfBody.replaceAll("\r\n", "\n").trim()).digest("hex");
+    const oldGuardBodyMd5 = crypto.createHash("md5").update(crlfBody.trim()).digest("hex");
+    expect(crlfBody).toContain("\r\n  RETURN");
+    expect(install).toContain(canonicalBodyMd5);
+    expect(rollback).toContain(canonicalBodyMd5);
+    expect(canonicalBodyMd5).not.toBe(oldGuardBodyMd5);
     expect(install).toContain("actual_parallel is distinct from 'u'");
     expect(install).toContain("actual_support is distinct from 0::oid");
     expect(install).toContain(functions.find((entry) => entry.name === "start_session")!.definition_md5);

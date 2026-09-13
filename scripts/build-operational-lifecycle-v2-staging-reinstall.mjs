@@ -100,7 +100,7 @@ function metadataGuard(name, expected, hashes, message) {
     or actual_result is distinct from 'jsonb'
     or actual_kind is distinct from 'f'
     or actual_support is distinct from 0::oid`;
-  return `select md5(pg_get_functiondef(p.oid)), md5(btrim(p.prosrc)), quote_ident(pg_get_userbyid(p.proowner)), p.prosecdef, p.provolatile, to_jsonb(p.proconfig),
+  return `select md5(pg_get_functiondef(p.oid)), md5(btrim(replace(p.prosrc,chr(13)||chr(10),chr(10)), E' \\t\\n\\r')), quote_ident(pg_get_userbyid(p.proowner)), p.prosecdef, p.provolatile, to_jsonb(p.proconfig),
     p.proisstrict, p.proparallel, p.proleakproof, p.procost, p.prorows, p.proretset, pg_get_function_result(p.oid), p.prokind, p.prosupport,
     (select jsonb_agg(jsonb_build_object(
       'grantor',case when acl_items.grantor=0 then 'PUBLIC' else pg_get_userbyid(acl_items.grantor) end,

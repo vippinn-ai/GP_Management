@@ -176,6 +176,7 @@ describe("normalized lifecycle v2 SQL contract", () => {
     expect(reinstallBuilder).toContain('const PATCHED_FUNCTIONS = ["hop_session_v2", "reject_session_v2", "reject_customer_tab_v2"]');
     expect(reinstallBuilder).toContain("for (const name of VERIFIED_FUNCTIONS) validateFunctionEvidence");
     expect(reinstallBuilder).toContain("deployed definition, owner, configuration, or ACL drift");
+    expect(reinstallBuilder).toContain("btrim(replace(p.prosrc,chr(13)||chr(10),chr(10)), E' \\\\t\\\\n\\\\r')");
     expect(reinstallBuilder).toContain("installed definition, owner, configuration, or ACL mismatch");
     expect(reinstallBuilder).toContain("app_state changed after approved preflight");
     expect(reinstallBuilder).toContain("reinstall changed compatibility app_state");
