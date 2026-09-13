@@ -6,9 +6,11 @@ import { attachJson, captureAuthenticatedRestRequests, credentials, signIn } fro
 import { parsePostgrestPageEvidence } from "../../../src/qa/operationalPerformancePageEvidence";
 import { isSuccessfulCriticalResponse, readDecodedResponseBody } from "../../../src/qa/operationalPerformanceResponseEvidence";
 import {
+  CRITICAL_RESOURCE_TIMING_SETTLE_TIMEOUT_MS,
   measureBootstrapDependencyDepth,
   installVisibleReadyObserver,
   INVENTORY_RENDER_POLL_INTERVAL_MS,
+  missingExpectedCriticalResourceKeys,
   requestStartedByBrowserMark,
   selectCriticalEvidence,
   sumCriticalShellTransferBytes
@@ -222,6 +224,23 @@ async function resourceEvidence(page: Page, baseOrigin: string): Promise<{ marks
   };
 }
 
+async function settledResourceEvidence(
+  page: Page,
+  baseOrigin: string,
+  expectedCriticalRequestKeys: ReadonlySet<string>
+): Promise<{ marks: Record<string, number>; resources: ResourceEvidence[] }> {
+  const deadline = Date.now() + CRITICAL_RESOURCE_TIMING_SETTLE_TIMEOUT_MS;
+  let evidence = await resourceEvidence(page, baseOrigin);
+  while (
+    missingExpectedCriticalResourceKeys(evidence.resources, expectedCriticalRequestKeys).length > 0
+    && Date.now() < deadline
+  ) {
+    await page.waitForTimeout(INVENTORY_RENDER_POLL_INTERVAL_MS);
+    evidence = await resourceEvidence(page, baseOrigin);
+  }
+  return evidence;
+}
+
 async function collectResponseEvidence(response: Response, requestKeys: Map<Request, string>, baseOrigin: string, sink: ResponseEvidence[]) {
   const url = new URL(response.url());
   const api = /\/(?:rest|auth)\/v1\//.test(url.pathname);
@@ -416,7 +435,7 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
       return [completion];
     });
     await Promise.all(criticalRequestTasks);
-    const { marks, resources } = await resourceEvidence(coldPage, baseOrigin);
+    const { marks, resources } = await settledResourceEvidence(coldPage, baseOrigin, expectedCriticalRequestKeys);
     const comparisonReadyMark = visibleReadyMs;
     if (mode === "candidate") {
       expect(safeInteractiveMs).toBeGreaterThanOrEqual(0);

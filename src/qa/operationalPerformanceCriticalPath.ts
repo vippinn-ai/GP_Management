@@ -10,6 +10,7 @@ export interface CriticalResourceTiming {
 }
 
 export const INVENTORY_RENDER_POLL_INTERVAL_MS = 25;
+export const CRITICAL_RESOURCE_TIMING_SETTLE_TIMEOUT_MS = 1_000;
 
 export interface CriticalResponseTiming {
   requestKey: string;
@@ -78,6 +79,14 @@ export function requestStartedByBrowserMark(
     || safeInteractiveMarkMs < 0
   ) return null;
   return requestStartEpochMs <= pageTimeOriginEpochMs + safeInteractiveMarkMs;
+}
+
+export function missingExpectedCriticalResourceKeys(
+  resources: ReadonlyArray<Pick<CriticalResourceTiming, "requestKey">>,
+  expectedCriticalRequestKeys: ReadonlySet<string>
+): string[] {
+  const observedKeys = new Set(resources.map((entry) => entry.requestKey));
+  return [...expectedCriticalRequestKeys].filter((requestKey) => !observedKeys.has(requestKey));
 }
 
 export function selectCriticalEvidence<

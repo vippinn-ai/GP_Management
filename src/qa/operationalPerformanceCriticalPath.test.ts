@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  CRITICAL_RESOURCE_TIMING_SETTLE_TIMEOUT_MS,
   measureBootstrapDependencyDepth,
   installVisibleReadyObserver,
   INVENTORY_RENDER_POLL_INTERVAL_MS,
+  missingExpectedCriticalResourceKeys,
   requestStartedByBrowserMark,
   selectCriticalEvidence,
   sumCriticalShellTransferBytes,
@@ -21,6 +23,18 @@ function response(requestKey: string, path: string, status = 200): CriticalRespo
 describe("browser-domain operational performance evidence", () => {
   it("uses the event-granularity Inventory render polling budget", () => {
     expect(INVENTORY_RENDER_POLL_INTERVAL_MS).toBe(25);
+  });
+
+  it("bounds browser Resource Timing settlement without changing measured readiness", () => {
+    expect(CRITICAL_RESOURCE_TIMING_SETTLE_TIMEOUT_MS).toBe(1_000);
+    expect(missingExpectedCriticalResourceKeys(
+      [{ requestKey: "document:0" }, { requestKey: "api:0" }],
+      new Set(["document:0", "api:0", "logo:0"])
+    )).toEqual(["logo:0"]);
+    expect(missingExpectedCriticalResourceKeys(
+      [{ requestKey: "document:0" }, { requestKey: "api:0" }, { requestKey: "logo:0" }],
+      new Set(["document:0", "api:0", "logo:0"])
+    )).toEqual([]);
   });
   it("classifies request timing in the browser epoch at the exact safe boundary and fails closed on invalid timing", () => {
     expect(requestStartedByBrowserMark(10_400, 10_000, 400)).toBe(true);
