@@ -1,7 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { readDecodedResponseBody } from "./operationalPerformanceResponseEvidence";
+import { isSuccessfulCriticalResponse, readDecodedResponseBody } from "./operationalPerformanceResponseEvidence";
 
 describe("operational performance decoded response evidence", () => {
+  it.each(["baseline", "candidate"] as const)("requires successful API and JavaScript responses with decoded bodies in %s mode", () => {
+    expect(isSuccessfulCriticalResponse({ status: 200, api: true, javascript: false, bodyBytes: 17 })).toBe(true);
+    expect(isSuccessfulCriticalResponse({ status: 500, api: true, javascript: false, bodyBytes: 17 })).toBe(false);
+    expect(isSuccessfulCriticalResponse({ status: 200, api: true, javascript: false, bodyBytes: 0 })).toBe(false);
+    expect(isSuccessfulCriticalResponse({ status: 204, api: true, javascript: false, bodyBytes: 0 })).toBe(true);
+    expect(isSuccessfulCriticalResponse({ status: 200, api: false, javascript: true, bodyBytes: 0 })).toBe(false);
+    expect(isSuccessfulCriticalResponse({ status: 200, api: false, javascript: false, bodyBytes: 0 })).toBe(true);
+  });
+
   it("records decoded bytes and parsed JSON without using wire length", async () => {
     const body = new TextEncoder().encode('[{"version":736}]');
 

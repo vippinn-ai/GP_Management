@@ -4,7 +4,7 @@ import { gzipSync } from "node:zlib";
 import { expect, test, type Page, type Request, type Response } from "@playwright/test";
 import { attachJson, captureAuthenticatedRestRequests, credentials, signIn } from "./support/app";
 import { parsePostgrestPageEvidence } from "../../../src/qa/operationalPerformancePageEvidence";
-import { readDecodedResponseBody } from "../../../src/qa/operationalPerformanceResponseEvidence";
+import { isSuccessfulCriticalResponse, readDecodedResponseBody } from "../../../src/qa/operationalPerformanceResponseEvidence";
 import {
   measureBootstrapDependencyDepth,
   installVisibleReadyObserver,
@@ -599,6 +599,7 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
 
   expect.soft(loads.every((entry) => entry.failedRequestPaths.length === 0)).toBe(true);
   expect.soft(loads.every((entry) => entry.criticalEvidenceErrors.length === 0)).toBe(true);
+  expect.soft(loads.every((entry) => entry.criticalResponses.every(isSuccessfulCriticalResponse))).toBe(true);
   expect.soft(loads.every((entry) => !entry.requestedExportChunk)).toBe(true);
   const expectedAppStateVersion = Number(process.env.E2E_EXPECTED_APP_STATE_VERSION);
   expect.soft(Number.isInteger(expectedAppStateVersion)).toBe(true);
@@ -622,11 +623,6 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
     expect.soft(loads.every((entry) => entry.bootstrapDependencyDepth !== null && entry.bootstrapDependencyDepth <= 3)).toBe(true);
     expect.soft(loads.every((entry) => entry.criticalApiBytes > 0)).toBe(true);
     expect.soft(loads.every((entry) => entry.coldShellBytes > 0)).toBe(true);
-    expect.soft(loads.every((entry) => entry.criticalResponses.every((response) =>
-      response.status >= 200
-      && response.status < 400
-      && (response.status === 204 || response.status === 304 || response.bodyBytes > 0)
-    ))).toBe(true);
     expect.soft(loads.every((entry) => entry.idleRootCommits === 0)).toBe(true);
     expect.soft(loads.every((entry) => entry.inventoryStockMovementCount === Number(process.env.E2E_EXPECTED_RECENT_STOCK_MOVEMENTS))).toBe(true);
     expect.soft(loads.every((entry) => entry.inventoryHistoryReadyMs !== null && entry.inventoryHistoryReadyMs <= 5_000)).toBe(true);

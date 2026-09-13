@@ -87,6 +87,55 @@ export type RemoteSessionProfileResult =
   | { status: "inactive-or-missing"; userId: string }
   | { status: "profile-unreachable"; userId: string; error: Error };
 
+export interface RemoteLookupResult<T> {
+  data: T | null;
+  error: unknown;
+}
+
+export async function settleRemoteSessionProfileLookups(
+  userId: string,
+  includeOrganization: boolean,
+  loadProfile: () => Promise<RemoteLookupResult<RemoteProfile>>,
+  loadOrganization: () => Promise<RemoteLookupResult<RemoteOrganization>>
+): Promise<RemoteSessionProfileResult> {
+  const profileRequest = loadProfile();
+  const organizationRequest = includeOrganization
+    ? loadOrganization()
+    : Promise.resolve({ data: null, error: null });
+  const [profileResult, organizationResult] = await Promise.allSettled([profileRequest, organizationRequest]);
+  return classifyRemoteSessionProfileLookups(
+    userId,
+    includeOrganization,
+    profileResult as PromiseSettledResult<RemoteLookupResult<RemoteProfile>>,
+    organizationResult as PromiseSettledResult<RemoteLookupResult<RemoteOrganization>>
+  );
+}
+
+function lookupError(value: unknown, fallback: string): Error {
+  return value instanceof Error ? value : new Error(fallback);
+}
+
+export function classifyRemoteSessionProfileLookups(
+  userId: string,
+  includeOrganization: boolean,
+  profileLookup: PromiseSettledResult<RemoteLookupResult<RemoteProfile>>,
+  organizationLookup: PromiseSettledResult<RemoteLookupResult<RemoteOrganization>>
+): RemoteSessionProfileResult {
+  if (profileLookup.status === "rejected") {
+    return { status: "profile-unreachable", userId, error: lookupError(profileLookup.reason, "Unable to verify your profile.") };
+  }
+  if (profileLookup.value.error) {
+    return { status: "profile-unreachable", userId, error: lookupError(profileLookup.value.error, "Unable to verify your profile.") };
+  }
+  const profile = profileLookup.value.data;
+  if (!profile || !profile.active) return { status: "inactive-or-missing", userId };
+  if (!includeOrganization) return { status: "active", profile };
+  if (organizationLookup.status === "rejected" || organizationLookup.value.error || !organizationLookup.value.data) {
+    return { status: "profile-unreachable", userId, error: new Error("Unable to load your organization.") };
+  }
+  return { status: "active", profile, organization: organizationLookup.value.data };
+}
+
 let supabaseClient: SupabaseClient | null = null;
 let cachedProfiles: RemoteProfile[] = [];
 
@@ -215,16 +264,18 @@ export async function resolveRemoteSessionProfile(options: { includeOrganization
     return { status: "no-session" };
   }
   try {
-    const profileRequest = withRemoteTimeout(
-      supabase
-        .from("profiles")
-        .select("id, name, username, role, active, tabPermissions:tab_permissions")
-        .eq("id", authUserId)
-        .maybeSingle(),
-      "loading your profile"
-    );
-    const organizationRequest = options.includeOrganization
-      ? withRemoteTimeout(
+    return await settleRemoteSessionProfileLookups(
+      authUserId,
+      Boolean(options.includeOrganization),
+      () => withRemoteTimeout(
+        supabase
+          .from("profiles")
+          .select("id, name, username, role, active, tabPermissions:tab_permissions")
+          .eq("id", authUserId)
+          .maybeSingle(),
+        "loading your profile"
+      ),
+      () => withRemoteTimeout(
           supabase
             .from("organizations")
             .select("id, name, businessProfile:business_profile")
@@ -234,26 +285,7 @@ export async function resolveRemoteSessionProfile(options: { includeOrganization
             .maybeSingle(),
           "loading your organization"
         )
-      : Promise.resolve({ data: null, error: null });
-    const [{ data, error }, organizationResult] = await Promise.all([profileRequest, organizationRequest]);
-    if (error) {
-      return { status: "profile-unreachable", userId: authUserId, error };
-    }
-    if (!data || !data.active) {
-      return { status: "inactive-or-missing", userId: authUserId };
-    }
-    if (options.includeOrganization && (organizationResult.error || !organizationResult.data)) {
-      return {
-        status: "profile-unreachable",
-        userId: authUserId,
-        error: new Error("Unable to load your organization.")
-      };
-    }
-    return {
-      status: "active",
-      profile: data as RemoteProfile,
-      organization: organizationResult.data as RemoteOrganization | null ?? undefined
-    };
+    );
   } catch (error) {
     return {
       status: "profile-unreachable",

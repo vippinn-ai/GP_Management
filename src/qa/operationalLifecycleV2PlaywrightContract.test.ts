@@ -187,6 +187,12 @@ describe("operational lifecycle v2 Playwright and performance contract", () => {
     expect(spec).toContain("requestStartedByBrowserMark");
     expect(spec).toContain("startMinusSafeMs");
     expect(spec).toContain("criticalEvidenceErrors");
+    expect(spec).toContain("entry.criticalResponses.every(isSuccessfulCriticalResponse)");
+    const commonCriticalResponseGateIndex = spec.indexOf("entry.criticalResponses.every(isSuccessfulCriticalResponse)");
+    expect(commonCriticalResponseGateIndex).toBeGreaterThan(-1);
+    expect(commonCriticalResponseGateIndex).toBeLessThan(
+      spec.indexOf('if (mode === "candidate")', commonCriticalResponseGateIndex)
+    );
     expect(spec).toContain("bp-visible-dashboard-ready");
     expect(spec).toContain("installVisibleReadyObserver");
     expect(spec).not.toContain("bp-baseline-interactive-observed");

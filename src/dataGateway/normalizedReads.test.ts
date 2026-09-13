@@ -4,6 +4,7 @@ import {
   buildNormalizedComboData,
   buildNormalizedConfigData,
   buildNormalizedLiveData,
+  loadNormalizedAppDataOverlay,
   loadNormalizedStockMovements,
   mapNormalizedAuditLog
 } from "./normalizedReads";
@@ -24,6 +25,34 @@ describe("normalized critical bootstrap graph", () => {
     expect(snapshotBody).not.toContain("loadNormalizedAuditLogs");
     expect(snapshotBody).toContain("bills: []");
     expect(gateway).toContain("loadDeferredNormalizedDashboardContext");
+  });
+
+  it("reuses a supplied startup organization without querying the active organization again", async () => {
+    const fromCalls: string[] = [];
+    const query = {
+      select: vi.fn(() => query),
+      eq: vi.fn(() => query),
+      order: vi.fn(() => query),
+      then: (resolve: (value: { data: unknown[]; error: null }) => unknown) => Promise.resolve(resolve({ data: [], error: null }))
+    };
+    const client = {
+      from: vi.fn((table: string) => {
+        fromCalls.push(table);
+        return query;
+      })
+    };
+
+    await expect(loadNormalizedAppDataOverlay({
+      normalizedConfigReads: true,
+      normalizedCatalogReads: false,
+      normalizedComboReads: false,
+      normalizedLiveReads: false,
+      organization: { id: "org-primary", name: "BreakPerfect", businessProfile: { name: "BreakPerfect" } },
+      client: client as never
+    })).resolves.toMatchObject({ organizationId: "org-primary" });
+
+    expect(fromCalls).toEqual(expect.arrayContaining(["inventory_categories", "stations", "pricing_rules"]));
+    expect(fromCalls).not.toContain("organizations");
   });
 });
 

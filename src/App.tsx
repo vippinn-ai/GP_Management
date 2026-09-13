@@ -695,8 +695,7 @@ export default function App() {
   const filteredInventoryItems = visibleInventoryItems.filter((item) =>
     `${item.name} ${item.category}`.toLowerCase().includes(inventoryItemSearch.trim().toLowerCase())
   );
-  const remoteReadOnly =
-    backendConfigured && (remoteRestoreState === "stale-cache" || remoteRestoreState === "retrying");
+  const remoteReadOnly = backendConfigured && remoteRestoreState !== "ready";
   const remoteReadOnlyMessage =
     "Latest remote data is still loading. Cached data is read-only until sync recovers.";
 
@@ -1104,10 +1103,16 @@ export default function App() {
   });
 
   useEffect(() => {
-    if (online && activeUserId && backendConfigured) {
+    if (
+      online &&
+      activeUserId &&
+      backendConfigured &&
+      !remoteLoading &&
+      remoteRestoreState === "ready"
+    ) {
       scheduleOperationalSync(0);
     }
-  }, [activeUserId, backendConfigured, online]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [activeUserId, backendConfigured, online, remoteLoading, remoteRestoreState]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function refreshRemoteState(options?: { keepUser?: boolean }) {
     const snapshot = await defaultRemoteDataGateway.loadAppDataSnapshot();
@@ -2530,7 +2535,15 @@ export default function App() {
   }
 
   async function syncOperationalQueue() {
-    if (!backendConfigured || !activeUserId || !online || remoteReadOnly || operationalSyncInFlightRef.current) {
+    if (
+      !backendConfigured ||
+      !activeUserId ||
+      !online ||
+      remoteLoading ||
+      remoteRestoreState !== "ready" ||
+      remoteReadOnly ||
+      operationalSyncInFlightRef.current
+    ) {
       return;
     }
     let syncableMutations = pendingOperationalMutationsRef.current.filter(

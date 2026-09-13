@@ -139,11 +139,9 @@ export function useAppSync(params: {
         }
 
         try {
-          // Subscribe while the authoritative snapshot is loading. The normalized
-          // gateway buffers compact events and folds them into the snapshot before
-          // this restore becomes writable.
-          setActiveUserId(sessionResult.profile.id);
-          setActiveTab("dashboard");
+          // The normalized gateway establishes realtime before loading the
+          // authoritative snapshot, then folds buffered compact events into that
+          // snapshot before this restore becomes writable.
           const snapshot = await dataGateway.loadAppDataSnapshot({ organization: sessionResult.organization });
           if (cancelled) {
             return;
@@ -156,6 +154,8 @@ export function useAppSync(params: {
             setRemoteVersion(snapshot.version);
           }
           setRemoteError("");
+          setActiveUserId(sessionResult.profile.id);
+          setActiveTab("dashboard");
           setRemoteRestoreState("ready");
         } catch (error) {
           if (cancelled) {
