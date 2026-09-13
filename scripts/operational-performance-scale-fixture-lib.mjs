@@ -302,8 +302,8 @@ const rpcIdentitySql = () => `(select case when to_regprocedure('public.${SCALE_
   'authenticated_execute',has_function_privilege('authenticated','public.${SCALE_RPC}(jsonb)','execute'),
   'anon_execute',has_function_privilege('anon','public.${SCALE_RPC}(jsonb)','execute'),
   'public_execute',(select exists(select 1 from aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) acl where acl.grantee=0 and acl.privilege_type='EXECUTE') from pg_proc p where p.oid=to_regprocedure('public.${SCALE_RPC}(jsonb)')),
-  'body_md5',(select md5(prosrc) from pg_proc where oid=to_regprocedure('public.${SCALE_RPC}(jsonb)')),
-  'definition_md5',(select md5(pg_get_functiondef(to_regprocedure('public.${SCALE_RPC}(jsonb)')))
+  'body_md5',(select md5(replace(replace(prosrc,chr(13)||chr(10),chr(10)),chr(13),chr(10))) from pg_proc where oid=to_regprocedure('public.${SCALE_RPC}(jsonb)')),
+  'definition_md5',(select md5(replace(replace(pg_get_functiondef(to_regprocedure('public.${SCALE_RPC}(jsonb)')),chr(13)||chr(10),chr(10)),chr(13),chr(10)))
 )) end)`;
 const identitySql = () => `jsonb_build_object('organization_id','${ORGANIZATION_ID}','app_state',${appStateSql()},'public_counts',${countObjectSql()},'public_fingerprints',${fingerprintObjectSql()},'auxiliary_counts',${auxiliaryCountObjectSql()},'auxiliary_fingerprints',${auxiliaryFingerprintObjectSql()},'shape_counts',${shapeCountObjectSql()},'scale_fixture_rpc',${rpcIdentitySql()})`;
 const scaleRpcBodySql = () => `declare v_org text:=nullif(payload->>'organization_id',''); v_actor uuid:=auth.uid();
@@ -562,12 +562,13 @@ ${shapedAppStateSql(runId,c,{...appC,representationFraction:plan.appState.repres
 create function public.${SCALE_RPC}(payload jsonb) returns jsonb language plpgsql stable security definer set search_path=public as $body$${scaleRpcBodySql()}$body$;
 revoke all on function public.${SCALE_RPC}(jsonb) from public;
 revoke execute on function public.${SCALE_RPC}(jsonb) from anon;
+revoke execute on function public.${SCALE_RPC}(jsonb) from service_role;
 grant execute on function public.${SCALE_RPC}(jsonb) to authenticated;
 
 do $$ declare v_proc pg_proc;
 begin
   select * into strict v_proc from pg_proc where oid=to_regprocedure('public.${SCALE_RPC}(jsonb)');
-  if pg_get_userbyid(v_proc.proowner)<>'postgres' or v_proc.prosecdef is not true or v_proc.provolatile<>'s' or v_proc.proconfig is distinct from array['search_path=public']::text[] or md5(v_proc.prosrc)<>${q(md5Hex(scaleRpcBodySql()))} then raise exception 'fixture identity RPC definition metadata mismatch'; end if;
+  if pg_get_userbyid(v_proc.proowner)<>'postgres' or v_proc.prosecdef is not true or v_proc.provolatile<>'s' or v_proc.proconfig is distinct from array['search_path=public']::text[] or md5(replace(replace(v_proc.prosrc,chr(13)||chr(10),chr(10)),chr(13),chr(10)))<>${q(md5Hex(scaleRpcBodySql()))} then raise exception 'fixture identity RPC definition metadata mismatch'; end if;
   if (select count(*) from aclexplode(coalesce(v_proc.proacl,acldefault('f',v_proc.proowner))))<>2
     or not exists(select 1 from aclexplode(coalesce(v_proc.proacl,acldefault('f',v_proc.proowner))) acl where acl.grantee=v_proc.proowner and acl.privilege_type='EXECUTE' and not acl.is_grantable)
     or not exists(select 1 from aclexplode(coalesce(v_proc.proacl,acldefault('f',v_proc.proowner))) acl where acl.grantee=(select oid from pg_roles where rolname='authenticated') and acl.privilege_type='EXECUTE' and not acl.is_grantable)

@@ -113,6 +113,10 @@ describe("operational performance scale fixture",()=>{
     expect(generated.seed).toContain("qa_scale_fixture_padding");
     expect(generated.seed).toContain("create function public.get_operational_performance_scale_identity");
     expect(generated.seed).not.toContain("create or replace function public.get_operational_performance_scale_identity");
+    expect(generated.seed).toContain("revoke execute on function public.get_operational_performance_scale_identity(jsonb) from service_role");
+    expect(generated.seed).toContain("md5(replace(replace(v_proc.prosrc,chr(13)||chr(10),chr(10)),chr(13),chr(10)))");
+    expect(generated.seed).toContain("md5(replace(replace(prosrc,chr(13)||chr(10),chr(10)),chr(13),chr(10)))");
+    expect(generated.seed).toContain("md5(replace(replace(pg_get_functiondef(to_regprocedure('public.get_operational_performance_scale_identity(jsonb)')),chr(13)||chr(10),chr(10)),chr(13),chr(10)))");
     expect(generated.seed).not.toContain("to_jsonb(a)");
     expect(generated.seed).not.toContain("has_function_privilege('public'");
     expect(generated.seed).toContain("aclexplode");
