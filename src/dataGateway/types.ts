@@ -1,4 +1,4 @@
-import type { RemoteAppDataSnapshot, RemoteOrganization, SaveRemoteTelemetryOptions } from "../backend";
+import type { RemoteAppDataSnapshot, RemoteOrganization, RemoteProfile, SaveRemoteTelemetryOptions } from "../backend";
 import type { OperationalMutation } from "../operationalSync";
 import type {
   AppData,
@@ -178,6 +178,9 @@ export interface AdminDataChangeCommitResult {
 }
 
 export interface RemoteDataGateway {
+  prepareAuthenticatedBootstrap?(): Promise<AuthenticatedBootstrapPreparation>;
+  loadAuthenticatedAppDataSnapshot?(): Promise<AuthenticatedAppDataSnapshotResult>;
+  scheduleAuthenticatedBootstrapCancellation?(): void;
   loadAppDataSnapshot(options?: { organization?: RemoteOrganization }): Promise<RemoteAppDataSnapshot>;
   saveAppData(
     appData: AppData,
@@ -194,3 +197,17 @@ export interface RemoteDataGateway {
     onError?: (error: Error) => void
   ): () => void;
 }
+
+export type AuthenticatedBootstrapPreparation =
+  | { status: "no-session" }
+  | { status: "session"; userId: string };
+
+export type AuthenticatedAppDataSnapshotResult =
+  | { status: "no-session" }
+  | { status: "inactive-or-missing"; userId: string }
+  | {
+      status: "active";
+      profile: RemoteProfile;
+      organization: RemoteOrganization;
+      snapshot: RemoteAppDataSnapshot;
+    };

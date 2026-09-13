@@ -17,3 +17,19 @@ The application SHALL subscribe and catch up compact events before enabling writ
 #### Scenario: Mutation arrives during startup
 - **WHEN** a compact operational event arrives after subscription is confirmed but before the critical snapshot is ready
 - **THEN** the application buffers and applies that event before enabling writes, without reading or reapplying `app_state.data`
+
+### Requirement: Atomic authenticated startup is fail closed
+The application SHALL use one authenticated, tenant-derived critical bootstrap result and one shared realtime attempt before assigning identity or enabling writes.
+
+#### Scenario: Active authenticated startup
+- **WHEN** a valid session starts the application
+- **THEN** the App module load overlaps one shared realtime handshake, the same channel reaches `SUBSCRIBED`, and exactly one no-argument bootstrap RPC returns the actor, organization, critical normalized rows, and compatibility version metadata
+- **AND** buffered events for that organization are applied once before safe interaction
+
+#### Scenario: No authenticated session
+- **WHEN** local auth contains no session
+- **THEN** startup creates no realtime subscription and invokes no bootstrap RPC
+
+#### Scenario: Trust or completeness check fails
+- **WHEN** actor, role, organization, RLS, contract, row shape, relationship, bound, byte limit, channel, buffer, or catch-up validation fails
+- **THEN** startup removes the attempt channel, clears its tenant identity and buffer, enables no writes, and surfaces blocked or cached-read-only recovery without automatic retry

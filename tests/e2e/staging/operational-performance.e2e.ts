@@ -85,6 +85,8 @@ type LoadEvidence = {
   requestedExportChunk: boolean;
   requestedHistoryBeforeSafeInteractive: boolean;
   bootstrapDependencyDepth: number | null;
+  bootstrapRpcMs: number | null;
+  catchupToSafeMs: number | null;
   largestContentfulPaintMs: number;
   largestContentfulPaintElement: string;
   largestContentfulPaintResourcePath: string;
@@ -132,6 +134,8 @@ function summarize(loads: LoadEvidence[]) {
   const inventoryStockMovementBytes = loads
     .map((entry) => entry.inventoryStockMovementBytes)
     .filter((value): value is number => value !== null);
+  const bootstrapRpcDurations = loads.map((entry) => entry.bootstrapRpcMs).filter((value): value is number => value !== null);
+  const catchupToSafeDurations = loads.map((entry) => entry.catchupToSafeMs).filter((value): value is number => value !== null);
   return {
     samples: visibleReady.length,
     p50: percentile(visibleReady, 0.5),
@@ -141,6 +145,10 @@ function summarize(loads: LoadEvidence[]) {
     mean: visibleReady.reduce((total, value) => total + value, 0) / visibleReady.length,
     safeInteractiveP95: percentile(safe, 0.95),
     safeInteractiveMax: safe.length > 0 ? Math.max(...safe) : 0,
+    bootstrapRpcP95Ms: percentile(bootstrapRpcDurations, 0.95),
+    bootstrapRpcMaxMs: bootstrapRpcDurations.length > 0 ? Math.max(...bootstrapRpcDurations) : 0,
+    catchupToSafeP95Ms: percentile(catchupToSafeDurations, 0.95),
+    catchupToSafeMaxMs: catchupToSafeDurations.length > 0 ? Math.max(...catchupToSafeDurations) : 0,
     criticalApiBytesP95: percentile(payloads, 0.95),
     criticalApiBytesMax: Math.max(...payloads),
     coldShellBytesP95: percentile(shells, 0.95),
@@ -195,7 +203,13 @@ function nextCorrelationKey(url: string, occurrences: Map<string, number>) {
 
 async function resourceEvidence(page: Page, baseOrigin: string): Promise<{ marks: Record<string, number>; resources: ResourceEvidence[] }> {
   const rawEvidence = await page.evaluate(() => {
-    const allowedMarks = ["bp-bootstrap-requested", "bp-realtime-ready", "bp-critical-snapshot-ready", "bp-critical-catchup-ready", "bp-safe-interactive", "bp-visible-dashboard-ready"];
+    const allowedMarks = [
+      "bp-app-module-requested", "bp-app-module-ready", "bp-session-requested", "bp-session-ready",
+      "bp-realtime-requested", "bp-realtime-ready", "bp-bootstrap-requested",
+      "bp-bootstrap-rpc-requested", "bp-bootstrap-rpc-response", "bp-bootstrap-mapped",
+      "bp-critical-snapshot-ready", "bp-critical-catchup-ready", "bp-safe-interactive",
+      "bp-visible-dashboard-ready"
+    ];
     const marks = Object.fromEntries(allowedMarks.map((name) => [name, performance.getEntriesByName(name, "mark").at(-1)?.startTime ?? -1]));
     const resources = [...performance.getEntriesByType("navigation"), ...performance.getEntriesByType("resource")].map((raw) => {
       const entry = raw as PerformanceResourceTiming | PerformanceNavigationTiming;
@@ -274,7 +288,10 @@ async function collectResponseEvidence(response: Response, requestKeys: Map<Requ
     ? parsePostgrestPageEvidence(response.url(), requestHeaders.prefer, headers["content-range"])
     : undefined;
   if (api || javascript || (shell && contentLengthBytes === 0)) {
-    const requiresJson = url.pathname.endsWith("/rest/v1/app_state") || url.pathname.endsWith("/rest/v1/stock_movements");
+    const operationalBootstrapResponse = url.pathname.endsWith("/rest/v1/rpc/load_operational_bootstrap_v2");
+    const requiresJson = url.pathname.endsWith("/rest/v1/app_state")
+      || url.pathname.endsWith("/rest/v1/stock_movements")
+      || operationalBootstrapResponse;
     const decoded = await readDecodedResponseBody(() => response.body(), requiresJson);
     bodyBytes = decoded.bodyBytes;
     evidenceError = decoded.error;
@@ -285,6 +302,15 @@ async function collectResponseEvidence(response: Response, requestKeys: Map<Requ
         const row = Array.isArray(parsed) ? parsed[0] : parsed;
         if (row && typeof row === "object" && Number.isInteger((row as { version?: unknown }).version)) {
           appStateVersion = (row as { version: number }).version;
+        }
+      }
+      if (operationalBootstrapResponse) {
+        const parsed = decoded.parsedJson;
+        if (parsed && typeof parsed === "object") {
+          const metadata = (parsed as { app_state_metadata?: unknown }).app_state_metadata;
+          if (metadata && typeof metadata === "object" && Number.isInteger((metadata as { version?: unknown }).version)) {
+            appStateVersion = (metadata as { version: number }).version;
+          }
         }
       }
       if (url.pathname.endsWith("/rest/v1/stock_movements")) {
@@ -459,10 +485,21 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
     const comparisonReadyMark = visibleReadyMs;
     if (mode === "candidate") {
       expect(safeInteractiveMs).toBeGreaterThanOrEqual(0);
-      for (const mark of ["bp-bootstrap-requested", "bp-realtime-ready", "bp-critical-snapshot-ready", "bp-critical-catchup-ready"]) {
+      for (const mark of [
+        "bp-app-module-requested", "bp-app-module-ready", "bp-session-requested", "bp-session-ready",
+        "bp-realtime-requested", "bp-realtime-ready", "bp-bootstrap-requested",
+        "bp-bootstrap-rpc-requested", "bp-bootstrap-rpc-response", "bp-bootstrap-mapped",
+        "bp-critical-snapshot-ready", "bp-critical-catchup-ready"
+      ]) {
         expect(marks[mark]).toBeGreaterThanOrEqual(0);
         expect(marks[mark]).toBeLessThanOrEqual(safeInteractiveMs);
       }
+      expect(marks["bp-app-module-requested"]).toBeLessThan(marks["bp-app-module-ready"]);
+      expect(marks["bp-session-requested"]).toBeLessThanOrEqual(marks["bp-realtime-requested"]);
+      expect(marks["bp-realtime-ready"]).toBeLessThanOrEqual(marks["bp-bootstrap-rpc-requested"]);
+      expect(marks["bp-bootstrap-rpc-requested"]).toBeLessThan(marks["bp-bootstrap-rpc-response"]);
+      expect(marks["bp-bootstrap-rpc-response"]).toBeLessThanOrEqual(marks["bp-bootstrap-mapped"]);
+      expect(marks["bp-bootstrap-mapped"]).toBeLessThanOrEqual(marks["bp-critical-catchup-ready"]);
     }
     const criticalSelection = selectCriticalEvidence(resources, responses, comparisonReadyMark, expectedCriticalRequestKeys);
     const criticalResources = criticalSelection.criticalResources;
@@ -600,6 +637,8 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
       requestedExportChunk,
       requestedHistoryBeforeSafeInteractive,
       bootstrapDependencyDepth: mode === "candidate" ? measureBootstrapDependencyDepth(criticalResources, criticalResponses) : null,
+      bootstrapRpcMs: mode === "candidate" ? marks["bp-bootstrap-rpc-response"] - marks["bp-bootstrap-rpc-requested"] : null,
+      catchupToSafeMs: mode === "candidate" ? safeInteractiveMs - marks["bp-critical-catchup-ready"] : null,
       largestContentfulPaintMs: webVitals.largestContentfulPaintMs,
       largestContentfulPaintElement: webVitals.largestContentfulPaintElement,
       largestContentfulPaintResourcePath: webVitals.largestContentfulPaintResourcePath,
@@ -648,7 +687,10 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
   const expectedAppStateVersion = Number(process.env.E2E_EXPECTED_APP_STATE_VERSION);
   expect.soft(Number.isInteger(expectedAppStateVersion)).toBe(true);
   expect.soft(loads.every((entry) => {
-    const identities = entry.criticalResponses.filter((response) => response.path.endsWith("/rest/v1/app_state"));
+    const identities = entry.criticalResponses.filter((response) =>
+      response.path.endsWith("/rest/v1/app_state")
+      || response.path.endsWith("/rest/v1/rpc/load_operational_bootstrap_v2")
+    );
     return identities.length > 0 && identities.every((response) => response.appStateVersion === expectedAppStateVersion);
   })).toBe(true);
   if (mode === "candidate") {
@@ -664,7 +706,19 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
       && response.status < 400
       && /\/assets\/InventoryPanel-[^/]+\.js$/.test(response.path)
     ))).toBe(true);
-    expect.soft(loads.every((entry) => entry.bootstrapDependencyDepth !== null && entry.bootstrapDependencyDepth <= 3)).toBe(true);
+    expect.soft(loads.every((entry) => entry.bootstrapDependencyDepth !== null && entry.bootstrapDependencyDepth <= 2)).toBe(true);
+    expect.soft(loads.every((entry) => {
+      const bootstrapCalls = entry.criticalResponses.filter((response) =>
+        response.path.endsWith("/rest/v1/rpc/load_operational_bootstrap_v2")
+      );
+      const forbiddenDirectReads = entry.criticalResponses.filter((response) =>
+        /\/rest\/v1\/(?:app_state|profiles|organizations|inventory_categories|stations|pricing_rules|inventory_items|sale_variants|combos|sessions|customer_tabs|bills|payments|expenses|audit_logs|stock_movements)(?:$|\/)/.test(response.path)
+      );
+      return bootstrapCalls.length === 1
+        && bootstrapCalls[0].bodyBytes > 0
+        && bootstrapCalls[0].bodyBytes <= 160_992
+        && forbiddenDirectReads.length === 0;
+    })).toBe(true);
     expect.soft(loads.every((entry) => entry.criticalApiBytes > 0)).toBe(true);
     expect.soft(loads.every((entry) => entry.coldShellBytes > 0)).toBe(true);
     expect.soft(loads.every((entry) => entry.idleRootCommits === 0)).toBe(true);
@@ -674,6 +728,10 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
     expect.soft(loads.every((entry) => entry.inventoryRemoteErrorVisible === false)).toBe(true);
     expect.soft(summary.safeInteractiveP95).toBeLessThanOrEqual(3_500);
     expect.soft(summary.safeInteractiveMax).toBeLessThanOrEqual(5_000);
+    expect.soft(summary.bootstrapRpcP95Ms).toBeLessThanOrEqual(800);
+    expect.soft(summary.bootstrapRpcMaxMs).toBeLessThanOrEqual(1_200);
+    expect.soft(summary.catchupToSafeP95Ms).toBeLessThanOrEqual(100);
+    expect.soft(summary.catchupToSafeMaxMs).toBeLessThanOrEqual(200);
     expect.soft(summary.p95).toBeLessThanOrEqual(baseline!.summary.p95 * 0.6);
     expect.soft(summary.criticalApiBytesP95).toBeLessThanOrEqual(750 * 1024);
     expect.soft(summary.criticalApiBytesP95).toBeLessThanOrEqual(baseline!.summary.criticalApiBytesP95 * 0.4);

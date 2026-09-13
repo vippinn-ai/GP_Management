@@ -22,3 +22,11 @@ History/report/customer/audit data SHALL not block safe dashboard readiness and 
 - **WHEN** Inventory requests complete normalized stock-movement history containing more rows than the PostgREST response cap
 - **THEN** the application loads the complete requested history into canonical state through bounded, exact-count, deterministically ordered pages and renders the configured recent subset
 - **AND** any missing, drifting, overlapping, out-of-order, timed-out, or incomplete page produces a visible retryable read-only error without presenting partial history as complete
+
+### Requirement: Atomic bootstrap meets an independently evidenced critical-path budget
+The staging candidate SHALL expose browser-clock marks for App import, session, realtime, RPC, mapping, catch-up, and safe interaction and SHALL retain response/resource correlation evidence.
+
+#### Scenario: Fresh 30-load candidate race
+- **WHEN** a single unique zero-retry 30-load race runs against the frozen same-scale staging dataset
+- **THEN** safe interaction p95 is at most 3,500 ms and maximum at most 5,000 ms, LCP p75 is at most 2,500 ms, bootstrap RPC p95 is at most 800 ms and maximum at most 1,200 ms, and catch-up-to-safe p95 is at most 100 ms and maximum at most 200 ms
+- **AND** dependency depth is at most two, there is one critical bootstrap RPC, its decoded response is at most 160,992 bytes, and no direct profile, organization, history, report, audit, or `app_state` read occurs before safe interaction

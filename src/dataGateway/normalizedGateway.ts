@@ -17,13 +17,18 @@ import {
   type OperationalEventRow
 } from "./normalizedRealtime";
 import {
+  buildOperationalBootstrapRpcResult,
   loadNormalizedAppDataOverlay,
   loadNormalizedAuditLogs,
   loadNormalizedExpenseAdminData,
   loadNormalizedStockMovements
 } from "./normalizedReads";
 import { invokeOperationalMutationRpc } from "./rpcClient";
-import { resolveNormalizedOrganizationId } from "./normalizedOrganization";
+import {
+  clearCachedNormalizedOrganizationId,
+  rememberNormalizedOrganizationId,
+  resolveNormalizedOrganizationId
+} from "./normalizedOrganization";
 import type { RemoteDataGateway } from "./types";
 import {
   fetchProfiles,
@@ -43,11 +48,31 @@ const NORMALIZED_BOOTSTRAP_MAX_RECENT_BILLS = 5_000;
 const NORMALIZED_BOOTSTRAP_MAX_STOCK_MOVEMENTS = 5_000;
 const NORMALIZED_BOOTSTRAP_RECENT_AUDIT_LOGS = 20;
 const MAX_PROCESSED_REALTIME_EVENT_IDS = 2_000;
+const MAX_BUFFERED_BOOTSTRAP_EVENTS = 1_000;
+const OPERATIONAL_BOOTSTRAP_CLIENT_TIMEOUT_MS = 7_000;
 
 function markBootstrapPerformance(name: string) {
   if (typeof performance !== "undefined" && typeof performance.mark === "function") {
     performance.mark(name);
   }
+}
+
+function withOperationalBootstrapTimeout<T>(promise: PromiseLike<T>): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timeoutId = globalThis.setTimeout(() => {
+      reject(new Error("Operational bootstrap RPC did not finish within 7 seconds."));
+    }, OPERATIONAL_BOOTSTRAP_CLIENT_TIMEOUT_MS);
+    Promise.resolve(promise).then(
+      (value) => {
+        globalThis.clearTimeout(timeoutId);
+        resolve(value);
+      },
+      (error) => {
+        globalThis.clearTimeout(timeoutId);
+        reject(error);
+      }
+    );
+  });
 }
 
 function mergeLiveSessions(baseSessions: Session[], normalizedSessions: Session[]): Session[] {
@@ -436,14 +461,45 @@ export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): 
   let realtimeEventPipeline: Promise<void> = Promise.resolve();
   let bootstrapInFlight = false;
   const bufferedBootstrapEvents: OperationalEventRow[] = [];
+  let bootstrapBufferError: Error | null = null;
   const processedRealtimeEventIds = new Set<string>();
   let realtimeReadyPromise: Promise<void> | null = null;
   let realtimeUnsubscribe: (() => void) | null = null;
+  let realtimeGeneration = 0;
+  let selectedOrganizationId: string | null = null;
+  let scheduledTeardownId: ReturnType<typeof globalThis.setTimeout> | null = null;
   let realtimeSnapshotListener: ((snapshot: RemoteAppDataSnapshot) => void) | null = null;
   let realtimeErrorListener: ((error: Error) => void) | null = null;
+  let preparedAtomicBootstrap: Promise<{ status: "no-session" } | { status: "session"; userId: string }> | null = null;
+  let atomicBootstrapAttempt: ReturnType<NonNullable<RemoteDataGateway["loadAuthenticatedAppDataSnapshot"]>> | null = null;
+
+  const clearScheduledTeardown = () => {
+    if (scheduledTeardownId !== null) {
+      globalThis.clearTimeout(scheduledTeardownId);
+      scheduledTeardownId = null;
+    }
+  };
+
+  const resetRealtimeAttempt = () => {
+    clearScheduledTeardown();
+    realtimeGeneration += 1;
+    const unsubscribe = realtimeUnsubscribe;
+    realtimeUnsubscribe = null;
+    realtimeReadyPromise = null;
+    selectedOrganizationId = null;
+    lastSnapshot = null;
+    bootstrapInFlight = false;
+    bootstrapBufferError = null;
+    bufferedBootstrapEvents.length = 0;
+    processedRealtimeEventIds.clear();
+    clearCachedNormalizedOrganizationId();
+    realtimeEventPipeline = Promise.resolve();
+    unsubscribe?.();
+  };
 
   const applyRealtimeEvent = async (event: OperationalEventRow, notify: boolean) => {
     if (processedRealtimeEventIds.has(event.id)) return;
+    if (selectedOrganizationId && event.organization_id !== selectedOrganizationId) return;
     const client = getSupabaseClient();
     const startedAt = Date.now();
     try {
@@ -503,20 +559,31 @@ export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): 
   const ensureRealtimeReady = () => {
     if (!_flags.normalizedRealtime) return Promise.resolve();
     if (realtimeReadyPromise) return realtimeReadyPromise;
+    clearScheduledTeardown();
     const client = getSupabaseClient();
+    const generation = ++realtimeGeneration;
+    markBootstrapPerformance("bp-realtime-requested");
     realtimeReadyPromise = new Promise<void>((resolve, reject) => {
       let settled = false;
       const timeoutId = globalThis.setTimeout(() => {
-        if (settled) return;
+        if (settled || generation !== realtimeGeneration) return;
         settled = true;
         reject(new Error("Normalized realtime subscription did not become ready within 10 seconds."));
       }, 10_000);
       realtimeUnsubscribe = subscribeToOperationalEvents(
         client,
         (event) => {
+          if (generation !== realtimeGeneration) return Promise.resolve();
           if (processedRealtimeEventIds.has(event.id)) return Promise.resolve();
+          if (selectedOrganizationId && event.organization_id !== selectedOrganizationId) return Promise.resolve();
           if (bootstrapInFlight || !lastSnapshot) {
-            if (!bufferedBootstrapEvents.some((entry) => entry.id === event.id)) bufferedBootstrapEvents.push(event);
+            if (!bufferedBootstrapEvents.some((entry) => entry.id === event.id)) {
+              if (bufferedBootstrapEvents.length >= MAX_BUFFERED_BOOTSTRAP_EVENTS) {
+                bootstrapBufferError = new Error("Normalized realtime bootstrap buffer exceeded its safe limit.");
+                return Promise.resolve();
+              }
+              bufferedBootstrapEvents.push(event);
+            }
             return Promise.resolve();
           }
           realtimeEventPipeline = realtimeEventPipeline
@@ -529,11 +596,12 @@ export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): 
           return realtimeEventPipeline;
         },
         (status) => {
+          if (generation !== realtimeGeneration) return;
           if (settled) {
             if (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") {
-              realtimeUnsubscribe?.();
-              realtimeUnsubscribe = null;
-              realtimeReadyPromise = null;
+              resetRealtimeAttempt();
+              preparedAtomicBootstrap = null;
+              atomicBootstrapAttempt = null;
               realtimeErrorListener?.(new Error(`Normalized realtime disconnected (${status}); a fresh restore is required.`));
             }
             return;
@@ -552,6 +620,138 @@ export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): 
     });
     return realtimeReadyPromise;
   };
+
+  const prepareAuthenticatedBootstrap = () => {
+    clearScheduledTeardown();
+    if (preparedAtomicBootstrap) return preparedAtomicBootstrap;
+    const client = getSupabaseClient();
+    markBootstrapPerformance("bp-session-requested");
+    const preparation = (async () => {
+      const sessionResponse = await client.auth.getSession();
+      if (sessionResponse.error) throw sessionResponse.error;
+      const userId = sessionResponse.data.session?.user.id?.trim();
+      markBootstrapPerformance("bp-session-ready");
+      if (!userId) {
+        resetRealtimeAttempt();
+        return { status: "no-session" as const };
+      }
+      await ensureRealtimeReady();
+      markBootstrapPerformance("bp-realtime-ready");
+      return { status: "session" as const, userId };
+    })();
+    preparedAtomicBootstrap = preparation.catch((error) => {
+      resetRealtimeAttempt();
+      preparedAtomicBootstrap = null;
+      atomicBootstrapAttempt = null;
+      throw error;
+    });
+    const currentPreparation = preparedAtomicBootstrap;
+    void currentPreparation.then((result) => {
+      if (result.status === "no-session" && preparedAtomicBootstrap === currentPreparation) {
+        preparedAtomicBootstrap = null;
+        atomicBootstrapAttempt = null;
+      }
+    });
+    return preparedAtomicBootstrap;
+  };
+
+  const loadAuthenticatedAppDataSnapshot = () => {
+    clearScheduledTeardown();
+    if (atomicBootstrapAttempt) return atomicBootstrapAttempt;
+    const attempt = (async () => {
+      markBootstrapPerformance("bp-bootstrap-requested");
+      const preparation = await prepareAuthenticatedBootstrap();
+      if (preparation.status === "no-session") return preparation;
+      bootstrapInFlight = true;
+      const startedAt = Date.now();
+      try {
+        if (bootstrapBufferError) throw bootstrapBufferError;
+        markBootstrapPerformance("bp-bootstrap-rpc-requested");
+        const response = await withOperationalBootstrapTimeout(
+          getSupabaseClient().rpc("load_operational_bootstrap_v2")
+        );
+        markBootstrapPerformance("bp-bootstrap-rpc-response");
+        if (response.error) throw response.error;
+        const result = buildOperationalBootstrapRpcResult(response.data);
+        if (result.actorId !== preparation.userId) {
+          throw new Error("Operational bootstrap actor did not match the authenticated session.");
+        }
+        if (result.status === "inactive-or-missing") {
+          resetRealtimeAttempt();
+          return { status: "inactive-or-missing" as const, userId: result.actorId };
+        }
+        rememberNormalizedOrganizationId(result.organization.id);
+        selectedOrganizationId = result.organization.id;
+        const startupAppData = {
+          ...result.appData,
+          bills: [],
+          payments: [],
+          expenses: [],
+          stockMovements: [],
+          auditLogs: []
+        };
+        lastSnapshot = {
+          appData: hydrateAppData({
+            ...startupAppData,
+            customers: deriveStartupCustomers(startupAppData)
+          }),
+          version: result.version,
+          source: "normalized_bootstrap"
+        };
+        markBootstrapPerformance("bp-bootstrap-mapped");
+        if (bootstrapBufferError) throw bootstrapBufferError;
+        while (lastSnapshot && bufferedBootstrapEvents.length > 0) {
+          const event = bufferedBootstrapEvents.shift()!;
+          if (event.organization_id !== selectedOrganizationId) continue;
+          await applyRealtimeEvent(event, false);
+          if (bootstrapBufferError) throw bootstrapBufferError;
+        }
+        markBootstrapPerformance("bp-critical-snapshot-ready");
+        markBootstrapPerformance("bp-critical-catchup-ready");
+        recordStartupBootstrapTelemetry({
+          appData: lastSnapshot.appData,
+          source: "normalized_bootstrap",
+          version: result.version,
+          startedAt,
+          status: "success",
+          skippedFullAppStateData: true
+        });
+        return {
+          status: "active" as const,
+          profile: result.profile,
+          organization: result.organization,
+          snapshot: lastSnapshot
+        };
+      } catch (error) {
+        recordStartupBootstrapTelemetry({
+          appData: {},
+          source: "normalized_bootstrap",
+          startedAt,
+          status: "error",
+          errorMessage: error instanceof Error ? error.message : "Unable to load atomic operational bootstrap.",
+          skippedFullAppStateData: true
+        });
+        resetRealtimeAttempt();
+        preparedAtomicBootstrap = null;
+        atomicBootstrapAttempt = null;
+        throw error;
+      } finally {
+        bootstrapInFlight = false;
+      }
+    })();
+    atomicBootstrapAttempt = attempt;
+    return attempt;
+  };
+
+  const scheduleAuthenticatedBootstrapCancellation = () => {
+    clearScheduledTeardown();
+    scheduledTeardownId = globalThis.setTimeout(() => {
+      scheduledTeardownId = null;
+      resetRealtimeAttempt();
+      preparedAtomicBootstrap = null;
+      atomicBootstrapAttempt = null;
+    }, 0);
+  };
   const gateway: RemoteDataGateway = {
     async loadAppDataSnapshot(options) {
       markBootstrapPerformance("bp-bootstrap-requested");
@@ -561,9 +761,7 @@ export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): 
           await ensureRealtimeReady();
           markBootstrapPerformance("bp-realtime-ready");
         } catch (error) {
-          realtimeUnsubscribe?.();
-          realtimeUnsubscribe = null;
-          realtimeReadyPromise = null;
+          resetRealtimeAttempt();
           throw error;
         }
         if (_flags.normalizedBootstrap) {
@@ -624,14 +822,18 @@ export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): 
         return () => {
           if (realtimeSnapshotListener === onChange) realtimeSnapshotListener = null;
           if (realtimeErrorListener === onError) realtimeErrorListener = null;
-          realtimeUnsubscribe?.();
-          realtimeUnsubscribe = null;
-          realtimeReadyPromise = null;
+          if (_flags.atomicBootstrap) scheduleAuthenticatedBootstrapCancellation();
+          else resetRealtimeAttempt();
         };
       }
       return appStateRemoteDataGateway.subscribeToAppData(onChange, onError);
     }
   };
+  if (_flags.atomicBootstrap) {
+    gateway.prepareAuthenticatedBootstrap = prepareAuthenticatedBootstrap;
+    gateway.loadAuthenticatedAppDataSnapshot = loadAuthenticatedAppDataSnapshot;
+    gateway.scheduleAuthenticatedBootstrapCancellation = scheduleAuthenticatedBootstrapCancellation;
+  }
   if (_flags.rpcOperationalWrites) {
     gateway.commitOperationalMutation = (mutation) => invokeOperationalMutationRpc(mutation, {
       useV2: _flags.operationalRpcV2

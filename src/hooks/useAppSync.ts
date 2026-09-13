@@ -109,6 +109,75 @@ export function useAppSync(params: {
     setRemoteLoading(true);
     setRemoteRestoreState(restoreRetrySignal > 0 ? "retrying" : "checking");
 
+    const authenticatedSnapshotLoader = dataGateway.loadAuthenticatedAppDataSnapshot;
+    if (authenticatedSnapshotLoader) {
+      void (async () => {
+        let preparedUserId: string | null = null;
+        try {
+          const preparation = dataGateway.prepareAuthenticatedBootstrap
+            ? await dataGateway.prepareAuthenticatedBootstrap()
+            : null;
+          if (cancelled) return;
+          if (preparation?.status === "no-session") {
+            setActiveUserId(null);
+            setRemoteError("");
+            setRemoteRestoreState("ready");
+            return;
+          }
+          if (preparation?.status === "session") preparedUserId = preparation.userId;
+
+          const result = await authenticatedSnapshotLoader();
+          if (cancelled) return;
+          if (result.status === "no-session" || result.status === "inactive-or-missing") {
+            setActiveUserId(null);
+            setRemoteError("");
+            setRemoteRestoreState("ready");
+            return;
+          }
+          if (applyRemoteSnapshot) {
+            applyRemoteSnapshot(result.snapshot);
+          } else {
+            skipRemotePersistRef.current = true;
+            setAppData(normalizeAppDataCustomers(result.snapshot.appData));
+            setRemoteVersion(result.snapshot.version);
+          }
+          setRemoteError("");
+          setActiveUserId(result.profile.id);
+          setActiveTab("dashboard");
+          setRemoteRestoreState("ready");
+        } catch (error) {
+          if (cancelled) return;
+          if (hasCachedAppData && preparedUserId) {
+            skipRemotePersistRef.current = true;
+            setAppData(normalizeAppDataCustomers(appData));
+            setActiveUserId(preparedUserId);
+            setActiveTab("dashboard");
+            setRemoteError(
+              error instanceof Error
+                ? `${error.message} Cached data is read-only until retry succeeds.`
+                : "Latest remote data could not be loaded. Cached data is read-only until retry succeeds."
+            );
+            setRemoteRestoreState("stale-cache");
+          } else {
+            setActiveUserId(null);
+            setRemoteError(
+              error instanceof Error
+                ? `${error.message} Retry when the backend is reachable.`
+                : "Latest remote data could not be loaded. Retry when the backend is reachable."
+            );
+            setRemoteRestoreState("blocked");
+          }
+        } finally {
+          if (!cancelled) setRemoteLoading(false);
+        }
+      })();
+
+      return () => {
+        cancelled = true;
+        dataGateway.scheduleAuthenticatedBootstrapCancellation?.();
+      };
+    }
+
     resolveRemoteSessionProfile({ includeOrganization: !allowFullAppDataPersist })
       .then(async (sessionResult) => {
         if (cancelled) {

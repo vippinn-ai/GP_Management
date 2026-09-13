@@ -14,6 +14,7 @@ const backendMocks = vi.hoisted(() => ({
 vi.mock("../backend", () => backendMocks);
 
 const normalizedReadMocks = vi.hoisted(() => ({
+  buildOperationalBootstrapRpcResult: vi.fn(),
   loadNormalizedAppDataOverlay: vi.fn(),
   loadNormalizedAuditLogs: vi.fn(),
   loadNormalizedExpenseAdminData: vi.fn(),
@@ -361,6 +362,7 @@ function createSnapshot(version = 1): RemoteAppDataSnapshot {
 describe("data gateway feature flags", () => {
   it("defaults every normalized and RPC feature flag to disabled", () => {
     expect(DEFAULT_BACKEND_FEATURE_FLAGS).toEqual({
+      atomicBootstrap: false,
       normalizedBootstrap: false,
       normalizedConfigReads: false,
       normalizedCatalogReads: false,
@@ -384,6 +386,7 @@ describe("data gateway feature flags", () => {
     const flags = resolveBackendFeatureFlags(
       { rpcFinancialWrites: true },
       {
+        VITE_BACKEND_ATOMIC_BOOTSTRAP: "true",
         VITE_BACKEND_NORMALIZED_CONFIG_READS: "true",
         VITE_BACKEND_NORMALIZED_BOOTSTRAP: "true",
         VITE_BACKEND_NORMALIZED_CATALOG_READS: "0",
@@ -404,6 +407,7 @@ describe("data gateway feature flags", () => {
     );
 
     expect(flags.normalizedConfigReads).toBe(true);
+    expect(flags.atomicBootstrap).toBe(true);
     expect(flags.normalizedBootstrap).toBe(true);
     expect(flags.normalizedCatalogReads).toBe(false);
     expect(flags.normalizedComboReads).toBe(true);
@@ -431,6 +435,13 @@ describe("data gateway feature flags", () => {
       VITE_BACKEND_OPERATIONAL_RPC_V2: "true",
       VITE_BACKEND_RPC_OPERATIONAL_WRITES: "true"
     })).toThrow(/requires normalized lifecycle reads and realtime first/i);
+  });
+
+  it("fails closed when atomic bootstrap is enabled before normalized bootstrap and realtime", () => {
+    expect(() => resolveBackendFeatureFlags({}, {
+      VITE_BACKEND_ATOMIC_BOOTSTRAP: "true",
+      VITE_BACKEND_NORMALIZED_BOOTSTRAP: "true"
+    })).toThrow(/requires normalized bootstrap and realtime first/i);
   });
 });
 
@@ -1129,6 +1140,230 @@ describe("app_state data gateway", () => {
       { sessionIds: [], customerTabIds: ["tab-1"] },
       client
     );
+  });
+
+  it("does not subscribe or invoke the atomic bootstrap RPC without an authenticated session", async () => {
+    const client = {
+      auth: { getSession: vi.fn().mockResolvedValue({ data: { session: null }, error: null }) },
+      channel: vi.fn(),
+      removeChannel: vi.fn(),
+      rpc: vi.fn()
+    };
+    backendMocks.getSupabaseClient.mockReturnValue(client);
+    const gateway = createRemoteDataGateway({
+      ...DEFAULT_BACKEND_FEATURE_FLAGS,
+      atomicBootstrap: true,
+      normalizedBootstrap: true,
+      normalizedRealtime: true
+    });
+
+    await expect(gateway.prepareAuthenticatedBootstrap?.()).resolves.toEqual({ status: "no-session" });
+    await expect(gateway.loadAuthenticatedAppDataSnapshot?.()).resolves.toEqual({ status: "no-session" });
+    expect(client.auth.getSession).toHaveBeenCalledTimes(2);
+    expect(client.channel).not.toHaveBeenCalled();
+    expect(client.rpc).not.toHaveBeenCalled();
+  });
+
+  it("rechecks the session after a no-session preparation so a later sign-in can bootstrap", async () => {
+    let realtimeStatus: ((status: string) => void) | undefined;
+    const channel = {
+      on: vi.fn().mockReturnThis(),
+      subscribe: vi.fn((onStatus?: (status: string) => void) => {
+        realtimeStatus = onStatus;
+        return channel;
+      })
+    };
+    const client = {
+      auth: { getSession: vi.fn()
+        .mockResolvedValueOnce({ data: { session: null }, error: null })
+        .mockResolvedValueOnce({ data: { session: { user: { id: "user-1" } } }, error: null }) },
+      channel: vi.fn(() => channel),
+      removeChannel: vi.fn(),
+      rpc: vi.fn()
+    };
+    backendMocks.getSupabaseClient.mockReturnValue(client);
+    const gateway = createRemoteDataGateway({
+      ...DEFAULT_BACKEND_FEATURE_FLAGS,
+      atomicBootstrap: true,
+      normalizedBootstrap: true,
+      normalizedRealtime: true
+    });
+
+    await expect(gateway.prepareAuthenticatedBootstrap?.()).resolves.toEqual({ status: "no-session" });
+    const signedInPreparation = gateway.prepareAuthenticatedBootstrap?.();
+    await vi.waitFor(() => expect(channel.subscribe).toHaveBeenCalledTimes(1));
+    realtimeStatus?.("SUBSCRIBED");
+
+    await expect(signedInPreparation).resolves.toEqual({ status: "session", userId: "user-1" });
+    expect(client.auth.getSession).toHaveBeenCalledTimes(2);
+    expect(client.rpc).not.toHaveBeenCalled();
+  });
+
+  it("shares one session, channel, buffer, and RPC across concurrent atomic bootstrap callers", async () => {
+    let realtimeHandler: ((payload: { new: unknown }) => void) | undefined;
+    let realtimeStatus: ((status: string) => void) | undefined;
+    let resolveRpc!: (value: { data: unknown; error: null }) => void;
+    const rpcPromise = new Promise<{ data: unknown; error: null }>((resolve) => { resolveRpc = resolve; });
+    const channel = {
+      on: vi.fn((_kind, _config, handler) => {
+        realtimeHandler = handler;
+        return channel;
+      }),
+      subscribe: vi.fn((onStatus?: (status: string) => void) => {
+        realtimeStatus = onStatus;
+        return channel;
+      })
+    };
+    const client = {
+      auth: { getSession: vi.fn().mockResolvedValue({ data: { session: { user: { id: "user-1" } } }, error: null }) },
+      channel: vi.fn(() => channel),
+      removeChannel: vi.fn(),
+      rpc: vi.fn(() => rpcPromise)
+    };
+    backendMocks.getSupabaseClient.mockReturnValue(client);
+    normalizedReadMocks.buildOperationalBootstrapRpcResult.mockReturnValue({
+      status: "active",
+      actorId: "user-1",
+      profile: { id: "user-1", name: "Admin", username: "admin", role: "admin", active: true },
+      organization: { id: "org-primary", name: "BreakPerfect", businessProfile: { name: "BreakPerfect" } },
+      version: 44,
+      appData: createAppData()
+    });
+    normalizedReadMocks.loadNormalizedLiveDataByIds.mockResolvedValue({
+      sessions: [{ id: "session-1", stationId: "station-1", status: "active" }],
+      sessionPauseLogs: [],
+      customerTabs: []
+    });
+    const gateway = createRemoteDataGateway({
+      ...DEFAULT_BACKEND_FEATURE_FLAGS,
+      atomicBootstrap: true,
+      normalizedBootstrap: true,
+      normalizedRealtime: true
+    });
+
+    const preparation = gateway.prepareAuthenticatedBootstrap?.();
+    const firstLoad = gateway.loadAuthenticatedAppDataSnapshot?.();
+    const secondLoad = gateway.loadAuthenticatedAppDataSnapshot?.();
+    await vi.waitFor(() => expect(channel.subscribe).toHaveBeenCalledTimes(1));
+    expect(client.rpc).not.toHaveBeenCalled();
+    realtimeHandler?.({
+      new: {
+        organization_id: "org-other",
+        id: "event-other",
+        event_type: "start_session_v2",
+        entity_type: "session",
+        entity_id: "session-other",
+        created_at: "2026-09-14T01:00:00.000Z",
+        metadata: { changed_rows: { sessions: ["session-other"] } }
+      }
+    });
+    realtimeHandler?.({
+      new: {
+        organization_id: "org-primary",
+        id: "event-primary",
+        event_type: "start_session_v2",
+        entity_type: "session",
+        entity_id: "session-1",
+        created_at: "2026-09-14T01:00:01.000Z",
+        metadata: { changed_rows: { sessions: ["session-1"] } }
+      }
+    });
+    realtimeStatus?.("SUBSCRIBED");
+    await expect(preparation).resolves.toEqual({ status: "session", userId: "user-1" });
+    await vi.waitFor(() => expect(client.rpc).toHaveBeenCalledTimes(1));
+    resolveRpc({ data: { contract_version: 1 }, error: null });
+
+    await expect(firstLoad).resolves.toMatchObject({
+      status: "active",
+      profile: { id: "user-1" },
+      snapshot: {
+        version: 44,
+        sourceEventId: "event-primary",
+        appData: { sessions: [expect.objectContaining({ id: "session-1" })] }
+      }
+    });
+    await expect(secondLoad).resolves.toEqual(await firstLoad);
+    expect(client.auth.getSession).toHaveBeenCalledTimes(1);
+    expect(client.channel).toHaveBeenCalledTimes(1);
+    expect(client.rpc).toHaveBeenCalledWith("load_operational_bootstrap_v2");
+    expect(client.rpc).toHaveBeenCalledTimes(1);
+    expect(normalizedReadMocks.loadNormalizedLiveDataByIds).toHaveBeenCalledTimes(1);
+    expect(normalizedReadMocks.loadNormalizedLiveDataByIds).toHaveBeenCalledWith(
+      "org-primary",
+      { sessionIds: ["session-1"], customerTabIds: [] },
+      client
+    );
+  });
+
+  it("tears down the atomic channel and returns no data for an inactive actor", async () => {
+    let realtimeStatus: ((status: string) => void) | undefined;
+    const channel = {
+      on: vi.fn().mockReturnThis(),
+      subscribe: vi.fn((onStatus?: (status: string) => void) => {
+        realtimeStatus = onStatus;
+        return channel;
+      })
+    };
+    const client = {
+      auth: { getSession: vi.fn().mockResolvedValue({ data: { session: { user: { id: "user-1" } } }, error: null }) },
+      channel: vi.fn(() => channel),
+      removeChannel: vi.fn(),
+      rpc: vi.fn().mockResolvedValue({ data: {}, error: null })
+    };
+    backendMocks.getSupabaseClient.mockReturnValue(client);
+    normalizedReadMocks.buildOperationalBootstrapRpcResult.mockReturnValue({
+      status: "inactive-or-missing",
+      actorId: "user-1"
+    });
+    const gateway = createRemoteDataGateway({
+      ...DEFAULT_BACKEND_FEATURE_FLAGS,
+      atomicBootstrap: true,
+      normalizedBootstrap: true,
+      normalizedRealtime: true
+    });
+
+    const loading = gateway.loadAuthenticatedAppDataSnapshot?.();
+    await vi.waitFor(() => expect(channel.subscribe).toHaveBeenCalledTimes(1));
+    realtimeStatus?.("SUBSCRIBED");
+    await expect(loading).resolves.toEqual({ status: "inactive-or-missing", userId: "user-1" });
+    expect(client.removeChannel).toHaveBeenCalledWith(channel);
+  });
+
+  it("cancels a StrictMode-style deferred teardown when the next caller adopts the same preparation", async () => {
+    let realtimeStatus: ((status: string) => void) | undefined;
+    const channel = {
+      on: vi.fn().mockReturnThis(),
+      subscribe: vi.fn((onStatus?: (status: string) => void) => {
+        realtimeStatus = onStatus;
+        return channel;
+      })
+    };
+    const client = {
+      auth: { getSession: vi.fn().mockResolvedValue({ data: { session: { user: { id: "user-1" } } }, error: null }) },
+      channel: vi.fn(() => channel),
+      removeChannel: vi.fn(),
+      rpc: vi.fn()
+    };
+    backendMocks.getSupabaseClient.mockReturnValue(client);
+    const gateway = createRemoteDataGateway({
+      ...DEFAULT_BACKEND_FEATURE_FLAGS,
+      atomicBootstrap: true,
+      normalizedBootstrap: true,
+      normalizedRealtime: true
+    });
+
+    const first = gateway.prepareAuthenticatedBootstrap?.();
+    await vi.waitFor(() => expect(channel.subscribe).toHaveBeenCalledTimes(1));
+    gateway.scheduleAuthenticatedBootstrapCancellation?.();
+    const adopted = gateway.prepareAuthenticatedBootstrap?.();
+    realtimeStatus?.("SUBSCRIBED");
+
+    await expect(first).resolves.toEqual({ status: "session", userId: "user-1" });
+    await expect(adopted).resolves.toEqual({ status: "session", userId: "user-1" });
+    await new Promise((resolve) => globalThis.setTimeout(resolve, 5));
+    expect(client.auth.getSession).toHaveBeenCalledTimes(1);
+    expect(client.channel).toHaveBeenCalledTimes(1);
+    expect(client.removeChannel).not.toHaveBeenCalled();
   });
 
   it("waits for confirmed realtime subscription before starting the bootstrap snapshot", async () => {

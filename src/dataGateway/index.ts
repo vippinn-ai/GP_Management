@@ -151,6 +151,8 @@ export {
 export type {
   AdminDataChangeCommitResult,
   AdminDataChangePatch,
+  AuthenticatedAppDataSnapshotResult,
+  AuthenticatedBootstrapPreparation,
   FinancialAdjustmentCommitResult,
   FinancialAdjustmentKind,
   FinancialAdjustmentPatch,

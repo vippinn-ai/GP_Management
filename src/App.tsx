@@ -3570,11 +3570,17 @@ export default function App() {
     if (backendConfigured) {
       void runBlockingAction("Signing in...", async () => {
         const profile = await signInWithUsername(loginUsername, loginPassword);
-        const snapshot = await defaultRemoteDataGateway.loadAppDataSnapshot();
+        const atomicResult = defaultRemoteDataGateway.loadAuthenticatedAppDataSnapshot
+          ? await defaultRemoteDataGateway.loadAuthenticatedAppDataSnapshot()
+          : null;
+        if (atomicResult && atomicResult.status !== "active") {
+          throw new Error("The signed-in account is not active for operational access.");
+        }
+        const snapshot = atomicResult?.snapshot ?? await defaultRemoteDataGateway.loadAppDataSnapshot();
         skipRemotePersistRef.current = true;
         setAppData(normalizeAppDataCustomers(snapshot.appData));
         setRemoteVersion(snapshot.version);
-        setActiveUserId(profile.id);
+        setActiveUserId(atomicResult?.profile.id ?? profile.id);
         setLoginError("");
         setRemoteError("");
         setRemoteRestoreState("ready");
@@ -3638,6 +3644,7 @@ export default function App() {
     if (backendConfigured) {
       void runBlockingAction("Signing out...", async () => {
         await signOutRemote();
+        defaultRemoteDataGateway.scheduleAuthenticatedBootstrapCancellation?.();
         clearCachedNormalizedOrganizationId();
         setActiveUserId(null);
         setRemoteError("");

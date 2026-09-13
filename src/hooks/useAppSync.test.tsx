@@ -192,6 +192,73 @@ describe("useAppSync session restore", () => {
     expect(screen.getByTestId("remote-error")).toBeEmptyDOMElement();
   });
 
+  it("uses the atomic authenticated snapshot without the legacy profile or snapshot reads", async () => {
+    const atomicSnapshot = snapshot("Atomic normalized", 44);
+    atomicSnapshot.source = "normalized_bootstrap";
+    const gateway: RemoteDataGateway = {
+      prepareAuthenticatedBootstrap: vi.fn().mockResolvedValue({ status: "session", userId: "user-1" }),
+      loadAuthenticatedAppDataSnapshot: vi.fn().mockResolvedValue({
+        status: "active",
+        profile: activeProfile,
+        organization: { id: "org-primary", name: "BreakPerfect", businessProfile: {} },
+        snapshot: atomicSnapshot
+      }),
+      scheduleAuthenticatedBootstrapCancellation: vi.fn(),
+      loadAppDataSnapshot: vi.fn(),
+      saveAppData: vi.fn().mockResolvedValue(45),
+      subscribeToAppData: vi.fn(() => () => undefined)
+    };
+
+    const view = render(<Harness hasCachedAppData={false} dataGateway={gateway} />);
+
+    await waitFor(() => expect(screen.getByTestId("restore-state")).toHaveTextContent("ready"));
+    expect(screen.getByTestId("active-user")).toHaveTextContent("user-1");
+    expect(screen.getByTestId("business-name")).toHaveTextContent("Atomic normalized");
+    expect(backendMocks.resolveRemoteSessionProfile).not.toHaveBeenCalled();
+    expect(gateway.loadAppDataSnapshot).not.toHaveBeenCalled();
+    expect(gateway.loadAuthenticatedAppDataSnapshot).toHaveBeenCalledTimes(1);
+
+    view.unmount();
+    expect(gateway.scheduleAuthenticatedBootstrapCancellation).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps cached data read-only when the atomic bootstrap fails after session preparation", async () => {
+    const gateway: RemoteDataGateway = {
+      prepareAuthenticatedBootstrap: vi.fn().mockResolvedValue({ status: "session", userId: "user-1" }),
+      loadAuthenticatedAppDataSnapshot: vi.fn().mockRejectedValue(new Error("Atomic bootstrap failed.")),
+      scheduleAuthenticatedBootstrapCancellation: vi.fn(),
+      loadAppDataSnapshot: vi.fn(),
+      saveAppData: vi.fn(),
+      subscribeToAppData: vi.fn(() => () => undefined)
+    };
+
+    render(<Harness initialAppData={createAppData("Cached atomic")} hasCachedAppData dataGateway={gateway} />);
+
+    await waitFor(() => expect(screen.getByTestId("restore-state")).toHaveTextContent("stale-cache"));
+    expect(screen.getByTestId("active-user")).toHaveTextContent("user-1");
+    expect(screen.getByTestId("business-name")).toHaveTextContent("Cached atomic");
+    expect(screen.getByTestId("remote-error")).toHaveTextContent("read-only");
+    expect(backendMocks.resolveRemoteSessionProfile).not.toHaveBeenCalled();
+  });
+
+  it("does not invoke the atomic snapshot loader when preparation finds no session", async () => {
+    const gateway: RemoteDataGateway = {
+      prepareAuthenticatedBootstrap: vi.fn().mockResolvedValue({ status: "no-session" }),
+      loadAuthenticatedAppDataSnapshot: vi.fn(),
+      scheduleAuthenticatedBootstrapCancellation: vi.fn(),
+      loadAppDataSnapshot: vi.fn(),
+      saveAppData: vi.fn(),
+      subscribeToAppData: vi.fn(() => () => undefined)
+    };
+
+    render(<Harness hasCachedAppData={false} dataGateway={gateway} />);
+
+    await waitFor(() => expect(screen.getByTestId("restore-state")).toHaveTextContent("ready"));
+    expect(screen.getByTestId("active-user")).toHaveTextContent("none");
+    expect(gateway.loadAuthenticatedAppDataSnapshot).not.toHaveBeenCalled();
+    expect(backendMocks.resolveRemoteSessionProfile).not.toHaveBeenCalled();
+  });
+
   it("resolves the normalized organization beside the profile and reuses it without another startup lookup", async () => {
     const organization = { id: "org-primary", name: "BreakPerfect", businessProfile: { name: "BreakPerfect" } };
     const gateway: RemoteDataGateway = {

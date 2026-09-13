@@ -1,4 +1,5 @@
 export interface BackendFeatureFlags {
+  atomicBootstrap: boolean;
   normalizedBootstrap: boolean;
   normalizedConfigReads: boolean;
   normalizedCatalogReads: boolean;
@@ -18,6 +19,7 @@ export interface BackendFeatureFlags {
 }
 
 export const DEFAULT_BACKEND_FEATURE_FLAGS: BackendFeatureFlags = Object.freeze({
+  atomicBootstrap: false,
   normalizedBootstrap: false,
   normalizedConfigReads: false,
   normalizedCatalogReads: false,
@@ -39,6 +41,7 @@ export const DEFAULT_BACKEND_FEATURE_FLAGS: BackendFeatureFlags = Object.freeze(
 type BackendFeatureFlagKey = keyof BackendFeatureFlags;
 
 const ENV_FLAG_NAMES: Record<BackendFeatureFlagKey, keyof ImportMetaEnv> = {
+  atomicBootstrap: "VITE_BACKEND_ATOMIC_BOOTSTRAP",
   normalizedBootstrap: "VITE_BACKEND_NORMALIZED_BOOTSTRAP",
   normalizedConfigReads: "VITE_BACKEND_NORMALIZED_CONFIG_READS",
   normalizedCatalogReads: "VITE_BACKEND_NORMALIZED_CATALOG_READS",
@@ -76,6 +79,15 @@ export function resolveBackendFeatureFlags(
     ...resolved,
     ...overrides
   };
+  if (merged.atomicBootstrap) {
+    const requiredFlags: BackendFeatureFlagKey[] = ["normalizedBootstrap", "normalizedRealtime"];
+    const missingFlags = requiredFlags.filter((key) => !merged[key]);
+    if (missingFlags.length > 0) {
+      throw new Error(
+        `VITE_BACKEND_ATOMIC_BOOTSTRAP requires normalized bootstrap and realtime first. Missing flags: ${missingFlags.join(", ")}.`
+      );
+    }
+  }
   if (merged.financialRpcV2) {
     const requiredFlags: BackendFeatureFlagKey[] = [
       "normalizedBootstrap",
@@ -113,6 +125,7 @@ export function resolveBackendFeatureFlags(
 
 export function hasNormalizedGatewayFlag(flags: BackendFeatureFlags): boolean {
   return (
+    flags.atomicBootstrap ||
     flags.normalizedBootstrap ||
     flags.normalizedConfigReads ||
     flags.normalizedCatalogReads ||

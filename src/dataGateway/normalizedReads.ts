@@ -1,5 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { getSupabaseClient, type RemoteOrganization } from "../backend";
+import { getSupabaseClient, type RemoteOrganization, type RemoteProfile } from "../backend";
 import { rememberNormalizedOrganizationId } from "./normalizedOrganization";
 import type {
   AppData,
@@ -36,6 +36,8 @@ import type {
 const NORMALIZED_READ_TIMEOUT_MS = 15_000;
 const NORMALIZED_READ_PAGE_SIZE = 1_000;
 const NORMALIZED_READ_MAX_PAGES = 5;
+export const OPERATIONAL_BOOTSTRAP_CONTRACT_VERSION = 1;
+export const OPERATIONAL_BOOTSTRAP_MAX_PAYLOAD_BYTES = 160_992;
 
 interface OrganizationRow {
   id: string;
@@ -230,6 +232,20 @@ interface CustomerTabItemRow extends SaleLineRow {
 interface CustomerTabComboApplicationRow extends ComboApplicationRow {
   customer_tab_id: string;
 }
+
+export type OperationalBootstrapRpcResult =
+  | {
+      status: "inactive-or-missing";
+      actorId: string;
+    }
+  | {
+      status: "active";
+      actorId: string;
+      profile: RemoteProfile;
+      organization: RemoteOrganization;
+      version: number;
+      appData: Partial<AppData>;
+    };
 
 interface ExpenseRow {
   id: string;
@@ -1044,6 +1060,375 @@ export function buildNormalizedLiveData(params: {
         comboApplications: customerTabComboApplicationsByTabId.get(row.id) ?? []
       })
     )
+  };
+}
+
+function requireBootstrapRecord(value: unknown, label: string): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`Operational bootstrap returned an invalid ${label}.`);
+  }
+  return value as Record<string, unknown>;
+}
+
+function requireBootstrapText(value: unknown, label: string): string {
+  if (typeof value !== "string" || !value.trim()) {
+    throw new Error(`Operational bootstrap returned an invalid ${label}.`);
+  }
+  return value;
+}
+
+const BOOTSTRAP_ROW_KEYS: Record<string, readonly string[]> = {
+  profiles: ["organization_id", "id", "name", "username", "role", "active", "tabPermissions"],
+  inventory_categories: ["organization_id", "name"],
+  stations: ["organization_id", "id", "name", "mode", "active", "ltp_enabled", "notes", "raw_data"],
+  pricing_rules: ["organization_id", "id", "station_id", "label", "start_minute", "end_minute", "hourly_rate", "raw_data"],
+  inventory_items: [
+    "organization_id", "id", "name", "category", "price", "stock_qty", "low_stock_threshold", "unit",
+    "is_reusable", "barcode", "active", "archived_at", "archived_by_user_id", "archive_reason",
+    "sell_base_item", "cigarette_pack", "raw_data"
+  ],
+  sale_variants: [
+    "organization_id", "inventory_item_id", "id", "name", "price", "stock_units_per_sale",
+    "barcode", "active", "raw_data"
+  ],
+  combos: [
+    "organization_id", "id", "name", "type", "active", "price", "included_minutes", "raw_data",
+    "created_at", "updated_at"
+  ],
+  combo_station_targets: ["organization_id", "combo_id", "station_id"],
+  combo_fixed_items: [
+    "organization_id", "combo_id", "id", "sellable_option_id", "quantity", "raw_data", "created_at"
+  ],
+  combo_choice_groups: [
+    "organization_id", "combo_id", "id", "label", "required_quantity", "raw_data", "created_at"
+  ],
+  combo_choice_options: ["organization_id", "combo_id", "choice_group_id", "option_id"],
+  sessions: [
+    "organization_id", "id", "station_id", "station_name_snapshot", "mode", "started_at", "ended_at",
+    "status", "customer_id", "customer_name", "customer_phone", "play_mode", "ltp_eligible", "ltp_outcome",
+    "ltp_discount_applied", "pricing_snapshot", "pause_log_ids", "continued_from_session_ids", "closed_bill_id",
+    "close_disposition", "close_reason", "raw_data", "created_at"
+  ],
+  session_pause_logs: ["organization_id", "id", "session_id", "paused_at", "resumed_at", "raw_data", "created_at"],
+  session_items: [
+    "organization_id", "session_id", "id", "inventory_item_id", "name", "quantity", "unit_price", "added_at",
+    "sold_as_pack_of", "sale_variant_id", "stock_units_per_sale", "combo_application_id", "combo_id", "raw_data",
+    "created_at"
+  ],
+  session_combo_applications: [
+    "organization_id", "session_id", "id", "combo_id", "combo_name", "price", "included_minutes", "applied_at",
+    "fixed_items", "choices", "raw_data", "created_at"
+  ],
+  customer_tabs: [
+    "organization_id", "id", "customer_id", "customer_name", "customer_phone", "status", "opened_at", "closed_at",
+    "continued_from_session_ids", "closed_bill_id", "close_disposition", "close_reason", "raw_data", "created_at"
+  ],
+  customer_tab_items: [
+    "organization_id", "customer_tab_id", "id", "inventory_item_id", "name", "quantity", "unit_price", "added_at",
+    "sold_as_pack_of", "sale_variant_id", "stock_units_per_sale", "combo_application_id", "combo_id", "raw_data",
+    "created_at"
+  ],
+  customer_tab_combo_applications: [
+    "organization_id", "customer_tab_id", "id", "combo_id", "combo_name", "price", "included_minutes", "applied_at",
+    "fixed_items", "choices", "raw_data", "created_at"
+  ]
+};
+
+function requireBootstrapRows<T>(
+  payload: Record<string, unknown>,
+  key: string,
+  limit: number
+): T[] {
+  const value = payload[key];
+  if (!Array.isArray(value) || value.length > limit) {
+    throw new Error(`Operational bootstrap returned an invalid or oversized ${key} collection.`);
+  }
+  const expectedKeys = BOOTSTRAP_ROW_KEYS[key];
+  if (!expectedKeys) throw new Error(`Operational bootstrap has no row contract for ${key}.`);
+  return value.map((entry, index) => {
+    const record = requireBootstrapRecord(entry, `${key}[${index}]`);
+    const actualKeys = Object.keys(record).sort();
+    const sortedExpectedKeys = [...expectedKeys].sort();
+    if (
+      actualKeys.length !== sortedExpectedKeys.length
+      || actualKeys.some((actualKey, keyIndex) => actualKey !== sortedExpectedKeys[keyIndex])
+    ) {
+      throw new Error(`Operational bootstrap returned malformed or unexpected ${key}[${index}] fields.`);
+    }
+    return record as unknown as T;
+  });
+}
+
+function assertNoUnexpectedBootstrapKeys(
+  payload: Record<string, unknown>,
+  expectedKeys: readonly string[]
+) {
+  const expected = new Set(expectedKeys);
+  const unexpected = Object.keys(payload).filter((key) => !expected.has(key));
+  if (unexpected.length > 0) {
+    throw new Error(`Operational bootstrap returned unexpected response fields: ${unexpected.join(", ")}.`);
+  }
+}
+
+function assertBootstrapOrganizationRows(
+  rows: readonly unknown[],
+  organizationId: string,
+  label: string
+) {
+  for (const row of rows) {
+    const record = row as Record<string, unknown>;
+    if (record.organization_id !== organizationId) {
+      throw new Error(`Operational bootstrap returned cross-tenant ${label} data.`);
+    }
+  }
+}
+
+function assertUniqueBootstrapRows<T>(rows: T[], identity: (row: T) => string, label: string) {
+  const identities = new Set<string>();
+  for (const row of rows) {
+    const id = identity(row);
+    if (!id || identities.has(id)) {
+      throw new Error(`Operational bootstrap returned duplicate or missing ${label} identity.`);
+    }
+    identities.add(id);
+  }
+}
+
+function mapBootstrapProfile(value: unknown, label: string): RemoteProfile {
+  const row = requireBootstrapRecord(value, label);
+  const role = requireBootstrapText(row.role, `${label}.role`);
+  if (role !== "admin" && role !== "manager" && role !== "receptionist") {
+    throw new Error(`Operational bootstrap returned an invalid ${label}.role.`);
+  }
+  if (typeof row.active !== "boolean") {
+    throw new Error(`Operational bootstrap returned an invalid ${label}.active.`);
+  }
+  const tabPermissions = row.tabPermissions;
+  if (tabPermissions !== undefined && tabPermissions !== null && (
+    !Array.isArray(tabPermissions) || tabPermissions.some((entry) => typeof entry !== "string")
+  )) {
+    throw new Error(`Operational bootstrap returned invalid ${label}.tabPermissions.`);
+  }
+  return {
+    id: requireBootstrapText(row.id, `${label}.id`),
+    name: requireBootstrapText(row.name, `${label}.name`),
+    username: requireBootstrapText(row.username, `${label}.username`),
+    role,
+    active: row.active,
+    tabPermissions: tabPermissions as RemoteProfile["tabPermissions"]
+  };
+}
+
+export function buildOperationalBootstrapRpcResult(rawPayload: unknown): OperationalBootstrapRpcResult {
+  const serialized = JSON.stringify(rawPayload);
+  if (new TextEncoder().encode(serialized).byteLength > OPERATIONAL_BOOTSTRAP_MAX_PAYLOAD_BYTES) {
+    throw new Error("Operational bootstrap payload exceeded the safe byte limit.");
+  }
+  const payload = requireBootstrapRecord(rawPayload, "response envelope");
+  if (payload.contract_version !== OPERATIONAL_BOOTSTRAP_CONTRACT_VERSION) {
+    throw new Error("Operational bootstrap returned an unsupported contract version.");
+  }
+  const actorId = requireBootstrapText(payload.actor_id, "actor_id");
+  if (payload.status === "inactive-or-missing") {
+    assertNoUnexpectedBootstrapKeys(payload, ["contract_version", "status", "actor_id"]);
+    const protectedKeys = [
+      "profiles", "organization", "inventory_categories", "stations", "pricing_rules",
+      "inventory_items", "sale_variants", "combos", "sessions", "customer_tabs"
+    ];
+    if (protectedKeys.some((key) => key in payload)) {
+      throw new Error("Inactive operational bootstrap response included protected application data.");
+    }
+    return { status: "inactive-or-missing", actorId };
+  }
+  if (payload.status !== "active") {
+    throw new Error("Operational bootstrap returned an invalid status.");
+  }
+  assertNoUnexpectedBootstrapKeys(payload, [
+    "contract_version", "status", "actor_id", "organization_id", "actor_profile", "organization",
+    "app_state_metadata", "profiles", "inventory_categories", "stations", "pricing_rules",
+    "inventory_items", "sale_variants", "combos", "combo_station_targets", "combo_fixed_items",
+    "combo_choice_groups", "combo_choice_options", "sessions", "session_pause_logs", "session_items",
+    "session_combo_applications", "customer_tabs", "customer_tab_items",
+    "customer_tab_combo_applications"
+  ]);
+
+  const organizationId = requireBootstrapText(payload.organization_id, "organization_id");
+  assertNoUnexpectedBootstrapKeys(
+    requireBootstrapRecord(payload.actor_profile, "actor_profile"),
+    ["id", "name", "username", "role", "active", "tabPermissions"]
+  );
+  const actorProfile = mapBootstrapProfile(payload.actor_profile, "actor_profile");
+  if (!actorProfile.active || actorProfile.id !== actorId) {
+    throw new Error("Operational bootstrap actor identity did not match the authenticated response.");
+  }
+  const organizationRow = requireBootstrapRecord(payload.organization, "organization") as unknown as OrganizationRow;
+  assertNoUnexpectedBootstrapKeys(
+    organizationRow as unknown as Record<string, unknown>,
+    ["id", "name", "business_profile"]
+  );
+  if (requireBootstrapText(organizationRow.id, "organization.id") !== organizationId) {
+    throw new Error("Operational bootstrap organization identity did not match its row.");
+  }
+  requireBootstrapText(organizationRow.name, "organization.name");
+  if (
+    organizationRow.business_profile !== null
+    && (typeof organizationRow.business_profile !== "object" || Array.isArray(organizationRow.business_profile))
+  ) {
+    throw new Error("Operational bootstrap returned an invalid organization business profile.");
+  }
+  const metadata = requireBootstrapRecord(payload.app_state_metadata, "app_state_metadata");
+  assertNoUnexpectedBootstrapKeys(metadata, ["version", "updated_at"]);
+  const version = Number(metadata.version);
+  if (!Number.isSafeInteger(version) || version < 0) {
+    throw new Error("Operational bootstrap returned an invalid app-state version.");
+  }
+
+  const profileRows = requireBootstrapRows<Record<string, unknown>>(payload, "profiles", 100);
+  const profiles = profileRows.map((row, index) => mapBootstrapProfile(row, `profiles[${index}]`));
+  assertUniqueBootstrapRows(profiles, (profile) => profile.id, "profile");
+  const collectionActor = profiles.find((profile) => profile.id === actorId);
+  if (!collectionActor?.active) {
+    throw new Error("Operational bootstrap staff collection omitted the active actor.");
+  }
+  if (
+    collectionActor.name !== actorProfile.name
+    || collectionActor.username !== actorProfile.username
+    || collectionActor.role !== actorProfile.role
+    || JSON.stringify(collectionActor.tabPermissions ?? null) !== JSON.stringify(actorProfile.tabPermissions ?? null)
+  ) {
+    throw new Error("Operational bootstrap actor profile diverged from the staff collection.");
+  }
+
+  const inventoryCategories = requireBootstrapRows<InventoryCategoryRow>(payload, "inventory_categories", 100);
+  const stations = requireBootstrapRows<StationRow>(payload, "stations", 100);
+  const pricingRules = requireBootstrapRows<PricingRuleRow>(payload, "pricing_rules", 500);
+  const inventoryItems = requireBootstrapRows<InventoryItemRow>(payload, "inventory_items", 2_000);
+  const saleVariants = requireBootstrapRows<SaleVariantRow>(payload, "sale_variants", 5_000);
+  const combos = requireBootstrapRows<ComboRow>(payload, "combos", 1_000);
+  const stationTargets = requireBootstrapRows<ComboStationTargetRow>(payload, "combo_station_targets", 5_000);
+  const fixedItems = requireBootstrapRows<ComboFixedItemRow>(payload, "combo_fixed_items", 5_000);
+  const choiceGroups = requireBootstrapRows<ComboChoiceGroupRow>(payload, "combo_choice_groups", 5_000);
+  const choiceOptions = requireBootstrapRows<ComboChoiceOptionRow>(payload, "combo_choice_options", 10_000);
+  const sessions = requireBootstrapRows<SessionRow>(payload, "sessions", 500);
+  const sessionPauseLogs = requireBootstrapRows<SessionPauseLogRow>(payload, "session_pause_logs", 5_000);
+  const sessionItems = requireBootstrapRows<SessionItemRow>(payload, "session_items", 5_000);
+  const sessionComboApplications = requireBootstrapRows<SessionComboApplicationRow>(payload, "session_combo_applications", 5_000);
+  const customerTabs = requireBootstrapRows<CustomerTabRow>(payload, "customer_tabs", 500);
+  const customerTabItems = requireBootstrapRows<CustomerTabItemRow>(payload, "customer_tab_items", 5_000);
+  const customerTabComboApplications = requireBootstrapRows<CustomerTabComboApplicationRow>(
+    payload,
+    "customer_tab_combo_applications",
+    5_000
+  );
+
+  for (const [rows, label] of [
+    [profileRows, "profiles"],
+    [inventoryCategories, "inventory_categories"],
+    [stations, "stations"],
+    [pricingRules, "pricing_rules"],
+    [inventoryItems, "inventory_items"],
+    [saleVariants, "sale_variants"],
+    [combos, "combos"],
+    [stationTargets, "combo_station_targets"],
+    [fixedItems, "combo_fixed_items"],
+    [choiceGroups, "combo_choice_groups"],
+    [choiceOptions, "combo_choice_options"],
+    [sessions, "sessions"],
+    [sessionPauseLogs, "session_pause_logs"],
+    [sessionItems, "session_items"],
+    [sessionComboApplications, "session_combo_applications"],
+    [customerTabs, "customer_tabs"],
+    [customerTabItems, "customer_tab_items"],
+    [customerTabComboApplications, "customer_tab_combo_applications"]
+  ] as const) {
+    assertBootstrapOrganizationRows(rows, organizationId, label);
+  }
+
+  assertUniqueBootstrapRows(inventoryCategories, (row) => requireBootstrapText(row.name, "inventory category name"), "inventory category");
+  assertUniqueBootstrapRows(stations, (row) => requireBootstrapText(row.id, "station id"), "station");
+  assertUniqueBootstrapRows(pricingRules, (row) => requireBootstrapText(row.id, "pricing rule id"), "pricing rule");
+  assertUniqueBootstrapRows(inventoryItems, (row) => requireBootstrapText(row.id, "inventory item id"), "inventory item");
+  assertUniqueBootstrapRows(saleVariants, (row) => `${requireBootstrapText(row.inventory_item_id, "sale variant item id")}:${requireBootstrapText(row.id, "sale variant id")}`, "sale variant");
+  assertUniqueBootstrapRows(combos, (row) => requireBootstrapText(row.id, "combo id"), "combo");
+  assertUniqueBootstrapRows(stationTargets, (row) => `${requireBootstrapText(row.combo_id, "combo target combo id")}:${requireBootstrapText(row.station_id, "combo target station id")}`, "combo station target");
+  assertUniqueBootstrapRows(fixedItems, (row) => `${requireBootstrapText(row.combo_id, "fixed item combo id")}:${requireBootstrapText(row.id, "fixed item id")}`, "combo fixed item");
+  assertUniqueBootstrapRows(choiceGroups, (row) => `${requireBootstrapText(row.combo_id, "choice group combo id")}:${requireBootstrapText(row.id, "choice group id")}`, "combo choice group");
+  assertUniqueBootstrapRows(choiceOptions, (row) => `${requireBootstrapText(row.combo_id, "choice option combo id")}:${requireBootstrapText(row.choice_group_id, "choice option group id")}:${requireBootstrapText(row.option_id, "choice option id")}`, "combo choice option");
+  assertUniqueBootstrapRows(sessions, (row) => requireBootstrapText(row.id, "session id"), "session");
+  assertUniqueBootstrapRows(sessionPauseLogs, (row) => `${requireBootstrapText(row.session_id, "pause session id")}:${requireBootstrapText(row.id, "pause id")}`, "session pause");
+  assertUniqueBootstrapRows(sessionItems, (row) => `${requireBootstrapText(row.session_id, "session item session id")}:${requireBootstrapText(row.id, "session item id")}`, "session item");
+  assertUniqueBootstrapRows(sessionComboApplications, (row) => `${requireBootstrapText(row.session_id, "session combo session id")}:${requireBootstrapText(row.id, "session combo id")}`, "session combo application");
+  assertUniqueBootstrapRows(customerTabs, (row) => requireBootstrapText(row.id, "customer tab id"), "customer tab");
+  assertUniqueBootstrapRows(customerTabItems, (row) => `${requireBootstrapText(row.customer_tab_id, "customer tab item tab id")}:${requireBootstrapText(row.id, "customer tab item id")}`, "customer tab item");
+  assertUniqueBootstrapRows(customerTabComboApplications, (row) => `${requireBootstrapText(row.customer_tab_id, "customer tab combo tab id")}:${requireBootstrapText(row.id, "customer tab combo id")}`, "customer tab combo application");
+
+  const inventoryItemIds = new Set(inventoryItems.map((row) => row.id));
+  const comboIds = new Set(combos.map((row) => row.id));
+  const choiceGroupKeys = new Set(choiceGroups.map((row) => `${row.combo_id}:${row.id}`));
+  const sessionIds = new Set(sessions.map((row) => row.id));
+  const customerTabIds = new Set(customerTabs.map((row) => row.id));
+  if (saleVariants.some((row) => !inventoryItemIds.has(row.inventory_item_id))) {
+    throw new Error("Operational bootstrap returned a sale variant for an unknown inventory item.");
+  }
+  if (
+    stationTargets.some((row) => !comboIds.has(row.combo_id))
+    || fixedItems.some((row) => !comboIds.has(row.combo_id))
+    || choiceGroups.some((row) => !comboIds.has(row.combo_id))
+    || choiceOptions.some((row) => !comboIds.has(row.combo_id) || !choiceGroupKeys.has(`${row.combo_id}:${row.choice_group_id}`))
+  ) {
+    throw new Error("Operational bootstrap returned an orphaned combo child row.");
+  }
+  if (
+    sessionPauseLogs.some((row) => !row.session_id || !sessionIds.has(row.session_id))
+    || sessionItems.some((row) => !sessionIds.has(row.session_id))
+    || sessionComboApplications.some((row) => !sessionIds.has(row.session_id))
+  ) {
+    throw new Error("Operational bootstrap returned an orphaned session child row.");
+  }
+  if (
+    customerTabItems.some((row) => !customerTabIds.has(row.customer_tab_id))
+    || customerTabComboApplications.some((row) => !customerTabIds.has(row.customer_tab_id))
+  ) {
+    throw new Error("Operational bootstrap returned an orphaned customer-tab child row.");
+  }
+
+  const configData = buildNormalizedConfigData({ organization: organizationRow, inventoryCategories, stations, pricingRules });
+  const catalogData = buildNormalizedCatalogData({ inventoryItems, saleVariants });
+  const comboData = buildNormalizedComboData({ combos, stationTargets, fixedItems, choiceGroups, choiceOptions });
+  const liveData = buildNormalizedLiveData({
+    sessions,
+    sessionPauseLogs,
+    sessionItems,
+    sessionComboApplications,
+    customerTabs,
+    customerTabItems,
+    customerTabComboApplications
+  });
+  return {
+    status: "active",
+    actorId,
+    profile: actorProfile,
+    organization: {
+      id: organizationId,
+      name: organizationRow.name,
+      businessProfile: organizationRow.business_profile
+    },
+    version,
+    appData: {
+      users: profiles.map((profile) => ({
+        ...profile,
+        tabPermissions: Array.isArray(profile.tabPermissions) ? profile.tabPermissions : undefined
+      })),
+      businessProfile: configData.businessProfile,
+      inventoryCategories: configData.inventoryCategories,
+      stations: configData.stations,
+      pricingRules: configData.pricingRules,
+      inventoryItems: catalogData.inventoryItems,
+      combos: comboData.combos,
+      sessions: liveData.sessions,
+      sessionPauseLogs: liveData.sessionPauseLogs,
+      customerTabs: liveData.customerTabs
+    }
   };
 }
 
