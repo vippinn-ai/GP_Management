@@ -219,10 +219,29 @@ describe("normalized lifecycle v2 SQL contract", () => {
     expect(transactionalProof).toContain("insert into qa_negative_results values('unsupported-role'");
     expect(transactionalProof).toContain("original_sqlstate = RETURNED_SQLSTATE");
     expect(transactionalProof).toContain("qa_error_code('not-json', '23502') = '23502'");
+    expect(transactionalProof).toContain("a.id not like c.run_id||'-v1-audit-%'");
     expect(transactionalProof).toContain("Operational v2 changed app_state");
     expect(transactionalProof).toMatch(/rollback;\s*$/i);
     expect(transactionalProof).not.toMatch(/\bcommit\s*;/i);
     expect(transactionalProofBuilder).toContain('flag: "wx"');
     expect(transactionalProofBuilder).toContain("rollbackOnly: true");
+  });
+
+  it("keeps the v2 audit cardinality separate from frozen-v1 comparisons while detecting leaked failures", () => {
+    const runId = "qa-proof";
+    const actions = ["session_hopped", "session_rejected", "customer_tab_rejected"];
+    const audits = [
+      ...actions.map((action, index) => ({ id: `${runId}-audit-${index}`, action })),
+      ...Array.from({ length: 20 }, (_, sample) => actions.map((action, index) => ({ id: `${runId}-perf-audit-${index}-${sample}`, action }))).flat(),
+      ...Array.from({ length: 10 }, (_, sample) => actions.map((action, index) => ({ id: `${runId}-small-audit-${index}-${sample}`, action }))).flat(),
+      ...Array.from({ length: 20 }, (_, sample) => actions.map((action, index) => ({ id: `${runId}-v1-audit-${index}-${sample}`, action }))).flat(),
+      { id: `${runId}-audit-collision`, action: "qa_collision" }
+    ];
+    const matchesV2Audit = (audit: { id: string; action: string }) =>
+      audit.id.startsWith(`${runId}-`) && audit.id.includes("audit-")
+      && !audit.id.startsWith(`${runId}-v1-audit-`) && actions.includes(audit.action);
+
+    expect(audits.filter(matchesV2Audit)).toHaveLength(93);
+    expect([...audits, { id: `${runId}-audit-neg-leaked`, action: "session_rejected" }].filter(matchesV2Audit)).toHaveLength(94);
   });
 });
