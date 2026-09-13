@@ -73,7 +73,12 @@ describe("App auth bootstrap invalidation ordering", () => {
       snapshot: {
         version: 44,
         source: "normalized_bootstrap",
-        appData: hydrateAppData({ users: [activeProfile] })
+        appData: hydrateAppData({
+          users: [{
+            ...activeProfile,
+            tabPermissions: activeProfile.tabPermissions ?? undefined
+          }]
+        })
       }
     });
     mocks.subscribeToAppData.mockReturnValue(() => undefined);
