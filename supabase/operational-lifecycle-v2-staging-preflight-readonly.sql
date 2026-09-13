@@ -39,7 +39,8 @@ with target_functions as (
     and p.proname in (
       'hop_session','reject_session','reject_customer_tab',
       'start_session','open_customer_tab','link_customer_tab_continuation',
-      'hop_session_v2','reject_session_v2','reject_customer_tab_v2'
+      'hop_session_v2','reject_session_v2','reject_customer_tab_v2',
+      'get_operational_performance_dataset_identity'
     )
     and pg_get_function_identity_arguments(p.oid)='payload jsonb'
 ), function_evidence as (

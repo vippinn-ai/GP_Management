@@ -14,6 +14,7 @@ Each completed item records commit SHA, command, timestamp, artifact path, and S
 - [x] Add least-privilege `operational_mutations` and normalized-only v2 functions. Evidence pending independent review and staging install.
 - [x] Harden new-tab continuation-source locking and actor attribution. Evidence pending independent review and staging races.
 - [x] Add database-identity-bound installer, exact source/artifact/body/grant verification, guarded rollback capture, and transactional proof tooling. Evidence pending staging execution.
+- [x] Add a narrow, preflight-bound reinstall path for corrections to already-installed v2 functions, preserving exact owner/ACL state and producing an exact definition rollback. Evidence pending independent review and staging execution.
 - [ ] Prove `app_state` data hash/version/timestamp/updater invariance.
 
 ## 3. Frontend lifecycle

@@ -11,6 +11,7 @@ const preflight = readFileSync(path.join(process.cwd(), "supabase/operational-li
 const postflight = readFileSync(path.join(process.cwd(), "supabase/operational-lifecycle-v2-staging-postflight-readonly.sql"), "utf8");
 const stagingEnvironmentIdentity = readFileSync(path.join(process.cwd(), "supabase/operational-v2-staging-environment-identity.sql"), "utf8");
 const installer = readFileSync(path.join(process.cwd(), "scripts/build-operational-lifecycle-v2-staging-install.mjs"), "utf8");
+const reinstallBuilder = readFileSync(path.join(process.cwd(), "scripts/build-operational-lifecycle-v2-staging-reinstall.mjs"), "utf8");
 const postflightVerifier = readFileSync(path.join(process.cwd(), "scripts/verify-operational-lifecycle-v2-staging-postflight.mjs"), "utf8");
 const transactionalProof = readFileSync(path.join(process.cwd(), "supabase/operational-lifecycle-v2-transactional-proof.sql"), "utf8");
 const transactionalProofBuilder = readFileSync(path.join(process.cwd(), "scripts/build-operational-v2-transactional-proof.mjs"), "utf8");
@@ -168,6 +169,18 @@ describe("normalized lifecycle v2 SQL contract", () => {
     expect(postflightVerifier).toContain("physical database identity drift");
     expect(postflightVerifier).toContain("installed definition, owner, configuration, or ACL drift");
     expect(postflight).toContain("acl_detail");
+    expect(preflight).toContain("get_operational_performance_dataset_identity");
+  });
+
+  it("provides a narrow guarded reinstall for already-installed v2 corrections", () => {
+    expect(reinstallBuilder).toContain('const PATCHED_FUNCTIONS = ["hop_session_v2", "reject_session_v2", "reject_customer_tab_v2"]');
+    expect(reinstallBuilder).toContain("for (const name of VERIFIED_FUNCTIONS) validateFunctionEvidence");
+    expect(reinstallBuilder).toContain("deployed definition, owner, configuration, or ACL drift");
+    expect(reinstallBuilder).toContain("installed definition, owner, configuration, or ACL mismatch");
+    expect(reinstallBuilder).toContain("app_state changed after approved preflight");
+    expect(reinstallBuilder).toContain("reinstall changed compatibility app_state");
+    expect(reinstallBuilder).toContain('flag: "wx"');
+    expect(reinstallBuilder).toContain('operation: "staging-v2-function-reinstall"');
   });
 
   it("provides an immutable rollback-only transactional proof for all lifecycle v2 functions", () => {

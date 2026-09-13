@@ -19,6 +19,8 @@ Record branch, commit SHA, clean status, build asset names/hashes, SQL file hash
 7. Verify the immutable manifest binds the preflight, source files, install, and rollback by SHA-256 before execution.
 8. Stop on wrong environment, unknown or drifted deployed-function definition/owner/configuration/ACL, any open session/tab, any unconsumed recoverable hopped session, dirty mutation floor, missing rollback artifact, or incomplete role access.
 
+If a rollback-only proof exposes a defect in already-installed v2 function bodies, permanently close that proof identity and reconcile its rollback before proceeding. After correcting and locally validating the source, capture a fresh preflight and build a narrow reinstall with `npm run build:db:staging:operational-v2:reinstall -- --run-id=normops-YYYYMMDD-HHMM-reinstall-<suffix> --preflight=<saved-json>`. This package must replace only `hop_session_v2`, `reject_session_v2`, and `reject_customer_tab_v2`; it refuses missing or drifted evidence for all seven verified functions, preserves the three target functions' deployed owners and ACLs, verifies the new bodies and unchanged `app_state` inside the transaction, and carries an exact preflight-definition rollback. Obtain exact artifact-hash reviewer and tester approval before its one allowed execution. Then run the normal read-only postflight/verifier and create a new proof identity. Never rerun the failed proof.
+
 ## Additive install
 
 1. Execute only the generated manifest-bound install. It installs lifecycle v2 and the exact reviewed `start_session`, `open_customer_tab`, and `link_customer_tab_continuation` actor-safe definitions in one transaction.
