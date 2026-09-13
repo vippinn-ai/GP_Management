@@ -3569,8 +3569,8 @@ export default function App() {
     if (trimmedUsername.length > 64) { setLoginError("Username is too long."); return; }
     if (backendConfigured) {
       void runBlockingAction("Signing in...", async () => {
-        const profile = await signInWithUsername(loginUsername, loginPassword);
         defaultRemoteDataGateway.resetAuthenticatedBootstrapAttempt?.();
+        const profile = await signInWithUsername(loginUsername, loginPassword);
         const atomicResult = defaultRemoteDataGateway.loadAuthenticatedAppDataSnapshot
           ? await defaultRemoteDataGateway.loadAuthenticatedAppDataSnapshot()
           : null;
@@ -3644,8 +3644,8 @@ export default function App() {
   function handleLogout() {
     if (backendConfigured) {
       void runBlockingAction("Signing out...", async () => {
-        await signOutRemote();
         defaultRemoteDataGateway.resetAuthenticatedBootstrapAttempt?.();
+        await signOutRemote();
         clearCachedNormalizedOrganizationId();
         setActiveUserId(null);
         setRemoteError("");

@@ -43,5 +43,11 @@ describe("atomic startup coordinator source contract", () => {
     const resets = appSource.match(/defaultRemoteDataGateway\.resetAuthenticatedBootstrapAttempt\?\.\(\)/g) ?? [];
     expect(resets).toHaveLength(2);
     expect(appSource).not.toContain("defaultRemoteDataGateway.scheduleAuthenticatedBootstrapCancellation?.();");
+    const loginStart = appSource.indexOf("function handleLogin");
+    const logoutStart = appSource.indexOf("function handleLogout");
+    const loginBody = appSource.slice(loginStart, logoutStart);
+    const logoutBody = appSource.slice(logoutStart, appSource.indexOf("function handle", logoutStart + 1));
+    expect(loginBody.indexOf("resetAuthenticatedBootstrapAttempt?.()")).toBeLessThan(loginBody.indexOf("await signInWithUsername"));
+    expect(logoutBody.indexOf("resetAuthenticatedBootstrapAttempt?.()")).toBeLessThan(logoutBody.indexOf("await signOutRemote"));
   });
 });

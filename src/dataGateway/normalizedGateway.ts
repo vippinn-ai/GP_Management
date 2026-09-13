@@ -517,6 +517,18 @@ export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): 
     atomicBootstrapAttempt = null;
   };
 
+  const failAtomicAttemptUntilManualReset = (error: Error) => {
+    atomicAttemptGeneration += 1;
+    resetRealtimeAttempt();
+    const failedPreparation = Promise.reject<{ status: "no-session" } | { status: "session"; userId: string }>(error);
+    const failedAttempt = Promise.reject<Awaited<ReturnType<NonNullable<RemoteDataGateway["loadAuthenticatedAppDataSnapshot"]>>>>(error);
+    void failedPreparation.catch(() => undefined);
+    void failedAttempt.catch(() => undefined);
+    preparedAtomicBootstrap = failedPreparation;
+    preparedAtomicBootstrapGeneration = atomicAttemptGeneration;
+    atomicBootstrapAttempt = failedAttempt;
+  };
+
   const applyRealtimeEvent = async (event: OperationalEventRow, notify: boolean, validateAttempt?: () => void) => {
     validateAttempt?.();
     if (processedRealtimeEventIds.has(event.id)) return;
@@ -622,6 +634,7 @@ export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): 
               }
             }))
             .catch((error) => {
+              if (generation !== realtimeGeneration) return;
               const normalizedError = error instanceof Error ? error : new Error("Unable to apply compact realtime event.");
               console.warn("Unable to apply compact realtime event.", normalizedError);
               realtimeErrorListener?.(normalizedError);
@@ -632,8 +645,14 @@ export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): 
           if (generation !== realtimeGeneration) return;
           if (settled) {
             if (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") {
-              invalidateAtomicAttempt();
-              realtimeErrorListener?.(new Error(`Normalized realtime disconnected (${status}); a fresh restore is required.`));
+              const error = new Error(
+                _flags.atomicBootstrap
+                  ? `Normalized realtime disconnected (${status}); a manual retry is required.`
+                  : `Normalized realtime disconnected (${status}); a fresh restore is required.`
+              );
+              if (_flags.atomicBootstrap) failAtomicAttemptUntilManualReset(error);
+              else resetRealtimeAttempt();
+              realtimeErrorListener?.(error);
             }
             return;
           }

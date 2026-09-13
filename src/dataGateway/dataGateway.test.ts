@@ -1402,6 +1402,151 @@ describe("app_state data gateway", () => {
     expect(client.rpc).toHaveBeenCalledTimes(2);
   });
 
+  it("caches a post-ready atomic disconnect failure until one explicit manual reset", async () => {
+    const realtimeStatuses: Array<(status: string) => void> = [];
+    const channels = Array.from({ length: 2 }, () => {
+      const channel = {
+        on: vi.fn(() => channel),
+        subscribe: vi.fn((callback: (status: string) => void) => {
+          realtimeStatuses.push(callback);
+          return channel;
+        })
+      };
+      return channel;
+    });
+    const client = {
+      auth: { getSession: vi.fn().mockResolvedValue({ data: { session: { user: { id: "user-1" } } }, error: null }) },
+      channel: vi.fn()
+        .mockImplementationOnce(() => channels[0])
+        .mockImplementationOnce(() => channels[1]),
+      removeChannel: vi.fn(),
+      rpc: vi.fn().mockResolvedValue({ data: { actor: "user-1" }, error: null })
+    };
+    backendMocks.getSupabaseClient.mockReturnValue(client);
+    normalizedReadMocks.buildOperationalBootstrapRpcResult.mockReturnValue({
+      status: "active",
+      actorId: "user-1",
+      profile: { id: "user-1", name: "Admin", username: "admin", role: "admin", active: true },
+      organization: { id: "org-primary", name: "BreakPerfect", businessProfile: { name: "BreakPerfect" } },
+      version: 44,
+      appData: createAppData()
+    });
+    const gateway = createRemoteDataGateway({
+      ...DEFAULT_BACKEND_FEATURE_FLAGS,
+      atomicBootstrap: true,
+      normalizedBootstrap: true,
+      normalizedRealtime: true
+    });
+
+    const initialLoad = gateway.loadAuthenticatedAppDataSnapshot?.();
+    await vi.waitFor(() => expect(realtimeStatuses).toHaveLength(1));
+    realtimeStatuses[0]("SUBSCRIBED");
+    await expect(initialLoad).resolves.toMatchObject({ status: "active", snapshot: { version: 44 } });
+    const onError = vi.fn();
+    gateway.subscribeToAppData(vi.fn(), onError);
+
+    realtimeStatuses[0]("CHANNEL_ERROR");
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining("manual retry") }));
+    await expect(gateway.prepareAuthenticatedBootstrap?.()).rejects.toThrow(/manual retry/i);
+    await expect(gateway.loadAuthenticatedAppDataSnapshot?.()).rejects.toThrow(/manual retry/i);
+    expect(client.auth.getSession).toHaveBeenCalledTimes(1);
+    expect(client.channel).toHaveBeenCalledTimes(1);
+    expect(client.rpc).toHaveBeenCalledTimes(1);
+
+    gateway.resetAuthenticatedBootstrapAttempt?.();
+    const freshLoad = gateway.loadAuthenticatedAppDataSnapshot?.();
+    await vi.waitFor(() => expect(realtimeStatuses).toHaveLength(2));
+    realtimeStatuses[1]("SUBSCRIBED");
+    await expect(freshLoad).resolves.toMatchObject({ status: "active", snapshot: { version: 44 } });
+    expect(client.auth.getSession).toHaveBeenCalledTimes(2);
+    expect(client.channel).toHaveBeenCalledTimes(2);
+    expect(client.rpc).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not report a superseded account-A realtime hydration failure to account B", async () => {
+    const realtimeHandlers: Array<(payload: { new: unknown }) => void> = [];
+    const realtimeStatuses: Array<(status: string) => void> = [];
+    let resolveAccountAOverlay!: (value: { sessions: never[]; sessionPauseLogs: never[]; customerTabs: never[] }) => void;
+    const accountAOverlay = new Promise<{ sessions: never[]; sessionPauseLogs: never[]; customerTabs: never[] }>((resolve) => {
+      resolveAccountAOverlay = resolve;
+    });
+    const client = {
+      auth: {
+        getSession: vi.fn()
+          .mockResolvedValueOnce({ data: { session: { user: { id: "user-a" } } }, error: null })
+          .mockResolvedValueOnce({ data: { session: { user: { id: "user-b" } } }, error: null })
+      },
+      channel: vi.fn(() => {
+        const channel = {
+          on: vi.fn((_kind, _config, handler: (payload: { new: unknown }) => void) => {
+            realtimeHandlers.push(handler);
+            return channel;
+          }),
+          subscribe: vi.fn((callback: (status: string) => void) => {
+            realtimeStatuses.push(callback);
+            return channel;
+          })
+        };
+        return channel;
+      }),
+      removeChannel: vi.fn(),
+      rpc: vi.fn()
+        .mockResolvedValueOnce({ data: { actor: "user-a" }, error: null })
+        .mockResolvedValueOnce({ data: { actor: "user-b" }, error: null })
+    };
+    backendMocks.getSupabaseClient.mockReturnValue(client);
+    normalizedReadMocks.buildOperationalBootstrapRpcResult.mockImplementation((data: { actor: string }) => ({
+      status: "active",
+      actorId: data.actor,
+      profile: { id: data.actor, name: data.actor, username: data.actor, role: "admin", active: true },
+      organization: { id: `org-${data.actor}`, name: data.actor, businessProfile: { name: data.actor } },
+      version: data.actor === "user-a" ? 41 : 42,
+      appData: createAppData()
+    }));
+    normalizedReadMocks.loadNormalizedLiveDataByIds.mockImplementationOnce(() => accountAOverlay);
+    const gateway = createRemoteDataGateway({
+      ...DEFAULT_BACKEND_FEATURE_FLAGS,
+      atomicBootstrap: true,
+      normalizedBootstrap: true,
+      normalizedRealtime: true
+    });
+
+    const accountALoad = gateway.loadAuthenticatedAppDataSnapshot?.();
+    await vi.waitFor(() => expect(realtimeStatuses).toHaveLength(1));
+    realtimeStatuses[0]("SUBSCRIBED");
+    await expect(accountALoad).resolves.toMatchObject({ status: "active", profile: { id: "user-a" } });
+    realtimeHandlers[0]({
+      new: {
+        organization_id: "org-user-a",
+        id: "event-user-a",
+        event_type: "session_updated",
+        entity_type: "session",
+        entity_id: "session-a",
+        created_at: "2026-09-14T04:00:00.000Z",
+        metadata: { changed_rows: { sessions: ["session-a"] } }
+      }
+    });
+    await vi.waitFor(() => expect(normalizedReadMocks.loadNormalizedLiveDataByIds).toHaveBeenCalledTimes(1));
+
+    gateway.resetAuthenticatedBootstrapAttempt?.();
+    const accountBLoad = gateway.loadAuthenticatedAppDataSnapshot?.();
+    await vi.waitFor(() => expect(realtimeStatuses).toHaveLength(2));
+    realtimeStatuses[1]("SUBSCRIBED");
+    await expect(accountBLoad).resolves.toMatchObject({ status: "active", profile: { id: "user-b" }, snapshot: { version: 42 } });
+    const accountBChange = vi.fn();
+    const accountBError = vi.fn();
+    gateway.subscribeToAppData(accountBChange, accountBError);
+
+    resolveAccountAOverlay({ sessions: [], sessionPauseLogs: [], customerTabs: [] });
+    await new Promise((resolve) => globalThis.setTimeout(resolve, 0));
+    expect(accountBChange).not.toHaveBeenCalled();
+    expect(accountBError).not.toHaveBeenCalled();
+    await expect(gateway.loadAuthenticatedAppDataSnapshot?.()).resolves.toEqual(await accountBLoad);
+    expect(client.auth.getSession).toHaveBeenCalledTimes(2);
+    expect(client.channel).toHaveBeenCalledTimes(2);
+    expect(client.rpc).toHaveBeenCalledTimes(2);
+  });
+
   it("tears down the atomic channel and returns no data for an inactive actor", async () => {
     let realtimeStatus: ((status: string) => void) | undefined;
     const channel = {
