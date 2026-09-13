@@ -76,7 +76,9 @@ describe("operational bootstrap staging controls", () => {
     expect(preflight).toContain("pg_get_functiondef(oid)");
     expect(preflight).toContain("acl_detail");
     expect(preflight).toContain("'installer_role', current_user");
-    expect(preflight).toContain("regexp_replace(btrim(prosrc, E' \\t\\n\\r')");
+    expect(preflight).toContain("replace(replace(btrim(prosrc, E' \\t\\n\\r')");
+    expect(preflight).toContain("'permissive', permissive");
+    expect(preflight).toContain("canonical function-body newline normalization failed");
     expect(preflight).toContain("current_user_has_org_access(text)");
     expect(preflight).toContain("relrowsecurity");
     expect(preflight.trimEnd()).toMatch(/rollback;$/i);

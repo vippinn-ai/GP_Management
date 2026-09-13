@@ -23,6 +23,9 @@ begin
   if not exists (select 1 from public.deployment_environment_identity
     where environment = 'staging' and project_ref = 'tkbdyzxwwbhkpztgjjxh')
   then raise exception 'staging database identity failed'; end if;
+  if md5(replace(replace(btrim(E' \talpha\r\nbeta\rgamma\n ', E' \t\n\r'), E'\r\n', E'\n'), E'\r', E'\n'))
+    is distinct from md5(E'alpha\nbeta\ngamma')
+  then raise exception 'canonical function-body newline normalization failed'; end if;
   select profile.id into strict actor_id
   from public.profiles profile
   join public.organization_members membership on membership.user_id = profile.id
@@ -86,7 +89,7 @@ select jsonb_build_object(
   'captured_at_utc', timezone('utc', clock_timestamp()),
   'function', (select jsonb_build_object(
     'definition_md5', md5(pg_get_functiondef(oid)),
-    'body_md5', md5(regexp_replace(btrim(prosrc, E' \t\n\r'), E'\\r\\n?', E'\\n', 'g')),
+    'body_md5', md5(replace(replace(btrim(prosrc, E' \t\n\r'), E'\r\n', E'\n'), E'\r', E'\n')),
     'owner', pg_get_userbyid(proowner),
     'security_definer', prosecdef,
     'volatility', provolatile,

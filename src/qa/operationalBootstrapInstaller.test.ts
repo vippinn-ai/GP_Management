@@ -38,6 +38,7 @@ function fixture(targetFunction: unknown = null) {
         published: true,
         policies: [{
           name: "operational_events_select",
+          permissive: "PERMISSIVE",
           roles: ["authenticated"],
           command: "SELECT",
           using: "current_user_has_org_access(organization_id)",
@@ -74,7 +75,7 @@ function runBuilder(sourceRoot: string, commit: string, runId: string, preflight
   ], { cwd: sourceRoot, stdio: "pipe" });
 }
 
-describe("atomic bootstrap staging installer builder", () => {
+describe("atomic bootstrap staging installer builder", { timeout: 30_000 }, () => {
   it("generates immutable install and exact absent-function rollback artifacts", () => {
     const runId = `normops-20260914-${String(Date.now()).slice(-4)}-bootstrap-test`;
     const fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), "bp-bootstrap-preflight-"));
@@ -98,7 +99,8 @@ describe("atomic bootstrap staging installer builder", () => {
     expect(manifest.sourceCommit).toBe(commit);
     expect(install).toContain("realtime publication, RLS policy, or access helper changed after preflight");
     expect(install).toContain("exact ACL mismatch");
-    expect(install).toContain("regexp_replace(btrim(p.prosrc, E' \\t\\n\\r')");
+    expect(install).toContain("replace(replace(btrim(p.prosrc, E' \\t\\n\\r')");
+    expect(install).toContain("canonical function-body newline normalization failed");
     expect(rollback).toContain("owner, configuration, ACL, or security drift");
     expect(manifest.install.sha256).toBe(sha256(install));
     expect(manifest.rollback.sha256).toBe(sha256(rollback));
@@ -124,10 +126,24 @@ describe("atomic bootstrap staging installer builder", () => {
     const invalid = fixture() as { evidence: { realtime_security: { policies: unknown[] } } };
     invalid.evidence.realtime_security.policies.push({
       name: "permissive_public_select",
+      permissive: "PERMISSIVE",
       roles: ["PUBLIC"],
       command: "SELECT",
       using: "true"
     });
+    fs.writeFileSync(preflightPath, JSON.stringify(invalid));
+    createdPaths.push(fixtureDir);
+    const { sourceRoot, commit } = createCleanSourceRepo();
+
+    expect(() => runBuilder(sourceRoot, commit, runId, preflightPath)).toThrow();
+  });
+
+  it("fails closed when the only matching policy is restrictive", () => {
+    const runId = `normops-20260914-${String(Date.now()).slice(-4)}-bootstrap-restrictive`;
+    const fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), "bp-bootstrap-preflight-restrictive-"));
+    const preflightPath = path.join(fixtureDir, "preflight.json");
+    const invalid = fixture() as { evidence: { realtime_security: { policies: Array<{ permissive: string }> } } };
+    invalid.evidence.realtime_security.policies[0].permissive = "RESTRICTIVE";
     fs.writeFileSync(preflightPath, JSON.stringify(invalid));
     createdPaths.push(fixtureDir);
     const { sourceRoot, commit } = createCleanSourceRepo();

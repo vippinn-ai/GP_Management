@@ -64,6 +64,10 @@ Events contain changed normalized IDs, mutation identity, duration, and released
 
 The atomic startup attempt is also single-shot. A failed or ambiguous session, realtime, RPC, mapping, or catch-up promise remains cached and cannot be retried by a timer, remount, or StrictMode effect adoption. Only an explicit user retry signal tears down the prior channel and creates one fresh attempt; the same retry signal is consumed once. When the atomic flag is off, the build uses the retained static application entry so this optimization adds no default-off chunk waterfall.
 
+Every atomic attempt has an internal generation. Explicit sign-in/sign-out/reset invalidates the previous generation immediately, and asynchronous session, RPC, and realtime-hydration boundaries recheck it before publishing organization identity, cache, or snapshot state. A late response from account A must fail as superseded and cannot clear or overwrite account B's newer attempt.
+
+Invalidation actively rejects a still-pending realtime-ready barrier and unsubscribes its channel, so an unadopted preparation cannot hang until its ten-second timeout. Installer preflight, install, postflight, and rollback compare canonical function bodies with an executed CRLF/CR/LF normalization self-test and accept exactly one applicable `PERMISSIVE`, authenticated, tenant-helper policy for `operational_events`.
+
 ## Rollback
 
 Disable the operational-v2 flag to return new target commands to retained v1 functions while normalized reads remain enabled. Keep v2 functions/table installed so evidence remains. A full compatibility-read rollback requires separately verified normalized-to-`app_state` reconstruction. Bundle and bootstrap units have independent frontend rollback commits/flags.

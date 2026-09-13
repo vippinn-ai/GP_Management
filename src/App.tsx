@@ -3570,6 +3570,7 @@ export default function App() {
     if (backendConfigured) {
       void runBlockingAction("Signing in...", async () => {
         const profile = await signInWithUsername(loginUsername, loginPassword);
+        defaultRemoteDataGateway.resetAuthenticatedBootstrapAttempt?.();
         const atomicResult = defaultRemoteDataGateway.loadAuthenticatedAppDataSnapshot
           ? await defaultRemoteDataGateway.loadAuthenticatedAppDataSnapshot()
           : null;
@@ -3644,7 +3645,7 @@ export default function App() {
     if (backendConfigured) {
       void runBlockingAction("Signing out...", async () => {
         await signOutRemote();
-        defaultRemoteDataGateway.scheduleAuthenticatedBootstrapCancellation?.();
+        defaultRemoteDataGateway.resetAuthenticatedBootstrapAttempt?.();
         clearCachedNormalizedOrganizationId();
         setActiveUserId(null);
         setRemoteError("");

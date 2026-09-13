@@ -464,6 +464,7 @@ export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): 
   let bootstrapBufferError: Error | null = null;
   const processedRealtimeEventIds = new Set<string>();
   let realtimeReadyPromise: Promise<void> | null = null;
+  let realtimeReadyReject: ((error: Error) => void) | null = null;
   let realtimeUnsubscribe: (() => void) | null = null;
   let realtimeGeneration = 0;
   let selectedOrganizationId: string | null = null;
@@ -471,7 +472,9 @@ export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): 
   let realtimeSnapshotListener: ((snapshot: RemoteAppDataSnapshot) => void) | null = null;
   let realtimeErrorListener: ((error: Error) => void) | null = null;
   let preparedAtomicBootstrap: Promise<{ status: "no-session" } | { status: "session"; userId: string }> | null = null;
+  let preparedAtomicBootstrapGeneration: number | null = null;
   let atomicBootstrapAttempt: ReturnType<NonNullable<RemoteDataGateway["loadAuthenticatedAppDataSnapshot"]>> | null = null;
+  let atomicAttemptGeneration = 0;
 
   const clearScheduledTeardown = () => {
     if (scheduledTeardownId !== null) {
@@ -482,6 +485,8 @@ export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): 
 
   const resetRealtimeAttempt = () => {
     clearScheduledTeardown();
+    const rejectPendingReady = realtimeReadyReject;
+    realtimeReadyReject = null;
     realtimeGeneration += 1;
     const unsubscribe = realtimeUnsubscribe;
     realtimeUnsubscribe = null;
@@ -495,9 +500,25 @@ export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): 
     clearCachedNormalizedOrganizationId();
     realtimeEventPipeline = Promise.resolve();
     unsubscribe?.();
+    rejectPendingReady?.(new Error("Normalized realtime preparation was superseded."));
   };
 
-  const applyRealtimeEvent = async (event: OperationalEventRow, notify: boolean) => {
+  const assertAtomicAttemptCurrent = (generation: number) => {
+    if (generation !== atomicAttemptGeneration) {
+      throw new Error("Atomic bootstrap attempt was superseded by logout or account change.");
+    }
+  };
+
+  const invalidateAtomicAttempt = () => {
+    atomicAttemptGeneration += 1;
+    resetRealtimeAttempt();
+    preparedAtomicBootstrap = null;
+    preparedAtomicBootstrapGeneration = null;
+    atomicBootstrapAttempt = null;
+  };
+
+  const applyRealtimeEvent = async (event: OperationalEventRow, notify: boolean, validateAttempt?: () => void) => {
+    validateAttempt?.();
     if (processedRealtimeEventIds.has(event.id)) return;
     if (selectedOrganizationId && event.organization_id !== selectedOrganizationId) return;
     const client = getSupabaseClient();
@@ -505,6 +526,7 @@ export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): 
     try {
       if (!lastSnapshot) throw new Error("Normalized realtime received an event without a base snapshot.");
       const overlay = await loadNormalizedRealtimeOverlay(event, _flags, client);
+      validateAttempt?.();
       if (overlay.requiresFullRefresh) {
         throw new Error("A full-refresh event requires an explicit normalized restore.");
       }
@@ -568,8 +590,15 @@ export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): 
       const timeoutId = globalThis.setTimeout(() => {
         if (settled || generation !== realtimeGeneration) return;
         settled = true;
+        realtimeReadyReject = null;
         reject(new Error("Normalized realtime subscription did not become ready within 10 seconds."));
       }, 10_000);
+      realtimeReadyReject = (error) => {
+        if (settled) return;
+        settled = true;
+        globalThis.clearTimeout(timeoutId);
+        reject(error);
+      };
       realtimeUnsubscribe = subscribeToOperationalEvents(
         client,
         (event) => {
@@ -587,7 +616,11 @@ export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): 
             return Promise.resolve();
           }
           realtimeEventPipeline = realtimeEventPipeline
-            .then(() => applyRealtimeEvent(event, true))
+            .then(() => applyRealtimeEvent(event, true, () => {
+              if (generation !== realtimeGeneration) {
+                throw new Error("Realtime event belonged to a superseded subscription.");
+              }
+            }))
             .catch((error) => {
               const normalizedError = error instanceof Error ? error : new Error("Unable to apply compact realtime event.");
               console.warn("Unable to apply compact realtime event.", normalizedError);
@@ -599,19 +632,19 @@ export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): 
           if (generation !== realtimeGeneration) return;
           if (settled) {
             if (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") {
-              resetRealtimeAttempt();
-              preparedAtomicBootstrap = null;
-              atomicBootstrapAttempt = null;
+              invalidateAtomicAttempt();
               realtimeErrorListener?.(new Error(`Normalized realtime disconnected (${status}); a fresh restore is required.`));
             }
             return;
           }
           if (status === "SUBSCRIBED") {
             settled = true;
+            realtimeReadyReject = null;
             globalThis.clearTimeout(timeoutId);
             resolve();
           } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") {
             settled = true;
+            realtimeReadyReject = null;
             globalThis.clearTimeout(timeoutId);
             reject(new Error(`Normalized realtime subscription failed before bootstrap (${status}).`));
           }
@@ -625,9 +658,12 @@ export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): 
     clearScheduledTeardown();
     if (preparedAtomicBootstrap) return preparedAtomicBootstrap;
     const client = getSupabaseClient();
+    const attemptGeneration = ++atomicAttemptGeneration;
+    preparedAtomicBootstrapGeneration = attemptGeneration;
     markBootstrapPerformance("bp-session-requested");
     const preparation = (async () => {
       const sessionResponse = await client.auth.getSession();
+      assertAtomicAttemptCurrent(attemptGeneration);
       if (sessionResponse.error) throw sessionResponse.error;
       const userId = sessionResponse.data.session?.user.id?.trim();
       markBootstrapPerformance("bp-session-ready");
@@ -636,11 +672,12 @@ export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): 
         return { status: "no-session" as const };
       }
       await ensureRealtimeReady();
+      assertAtomicAttemptCurrent(attemptGeneration);
       markBootstrapPerformance("bp-realtime-ready");
       return { status: "session" as const, userId };
     })();
     preparedAtomicBootstrap = preparation.catch((error) => {
-      resetRealtimeAttempt();
+      if (attemptGeneration === atomicAttemptGeneration) resetRealtimeAttempt();
       throw error;
     });
     const currentPreparation = preparedAtomicBootstrap;
@@ -648,6 +685,7 @@ export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): 
       .then((result) => {
         if (result.status === "no-session" && preparedAtomicBootstrap === currentPreparation) {
           preparedAtomicBootstrap = null;
+          preparedAtomicBootstrapGeneration = null;
           atomicBootstrapAttempt = null;
         }
       })
@@ -658,9 +696,13 @@ export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): 
   const loadAuthenticatedAppDataSnapshot = () => {
     clearScheduledTeardown();
     if (atomicBootstrapAttempt) return atomicBootstrapAttempt;
+    const preparationPromise = prepareAuthenticatedBootstrap();
+    const attemptGeneration = preparedAtomicBootstrapGeneration;
+    if (attemptGeneration === null) throw new Error("Atomic bootstrap preparation generation is missing.");
     const attempt = (async () => {
       markBootstrapPerformance("bp-bootstrap-requested");
-      const preparation = await prepareAuthenticatedBootstrap();
+      const preparation = await preparationPromise;
+      assertAtomicAttemptCurrent(attemptGeneration);
       if (preparation.status === "no-session") return preparation;
       bootstrapInFlight = true;
       const startedAt = Date.now();
@@ -670,9 +712,11 @@ export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): 
         const response = await withOperationalBootstrapTimeout(
           getSupabaseClient().rpc("load_operational_bootstrap_v2")
         );
+        assertAtomicAttemptCurrent(attemptGeneration);
         markBootstrapPerformance("bp-bootstrap-rpc-response");
         if (response.error) throw response.error;
         const result = buildOperationalBootstrapRpcResult(response.data);
+        assertAtomicAttemptCurrent(attemptGeneration);
         if (result.actorId !== preparation.userId) {
           throw new Error("Operational bootstrap actor did not match the authenticated session.");
         }
@@ -703,9 +747,11 @@ export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): 
         while (lastSnapshot && bufferedBootstrapEvents.length > 0) {
           const event = bufferedBootstrapEvents.shift()!;
           if (event.organization_id !== selectedOrganizationId) continue;
-          await applyRealtimeEvent(event, false);
+          await applyRealtimeEvent(event, false, () => assertAtomicAttemptCurrent(attemptGeneration));
+          assertAtomicAttemptCurrent(attemptGeneration);
           if (bootstrapBufferError) throw bootstrapBufferError;
         }
+        assertAtomicAttemptCurrent(attemptGeneration);
         markBootstrapPerformance("bp-critical-snapshot-ready");
         markBootstrapPerformance("bp-critical-catchup-ready");
         recordStartupBootstrapTelemetry({
@@ -723,18 +769,20 @@ export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): 
           snapshot: lastSnapshot
         };
       } catch (error) {
-        recordStartupBootstrapTelemetry({
-          appData: {},
-          source: "normalized_bootstrap",
-          startedAt,
-          status: "error",
-          errorMessage: error instanceof Error ? error.message : "Unable to load atomic operational bootstrap.",
-          skippedFullAppStateData: true
-        });
-        resetRealtimeAttempt();
+        if (attemptGeneration === atomicAttemptGeneration) {
+          recordStartupBootstrapTelemetry({
+            appData: {},
+            source: "normalized_bootstrap",
+            startedAt,
+            status: "error",
+            errorMessage: error instanceof Error ? error.message : "Unable to load atomic operational bootstrap.",
+            skippedFullAppStateData: true
+          });
+          resetRealtimeAttempt();
+        }
         throw error;
       } finally {
-        bootstrapInFlight = false;
+        if (attemptGeneration === atomicAttemptGeneration) bootstrapInFlight = false;
       }
     })();
     atomicBootstrapAttempt = attempt;
@@ -745,15 +793,11 @@ export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): 
     clearScheduledTeardown();
     scheduledTeardownId = globalThis.setTimeout(() => {
       scheduledTeardownId = null;
-      resetRealtimeAttempt();
-      preparedAtomicBootstrap = null;
-      atomicBootstrapAttempt = null;
+      invalidateAtomicAttempt();
     }, 0);
   };
   const resetAuthenticatedBootstrapAttempt = () => {
-    resetRealtimeAttempt();
-    preparedAtomicBootstrap = null;
-    atomicBootstrapAttempt = null;
+    invalidateAtomicAttempt();
   };
   const gateway: RemoteDataGateway = {
     async loadAppDataSnapshot(options) {

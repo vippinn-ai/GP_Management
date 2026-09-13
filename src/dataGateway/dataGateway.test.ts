@@ -1334,6 +1334,74 @@ describe("app_state data gateway", () => {
     );
   });
 
+  it("cannot publish a late account-A RPC after logout and an account-B bootstrap", async () => {
+    const realtimeStatuses: Array<(status: string) => void> = [];
+    let resolveAccountA!: (value: { data: unknown; error: null }) => void;
+    const accountARpc = new Promise<{ data: unknown; error: null }>((resolve) => { resolveAccountA = resolve; });
+    const client = {
+      auth: {
+        getSession: vi.fn()
+          .mockResolvedValueOnce({ data: { session: { user: { id: "user-a" } } }, error: null })
+          .mockResolvedValueOnce({ data: { session: { user: { id: "user-b" } } }, error: null })
+      },
+      channel: vi.fn(() => {
+        const channel = {
+          on: vi.fn(() => channel),
+          subscribe: vi.fn((callback: (status: string) => void) => {
+            realtimeStatuses.push(callback);
+            return channel;
+          })
+        };
+        return channel;
+      }),
+      removeChannel: vi.fn(),
+      rpc: vi.fn()
+        .mockImplementationOnce(() => accountARpc)
+        .mockResolvedValueOnce({ data: { actor: "user-b" }, error: null })
+    };
+    backendMocks.getSupabaseClient.mockReturnValue(client);
+    normalizedReadMocks.buildOperationalBootstrapRpcResult.mockImplementation((data: { actor?: string }) => {
+      const actorId = data.actor ?? "user-a";
+      return {
+        status: "active",
+        actorId,
+        profile: { id: actorId, name: actorId, username: actorId, role: "admin", active: true },
+        organization: { id: `org-${actorId}`, name: actorId, businessProfile: { name: actorId } },
+        version: actorId === "user-a" ? 41 : 42,
+        appData: createAppData()
+      };
+    });
+    const gateway = createRemoteDataGateway({
+      ...DEFAULT_BACKEND_FEATURE_FLAGS,
+      atomicBootstrap: true,
+      normalizedBootstrap: true,
+      normalizedRealtime: true
+    });
+
+    const accountALoad = gateway.loadAuthenticatedAppDataSnapshot?.();
+    const accountARejected = expect(accountALoad).rejects.toThrow(/superseded by logout or account change/i);
+    await vi.waitFor(() => expect(realtimeStatuses).toHaveLength(1));
+    realtimeStatuses[0]("SUBSCRIBED");
+    await vi.waitFor(() => expect(client.rpc).toHaveBeenCalledTimes(1));
+
+    gateway.resetAuthenticatedBootstrapAttempt?.();
+    const accountBLoad = gateway.loadAuthenticatedAppDataSnapshot?.();
+    await vi.waitFor(() => expect(realtimeStatuses).toHaveLength(2));
+    realtimeStatuses[1]("SUBSCRIBED");
+    await expect(accountBLoad).resolves.toMatchObject({
+      status: "active",
+      profile: { id: "user-b" },
+      organization: { id: "org-user-b" },
+      snapshot: { version: 42 }
+    });
+
+    resolveAccountA({ data: { actor: "user-a" }, error: null });
+    await accountARejected;
+    await expect(gateway.loadAuthenticatedAppDataSnapshot?.()).resolves.toEqual(await accountBLoad);
+    expect(client.auth.getSession).toHaveBeenCalledTimes(2);
+    expect(client.rpc).toHaveBeenCalledTimes(2);
+  });
+
   it("tears down the atomic channel and returns no data for an inactive actor", async () => {
     let realtimeStatus: ((status: string) => void) | undefined;
     const channel = {
@@ -1403,6 +1471,35 @@ describe("app_state data gateway", () => {
     expect(client.auth.getSession).toHaveBeenCalledTimes(1);
     expect(client.channel).toHaveBeenCalledTimes(1);
     expect(client.removeChannel).not.toHaveBeenCalled();
+  });
+
+  it("rejects rather than hanging when an unadopted preparation is cancelled before SUBSCRIBED", async () => {
+    const channel = {
+      on: vi.fn().mockReturnThis(),
+      subscribe: vi.fn().mockReturnThis()
+    };
+    const client = {
+      auth: { getSession: vi.fn().mockResolvedValue({ data: { session: { user: { id: "user-1" } } }, error: null }) },
+      channel: vi.fn(() => channel),
+      removeChannel: vi.fn(),
+      rpc: vi.fn()
+    };
+    backendMocks.getSupabaseClient.mockReturnValue(client);
+    const gateway = createRemoteDataGateway({
+      ...DEFAULT_BACKEND_FEATURE_FLAGS,
+      atomicBootstrap: true,
+      normalizedBootstrap: true,
+      normalizedRealtime: true
+    });
+
+    const preparation = gateway.prepareAuthenticatedBootstrap?.();
+    const rejected = expect(preparation).rejects.toThrow("Normalized realtime preparation was superseded.");
+    await vi.waitFor(() => expect(channel.subscribe).toHaveBeenCalledTimes(1));
+    gateway.scheduleAuthenticatedBootstrapCancellation?.();
+
+    await rejected;
+    expect(client.removeChannel).toHaveBeenCalledWith(channel);
+    expect(client.rpc).not.toHaveBeenCalled();
   });
 
   it("waits for confirmed realtime subscription before starting the bootstrap snapshot", async () => {

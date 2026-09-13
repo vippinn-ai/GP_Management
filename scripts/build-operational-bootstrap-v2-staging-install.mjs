@@ -19,7 +19,7 @@ const md5 = (value) => crypto.createHash("md5").update(value).digest("hex");
 const sqlLiteral = (value) => `'${String(value).replaceAll("'", "''")}'`;
 const quoteRole = (role) => role === "PUBLIC" ? "public" : `"${String(role).replaceAll('"', '""')}"`;
 const normalizeBody = (body) => body.replaceAll("\r\n", "\n").replaceAll("\r", "\n").trim();
-const normalizedBodySql = (expression) => `md5(regexp_replace(btrim(${expression}, E' \\t\\n\\r'), E'\\\\r\\\\n?', E'\\\\n', 'g'))`;
+const normalizedBodySql = (expression) => `md5(replace(replace(btrim(${expression}, E' \\t\\n\\r'), E'\\r\\n', E'\\n'), E'\\r', E'\\n'))`;
 
 function applicableSelectPolicy(policy) {
   const command = String(policy.command ?? "").toUpperCase();
@@ -36,6 +36,7 @@ function tenantScopedAuthenticatedPolicy(policy) {
     .replace(/^\((.*)\)$/, "$1");
   return roles.length === 1
     && roles[0] === "authenticated"
+    && String(policy.permissive ?? "").toUpperCase() === "PERMISSIVE"
     && normalizedUsing === "current_user_has_org_access(organization_id)";
 }
 
@@ -113,8 +114,8 @@ if (!preflight.installer_role || typeof preflight.installer_role !== "string") t
 if (preflight.realtime_security?.rls_enabled !== true || !Array.isArray(preflight.realtime_security?.policies)) throw new Error("Preflight realtime RLS evidence is incomplete.");
 if (preflight.realtime_security.published !== true) throw new Error("Operational events is not published to staging realtime.");
 const applicablePolicies = preflight.realtime_security.policies.filter(applicableSelectPolicy);
-if (applicablePolicies.length === 0 || applicablePolicies.some((policy) => !tenantScopedAuthenticatedPolicy(policy))) {
-  throw new Error("Operational events SELECT policies do not prove an exact tenant-scoped authenticated-only policy set.");
+if (applicablePolicies.length !== 1 || !tenantScopedAuthenticatedPolicy(applicablePolicies[0])) {
+  throw new Error("Operational events SELECT policies do not prove exactly one permissive tenant-scoped authenticated-only policy.");
 }
 if (!/^[0-9a-f]{32}$/i.test(preflight.realtime_security?.access_helper_md5 ?? "")
   || md5(preflight.realtime_security?.access_helper_definition ?? "") !== preflight.realtime_security.access_helper_md5) {
@@ -173,7 +174,10 @@ const commonIdentityGuard = `if current_database() <> 'postgres' or (select syst
   if not exists (select 1 from public.deployment_environment_identity
     where environment = 'staging' and project_ref = '${EXPECTED_PROJECT_REF}'
       and identity_nonce = ${sqlLiteral(preflight.environment_identity.identity_nonce)}::uuid)
-    then raise exception 'staging database identity drift'; end if;`;
+    then raise exception 'staging database identity drift'; end if;
+  if ${normalizedBodySql("E' \\talpha\\r\\nbeta\\rgamma\\n '")}
+    is distinct from md5(E'alpha\\nbeta\\ngamma')
+    then raise exception 'canonical function-body newline normalization failed'; end if;`;
 
 const capturedRealtimeSecurity = {
   rls_enabled: preflight.realtime_security.rls_enabled,
@@ -189,7 +193,8 @@ const realtimeSecurityGuard = `select jsonb_build_object(
     ),
     'policies', coalesce((
       select jsonb_agg(jsonb_build_object(
-        'name', policyname, 'roles', roles, 'command', cmd, 'using', qual, 'check', with_check
+        'name', policyname, 'permissive', permissive, 'roles', roles,
+        'command', cmd, 'using', qual, 'check', with_check
       ) order by policyname)
       from pg_policies
       where schemaname = 'public' and tablename = 'operational_events'
@@ -251,8 +256,9 @@ end $$;`,
   reviewed,
   `do $$
 declare body_md5 text; actual_owner_name text; actual_security_definer boolean;
-  actual_volatility "char"; actual_config jsonb;
+  actual_volatility "char"; actual_config jsonb; actual_realtime_security jsonb;
 begin
+  ${realtimeSecurityGuard}
   ${installedStateGuard("installed bootstrap definition, owner, configuration, or exact ACL mismatch")}
   if exists (select 1 from public.app_state a cross join bootstrap_install_app_state b where a.id = 'primary'
     and (a.version, md5(a.data::text), octet_length(a.data::text), a.updated_at, a.updated_by)

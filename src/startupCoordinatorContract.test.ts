@@ -6,6 +6,7 @@ const mainSource = readFileSync(resolve(process.cwd(), "src/main.tsx"), "utf8");
 const legacyMainSource = readFileSync(resolve(process.cwd(), "src/main-legacy.tsx"), "utf8");
 const viteSource = readFileSync(resolve(process.cwd(), "vite.config.ts"), "utf8");
 const syncSource = readFileSync(resolve(process.cwd(), "src/hooks/useAppSync.ts"), "utf8");
+const appSource = readFileSync(resolve(process.cwd(), "src/App.tsx"), "utf8");
 
 describe("atomic startup coordinator source contract", () => {
   it("starts one dynamic App import beside the shared bootstrap preparation", () => {
@@ -36,5 +37,11 @@ describe("atomic startup coordinator source contract", () => {
     expect(syncSource).toContain("setActiveUserId(result.profile.id)");
     expect(syncSource).toContain("resolveRemoteSessionProfile({ includeOrganization: !allowFullAppDataPersist })");
     expect(syncSource).toContain("dataGateway.resetAuthenticatedBootstrapAttempt?.()");
+  });
+
+  it("invalidates the prior account attempt immediately on explicit sign-in and sign-out", () => {
+    const resets = appSource.match(/defaultRemoteDataGateway\.resetAuthenticatedBootstrapAttempt\?\.\(\)/g) ?? [];
+    expect(resets).toHaveLength(2);
+    expect(appSource).not.toContain("defaultRemoteDataGateway.scheduleAuthenticatedBootstrapCancellation?.();");
   });
 });

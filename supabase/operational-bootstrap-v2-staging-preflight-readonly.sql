@@ -13,6 +13,9 @@ begin
   ) then raise exception 'database-derived staging identity failed'; end if;
   if not exists (select 1 from public.app_state where id = 'primary')
   then raise exception 'primary app_state is missing'; end if;
+  if md5(replace(replace(btrim(E' \talpha\r\nbeta\rgamma\n ', E' \t\n\r'), E'\r\n', E'\n'), E'\r', E'\n'))
+    is distinct from md5(E'alpha\nbeta\ngamma')
+  then raise exception 'canonical function-body newline normalization failed'; end if;
 end $$;
 
 with target_function as (
@@ -26,7 +29,7 @@ with target_function as (
   select jsonb_build_object(
     'definition', pg_get_functiondef(oid),
     'definition_md5', md5(pg_get_functiondef(oid)),
-    'body_md5', md5(regexp_replace(btrim(prosrc, E' \t\n\r'), E'\\r\\n?', E'\\n', 'g')),
+    'body_md5', md5(replace(replace(btrim(prosrc, E' \t\n\r'), E'\r\n', E'\n'), E'\r', E'\n')),
     'owner', quote_ident(pg_get_userbyid(proowner)),
     'owner_name', pg_get_userbyid(proowner),
     'security_definer', prosecdef,
@@ -61,7 +64,8 @@ with target_function as (
     ),
     'policies', coalesce((
       select jsonb_agg(jsonb_build_object(
-        'name', policyname, 'roles', roles, 'command', cmd, 'using', qual, 'check', with_check
+        'name', policyname, 'permissive', permissive, 'roles', roles,
+        'command', cmd, 'using', qual, 'check', with_check
       ) order by policyname)
       from pg_policies
       where schemaname = 'public' and tablename = 'operational_events'
