@@ -43,10 +43,10 @@ describe("operational performance harness evidence binding", () => {
     expect(() => assertMatchingOperationalPerformanceHarness(structuredClone(identity), identity)).not.toThrow();
   });
 
-  it("rejects a candidate when any harness file changes", () => {
+  it.each(["config.ts", "scripts/run.mjs", "tests/e2e/staging/spec.ts"])("rejects a candidate when %s changes", (changedPath) => {
     const { root, files } = fixture();
     const baseline = buildOperationalPerformanceHarnessIdentity(root, files);
-    fs.writeFileSync(path.join(root, "config.ts"), "changed config\n");
+    fs.appendFileSync(path.join(root, ...changedPath.split("/")), "changed\n");
     const candidate = buildOperationalPerformanceHarnessIdentity(root, files);
     expect(() => assertMatchingOperationalPerformanceHarness(baseline, candidate)).toThrow(/identities differ/);
   });

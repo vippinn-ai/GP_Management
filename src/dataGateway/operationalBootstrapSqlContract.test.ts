@@ -6,7 +6,8 @@ import { describe, expect, it } from "vitest";
 const sql = readFileSync(resolve(process.cwd(), "supabase/operational-bootstrap-v2.sql"), "utf8");
 const preflight = readFileSync(resolve(process.cwd(), "supabase/operational-bootstrap-v2-staging-preflight-readonly.sql"), "utf8");
 const postflight = readFileSync(resolve(process.cwd(), "supabase/operational-bootstrap-v2-staging-postflight-readonly.sql"), "utf8");
-const installer = readFileSync(resolve(process.cwd(), "scripts/build-operational-bootstrap-v2-staging-install.mjs"), "utf8");
+const installer = readFileSync(resolve(process.cwd(), "scripts/build-operational-bootstrap-v2-staging-install.mjs"), "utf8")
+  .replaceAll("\r\n", "\n").replaceAll("\r", "\n");
 const phase1Schema = readFileSync(resolve(process.cwd(), "supabase/phase1-normalized-schema.sql"), "utf8");
 const body = sql.match(/as \$\$([\s\S]*?)\$\$;/i)?.[1] ?? "";
 const accessHelperBody = phase1Schema.match(

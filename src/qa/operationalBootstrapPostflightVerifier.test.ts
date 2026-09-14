@@ -141,7 +141,7 @@ function createFixture() {
   };
   const manifestPath = path.join(dir, "manifest.json");
   fs.writeFileSync(manifestPath, `${JSON.stringify(manifest)}\n`);
-  return { dir, preflightPath, postflightPath, manifestPath, postflight };
+  return { dir, preflightPath, postflightPath, manifestPath, postflight, manifest };
 }
 
 function runVerifier(fixture: ReturnType<typeof createFixture>) {
@@ -175,6 +175,11 @@ describe("atomic bootstrap staging postflight verifier", { timeout: 15_000 }, ()
     ["mismatched source", (fixture: ReturnType<typeof createFixture>) => { fixture.postflight.source_commit = "f".repeat(40); }],
     ["unexpected payload field", (fixture: ReturnType<typeof createFixture>) => { Object.assign(fixture.postflight.payload, { ignored_extra: true }); }],
     ["invalid app state version type", (fixture: ReturnType<typeof createFixture>) => { Object.assign(fixture.postflight.payload, { app_state_version: "44" }); }],
+    ["invalid actor UUID", (fixture: ReturnType<typeof createFixture>) => { fixture.postflight.payload.actor_id = "not-an-auth-uuid"; }],
+    ["non-integer payload bytes", (fixture: ReturnType<typeof createFixture>) => { fixture.postflight.payload.bytes = 133_365.5; }],
+    ["negative collection count", (fixture: ReturnType<typeof createFixture>) => { fixture.postflight.payload.collection_counts.inventory_items = -1; }],
+    ["fractional collection count", (fixture: ReturnType<typeof createFixture>) => { fixture.postflight.payload.collection_counts.inventory_items = 1.5; }],
+    ["extra collection count", (fixture: ReturnType<typeof createFixture>) => { Object.assign(fixture.postflight.payload.collection_counts, { bills: 1 }); }],
     ["incomplete collection shape", (fixture: ReturnType<typeof createFixture>) => {
       delete (fixture.postflight.payload.collection_counts as Record<string, number>).sale_variants;
     }]
@@ -182,6 +187,37 @@ describe("atomic bootstrap staging postflight verifier", { timeout: 15_000 }, ()
     const fixture = createFixture();
     mutate(fixture);
     fs.writeFileSync(fixture.postflightPath, `${JSON.stringify(fixture.postflight)}\n`);
+    const result = runVerifier(fixture);
+    expect(result.status).not.toBe(0);
+  });
+
+  it.each([
+    ["nonexistent source commit", (fixture: ReturnType<typeof createFixture>) => { fixture.manifest.sourceCommit = "f".repeat(40); }],
+    ["reviewed SQL blob hash drift", (fixture: ReturnType<typeof createFixture>) => { fixture.manifest.reviewedSql.blobSha256 = "0".repeat(64); }],
+    ["reviewed SQL content hash drift", (fixture: ReturnType<typeof createFixture>) => { fixture.manifest.reviewedSql.sha256 = "0".repeat(64); }],
+    ["reviewed postflight blob hash drift", (fixture: ReturnType<typeof createFixture>) => { fixture.manifest.reviewedPostflightSql.blobSha256 = "0".repeat(64); }],
+    ["reviewed postflight content hash drift", (fixture: ReturnType<typeof createFixture>) => { fixture.manifest.reviewedPostflightSql.sha256 = "0".repeat(64); }]
+  ])("rejects manifest lineage for %s", (_name, mutate) => {
+    const fixture = createFixture();
+    mutate(fixture);
+    fs.writeFileSync(fixture.manifestPath, `${JSON.stringify(fixture.manifest)}\n`);
+    const result = runVerifier(fixture);
+    expect(result.status).not.toBe(0);
+  });
+
+  it.each(["install", "postflight", "rollback"] as const)("rejects a tampered generated %s artifact", (artifact) => {
+    const fixture = createFixture();
+    fs.appendFileSync(fixture.manifest[artifact].path, "-- tampered after manifest\n");
+    const result = runVerifier(fixture);
+    expect(result.status).not.toBe(0);
+  });
+
+  it.each([
+    "supabase/operational-bootstrap-v2.sql",
+    "supabase/operational-bootstrap-v2-staging-postflight-readonly.sql"
+  ])("rejects working reviewed-source drift in %s", (relativePath) => {
+    const fixture = createFixture();
+    fs.appendFileSync(path.join(fixture.dir, ...relativePath.split("/")), "-- uncommitted drift\n");
     const result = runVerifier(fixture);
     expect(result.status).not.toBe(0);
   });

@@ -188,7 +188,10 @@ describe("atomic bootstrap staging installer builder", { timeout: 30_000 }, () =
       sha256(execFileSync("git", ["show", `${commit}:supabase/operational-bootstrap-v2-staging-postflight-readonly.sql`], { cwd: sourceRoot }))
     );
     expect(manifest.reviewedPostflightSql.sha256).toBe(
-      sha256(fs.readFileSync(path.join(sourceRoot, "supabase", "operational-bootstrap-v2-staging-postflight-readonly.sql"), "utf8").trim())
+      sha256(execFileSync("git", ["show", `${commit}:supabase/operational-bootstrap-v2-staging-postflight-readonly.sql`], {
+        cwd: sourceRoot,
+        encoding: "utf8"
+      }).trim())
     );
     expect(install).toContain("realtime publication, RLS policy, or access helper changed after preflight");
     expect(postflight).toContain("realtime publication, RLS policy, or access helper changed after preflight");
