@@ -124,7 +124,7 @@ describe("operational bootstrap row value contracts", () => {
     );
   });
 
-  it("rejects any non-empty compatibility data instead of accepting stale normalized overrides", () => {
+  it("rejects malformed known compatibility values instead of silently defaulting them", () => {
     const row = structuredClone(validRows.sessions);
     row.raw_data = {
       status: "mystery",
@@ -138,7 +138,39 @@ describe("operational bootstrap row value contracts", () => {
       }]
     };
     expect(() => validateOperationalBootstrapRow("sessions", row, "sessions[0]")).toThrow(
-      /unexpected sessions\[0\]\.raw_data fields/i
+      /invalid sessions\[0\]\.raw_data\.status/i
+    );
+  });
+
+  it("accepts only non-redundant nullable inventory and variant fallbacks", () => {
+    const legacyInventory = structuredClone(validRows.inventory_items);
+    legacyInventory.category = null;
+    legacyInventory.barcode = null;
+    legacyInventory.raw_data = { category: "Legacy", barcode: "LEGACY-1" };
+    expect(() => validateOperationalBootstrapRow("inventory_items", legacyInventory, "inventory_items[0]")).not.toThrow();
+
+    const redundantInventory = structuredClone(validRows.inventory_items);
+    redundantInventory.raw_data = { category: "Duplicate" };
+    expect(() => validateOperationalBootstrapRow("inventory_items", redundantInventory, "inventory_items[0]")).toThrow(
+      /redundant inventory_items\[0\]\.raw_data\.category/i
+    );
+
+    const qaInventory = structuredClone(validRows.inventory_items);
+    qaInventory.raw_data = { qaScaleRunId: "run-1" };
+    expect(() => validateOperationalBootstrapRow("inventory_items", qaInventory, "inventory_items[0]")).toThrow(
+      /unexpected inventory_items\[0\]\.raw_data fields/i
+    );
+
+    const legacyVariant = structuredClone(validRows.sale_variants);
+    legacyVariant.barcode = null;
+    legacyVariant.raw_data = { barcode: "LEGACY-VARIANT" };
+    expect(() => validateOperationalBootstrapRow("sale_variants", legacyVariant, "sale_variants[0]")).not.toThrow();
+
+    const redundantVariant = structuredClone(validRows.sale_variants);
+    redundantVariant.barcode = "TYPED";
+    redundantVariant.raw_data = { barcode: "DUPLICATE" };
+    expect(() => validateOperationalBootstrapRow("sale_variants", redundantVariant, "sale_variants[0]")).toThrow(
+      /redundant sale_variants\[0\]\.raw_data\.barcode/i
     );
   });
 });

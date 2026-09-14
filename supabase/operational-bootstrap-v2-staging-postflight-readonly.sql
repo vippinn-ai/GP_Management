@@ -152,6 +152,30 @@ begin
     is distinct from (select array_agg(key order by key) from unnest(expected_keys) as keys(key))
   then raise exception 'bootstrap response keys mismatch'; end if;
   if octet_length(payload::text) > 160992 then raise exception 'bootstrap payload exceeded byte budget'; end if;
+  if exists (
+    select 1
+    from jsonb_array_elements(payload -> 'inventory_items') as item(row_data)
+    where jsonb_typeof(item.row_data -> 'raw_data') is distinct from 'object'
+      or exists (
+        select 1 from jsonb_object_keys(item.row_data -> 'raw_data') as raw_key(key)
+        where raw_key.key not in ('category', 'barcode', 'archivedAt', 'archivedByUserId', 'archiveReason')
+      )
+      or ((item.row_data -> 'raw_data') ? 'category' and item.row_data -> 'category' <> 'null'::jsonb)
+      or ((item.row_data -> 'raw_data') ? 'barcode' and item.row_data -> 'barcode' <> 'null'::jsonb)
+      or ((item.row_data -> 'raw_data') ? 'archivedAt' and item.row_data -> 'archived_at' <> 'null'::jsonb)
+      or ((item.row_data -> 'raw_data') ? 'archivedByUserId' and item.row_data -> 'archived_by_user_id' <> 'null'::jsonb)
+      or ((item.row_data -> 'raw_data') ? 'archiveReason' and item.row_data -> 'archive_reason' <> 'null'::jsonb)
+  ) then raise exception 'bootstrap inventory compatibility projection mismatch'; end if;
+  if exists (
+    select 1
+    from jsonb_array_elements(payload -> 'sale_variants') as variant(row_data)
+    where jsonb_typeof(variant.row_data -> 'raw_data') is distinct from 'object'
+      or exists (
+        select 1 from jsonb_object_keys(variant.row_data -> 'raw_data') as raw_key(key)
+        where raw_key.key <> 'barcode'
+      )
+      or ((variant.row_data -> 'raw_data') ? 'barcode' and variant.row_data -> 'barcode' <> 'null'::jsonb)
+  ) then raise exception 'bootstrap sale-variant compatibility projection mismatch'; end if;
   select pg_get_userbyid(p.proowner), p.prosecdef, p.provolatile, p.proconfig
   into strict function_owner, function_security_definer, function_volatility, function_config
   from pg_proc p join pg_namespace n on n.oid = p.pronamespace

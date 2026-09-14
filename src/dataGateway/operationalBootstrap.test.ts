@@ -98,6 +98,52 @@ describe("operational bootstrap RPC response mapping", () => {
     });
   });
 
+  it("reconstructs inventory and variants from normalized columns plus allowed nullable fallbacks", () => {
+    const envelope = cloneEnvelope();
+    envelope.inventory_items = [{
+      organization_id: "org-primary",
+      id: "item-1",
+      name: "Legacy Bottle",
+      category: null,
+      price: 40,
+      stock_qty: 12,
+      low_stock_threshold: 2,
+      unit: "piece",
+      is_reusable: false,
+      barcode: null,
+      active: true,
+      archived_at: null,
+      archived_by_user_id: null,
+      archive_reason: null,
+      sell_base_item: true,
+      cigarette_pack: null,
+      raw_data: { category: "Drinks", barcode: "ITEM-LEGACY" }
+    }];
+    envelope.sale_variants = [{
+      organization_id: "org-primary",
+      inventory_item_id: "item-1",
+      id: "variant-1",
+      name: "Large",
+      price: 60,
+      stock_units_per_sale: 2,
+      barcode: null,
+      active: true,
+      raw_data: { barcode: "VARIANT-LEGACY" }
+    }];
+
+    expect(buildOperationalBootstrapRpcResult(envelope)).toMatchObject({
+      status: "active",
+      appData: {
+        inventoryItems: [{
+          id: "item-1",
+          category: "Drinks",
+          barcode: "ITEM-LEGACY",
+          saleVariants: [{ id: "variant-1", barcode: "VARIANT-LEGACY", stockUnitsPerSale: 2 }]
+        }]
+      }
+    });
+  });
+
   it("accepts only the minimal inactive response and never exposes application data", () => {
     expect(buildOperationalBootstrapRpcResult({
       contract_version: OPERATIONAL_BOOTSTRAP_CONTRACT_VERSION,

@@ -158,11 +158,27 @@ const rawComboChoiceGroup = {
 function validateRawData(
   row: Record<string, unknown>,
   label: string,
-  _validators: Record<string, ValueValidator>
+  validators: Record<string, ValueValidator>
 ) {
-  recordValue(row.raw_data, `${label}.raw_data`);
-  if (Object.keys(row.raw_data as Record<string, unknown>).length > 0) {
-    throw new Error(`Operational bootstrap returned unexpected ${label}.raw_data fields.`);
+  validateKnownFields(row.raw_data, `${label}.raw_data`, Object.fromEntries(
+    Object.entries(validators).map(([key, validator]) => [key, optional(validator)])
+  ));
+}
+
+function validateFallbackOnlyRawData(
+  row: Record<string, unknown>,
+  label: string,
+  validators: Record<string, ValueValidator>,
+  normalizedColumns: Record<string, string>
+) {
+  validateKnownFields(row.raw_data, `${label}.raw_data`, Object.fromEntries(
+    Object.entries(validators).map(([key, validator]) => [key, optional(validator)])
+  ), { rejectUnexpected: true });
+  const raw = row.raw_data as Record<string, unknown>;
+  for (const [rawKey, columnKey] of Object.entries(normalizedColumns)) {
+    if (rawKey in raw && row[columnKey] !== null) {
+      throw new Error(`Operational bootstrap returned redundant ${label}.raw_data.${rawKey}.`);
+    }
   }
 }
 
@@ -272,11 +288,12 @@ const validators: Record<string, RowValidator> = {
         size: positiveInteger, packPrice: nonNegativeNumber
       }, { rejectUnexpected: true });
     }
-    validateRawData(row, label, {
-      category: nullable(stringValue), price: nonNegativeNumber, stockQty: finiteNumber,
-      lowStockThreshold: nonNegativeNumber, unit: textValue, isReusable: booleanValue,
-      barcode: nullable(stringValue), active: booleanValue, archivedAt: nullable(timestampValue),
-      archivedByUserId: nullable(textValue), archiveReason: nullable(stringValue), sellBaseItem: booleanValue
+    validateFallbackOnlyRawData(row, label, {
+      category: nullable(stringValue), barcode: nullable(stringValue), archivedAt: nullable(timestampValue),
+      archivedByUserId: nullable(textValue), archiveReason: nullable(stringValue)
+    }, {
+      category: "category", barcode: "barcode", archivedAt: "archived_at",
+      archivedByUserId: "archived_by_user_id", archiveReason: "archive_reason"
     });
   }),
   sale_variants: withOrganization((row, label) => {
@@ -285,10 +302,7 @@ const validators: Record<string, RowValidator> = {
       stock_units_per_sale: positiveNumber, barcode: nullable(stringValue), active: booleanValue,
       raw_data: recordValue
     });
-    validateRawData(row, label, {
-      name: textValue, price: nonNegativeNumber, stockUnitsPerSale: positiveNumber,
-      barcode: nullable(stringValue), active: booleanValue
-    });
+    validateFallbackOnlyRawData(row, label, { barcode: nullable(stringValue) }, { barcode: "barcode" });
   }),
   combos: withOrganization((row, label) => {
     validateFields(row, label, {

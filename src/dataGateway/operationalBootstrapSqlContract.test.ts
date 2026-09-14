@@ -55,9 +55,15 @@ describe("operational bootstrap v2 SQL contract", () => {
     expect(body).toMatch(/bootstrap_collection_limit_exceeded/i);
   });
 
-  it("keeps raw_data in the wire shape without transmitting duplicated legacy JSON", () => {
-    expect(body).not.toMatch(/\b(?:station|rule|item|variant|combo|fixed|choice_group|session|pause|applied|tab)\.raw_data\b/i);
-    expect(body.match(/'\{\}'::jsonb as raw_data/gi)).toHaveLength(14);
+  it("bounds catalog compatibility JSON without removing legacy operational fallbacks", () => {
+    expect(body.match(/jsonb_strip_nulls\(jsonb_build_object\(/gi)).toHaveLength(2);
+    expect(body).toMatch(/case when item\.category is null then item\.raw_data -> 'category' end/i);
+    expect(body).toMatch(/case when item\.barcode is null then item\.raw_data -> 'barcode' end/i);
+    expect(body).toMatch(/case when variant\.barcode is null then variant\.raw_data -> 'barcode' end/i);
+    expect(body).toMatch(/session\.raw_data/i);
+    expect(body).toMatch(/tab\.raw_data/i);
+    expect(body).toMatch(/combo\.raw_data/i);
+    expect(body).not.toMatch(/qaScaleRunId|synthetic|ordinal/);
   });
 
   it("tenant-predicates every normalized operational collection", () => {
@@ -107,6 +113,9 @@ describe("operational bootstrap staging controls", () => {
     expect(postflight).toContain("payload := public.load_operational_bootstrap_v2()");
     expect(postflight).toContain("bootstrap response keys mismatch");
     expect(postflight).toContain("octet_length(payload::text) > 160992");
+    expect(postflight).toContain("bootstrap inventory compatibility projection mismatch");
+    expect(postflight).toContain("bootstrap sale-variant compatibility projection mismatch");
+    expect(postflight).toContain("jsonb_object_keys(item.row_data -> 'raw_data')");
     expect(postflight).toContain("has_function_privilege('anon'");
     expect(postflight).toContain("'service_role_execute'");
     expect(postflight).toContain("not in (function_owner, 'authenticated')");
