@@ -55,6 +55,11 @@ describe("operational bootstrap v2 SQL contract", () => {
     expect(body).toMatch(/bootstrap_collection_limit_exceeded/i);
   });
 
+  it("keeps raw_data in the wire shape without transmitting duplicated legacy JSON", () => {
+    expect(body).not.toMatch(/\b(?:station|rule|item|variant|combo|fixed|choice_group|session|pause|applied|tab)\.raw_data\b/i);
+    expect(body.match(/'\{\}'::jsonb as raw_data/gi)).toHaveLength(14);
+  });
+
   it("tenant-predicates every normalized operational collection", () => {
     for (const alias of [
       "membership", "category", "station", "rule", "item", "variant", "combo", "target",

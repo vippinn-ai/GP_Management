@@ -124,7 +124,7 @@ describe("operational bootstrap row value contracts", () => {
     );
   });
 
-  it("rejects malformed known compatibility values instead of silently defaulting them", () => {
+  it("rejects any non-empty compatibility data instead of accepting stale normalized overrides", () => {
     const row = structuredClone(validRows.sessions);
     row.raw_data = {
       status: "mystery",
@@ -138,7 +138,7 @@ describe("operational bootstrap row value contracts", () => {
       }]
     };
     expect(() => validateOperationalBootstrapRow("sessions", row, "sessions[0]")).toThrow(
-      /invalid sessions\[0\]\.raw_data\.status/i
+      /unexpected sessions\[0\]\.raw_data fields/i
     );
   });
 });

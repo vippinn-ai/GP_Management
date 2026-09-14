@@ -158,11 +158,12 @@ const rawComboChoiceGroup = {
 function validateRawData(
   row: Record<string, unknown>,
   label: string,
-  validators: Record<string, ValueValidator>
+  _validators: Record<string, ValueValidator>
 ) {
-  validateKnownFields(row.raw_data, `${label}.raw_data`, Object.fromEntries(
-    Object.entries(validators).map(([key, validator]) => [key, optional(validator)])
-  ));
+  recordValue(row.raw_data, `${label}.raw_data`);
+  if (Object.keys(row.raw_data as Record<string, unknown>).length > 0) {
+    throw new Error(`Operational bootstrap returned unexpected ${label}.raw_data fields.`);
+  }
 }
 
 const saleLineFields: Record<string, ValueValidator> = {

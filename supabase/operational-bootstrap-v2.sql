@@ -123,6 +123,9 @@ begin
       detail = jsonb_build_object('code', 'bootstrap_collection_limit_exceeded')::text;
   end if;
 
+  -- Keep the compatibility field in the fixed wire contract, but do not ship
+  -- duplicated or QA-only legacy JSON. Every mapper-consumed value below has
+  -- a validated normalized column or normalized child collection.
   v_result := jsonb_build_object(
     'contract_version', 1,
     'status', 'active',
@@ -158,7 +161,8 @@ begin
     'stations', coalesce((
       select jsonb_agg(to_jsonb(row_data) order by row_data.name, row_data.id)
       from (
-        select station.organization_id, station.id, station.name, station.mode, station.active, station.ltp_enabled, station.notes, station.raw_data
+        select station.organization_id, station.id, station.name, station.mode, station.active, station.ltp_enabled, station.notes,
+          '{}'::jsonb as raw_data
         from public.stations as station
         where station.organization_id = v_organization_id
         order by station.name, station.id
@@ -167,7 +171,8 @@ begin
     'pricing_rules', coalesce((
       select jsonb_agg(to_jsonb(row_data) order by row_data.station_id, row_data.start_minute, row_data.id)
       from (
-        select rule.organization_id, rule.id, rule.station_id, rule.label, rule.start_minute, rule.end_minute, rule.hourly_rate, rule.raw_data
+        select rule.organization_id, rule.id, rule.station_id, rule.label, rule.start_minute, rule.end_minute, rule.hourly_rate,
+          '{}'::jsonb as raw_data
         from public.pricing_rules as rule
         where rule.organization_id = v_organization_id
         order by rule.station_id, rule.start_minute, rule.id
@@ -178,7 +183,8 @@ begin
       from (
         select item.organization_id, item.id, item.name, item.category, item.price, item.stock_qty, item.low_stock_threshold,
           item.unit, item.is_reusable, item.barcode, item.active, item.archived_at,
-          item.archived_by_user_id, item.archive_reason, item.sell_base_item, item.cigarette_pack, item.raw_data
+          item.archived_by_user_id, item.archive_reason, item.sell_base_item, item.cigarette_pack,
+          '{}'::jsonb as raw_data
         from public.inventory_items as item
         where item.organization_id = v_organization_id
         order by item.category, item.name, item.id
@@ -188,7 +194,7 @@ begin
       select jsonb_agg(to_jsonb(row_data) order by row_data.inventory_item_id, row_data.name, row_data.id)
       from (
         select variant.organization_id, variant.inventory_item_id, variant.id, variant.name, variant.price,
-          variant.stock_units_per_sale, variant.barcode, variant.active, variant.raw_data
+          variant.stock_units_per_sale, variant.barcode, variant.active, '{}'::jsonb as raw_data
         from public.sale_variants as variant
         where variant.organization_id = v_organization_id
         order by variant.inventory_item_id, variant.name, variant.id
@@ -198,7 +204,7 @@ begin
       select jsonb_agg(to_jsonb(row_data) order by row_data.name, row_data.id)
       from (
         select combo.organization_id, combo.id, combo.name, combo.type, combo.active, combo.price,
-          combo.included_minutes, combo.raw_data, combo.created_at, combo.updated_at
+          combo.included_minutes, '{}'::jsonb as raw_data, combo.created_at, combo.updated_at
         from public.combos as combo
         where combo.organization_id = v_organization_id
         order by combo.name, combo.id
@@ -216,7 +222,8 @@ begin
     'combo_fixed_items', coalesce((
       select jsonb_agg(to_jsonb(row_data) order by row_data.combo_id, row_data.created_at, row_data.id)
       from (
-        select fixed.organization_id, fixed.combo_id, fixed.id, fixed.sellable_option_id, fixed.quantity, fixed.raw_data, fixed.created_at
+        select fixed.organization_id, fixed.combo_id, fixed.id, fixed.sellable_option_id, fixed.quantity,
+          '{}'::jsonb as raw_data, fixed.created_at
         from public.combo_fixed_items as fixed
         where fixed.organization_id = v_organization_id
         order by fixed.combo_id, fixed.created_at, fixed.id
@@ -226,7 +233,7 @@ begin
       select jsonb_agg(to_jsonb(row_data) order by row_data.combo_id, row_data.created_at, row_data.id)
       from (
         select choice_group.organization_id, choice_group.combo_id, choice_group.id, choice_group.label,
-          choice_group.required_quantity, choice_group.raw_data, choice_group.created_at
+          choice_group.required_quantity, '{}'::jsonb as raw_data, choice_group.created_at
         from public.combo_choice_groups as choice_group
         where choice_group.organization_id = v_organization_id
         order by choice_group.combo_id, choice_group.created_at, choice_group.id
@@ -249,7 +256,7 @@ begin
           session.customer_name, session.customer_phone, session.play_mode, session.ltp_eligible,
           session.ltp_outcome, session.ltp_discount_applied, session.pricing_snapshot,
           session.pause_log_ids, session.continued_from_session_ids, session.closed_bill_id,
-          session.close_disposition, session.close_reason, session.raw_data, session.created_at
+          session.close_disposition, session.close_reason, '{}'::jsonb as raw_data, session.created_at
         from public.sessions as session
         where session.organization_id = v_organization_id
           and (session.status <> 'closed' or (session.status = 'closed' and session.close_disposition = 'hopped' and session.closed_bill_id is null))
@@ -259,7 +266,8 @@ begin
     'session_pause_logs', coalesce((
       select jsonb_agg(to_jsonb(row_data) order by row_data.session_id, row_data.paused_at, row_data.id)
       from (
-        select pause.organization_id, pause.id, pause.session_id, pause.paused_at, pause.resumed_at, pause.raw_data, pause.created_at
+        select pause.organization_id, pause.id, pause.session_id, pause.paused_at, pause.resumed_at,
+          '{}'::jsonb as raw_data, pause.created_at
         from public.session_pause_logs as pause
         where pause.organization_id = v_organization_id
           and pause.session_id in (
@@ -275,7 +283,7 @@ begin
       from (
         select item.organization_id, item.session_id, item.id, item.inventory_item_id, item.name, item.quantity,
           item.unit_price, item.added_at, item.sold_as_pack_of, item.sale_variant_id,
-          item.stock_units_per_sale, item.combo_application_id, item.combo_id, item.raw_data, item.created_at
+          item.stock_units_per_sale, item.combo_application_id, item.combo_id, '{}'::jsonb as raw_data, item.created_at
         from public.session_items as item
         where item.organization_id = v_organization_id
           and item.session_id in (
@@ -291,7 +299,7 @@ begin
       from (
         select applied.organization_id, applied.session_id, applied.id, applied.combo_id, applied.combo_name, applied.price,
           applied.included_minutes, applied.applied_at, applied.fixed_items, applied.choices,
-          applied.raw_data, applied.created_at
+          '{}'::jsonb as raw_data, applied.created_at
         from public.session_combo_applications as applied
         where applied.organization_id = v_organization_id
           and applied.session_id in (
@@ -307,7 +315,7 @@ begin
       from (
         select tab.organization_id, tab.id, tab.customer_id, tab.customer_name, tab.customer_phone, tab.status,
           tab.opened_at, tab.closed_at, tab.continued_from_session_ids, tab.closed_bill_id,
-          tab.close_disposition, tab.close_reason, tab.raw_data, tab.created_at
+          tab.close_disposition, tab.close_reason, '{}'::jsonb as raw_data, tab.created_at
         from public.customer_tabs as tab
         where tab.organization_id = v_organization_id and tab.status = 'open'
         order by tab.opened_at desc, tab.id desc
@@ -318,7 +326,7 @@ begin
       from (
         select item.organization_id, item.customer_tab_id, item.id, item.inventory_item_id, item.name, item.quantity,
           item.unit_price, item.added_at, item.sold_as_pack_of, item.sale_variant_id,
-          item.stock_units_per_sale, item.combo_application_id, item.combo_id, item.raw_data, item.created_at
+          item.stock_units_per_sale, item.combo_application_id, item.combo_id, '{}'::jsonb as raw_data, item.created_at
         from public.customer_tab_items as item
         where item.organization_id = v_organization_id
           and item.customer_tab_id in (
@@ -333,7 +341,7 @@ begin
       from (
         select applied.organization_id, applied.customer_tab_id, applied.id, applied.combo_id, applied.combo_name,
           applied.price, applied.included_minutes, applied.applied_at, applied.fixed_items,
-          applied.choices, applied.raw_data, applied.created_at
+          applied.choices, '{}'::jsonb as raw_data, applied.created_at
         from public.customer_tab_combo_applications as applied
         where applied.organization_id = v_organization_id
           and applied.customer_tab_id in (
