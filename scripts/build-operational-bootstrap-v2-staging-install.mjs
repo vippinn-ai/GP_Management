@@ -54,6 +54,14 @@ function gitOutput(root, args) {
   }).trim();
 }
 
+function gitBlob(root, commit, filePath) {
+  return execFileSync("git", ["-c", `safe.directory=${root}`, "show", `${commit}:${filePath}`], {
+    cwd: root,
+    encoding: null,
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+}
+
 function readEvidence(filePath) {
   const parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
   return parsed.evidence ?? parsed;
@@ -182,8 +190,13 @@ if (previous) {
   }
 }
 
-const reviewedPath = path.join(root, "supabase", "operational-bootstrap-v2.sql");
-const reviewed = fs.readFileSync(reviewedPath, "utf8").trim();
+const reviewedGitPath = "supabase/operational-bootstrap-v2.sql";
+const reviewedPath = path.join(root, ...reviewedGitPath.split("/"));
+const reviewedBlob = gitBlob(root, sourceCommit, reviewedGitPath);
+const reviewed = reviewedBlob.toString("utf8").trim();
+if (normalizeBody(fs.readFileSync(reviewedPath, "utf8")) !== normalizeBody(reviewed)) {
+  throw new Error("Working bootstrap SQL does not match the source-commit blob.");
+}
 const reviewedBodyMd5 = md5(extractReviewedBody(reviewed));
 const expectedInstalledOwner = previous?.owner_name ?? preflight.installer_role;
 const expectedInstalledConfig = ["search_path=pg_catalog", "statement_timeout=5s"];
@@ -284,13 +297,20 @@ const realtimeSecurityGuard = `select jsonb_build_object(
   if actual_realtime_security is distinct from ${sqlLiteral(JSON.stringify(capturedRealtimeSecurity))}::jsonb
     then raise exception 'realtime publication, RLS policy, or access helper changed after preflight'; end if;`;
 
-const reviewedPostflightPath = path.join(root, "supabase", "operational-bootstrap-v2-staging-postflight-readonly.sql");
-const reviewedPostflight = fs.readFileSync(reviewedPostflightPath, "utf8");
+const reviewedPostflightGitPath = "supabase/operational-bootstrap-v2-staging-postflight-readonly.sql";
+const reviewedPostflightPath = path.join(root, ...reviewedPostflightGitPath.split("/"));
+const reviewedPostflightBlob = gitBlob(root, sourceCommit, reviewedPostflightGitPath);
+const reviewedPostflight = reviewedPostflightBlob.toString("utf8").trim();
+if (normalizeBody(fs.readFileSync(reviewedPostflightPath, "utf8")) !== normalizeBody(reviewedPostflight)) {
+  throw new Error("Working bootstrap postflight SQL does not match the source-commit blob.");
+}
 const postflightBinding = `do $$
 declare actual_realtime_security jsonb;
 begin
   ${commonIdentityGuard}
   ${realtimeSecurityGuard}
+  perform set_config('normops.bootstrap_evidence_run_id', ${sqlLiteral(runId)}, true);
+  perform set_config('normops.bootstrap_evidence_source_commit', ${sqlLiteral(sourceCommit)}, true);
 end $$;`;
 const transactionMarker = "begin isolation level repeatable read read only;";
 if (!reviewedPostflight.includes(transactionMarker)) throw new Error("Reviewed postflight transaction marker is missing.");
@@ -418,7 +438,8 @@ const manifest = {
   systemIdentifier: EXPECTED_SYSTEM_IDENTIFIER,
   sourceCommit,
   preflight: { path: path.relative(root, preflightPath), sha256: sha256(preflightText) },
-  reviewedSql: { path: path.relative(root, reviewedPath), sha256: sha256(reviewed), bodyMd5: reviewedBodyMd5 },
+  reviewedSql: { path: path.relative(root, reviewedPath), blobSha256: sha256(reviewedBlob), sha256: sha256(reviewed), bodyMd5: reviewedBodyMd5 },
+  reviewedPostflightSql: { path: path.relative(root, reviewedPostflightPath), blobSha256: sha256(reviewedPostflightBlob), sha256: sha256(reviewedPostflight) },
   previousFunctionExisted: Boolean(previous),
   install: { path: path.relative(root, installPath), sha256: sha256(install) },
   postflight: { path: path.relative(root, postflightPath), sha256: sha256(postflight) },

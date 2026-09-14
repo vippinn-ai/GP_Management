@@ -1,10 +1,18 @@
 import crypto from "node:crypto";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
 const EXPECTED_PROJECT_REF = "tkbdyzxwwbhkpztgjjxh";
 const EXPECTED_SYSTEM_IDENTIFIER = "7623125441096521075";
 const PAYLOAD_LIMIT_BYTES = 160_992;
+const POSTFLIGHT_PAYLOAD_KEYS = [
+  "actor_id", "app_state_version", "bytes", "collection_counts", "contract_version", "organization_id", "status"
+];
+const PAYLOAD_COLLECTION_KEYS = [
+  "combos", "customer_tabs", "inventory_categories", "inventory_items", "pricing_rules",
+  "profiles", "sale_variants", "sessions", "stations"
+];
 
 function argument(name) {
   const marker = `--${name}=`;
@@ -64,16 +72,61 @@ if (!/^normops-\d{8}-\d{4}-[a-z0-9-]+$/i.test(manifest.runId ?? "")
 }
 if (manifest.preflight?.sha256 !== sha256(preflightText)) throw new Error("Manifest is not bound to this bootstrap preflight.");
 
-if (!manifest.reviewedSql?.path || !/^[a-f0-9]{64}$/i.test(manifest.reviewedSql.sha256 ?? "")
+if (!manifest.reviewedSql?.path || !/^[a-f0-9]{64}$/i.test(manifest.reviewedSql.blobSha256 ?? "")
+  || !/^[a-f0-9]{64}$/i.test(manifest.reviewedSql.sha256 ?? "")
   || !/^[a-f0-9]{32}$/i.test(manifest.reviewedSql.bodyMd5 ?? "")) {
   throw new Error("Reviewed bootstrap SQL binding is incomplete.");
 }
-const reviewedSqlPath = path.resolve(root, manifest.reviewedSql.path);
+const reviewedGitPath = String(manifest.reviewedSql.path).replaceAll("\\", "/");
+if (path.isAbsolute(reviewedGitPath) || reviewedGitPath.startsWith("../") || reviewedGitPath.includes("/../")) {
+  throw new Error("Reviewed bootstrap SQL path is not a repository-relative source path.");
+}
+try {
+  execFileSync("git", ["-c", `safe.directory=${root}`, "cat-file", "-e", `${manifest.sourceCommit}^{commit}`], { cwd: root, stdio: "pipe" });
+} catch {
+  throw new Error("Bootstrap manifest source commit does not exist in this repository.");
+}
+const committedReviewedSqlBytes = execFileSync(
+  "git",
+  ["-c", `safe.directory=${root}`, "show", `${manifest.sourceCommit}:${reviewedGitPath}`],
+  { cwd: root, encoding: null, stdio: ["ignore", "pipe", "pipe"] }
+);
+if (sha256(committedReviewedSqlBytes) !== manifest.reviewedSql.blobSha256) {
+  throw new Error("Bootstrap manifest reviewed SQL blob does not match its source commit.");
+}
+const committedReviewedSql = committedReviewedSqlBytes.toString("utf8").trim();
+if (sha256(committedReviewedSql) !== manifest.reviewedSql.sha256) {
+  throw new Error("Bootstrap manifest reviewed SQL does not match its source commit.");
+}
+if (!manifest.reviewedPostflightSql?.path || !/^[a-f0-9]{64}$/i.test(manifest.reviewedPostflightSql.blobSha256 ?? "")
+  || !/^[a-f0-9]{64}$/i.test(manifest.reviewedPostflightSql.sha256 ?? "")) {
+  throw new Error("Reviewed bootstrap postflight SQL binding is incomplete.");
+}
+const reviewedPostflightGitPath = String(manifest.reviewedPostflightSql.path).replaceAll("\\", "/");
+if (path.isAbsolute(reviewedPostflightGitPath) || reviewedPostflightGitPath.startsWith("../") || reviewedPostflightGitPath.includes("/../")) {
+  throw new Error("Reviewed bootstrap postflight SQL path is not a repository-relative source path.");
+}
+const committedReviewedPostflightSqlBytes = execFileSync(
+  "git",
+  ["-c", `safe.directory=${root}`, "show", `${manifest.sourceCommit}:${reviewedPostflightGitPath}`],
+  { cwd: root, encoding: null, stdio: ["ignore", "pipe", "pipe"] }
+);
+if (sha256(committedReviewedPostflightSqlBytes) !== manifest.reviewedPostflightSql.blobSha256) {
+  throw new Error("Bootstrap manifest reviewed postflight SQL blob does not match its source commit.");
+}
+const committedReviewedPostflightSql = committedReviewedPostflightSqlBytes.toString("utf8").trim();
+if (sha256(committedReviewedPostflightSql) !== manifest.reviewedPostflightSql.sha256) {
+  throw new Error("Bootstrap manifest reviewed postflight SQL does not match its source commit.");
+}
+const reviewedSqlPath = path.resolve(root, reviewedGitPath);
+const reviewedPostflightSqlPath = path.resolve(root, reviewedPostflightGitPath);
 verifyArtifact(root, manifest.install, "Bootstrap install artifact");
 verifyArtifact(root, manifest.postflight, "Bootstrap postflight SQL artifact");
 verifyArtifact(root, manifest.rollback, "Bootstrap rollback artifact");
-const reviewedSql = fs.readFileSync(reviewedSqlPath, "utf8").trim();
+const reviewedSql = normalizeBody(fs.readFileSync(reviewedSqlPath, "utf8"));
 if (sha256(reviewedSql) !== manifest.reviewedSql.sha256) throw new Error("Reviewed bootstrap SQL SHA-256 changed.");
+const reviewedPostflightSql = normalizeBody(fs.readFileSync(reviewedPostflightSqlPath, "utf8"));
+if (sha256(reviewedPostflightSql) !== manifest.reviewedPostflightSql.sha256) throw new Error("Reviewed bootstrap postflight SQL SHA-256 changed.");
 if (md5(extractReviewedBody(reviewedSql)) !== manifest.reviewedSql.bodyMd5) {
   throw new Error("Reviewed bootstrap body no longer matches the manifest.");
 }
@@ -93,10 +146,22 @@ if (preflight.open_sessions !== 0 || preflight.open_customer_tabs !== 0
 if (postflight.project_ref !== EXPECTED_PROJECT_REF || postflight.system_identifier !== EXPECTED_SYSTEM_IDENTIFIER) {
   throw new Error("Bootstrap postflight is not from the approved staging environment.");
 }
-if (postflight.payload?.status !== "active" || postflight.payload?.organization_id !== "org-primary"
+if (postflight.run_id !== manifest.runId || postflight.source_commit !== manifest.sourceCommit) {
+  throw new Error("Bootstrap postflight is not bound to this manifest run and source commit.");
+}
+if (!postflight.payload || typeof postflight.payload !== "object" || Array.isArray(postflight.payload)
+  || JSON.stringify(Object.keys(postflight.payload).sort()) !== JSON.stringify(POSTFLIGHT_PAYLOAD_KEYS)
+  || postflight.payload.status !== "active" || postflight.payload.organization_id !== "org-primary"
   || postflight.payload?.contract_version !== 1 || !Number.isInteger(postflight.payload?.bytes)
+  || !Number.isInteger(postflight.payload?.app_state_version)
   || postflight.payload.bytes <= 0 || postflight.payload.bytes > PAYLOAD_LIMIT_BYTES) {
   throw new Error("Bootstrap postflight payload contract or byte budget failed.");
+}
+if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(postflight.payload?.actor_id ?? "")
+  || !postflight.payload.collection_counts || typeof postflight.payload.collection_counts !== "object" || Array.isArray(postflight.payload.collection_counts)
+  || JSON.stringify(Object.keys(postflight.payload?.collection_counts ?? {}).sort()) !== JSON.stringify(PAYLOAD_COLLECTION_KEYS)
+  || Object.values(postflight.payload.collection_counts).some((value) => !Number.isInteger(value) || value < 0)) {
+  throw new Error("Bootstrap postflight actor or collection-count shape failed.");
 }
 if (postflight.function?.body_md5 !== manifest.reviewedSql.bodyMd5
   || postflight.function?.owner !== (preflight.target_function?.owner_name ?? preflight.installer_role)
@@ -155,6 +220,7 @@ const verification = {
     bytes: postflight.payload.bytes,
     limitBytes: PAYLOAD_LIMIT_BYTES,
     marginBytes: PAYLOAD_LIMIT_BYTES - postflight.payload.bytes,
+    actorId: postflight.payload.actor_id,
     collectionCounts: postflight.payload.collection_counts
   }
 };

@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
 
 const root = process.cwd();
@@ -23,8 +23,22 @@ function createFixture() {
     return { path: target, sha256: sha256(value) };
   };
   const source = "create or replace function public.load_operational_bootstrap_v2() returns jsonb language plpgsql as $$\nbegin return '{}'::jsonb; end;\n$$;\n";
-  const reviewedSource = write("source.sql", source);
-  const reviewedSql = { ...reviewedSource, sha256: sha256(source.trim()), bodyMd5: md5("begin return '{}'::jsonb; end;") };
+  fs.mkdirSync(path.join(dir, "supabase"));
+  fs.writeFileSync(path.join(dir, "supabase", "operational-bootstrap-v2.sql"), source);
+  const reviewedPostflightSource = "begin isolation level repeatable read read only;\nselect 1;\nrollback;\n";
+  fs.writeFileSync(path.join(dir, "supabase", "operational-bootstrap-v2-staging-postflight-readonly.sql"), reviewedPostflightSource);
+  execFileSync("git", ["init"], { cwd: dir, stdio: "pipe" });
+  execFileSync("git", ["config", "user.email", "bootstrap-verifier@example.invalid"], { cwd: dir });
+  execFileSync("git", ["config", "user.name", "Bootstrap Verifier"], { cwd: dir });
+  execFileSync("git", ["add", "supabase/operational-bootstrap-v2.sql", "supabase/operational-bootstrap-v2-staging-postflight-readonly.sql"], { cwd: dir });
+  execFileSync("git", ["commit", "-m", "fixture"], { cwd: dir, stdio: "pipe" });
+  const sourceCommit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: dir, encoding: "utf8" }).trim();
+  const reviewedSql = {
+    path: "supabase/operational-bootstrap-v2.sql",
+    blobSha256: sha256(Buffer.from(source)),
+    sha256: sha256(source.trim()),
+    bodyMd5: md5("begin return '{}'::jsonb; end;")
+  };
   const install = write("install.sql", "begin; select 1; commit;\n");
   const postflightSql = write("postflight.sql", "begin read only; select 1; rollback;\n");
   const rollback = write("rollback.sql", "begin; select 1; commit;\n");
@@ -65,15 +79,28 @@ function createFixture() {
   const preflightPath = path.join(dir, "preflight.json");
   fs.writeFileSync(preflightPath, `${JSON.stringify(preflight)}\n`);
   const postflight = {
+    run_id: "normops-20260914-0840-bootstrap-verify",
+    source_commit: sourceCommit,
     project_ref: "tkbdyzxwwbhkpztgjjxh",
     system_identifier: "7623125441096521075",
     payload: {
       bytes: 133_365,
       status: "active",
+      actor_id: "145f79b4-b3a3-4e06-a3d6-b764d4a0bf00",
       organization_id: "org-primary",
       contract_version: 1,
       app_state_version: 44,
-      collection_counts: { inventory_items: 168, sale_variants: 56 }
+      collection_counts: {
+        combos: 9,
+        profiles: 31,
+        sessions: 0,
+        stations: 7,
+        customer_tabs: 0,
+        pricing_rules: 8,
+        sale_variants: 56,
+        inventory_items: 168,
+        inventory_categories: 10
+      }
     },
     function: {
       body_md5: reviewedSql.bodyMd5,
@@ -100,9 +127,14 @@ function createFixture() {
     environment: "staging",
     projectRef: "tkbdyzxwwbhkpztgjjxh",
     systemIdentifier: "7623125441096521075",
-    sourceCommit: "a".repeat(40),
+    sourceCommit,
     preflight: { path: preflightPath, sha256: sha256(fs.readFileSync(preflightPath)) },
     reviewedSql,
+    reviewedPostflightSql: {
+      path: "supabase/operational-bootstrap-v2-staging-postflight-readonly.sql",
+      blobSha256: sha256(Buffer.from(reviewedPostflightSource)),
+      sha256: sha256(reviewedPostflightSource.trim())
+    },
     install,
     postflight: postflightSql,
     rollback
@@ -118,10 +150,10 @@ function runVerifier(fixture: ReturnType<typeof createFixture>) {
     `--preflight=${fixture.preflightPath}`,
     `--postflight=${fixture.postflightPath}`,
     `--manifest=${fixture.manifestPath}`
-  ], { cwd: root, encoding: "utf8" });
+  ], { cwd: fixture.dir, encoding: "utf8" });
 }
 
-describe("atomic bootstrap staging postflight verifier", () => {
+describe("atomic bootstrap staging postflight verifier", { timeout: 15_000 }, () => {
   it("creates a manifest-bound verification accepted by the performance runner contract", () => {
     const fixture = createFixture();
     const result = runVerifier(fixture);
@@ -130,13 +162,22 @@ describe("atomic bootstrap staging postflight verifier", () => {
     expect(verification.runId).toBe("normops-20260914-0840-bootstrap-verify");
     expect(verification.appStateUnchanged).toBe(true);
     expect(verification.incompleteMutations).toBe(0);
+    expect(verification.sourceCommit).toMatch(/^[a-f0-9]{40}$/);
+    expect(verification.payload.actorId).toBe("145f79b4-b3a3-4e06-a3d6-b764d4a0bf00");
     expect(verification.payload).toMatchObject({ bytes: 133_365, limitBytes: 160_992, marginBytes: 27_627 });
   });
 
   it.each([
     ["oversized payload", (fixture: ReturnType<typeof createFixture>) => { fixture.postflight.payload.bytes = 160_993; }],
     ["app state drift", (fixture: ReturnType<typeof createFixture>) => { fixture.postflight.app_state.md5 = "f".repeat(32); }],
-    ["unexpected ACL", (fixture: ReturnType<typeof createFixture>) => { fixture.postflight.function.acl_detail.push({ grantor: "postgres", grantee: "service_role", privilege_type: "EXECUTE", is_grantable: false }); }]
+    ["unexpected ACL", (fixture: ReturnType<typeof createFixture>) => { fixture.postflight.function.acl_detail.push({ grantor: "postgres", grantee: "service_role", privilege_type: "EXECUTE", is_grantable: false }); }],
+    ["mismatched run", (fixture: ReturnType<typeof createFixture>) => { fixture.postflight.run_id = "normops-20260914-0841-stale-result"; }],
+    ["mismatched source", (fixture: ReturnType<typeof createFixture>) => { fixture.postflight.source_commit = "f".repeat(40); }],
+    ["unexpected payload field", (fixture: ReturnType<typeof createFixture>) => { Object.assign(fixture.postflight.payload, { ignored_extra: true }); }],
+    ["invalid app state version type", (fixture: ReturnType<typeof createFixture>) => { Object.assign(fixture.postflight.payload, { app_state_version: "44" }); }],
+    ["incomplete collection shape", (fixture: ReturnType<typeof createFixture>) => {
+      delete (fixture.postflight.payload.collection_counts as Record<string, number>).sale_variants;
+    }]
   ])("fails closed for %s", (_name, mutate) => {
     const fixture = createFixture();
     mutate(fixture);

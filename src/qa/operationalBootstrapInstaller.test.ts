@@ -181,11 +181,26 @@ describe("atomic bootstrap staging installer builder", { timeout: 30_000 }, () =
     expect(rollback).toContain("rollback refused unexpected bootstrap definition, owner, configuration, ACL, or security drift");
     expect(manifest.previousFunctionExisted).toBe(false);
     expect(manifest.sourceCommit).toBe(commit);
+    expect(manifest.reviewedSql.blobSha256).toBe(
+      sha256(execFileSync("git", ["show", `${commit}:supabase/operational-bootstrap-v2.sql`], { cwd: sourceRoot }))
+    );
+    expect(manifest.reviewedPostflightSql.blobSha256).toBe(
+      sha256(execFileSync("git", ["show", `${commit}:supabase/operational-bootstrap-v2-staging-postflight-readonly.sql`], { cwd: sourceRoot }))
+    );
+    expect(manifest.reviewedPostflightSql.sha256).toBe(
+      sha256(fs.readFileSync(path.join(sourceRoot, "supabase", "operational-bootstrap-v2-staging-postflight-readonly.sql"), "utf8").trim())
+    );
     expect(install).toContain("realtime publication, RLS policy, or access helper changed after preflight");
     expect(postflight).toContain("realtime publication, RLS policy, or access helper changed after preflight");
     expect(postflight).toContain("11111111-2222-4333-8444-555555555555");
     expect(postflight).toContain("1582c0fa10f3c451fee64540e43de6f7");
     expect(postflight).toContain("actual_realtime_security is distinct from");
+    expect(postflight).toContain("normops.bootstrap_evidence_run_id");
+    expect(postflight).toContain(runId);
+    expect(postflight).toContain("normops.bootstrap_evidence_source_commit");
+    expect(postflight).toContain(commit);
+    expect(postflight).toContain("'run_id', current_setting('normops.bootstrap_evidence_run_id', true)");
+    expect(postflight).toContain("'source_commit', current_setting('normops.bootstrap_evidence_source_commit', true)");
     expect(postflight).toMatch(/begin isolation level repeatable read read only;\r?\n\r?\ndo \$\$/i);
     expect(postflight).not.toMatch(/\bdo \$\r?\n/);
     expect(postflight).not.toMatch(/\bend \$;\r?\n/);

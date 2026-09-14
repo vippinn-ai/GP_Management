@@ -6,6 +6,11 @@ import { createHash } from "node:crypto";
 import { gzipSync } from "node:zlib";
 import { AUXILIARY_IDENTITY_TABLES, SCALE_RPC, SCALE_TABLES, SHAPE_COUNT_KEYS } from "./operational-performance-scale-fixture-lib.mjs";
 import { sameAppStateIdentity, sameJsonValue } from "./json-value-equality.mjs";
+import { assertBootstrapPerformanceBinding } from "./operational-performance-bootstrap-binding.mjs";
+import {
+  assertMatchingOperationalPerformanceHarness,
+  buildOperationalPerformanceHarnessIdentity
+} from "./operational-performance-harness-binding.mjs";
 import {
   assertOperationalRunId,
   assertStagingBaseUrl,
@@ -17,6 +22,7 @@ import {
 } from "./playwright-staging-env.mjs";
 
 const root = process.cwd();
+const harness = buildOperationalPerformanceHarnessIdentity(root);
 const args = process.argv.slice(2);
 const discoveryOnly = args.includes("--list") || args.includes("--help");
 const localEnv = parseEnvFile(path.join(root, ".env.e2e.local"));
@@ -212,39 +218,19 @@ if (!discoveryOnly) {
       env.E2E_BOOTSTRAP_DB_MANIFEST_SHA256,
       "Candidate bootstrap database install manifest"
     );
-    if (
-      bootstrapDatabaseManifest.value.environment !== "staging"
-      || bootstrapDatabaseManifest.value.projectRef !== STAGING_PROJECT_REF
-      || !/^[a-f0-9]{40}$/i.test(bootstrapDatabaseManifest.value.sourceCommit ?? "")
-    ) {
-      throw new Error("Candidate bootstrap database install manifest is not an exact staging source.");
-    }
     bootstrapPostflightVerification = readBoundJson(
       env.E2E_BOOTSTRAP_DB_POSTFLIGHT_VERIFICATION_PATH,
       env.E2E_BOOTSTRAP_DB_POSTFLIGHT_VERIFICATION_SHA256,
       "Candidate bootstrap database postflight verification"
     );
-    if (
-      bootstrapPostflightVerification.value.projectRef !== STAGING_PROJECT_REF
-      || bootstrapPostflightVerification.value.systemIdentifier !== bootstrapDatabaseManifest.value.systemIdentifier
-      || bootstrapPostflightVerification.value.runId !== bootstrapDatabaseManifest.value.runId
-      || bootstrapPostflightVerification.value.sourceCommit !== bootstrapDatabaseManifest.value.sourceCommit
-      || bootstrapPostflightVerification.value.manifestSha256 !== bootstrapDatabaseManifest.sha256
-      || bootstrapPostflightVerification.value.appStateUnchanged !== true
-      || bootstrapPostflightVerification.value.incompleteMutations !== 0
-      || bootstrapPostflightVerification.value.cleanPreflightFloor !== true
-      || bootstrapPostflightVerification.value.installedFunctionBodyMd5 !== bootstrapDatabaseManifest.value.reviewedSql?.bodyMd5
-      || !Number.isInteger(bootstrapPostflightVerification.value.payload?.bytes)
-      || bootstrapPostflightVerification.value.payload.bytes <= 0
-      || bootstrapPostflightVerification.value.payload.bytes > 160_992
-      || bootstrapPostflightVerification.value.payload?.limitBytes !== 160_992
-      || bootstrapPostflightVerification.value.payload?.marginBytes !== 160_992 - bootstrapPostflightVerification.value.payload.bytes
-    ) {
-      throw new Error("Candidate bootstrap postflight verification is not an unchanged staging installation.");
-    }
-    if (!sameAppStateIdentity(bootstrapPostflightVerification.value.appState, scaleFixtureVerification.value.appStateBefore)) {
-      throw new Error("Candidate bootstrap postflight and performance scale fixture before-state identities differ.");
-    }
+    assertBootstrapPerformanceBinding({
+      manifest: bootstrapDatabaseManifest.value,
+      manifestSha256: bootstrapDatabaseManifest.sha256,
+      verification: bootstrapPostflightVerification.value,
+      scaleFixtureVerification: scaleFixtureVerification.value,
+      dataset,
+      stagingProjectRef: STAGING_PROJECT_REF
+    });
     baselineManifest = readBoundJson(
       env.E2E_PERFORMANCE_BASELINE_MANIFEST_PATH,
       env.E2E_PERFORMANCE_BASELINE_MANIFEST_SHA256,
@@ -299,6 +285,7 @@ if (!discoveryOnly) {
       || baselineManifest.value.datasetManifest?.sha256 !== datasetManifest.sha256
       || baselineEntry?.sha256 !== env.E2E_PERFORMANCE_BASELINE_SHA256.toLowerCase()
     ) throw new Error("Candidate baseline artifact is not transitively bound to its deployment, dataset, and environment profile.");
+    assertMatchingOperationalPerformanceHarness(baselineManifest.value.harness, harness);
   }
   env.E2E_DEPLOYED_BUNDLE_SHA256 = deployedArtifact.sha256;
 }
@@ -314,6 +301,7 @@ console.log(JSON.stringify({
   discoveryOnly,
   deployedArtifact,
   datasetManifest: datasetManifest ? { path: path.relative(root, datasetManifest.absolutePath), sha256: datasetManifest.sha256 } : undefined,
+  harness,
   postflightVerification: postflightVerification ? { path: path.relative(root, postflightVerification.absolutePath), sha256: postflightVerification.sha256 } : undefined,
   databaseManifest: databaseManifest ? { path: path.relative(root, databaseManifest.absolutePath), sha256: databaseManifest.sha256 } : undefined,
   bootstrapPostflightVerification: bootstrapPostflightVerification ? { path: path.relative(root, bootstrapPostflightVerification.absolutePath), sha256: bootstrapPostflightVerification.sha256 } : undefined,
@@ -356,6 +344,7 @@ if (!discoveryOnly) {
     profileId: env.E2E_PERFORMANCE_PROFILE_ID,
     profileManifest: { path: path.relative(root, profileManifest.absolutePath), sha256: profileManifest.sha256 },
     datasetManifest: { path: path.relative(root, datasetManifest.absolutePath), sha256: datasetManifest.sha256 },
+    harness,
     postflightVerification: postflightVerification ? { path: path.relative(root, postflightVerification.absolutePath), sha256: postflightVerification.sha256 } : undefined,
     databaseManifest: databaseManifest ? { path: path.relative(root, databaseManifest.absolutePath), sha256: databaseManifest.sha256 } : undefined,
     bootstrapPostflightVerification: bootstrapPostflightVerification ? { path: path.relative(root, bootstrapPostflightVerification.absolutePath), sha256: bootstrapPostflightVerification.sha256 } : undefined,

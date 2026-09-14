@@ -142,6 +142,8 @@ describe("operational lifecycle v2 Playwright and performance contract", () => {
 
   it("provides a reusable immutable 30-load performance gate", () => {
     const runner = read("scripts/run-operational-performance-staging-e2e.mjs");
+    const bootstrapBinding = read("scripts/operational-performance-bootstrap-binding.mjs");
+    const harnessBinding = read("scripts/operational-performance-harness-binding.mjs");
     const config = read("playwright.operational-performance.staging.config.ts");
     const spec = read("tests/e2e/staging/operational-performance.e2e.ts");
     expect(runner).toContain('E2E_PERFORMANCE_SAMPLES = "30"');
@@ -176,8 +178,17 @@ describe("operational lifecycle v2 Playwright and performance contract", () => {
     expect(runner).toContain("E2E_DB_POSTFLIGHT_VERIFICATION_SHA256");
     expect(runner).toContain("E2E_BOOTSTRAP_DB_MANIFEST_SHA256");
     expect(runner).toContain("E2E_BOOTSTRAP_DB_POSTFLIGHT_VERIFICATION_SHA256");
-    expect(runner).toContain("bootstrapPostflightVerification.value.manifestSha256 !== bootstrapDatabaseManifest.sha256");
-    expect(runner).toContain("!sameAppStateIdentity(bootstrapPostflightVerification.value.appState, scaleFixtureVerification.value.appStateBefore)");
+    expect(runner).toContain("assertBootstrapPerformanceBinding");
+    expect(bootstrapBinding).toContain("verification?.manifestSha256 !== manifestSha256");
+    expect(bootstrapBinding).toContain("scaleFixtureVerification?.appStateAfter");
+    expect(bootstrapBinding).toContain("dataset?.app_state");
+    expect(bootstrapBinding).toContain("dataset?.public_counts?.inventory_items");
+    expect(runner).toContain("buildOperationalPerformanceHarnessIdentity");
+    expect(runner).toContain("assertMatchingOperationalPerformanceHarness");
+    expect(runner).toContain("harness,");
+    expect(harnessBinding).toContain("scripts/run-operational-performance-staging-e2e.mjs");
+    expect(harnessBinding).toContain("playwright.operational-performance.staging.config.ts");
+    expect(harnessBinding).toContain("tests/e2e/staging/operational-performance.e2e.ts");
     expect(runner).toContain("E2E_PERFORMANCE_PROFILE_MANIFEST_SHA256");
     expect(runner).toContain("E2E_PERFORMANCE_BASELINE_MANIFEST_SHA256");
     expect(spec).toContain("initialJavascriptBytesMax");

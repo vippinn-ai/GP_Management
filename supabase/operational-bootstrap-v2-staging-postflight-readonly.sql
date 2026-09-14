@@ -227,6 +227,8 @@ with recursive target as (
   select current_setting('normops.bootstrap_postflight_payload')::jsonb value
 )
 select jsonb_build_object(
+  'run_id', current_setting('normops.bootstrap_evidence_run_id', true),
+  'source_commit', current_setting('normops.bootstrap_evidence_source_commit', true),
   'project_ref', 'tkbdyzxwwbhkpztgjjxh',
   'system_identifier', (select system_identifier::text from pg_control_system()),
   'captured_at_utc', timezone('utc', clock_timestamp()),
