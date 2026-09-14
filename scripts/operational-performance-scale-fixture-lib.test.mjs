@@ -130,6 +130,14 @@ describe("operational performance scale fixture",()=>{
     expect(generated.cleanup).toContain("disable trigger stock_movements_inventory_report_dirty");
     expect(generated.proof).toContain("auxiliary_fingerprints");
     expect(generated.seed).toContain("amount_paid,amount_due");
+    expect(generated.seed).toMatch(/insert into public\.combo_fixed_items \([^\r\n]*quantity[^\r\n]*\)\r?\nselect [^\r\n]*,1,jsonb_build_object\('qaScaleRunId'/);
+    expect(generated.seed).not.toMatch(/insert into public\.combo_fixed_items \([^\r\n]*quantity[^\r\n]*\)\r?\nselect [^\r\n]*,0,jsonb_build_object\('qaScaleRunId'/);
+    expect(generated.seed).toMatch(/insert into public\.session_items \([^\r\n]*quantity[^\r\n]*\)\r?\nselect [^\r\n]*,'QA Performance Item',1,0,/);
+    expect(generated.seed).toMatch(/insert into public\.customer_tab_items \([^\r\n]*quantity[^\r\n]*\)\r?\nselect [^\r\n]*,'QA Performance Item',1,0,/);
+    expect(generated.seed).not.toContain("'name','QA Performance Item','quantity',0,'unitPrice',0");
+    expect(generated.seed).toContain("fixture combo fixed-item quantity violates the bootstrap contract");
+    expect(generated.seed).toContain("fixture session-item quantity violates the bootstrap contract");
+    expect(generated.seed).toContain("fixture tab-item quantity violates the bootstrap contract");
     expect(generated.seed).toContain("quantity<>0) then raise exception 'fixture movement is not inert'");
     expect(generated.cleanup).toContain("scaled dataset drift prevents cleanup");
     expect(generated.cleanup).toContain("disable trigger app_state_set_updated_at");
