@@ -1,7 +1,11 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  assertCompatiblePerformanceMetricVersion,
   CRITICAL_RESOURCE_TIMING_SETTLE_TIMEOUT_MS,
+  freezeStartupWebVitals,
   measureBootstrapDependencyDepth,
+  measureResourceTimingPhases,
+  installWebVitalsObserver,
   installVisibleReadyObserver,
   INVENTORY_RENDER_POLL_INTERVAL_MS,
   missingExpectedCriticalResourceKeys,
@@ -14,7 +18,7 @@ import {
 } from "./operationalPerformanceCriticalPath";
 
 function resource(overrides: Partial<CriticalResourceTiming> & Pick<CriticalResourceTiming, "requestKey" | "path" | "startTime" | "responseEnd">): CriticalResourceTiming {
-  return { api: true, shell: false, javascript: false, transferSize: 0, ...overrides };
+  return { api: true, shell: false, javascript: false, transferSize: 0, responseStart: overrides.responseEnd, ...overrides };
 }
 
 function response(requestKey: string, path: string, status = 200): CriticalResponseTiming {
@@ -22,8 +26,21 @@ function response(requestKey: string, path: string, status = 200): CriticalRespo
 }
 
 describe("browser-domain operational performance evidence", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    delete (globalThis as typeof globalThis & { __BP_WEB_VITALS__?: unknown }).__BP_WEB_VITALS__;
+    delete (globalThis as typeof globalThis & { __BP_STARTUP_WEB_VITALS__?: unknown }).__BP_STARTUP_WEB_VITALS__;
+    delete (globalThis as typeof globalThis & { __BP_FREEZE_STARTUP_WEB_VITALS__?: unknown }).__BP_FREEZE_STARTUP_WEB_VITALS__;
+  });
+
   it("uses the event-granularity Inventory render polling budget", () => {
     expect(INVENTORY_RENDER_POLL_INTERVAL_MS).toBe(25);
+  });
+
+  it("accepts only the current metric-v3 baseline contract", () => {
+    expect(() => assertCompatiblePerformanceMetricVersion(3, 3)).not.toThrow();
+    expect(() => assertCompatiblePerformanceMetricVersion(2, 3)).toThrow(/metric version 2 is incompatible.*version 3/i);
+    expect(() => assertCompatiblePerformanceMetricVersion(undefined, 3)).toThrow(/incompatible/);
   });
 
   it("bounds browser Resource Timing settlement without changing measured readiness", () => {
@@ -131,6 +148,65 @@ describe("browser-domain operational performance evidence", () => {
     expect(marks).toEqual(["bp-visible-dashboard-ready"]);
   });
 
+  it("freezes startup LCP at the readiness boundary so post-safe activity cannot replace it", () => {
+    class FakePerformanceObserver {
+      static instances: FakePerformanceObserver[] = [];
+      readonly callback: (list: { getEntries: () => PerformanceEntry[] }) => void;
+      observedType = "";
+      pending: PerformanceEntry[] = [];
+
+      constructor(callback: (list: { getEntries: () => PerformanceEntry[] }) => void) {
+        this.callback = callback;
+        FakePerformanceObserver.instances.push(this);
+      }
+
+      observe(options: { type?: string }) {
+        this.observedType = options.type ?? "";
+      }
+
+      takeRecords(): PerformanceEntry[] {
+        const entries = this.pending;
+        this.pending = [];
+        return entries;
+      }
+
+      emit(entries: PerformanceEntry[]) {
+        this.callback({ getEntries: () => entries });
+      }
+
+      queue(entries: PerformanceEntry[]) {
+        this.pending.push(...entries);
+      }
+    }
+    vi.stubGlobal("PerformanceObserver", FakePerformanceObserver);
+    installWebVitalsObserver();
+    const lcpObserver = FakePerformanceObserver.instances.find((entry) => entry.observedType === "largest-contentful-paint")!;
+    const dashboard = document.createElement("h1");
+    dashboard.className = "dashboard-title";
+    lcpObserver.queue([{ startTime: 40, element: dashboard } as unknown as PerformanceEntry]);
+
+    expect(freezeStartupWebVitals(50)).toMatchObject({
+      largestContentfulPaintMs: 40,
+      largestContentfulPaintElement: "h1.dashboard-title"
+    });
+
+    const activity = document.createElement("strong");
+    activity.className = "activity-event-summary";
+    lcpObserver.emit([{ startTime: 80, element: activity } as unknown as PerformanceEntry]);
+    const delayedStartup = document.createElement("section");
+    delayedStartup.className = "dashboard-grid";
+    lcpObserver.emit([{ startTime: 45, element: delayedStartup } as unknown as PerformanceEntry]);
+    const target = globalThis as typeof globalThis & {
+      __BP_WEB_VITALS__?: { largestContentfulPaintMs: number };
+      __BP_STARTUP_WEB_VITALS__?: { largestContentfulPaintMs: number; largestContentfulPaintElement: string };
+    };
+    expect(target.__BP_WEB_VITALS__?.largestContentfulPaintMs).toBe(80);
+    expect(target.__BP_STARTUP_WEB_VITALS__).toMatchObject({
+      largestContentfulPaintMs: 45,
+      largestContentfulPaintElement: "section.dashboard-grid"
+    });
+  });
+
   it.each([
     [Number.NaN, 20, 0],
     [Number.POSITIVE_INFINITY, 20, 0],
@@ -213,6 +289,40 @@ describe("browser-domain operational performance evidence", () => {
     const responses = resources.map((entry) => response(entry.requestKey, entry.path));
     expect(measureBootstrapDependencyDepth(resources, responses)).toBe(3);
     expect(measureBootstrapDependencyDepth(resources.slice(1), responses.slice(1))).toBeNull();
+  });
+
+  it("anchors atomic bootstrap depth on one matched successful RPC and measures later sequential work", () => {
+    const rpcPath = "staging/rest/v1/rpc/load_operational_bootstrap_v2";
+    const rpc = resource({ requestKey: "rpc", path: rpcPath, startTime: 10, responseStart: 15, responseEnd: 20 });
+    const later = resource({ requestKey: "later", path: "staging/rest/v1/sessions", startTime: 21, responseEnd: 30 });
+    expect(measureBootstrapDependencyDepth([rpc], [response("rpc", rpcPath)])).toBe(1);
+    expect(measureBootstrapDependencyDepth([rpc, later], [response("rpc", rpcPath), response("later", later.path)])).toBe(2);
+  });
+
+  it("splits Resource Timing into total, TTFB, and download phases and rejects invalid ordering", () => {
+    expect(measureResourceTimingPhases({ startTime: 10, responseStart: 25, responseEnd: 40 })).toEqual({
+      totalMs: 30,
+      fetchToFirstByteMs: 15,
+      downloadMs: 15
+    });
+    expect(measureResourceTimingPhases({ startTime: 10, responseStart: 9, responseEnd: 40 })).toBeNull();
+    expect(measureResourceTimingPhases({ startTime: 10, responseStart: 25, responseEnd: 24 })).toBeNull();
+    expect(measureResourceTimingPhases({ startTime: Number.NaN, responseStart: 25, responseEnd: 40 })).toBeNull();
+    expect(measureResourceTimingPhases({ startTime: 10, responseStart: Number.POSITIVE_INFINITY, responseEnd: 40 })).toBeNull();
+    expect(measureResourceTimingPhases({ startTime: 10, responseStart: 25, responseEnd: Number.NaN })).toBeNull();
+    expect(measureResourceTimingPhases({ startTime: 10, responseStart: 10, responseEnd: 10 })).toEqual({ totalMs: 0, fetchToFirstByteMs: 0, downloadMs: 0 });
+  });
+
+  it("fails atomic dependency depth closed for missing, duplicate, unmatched, failed, or invalid RPC evidence", () => {
+    const rpcPath = "staging/rest/v1/rpc/load_operational_bootstrap_v2";
+    const rpc = resource({ requestKey: "rpc", path: rpcPath, startTime: 10, responseStart: 15, responseEnd: 20 });
+    expect(measureBootstrapDependencyDepth([rpc], [])).toBeNull();
+    expect(measureBootstrapDependencyDepth([rpc, { ...rpc, requestKey: "rpc-2" }], [response("rpc", rpcPath)])).toBeNull();
+    expect(measureBootstrapDependencyDepth([], [response("rpc", rpcPath)])).toBeNull();
+    expect(measureBootstrapDependencyDepth([rpc], [response("rpc", rpcPath), response("rpc", rpcPath)])).toBeNull();
+    expect(measureBootstrapDependencyDepth([rpc], [response("other", rpcPath)])).toBeNull();
+    expect(measureBootstrapDependencyDepth([rpc], [response("rpc", rpcPath, 500)])).toBeNull();
+    expect(measureBootstrapDependencyDepth([{ ...rpc, responseEnd: 9 }], [response("rpc", rpcPath)])).toBeNull();
   });
 
   it("uses encoded wire transfer bytes for the cold shell rather than decoded bodies", () => {

@@ -198,10 +198,11 @@ describe("operational lifecycle v2 Playwright and performance contract", () => {
     expect(runner).toContain("profileManifest.value.hostFingerprint !== currentHostFingerprint");
     expect(runner).toContain("profileManifest.value.browserChannel");
     expect(spec).toContain("baseline.browserVersion !== browserVersion");
-    expect(spec).toContain("PERFORMANCE_METRIC_VERSION = 2");
+    expect(spec).toContain("PERFORMANCE_METRIC_VERSION = 3");
     expect(spec).toContain("requestStartedByBrowserMark");
     expect(spec).toContain("requestStartedByBrowserMarkAfterCompletion");
     expect(spec).toContain('coldPage.on("requestfinished"');
+    expect(spec).toContain("await requestCompletion");
     expect(spec).toContain("requestLifecycleTasks.get(request)!");
     expect(spec).toContain("requestLifecycleResolvers.get(request)?.();");
     expect(spec.indexOf('coldPage.on("requestfinished"')).toBeGreaterThan(spec.indexOf('coldPage.on("response"'));
@@ -223,7 +224,11 @@ describe("operational lifecycle v2 Playwright and performance contract", () => {
     expect(spec).not.toContain("bp-baseline-interactive-observed");
     expect(spec).toContain("sumCriticalShellTransferBytes");
     expect(spec).toContain("largestContentfulPaintElement");
-    expect(spec).toContain('largestContentfulPaintResourcePath = "";');
+    expect(spec).toContain("freezeStartupWebVitals");
+    expect(spec).toContain("__BP_STARTUP_WEB_VITALS__");
+    expect(spec).toContain("postSafeLargestContentfulPaintMs");
+    expect(spec).toContain("bootstrapRpcFetchToFirstByteP95Ms");
+    expect(spec).toContain("bootstrapRpcDownloadP95Ms");
     expect(spec).toContain("inventoryNetworkCompleteMs");
     expect(spec).toContain("intervals: [INVENTORY_RENDER_POLL_INTERVAL_MS]");
     expect(spec).toContain("expect.soft");

@@ -6,8 +6,12 @@ import { attachJson, captureAuthenticatedRestRequests, credentials, signIn } fro
 import { parsePostgrestPageEvidence } from "../../../src/qa/operationalPerformancePageEvidence";
 import { isSuccessfulCriticalResponse, readDecodedResponseBody } from "../../../src/qa/operationalPerformanceResponseEvidence";
 import {
+  assertCompatiblePerformanceMetricVersion,
   CRITICAL_RESOURCE_TIMING_SETTLE_TIMEOUT_MS,
+  freezeStartupWebVitals,
   measureBootstrapDependencyDepth,
+  measureResourceTimingPhases,
+  installWebVitalsObserver,
   installVisibleReadyObserver,
   INVENTORY_RENDER_POLL_INTERVAL_MS,
   missingExpectedCriticalResourceKeys,
@@ -19,7 +23,7 @@ import {
 const runId = process.env.E2E_RUN_ID ?? "missing-run-id";
 const mode = process.env.E2E_PERFORMANCE_MODE === "baseline" ? "baseline" : "candidate";
 const sampleCount = Number(process.env.E2E_PERFORMANCE_SAMPLES ?? 30);
-const PERFORMANCE_METRIC_VERSION = 2;
+const PERFORMANCE_METRIC_VERSION = 3;
 
 type ResourceEvidence = {
   requestKey: string;
@@ -29,6 +33,7 @@ type ResourceEvidence = {
   javascript: boolean;
   initiatorType: string;
   startTime: number;
+  responseStart: number;
   responseEnd: number;
   transferSize: number;
   encodedBodySize: number;
@@ -40,6 +45,8 @@ type ResponseEvidence = {
   path: string;
   requestStartMs: number;
   responseEndMs: number;
+  playwrightResponseStartOffsetMs: number;
+  playwrightResponseEndOffsetMs: number;
   startMinusSafeMs?: number;
   status: number;
   bodyBytes: number;
@@ -87,10 +94,19 @@ type LoadEvidence = {
   requestedHistoryBeforeSafeInteractive: boolean;
   bootstrapDependencyDepth: number | null;
   bootstrapRpcMs: number | null;
+  bootstrapRpcFetchToFirstByteMs: number | null;
+  bootstrapRpcDownloadMs: number | null;
   catchupToSafeMs: number | null;
+  safeBoundaryLcpMs: number;
+  safeBoundaryLcpElement: string;
+  safeBoundaryLcpResourcePath: string;
+  loginLcpFrozenAtMs: number;
   largestContentfulPaintMs: number;
   largestContentfulPaintElement: string;
   largestContentfulPaintResourcePath: string;
+  postSafeLargestContentfulPaintMs: number;
+  postSafeLargestContentfulPaintElement: string;
+  postSafeLargestContentfulPaintResourcePath: string;
   cumulativeLayoutShift: number;
   renderEvidence: RenderEvidence | null;
   activePanelCommitDurationsMs: number[];
@@ -136,6 +152,8 @@ function summarize(loads: LoadEvidence[]) {
     .map((entry) => entry.inventoryStockMovementBytes)
     .filter((value): value is number => value !== null);
   const bootstrapRpcDurations = loads.map((entry) => entry.bootstrapRpcMs).filter((value): value is number => value !== null);
+  const bootstrapRpcFetchToFirstByteDurations = loads.map((entry) => entry.bootstrapRpcFetchToFirstByteMs).filter((value): value is number => value !== null);
+  const bootstrapRpcDownloadDurations = loads.map((entry) => entry.bootstrapRpcDownloadMs).filter((value): value is number => value !== null);
   const catchupToSafeDurations = loads.map((entry) => entry.catchupToSafeMs).filter((value): value is number => value !== null);
   return {
     samples: visibleReady.length,
@@ -148,6 +166,14 @@ function summarize(loads: LoadEvidence[]) {
     safeInteractiveMax: safe.length > 0 ? Math.max(...safe) : 0,
     bootstrapRpcP95Ms: percentile(bootstrapRpcDurations, 0.95),
     bootstrapRpcMaxMs: bootstrapRpcDurations.length > 0 ? Math.max(...bootstrapRpcDurations) : 0,
+    bootstrapRpcFetchToFirstByteP50Ms: percentile(bootstrapRpcFetchToFirstByteDurations, 0.5),
+    bootstrapRpcFetchToFirstByteP75Ms: percentile(bootstrapRpcFetchToFirstByteDurations, 0.75),
+    bootstrapRpcFetchToFirstByteP95Ms: percentile(bootstrapRpcFetchToFirstByteDurations, 0.95),
+    bootstrapRpcFetchToFirstByteMaxMs: bootstrapRpcFetchToFirstByteDurations.length > 0 ? Math.max(...bootstrapRpcFetchToFirstByteDurations) : 0,
+    bootstrapRpcDownloadP50Ms: percentile(bootstrapRpcDownloadDurations, 0.5),
+    bootstrapRpcDownloadP75Ms: percentile(bootstrapRpcDownloadDurations, 0.75),
+    bootstrapRpcDownloadP95Ms: percentile(bootstrapRpcDownloadDurations, 0.95),
+    bootstrapRpcDownloadMaxMs: bootstrapRpcDownloadDurations.length > 0 ? Math.max(...bootstrapRpcDownloadDurations) : 0,
     catchupToSafeP95Ms: percentile(catchupToSafeDurations, 0.95),
     catchupToSafeMaxMs: catchupToSafeDurations.length > 0 ? Math.max(...catchupToSafeDurations) : 0,
     criticalApiBytesP95: percentile(payloads, 0.95),
@@ -174,7 +200,8 @@ function readBaseline(browserVersion: string) {
   const actualSha = crypto.createHash("sha256").update(bytes).digest("hex");
   if (actualSha !== expectedSha) throw new Error("Performance baseline SHA-256 does not match.");
   const baseline = JSON.parse(bytes.toString("utf8"));
-  if (baseline.metricVersion !== PERFORMANCE_METRIC_VERSION || baseline.mode !== "baseline" || baseline.sampleCount !== sampleCount || !baseline.summary?.p95 || !baseline.summary?.criticalApiBytesP95) {
+  assertCompatiblePerformanceMetricVersion(baseline.metricVersion, PERFORMANCE_METRIC_VERSION);
+  if (baseline.mode !== "baseline" || baseline.sampleCount !== sampleCount || !baseline.summary?.p95 || !baseline.summary?.criticalApiBytesP95) {
     throw new Error("Performance baseline shape or sample count is incompatible.");
   }
   if (baseline.datasetManifestSha256 !== process.env.E2E_PERFORMANCE_DATASET_MANIFEST_SHA256?.toLowerCase()) {
@@ -220,6 +247,7 @@ async function resourceEvidence(page: Page, baseOrigin: string): Promise<{ marks
         path: `${url.hostname}${url.pathname}`,
         initiatorType: entry.initiatorType,
         startTime: entry.startTime,
+        responseStart: entry.responseStart,
         responseEnd: entry.responseEnd,
         transferSize: entry.transferSize,
         encodedBodySize: entry.encodedBodySize,
@@ -263,7 +291,13 @@ async function settledResourceEvidence(
   return evidence;
 }
 
-async function collectResponseEvidence(response: Response, requestKeys: Map<Request, string>, baseOrigin: string, sink: ResponseEvidence[]) {
+async function collectResponseEvidence(
+  response: Response,
+  requestCompletion: Promise<void>,
+  requestKeys: Map<Request, string>,
+  baseOrigin: string,
+  sink: ResponseEvidence[]
+) {
   const url = new URL(response.url());
   const api = /\/(?:rest|auth)\/v1\//.test(url.pathname);
   const shell = url.origin === baseOrigin && !api;
@@ -277,7 +311,6 @@ async function collectResponseEvidence(response: Response, requestKeys: Map<Requ
   let appStateVersion: number | undefined;
   let jsonRowCount: number | undefined;
   const javascript = shell && /\.js$/i.test(url.pathname);
-  const requestTiming = response.request().timing();
   const movementAtFilters = url.searchParams.getAll("movement_at");
   const stockMovementHistoryPage = url.pathname.endsWith("/rest/v1/stock_movements")
     && url.searchParams.get("organization_id") === "eq.org-primary"
@@ -320,11 +353,15 @@ async function collectResponseEvidence(response: Response, requestKeys: Map<Requ
       }
     }
   }
+  await requestCompletion;
+  const requestTiming = response.request().timing();
   sink.push({
     requestKey: requestKeys.get(response.request()) ?? "missing-request-correlation",
     path: `${url.hostname}${url.pathname}`,
     requestStartMs: requestTiming.startTime,
     responseEndMs: requestTiming.responseEnd >= 0 ? requestTiming.startTime + requestTiming.responseEnd : Number.NaN,
+    playwrightResponseStartOffsetMs: requestTiming.responseStart,
+    playwrightResponseEndOffsetMs: requestTiming.responseEnd,
     status: response.status(),
     bodyBytes,
     evidenceError,
@@ -379,30 +416,7 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
       viewport: { width: 1440, height: 900 },
       serviceWorkers: "block"
     });
-    await context.addInitScript(() => {
-      const target = globalThis as typeof globalThis & { __BP_WEB_VITALS__?: { largestContentfulPaintMs: number; largestContentfulPaintElement: string; largestContentfulPaintResourcePath: string; cumulativeLayoutShift: number } };
-      target.__BP_WEB_VITALS__ = { largestContentfulPaintMs: 0, largestContentfulPaintElement: "", largestContentfulPaintResourcePath: "", cumulativeLayoutShift: 0 };
-      new PerformanceObserver((list) => {
-        for (const raw of list.getEntries()) {
-          const entry = raw as PerformanceEntry & { element?: Element; url?: string };
-          target.__BP_WEB_VITALS__!.largestContentfulPaintMs = entry.startTime;
-          target.__BP_WEB_VITALS__!.largestContentfulPaintElement = entry.element
-            ? `${entry.element.tagName.toLowerCase()}${entry.element.id ? `#${entry.element.id}` : ""}${[...entry.element.classList].slice(0, 3).map((value) => `.${value}`).join("")}`
-            : "";
-          target.__BP_WEB_VITALS__!.largestContentfulPaintResourcePath = "";
-          if (entry.url) {
-            const url = new URL(entry.url);
-            target.__BP_WEB_VITALS__!.largestContentfulPaintResourcePath = `${url.hostname}${url.pathname}`;
-          }
-        }
-      }).observe({ type: "largest-contentful-paint", buffered: true });
-      new PerformanceObserver((list) => {
-        for (const entry of list.getEntries()) {
-          const shift = entry as PerformanceEntry & { value?: number; hadRecentInput?: boolean };
-          if (!shift.hadRecentInput) target.__BP_WEB_VITALS__!.cumulativeLayoutShift += shift.value ?? 0;
-        }
-      }).observe({ type: "layout-shift", buffered: true });
-    });
+    await context.addInitScript(installWebVitalsObserver);
     await context.addInitScript(installVisibleReadyObserver, {
       markName: "bp-visible-dashboard-ready",
       headingText: "Live Dashboard"
@@ -437,7 +451,13 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
       requestedExportChunk ||= /(?:xlsx|jspdf)[^/]*-[^/]+\.js$/i.test(url.pathname);
     });
     coldPage.on("response", (response) => {
-      const task = collectResponseEvidence(response, requestKeys, baseOrigin, responses);
+      const task = collectResponseEvidence(
+        response,
+        requestLifecycleTasks.get(response.request()) ?? Promise.resolve(),
+        requestKeys,
+        baseOrigin,
+        responses
+      );
       void task.finally(() => responseResolvers.get(response.request())?.());
     });
     coldPage.on("requestfinished", (request) => {
@@ -464,6 +484,8 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
     }));
     const visibleReadyMs = browserBoundary.visibleReadyMark;
     const safeInteractiveMs = mode === "candidate" ? browserBoundary.safeMark : -1;
+    const safeBoundaryLcpAtMs = mode === "candidate" ? safeInteractiveMs : visibleReadyMs;
+    await coldPage.evaluate(freezeStartupWebVitals, safeBoundaryLcpAtMs);
     const timingErrors: string[] = [];
     const expectedCriticalRequestKeys = new Set<string>();
     const criticalRequestTasks = [...responseTasks.entries()].map(async ([request, responseEvidenceCompletion]) => {
@@ -532,9 +554,17 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
     let inventoryHistoryReadyMs: number | null = null;
     let inventoryNetworkCompleteMs: number | null = null;
     let inventoryRemoteErrorVisible: boolean | null = null;
+    await coldPage.waitForLoadState("networkidle");
+    await coldPage.waitForTimeout(500);
+    await coldPage.evaluate(freezeStartupWebVitals, safeBoundaryLcpAtMs);
+    const safeBoundaryWebVitals = await coldPage.evaluate(() => {
+      type Vitals = { largestContentfulPaintMs: number; largestContentfulPaintElement: string; largestContentfulPaintResourcePath: string; cumulativeLayoutShift: number };
+      return (globalThis as typeof globalThis & { __BP_STARTUP_WEB_VITALS__?: Vitals }).__BP_STARTUP_WEB_VITALS__
+        ?? { largestContentfulPaintMs: 0, largestContentfulPaintElement: "", largestContentfulPaintResourcePath: "", cumulativeLayoutShift: 0 };
+    });
+    const loginLcpFrozenAtMs = await coldPage.evaluate(() => performance.now());
+    await coldPage.evaluate(freezeStartupWebVitals, loginLcpFrozenAtMs);
     if (mode === "candidate") {
-      await coldPage.waitForLoadState("networkidle");
-      await coldPage.waitForTimeout(500);
       renderEvidence = await coldPage.evaluate(() => (globalThis as typeof globalThis & { __BP_RENDER_EVIDENCE__?: RenderEvidence }).__BP_RENDER_EVIDENCE__ ?? null);
       expect(renderEvidence, "Candidate staging build must enable VITE_PERFORMANCE_EVIDENCE=true.").not.toBeNull();
       const panelCommitOffset = renderEvidence!.updateActualDurationsMs.length;
@@ -600,14 +630,29 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
       await coldPage.waitForTimeout(1_200);
       const afterIdle = await coldPage.evaluate(() => (globalThis as typeof globalThis & { __BP_RENDER_EVIDENCE__?: RenderEvidence }).__BP_RENDER_EVIDENCE__?.commits ?? 0);
       idleRootCommits = afterIdle - beforeIdle;
-    } else {
-      await coldPage.waitForLoadState("networkidle");
-      await coldPage.waitForTimeout(500);
     }
     await Promise.all(responseTasks.values());
     const bootstrapRpcResponseCount = responses.filter((entry) =>
       entry.path.endsWith("/rest/v1/rpc/load_operational_bootstrap_v2")
     ).length;
+    const bootstrapRpcResources = criticalResources.filter((entry) =>
+      entry.path.endsWith("/rest/v1/rpc/load_operational_bootstrap_v2")
+    );
+    const bootstrapRpcResponses = criticalResponses.filter((entry) =>
+      entry.path.endsWith("/rest/v1/rpc/load_operational_bootstrap_v2")
+    );
+    const bootstrapRpcPhases = mode === "candidate"
+      && bootstrapRpcResources.length === 1
+      && bootstrapRpcResponses.length === 1
+      && bootstrapRpcResources[0].requestKey === bootstrapRpcResponses[0].requestKey
+      ? measureResourceTimingPhases({
+        startTime: 0,
+        responseStart: bootstrapRpcResponses[0].playwrightResponseStartOffsetMs,
+        responseEnd: bootstrapRpcResponses[0].playwrightResponseEndOffsetMs
+      })
+      : null;
+    const bootstrapRpcFetchToFirstByteMs = bootstrapRpcPhases?.fetchToFirstByteMs ?? null;
+    const bootstrapRpcDownloadMs = bootstrapRpcPhases?.downloadMs ?? null;
     const postSafeResponses = responses.flatMap((entry) => {
       const postSafeBoundary = mode === "candidate" ? safeInteractiveMs : comparisonReadyMark;
       const startMinusSafeMs = entry.requestStartMs - browserBoundary.timeOrigin - postSafeBoundary;
@@ -615,7 +660,16 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
         ? [{ path: entry.path, startMinusSafeMs, status: entry.status }]
         : [];
     });
-    const webVitals = await coldPage.evaluate(() => (globalThis as typeof globalThis & { __BP_WEB_VITALS__?: { largestContentfulPaintMs: number; largestContentfulPaintElement: string; largestContentfulPaintResourcePath: string; cumulativeLayoutShift: number } }).__BP_WEB_VITALS__ ?? { largestContentfulPaintMs: 0, largestContentfulPaintElement: "", largestContentfulPaintResourcePath: "", cumulativeLayoutShift: 0 });
+    await coldPage.evaluate(freezeStartupWebVitals, loginLcpFrozenAtMs);
+    const webVitals = await coldPage.evaluate(() => {
+      type Vitals = { largestContentfulPaintMs: number; largestContentfulPaintElement: string; largestContentfulPaintResourcePath: string; cumulativeLayoutShift: number };
+      const target = globalThis as typeof globalThis & { __BP_WEB_VITALS__?: Vitals; __BP_STARTUP_WEB_VITALS__?: Vitals };
+      const empty: Vitals = { largestContentfulPaintMs: 0, largestContentfulPaintElement: "", largestContentfulPaintResourcePath: "", cumulativeLayoutShift: 0 };
+      return {
+        startup: target.__BP_STARTUP_WEB_VITALS__ ?? empty,
+        postSafe: target.__BP_WEB_VITALS__ ?? empty
+      };
+    });
 
     const responseEvidenceErrors = criticalResponses.flatMap((entry) => entry.evidenceError
       ? [`Critical response ${entry.requestKey} has invalid decoded-body evidence (${entry.evidenceError}).`]
@@ -644,11 +698,20 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
       requestedHistoryBeforeSafeInteractive,
       bootstrapDependencyDepth: mode === "candidate" ? measureBootstrapDependencyDepth(criticalResources, criticalResponses) : null,
       bootstrapRpcMs: mode === "candidate" ? marks["bp-bootstrap-rpc-response"] - marks["bp-bootstrap-rpc-requested"] : null,
+      bootstrapRpcFetchToFirstByteMs,
+      bootstrapRpcDownloadMs,
       catchupToSafeMs: mode === "candidate" ? safeInteractiveMs - marks["bp-critical-catchup-ready"] : null,
-      largestContentfulPaintMs: webVitals.largestContentfulPaintMs,
-      largestContentfulPaintElement: webVitals.largestContentfulPaintElement,
-      largestContentfulPaintResourcePath: webVitals.largestContentfulPaintResourcePath,
-      cumulativeLayoutShift: webVitals.cumulativeLayoutShift,
+      safeBoundaryLcpMs: safeBoundaryWebVitals.largestContentfulPaintMs,
+      safeBoundaryLcpElement: safeBoundaryWebVitals.largestContentfulPaintElement,
+      safeBoundaryLcpResourcePath: safeBoundaryWebVitals.largestContentfulPaintResourcePath,
+      loginLcpFrozenAtMs,
+      largestContentfulPaintMs: webVitals.startup.largestContentfulPaintMs,
+      largestContentfulPaintElement: webVitals.startup.largestContentfulPaintElement,
+      largestContentfulPaintResourcePath: webVitals.startup.largestContentfulPaintResourcePath,
+      postSafeLargestContentfulPaintMs: webVitals.postSafe.largestContentfulPaintMs,
+      postSafeLargestContentfulPaintElement: webVitals.postSafe.largestContentfulPaintElement,
+      postSafeLargestContentfulPaintResourcePath: webVitals.postSafe.largestContentfulPaintResourcePath,
+      cumulativeLayoutShift: webVitals.postSafe.cumulativeLayoutShift,
       renderEvidence,
       activePanelCommitDurationsMs,
       idleRootCommits,
@@ -714,6 +777,14 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
     ))).toBe(true);
     expect.soft(loads.every((entry) => entry.bootstrapDependencyDepth !== null && entry.bootstrapDependencyDepth <= 2)).toBe(true);
     expect.soft(loads.every((entry) => entry.bootstrapRpcResponseCount === 1)).toBe(true);
+    expect.soft(loads.every((entry) =>
+      entry.bootstrapRpcFetchToFirstByteMs !== null
+      && Number.isFinite(entry.bootstrapRpcFetchToFirstByteMs)
+      && entry.bootstrapRpcFetchToFirstByteMs >= 0
+      && entry.bootstrapRpcDownloadMs !== null
+      && Number.isFinite(entry.bootstrapRpcDownloadMs)
+      && entry.bootstrapRpcDownloadMs >= 0
+    )).toBe(true);
     expect.soft(loads.every((entry) => {
       const bootstrapCalls = entry.criticalResponses.filter((response) =>
         response.path.endsWith("/rest/v1/rpc/load_operational_bootstrap_v2")
@@ -745,6 +816,7 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
     expect.soft(summary.coldShellBytesP95).toBeLessThanOrEqual(450 * 1024);
     expect.soft(summary.initialJavascriptBytesMax).toBeLessThanOrEqual(1_000 * 1024);
     expect.soft(summary.initialJavascriptGzipBytesMax).toBeLessThanOrEqual(300 * 1024);
+    expect.soft(loads.every((entry) => entry.largestContentfulPaintMs > 0 && entry.largestContentfulPaintMs <= entry.loginLcpFrozenAtMs)).toBe(true);
     expect.soft(summary.lcpP75).toBeGreaterThan(0);
     expect.soft(summary.lcpP75).toBeLessThanOrEqual(2_500);
     expect.soft(summary.clsMax).toBeLessThanOrEqual(0.1);

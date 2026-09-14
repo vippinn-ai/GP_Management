@@ -5,8 +5,16 @@ export interface CriticalResourceTiming {
   shell: boolean;
   javascript: boolean;
   startTime: number;
+  responseStart: number;
   responseEnd: number;
   transferSize: number;
+}
+
+export interface WebVitalsEvidence {
+  largestContentfulPaintMs: number;
+  largestContentfulPaintElement: string;
+  largestContentfulPaintResourcePath: string;
+  cumulativeLayoutShift: number;
 }
 
 export const INVENTORY_RENDER_POLL_INTERVAL_MS = 25;
@@ -16,6 +24,18 @@ export interface CriticalResponseTiming {
   requestKey: string;
   path: string;
   status: number;
+}
+
+export interface ResourceTimingPhases {
+  totalMs: number;
+  fetchToFirstByteMs: number;
+  downloadMs: number;
+}
+
+export function assertCompatiblePerformanceMetricVersion(actual: unknown, expected: number): void {
+  if (!Number.isInteger(expected) || expected <= 0 || actual !== expected) {
+    throw new Error(`Performance baseline metric version ${String(actual)} is incompatible with required version ${String(expected)}.`);
+  }
 }
 
 export interface CriticalEvidenceSelection<
@@ -65,6 +85,92 @@ export function installVisibleReadyObserver(options: VisibleReadyObserverOptions
   scheduleInspection();
 }
 
+export function installWebVitalsObserver(): void {
+  type BrowserVitalsTarget = typeof globalThis & {
+    __BP_WEB_VITALS__?: WebVitalsEvidence;
+    __BP_STARTUP_WEB_VITALS__?: WebVitalsEvidence;
+    __BP_FREEZE_STARTUP_WEB_VITALS__?: (boundaryMs: number) => WebVitalsEvidence;
+  };
+  type LcpEntry = PerformanceEntry & { element?: Element; url?: string };
+
+  const target = globalThis as BrowserVitalsTarget;
+  const current: WebVitalsEvidence = {
+    largestContentfulPaintMs: 0,
+    largestContentfulPaintElement: "",
+    largestContentfulPaintResourcePath: "",
+    cumulativeLayoutShift: 0
+  };
+  const lcpEntries: LcpEntry[] = [];
+  let startupBoundaryMs: number | null = null;
+
+  const describeLcp = (entry: LcpEntry): WebVitalsEvidence => {
+    let resourcePath = "";
+    if (entry.url) {
+      const url = new URL(entry.url);
+      resourcePath = `${url.hostname}${url.pathname}`;
+    }
+    return {
+      largestContentfulPaintMs: entry.startTime,
+      largestContentfulPaintElement: entry.element
+        ? `${entry.element.tagName.toLowerCase()}${entry.element.id ? `#${entry.element.id}` : ""}${[...entry.element.classList].slice(0, 3).map((value) => `.${value}`).join("")}`
+        : "",
+      largestContentfulPaintResourcePath: resourcePath,
+      cumulativeLayoutShift: current.cumulativeLayoutShift
+    };
+  };
+  const latestAtOrBefore = (boundaryMs: number) => lcpEntries
+    .filter((entry) => Number.isFinite(entry.startTime) && entry.startTime <= boundaryMs)
+    .sort((left, right) => right.startTime - left.startTime)[0];
+  const refreshStartupSnapshot = () => {
+    if (startupBoundaryMs === null) return;
+    const latest = latestAtOrBefore(startupBoundaryMs);
+    target.__BP_STARTUP_WEB_VITALS__ = latest
+      ? describeLcp(latest)
+      : { ...current, largestContentfulPaintMs: 0, largestContentfulPaintElement: "", largestContentfulPaintResourcePath: "" };
+  };
+  const recordLcpEntries = (entries: PerformanceEntry[]) => {
+    for (const raw of entries) {
+      const entry = raw as LcpEntry;
+      if (!Number.isFinite(entry.startTime) || entry.startTime < 0) continue;
+      lcpEntries.push(entry);
+      if (entry.startTime >= current.largestContentfulPaintMs) Object.assign(current, describeLcp(entry));
+    }
+    refreshStartupSnapshot();
+  };
+
+  target.__BP_WEB_VITALS__ = current;
+  const lcpObserver = new PerformanceObserver((list) => recordLcpEntries(list.getEntries()));
+  lcpObserver.observe({ type: "largest-contentful-paint", buffered: true });
+  target.__BP_FREEZE_STARTUP_WEB_VITALS__ = (boundaryMs: number) => {
+    startupBoundaryMs = Number.isFinite(boundaryMs) && boundaryMs >= 0 ? boundaryMs : null;
+    recordLcpEntries(lcpObserver.takeRecords());
+    refreshStartupSnapshot();
+    return { ...(target.__BP_STARTUP_WEB_VITALS__ ?? current) };
+  };
+  new PerformanceObserver((list) => {
+    for (const entry of list.getEntries()) {
+      const shift = entry as PerformanceEntry & { value?: number; hadRecentInput?: boolean };
+      if (!shift.hadRecentInput) current.cumulativeLayoutShift += shift.value ?? 0;
+    }
+  }).observe({ type: "layout-shift", buffered: true });
+}
+
+export function freezeStartupWebVitals(boundaryMs: number): WebVitalsEvidence {
+  const target = globalThis as typeof globalThis & {
+    __BP_WEB_VITALS__?: WebVitalsEvidence;
+    __BP_STARTUP_WEB_VITALS__?: WebVitalsEvidence;
+    __BP_FREEZE_STARTUP_WEB_VITALS__?: (boundary: number) => WebVitalsEvidence;
+  };
+  const empty: WebVitalsEvidence = {
+    largestContentfulPaintMs: 0,
+    largestContentfulPaintElement: "",
+    largestContentfulPaintResourcePath: "",
+    cumulativeLayoutShift: 0
+  };
+  if (!Number.isFinite(boundaryMs) || boundaryMs < 0) return empty;
+  return target.__BP_FREEZE_STARTUP_WEB_VITALS__?.(boundaryMs) ?? empty;
+}
+
 export function requestStartedByBrowserMark(
   requestStartEpochMs: number,
   pageTimeOriginEpochMs: number,
@@ -79,6 +185,24 @@ export function requestStartedByBrowserMark(
     || safeInteractiveMarkMs < 0
   ) return null;
   return requestStartEpochMs <= pageTimeOriginEpochMs + safeInteractiveMarkMs;
+}
+
+export function measureResourceTimingPhases(
+  resource: Pick<CriticalResourceTiming, "startTime" | "responseStart" | "responseEnd">
+): ResourceTimingPhases | null {
+  if (
+    !Number.isFinite(resource.startTime)
+    || resource.startTime < 0
+    || !Number.isFinite(resource.responseStart)
+    || resource.responseStart < resource.startTime
+    || !Number.isFinite(resource.responseEnd)
+    || resource.responseEnd < resource.responseStart
+  ) return null;
+  return {
+    totalMs: resource.responseEnd - resource.startTime,
+    fetchToFirstByteMs: resource.responseStart - resource.startTime,
+    downloadMs: resource.responseEnd - resource.responseStart
+  };
 }
 
 export async function requestStartedByBrowserMarkAfterCompletion(
@@ -168,14 +292,46 @@ export function measureBootstrapDependencyDepth<TResource extends CriticalResour
   resources: TResource[],
   responses: TResponse[]
 ): number | null {
-  const statuses = new Map(responses.map((entry) => [entry.requestKey, entry.status]));
-  const apiResources = resources
-    .filter((entry) => entry.api && (statuses.get(entry.requestKey) ?? 500) < 400)
-    .sort((left, right) => left.startTime - right.startTime);
-  const organization = apiResources.find((entry) => /\/rest\/v1\/organizations$/.test(entry.path));
-  if (!organization) return null;
+  const operationalBootstrapPath = /\/rest\/v1\/rpc\/load_operational_bootstrap_v2$/;
+  const atomicResources = resources.filter((entry) => entry.api && operationalBootstrapPath.test(entry.path));
+  const atomicResponses = responses.filter((entry) => operationalBootstrapPath.test(entry.path));
+  const atomicEvidencePresent = atomicResources.length > 0 || atomicResponses.length > 0;
+  if (atomicEvidencePresent) {
+    if (atomicResources.length !== 1 || atomicResponses.length !== 1) return null;
+    const [atomicResource] = atomicResources;
+    const [atomicResponse] = atomicResponses;
+    if (
+      atomicResource.requestKey !== atomicResponse.requestKey
+      || atomicResponse.status < 200
+      || atomicResponse.status >= 400
+      || !Number.isFinite(atomicResource.startTime)
+      || atomicResource.startTime < 0
+      || !Number.isFinite(atomicResource.responseEnd)
+      || atomicResource.responseEnd < atomicResource.startTime
+    ) return null;
+  }
 
-  const bootstrapResources = apiResources.filter((entry) => entry.startTime + 2 >= organization.startTime);
+  const statusEntries = new Map<string, number[]>();
+  responses.forEach((entry) => statusEntries.set(entry.requestKey, [...(statusEntries.get(entry.requestKey) ?? []), entry.status]));
+  const apiResources = resources
+    .filter((entry) => {
+      const statuses = statusEntries.get(entry.requestKey) ?? [];
+      return entry.api
+        && Number.isFinite(entry.startTime)
+        && entry.startTime >= 0
+        && Number.isFinite(entry.responseEnd)
+        && entry.responseEnd >= entry.startTime
+        && statuses.length === 1
+        && statuses[0] >= 200
+        && statuses[0] < 400;
+    })
+    .sort((left, right) => left.startTime - right.startTime);
+  const anchor = atomicEvidencePresent
+    ? apiResources.find((entry) => operationalBootstrapPath.test(entry.path))
+    : apiResources.find((entry) => /\/rest\/v1\/organizations$/.test(entry.path));
+  if (!anchor) return null;
+
+  const bootstrapResources = apiResources.filter((entry) => entry.startTime + 2 >= anchor.startTime);
   const depths: number[] = [];
   bootstrapResources.forEach((_entry, index) => {
     let depth = 1;

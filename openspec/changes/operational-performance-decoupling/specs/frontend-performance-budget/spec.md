@@ -28,5 +28,6 @@ The staging candidate SHALL expose browser-clock marks for App import, session, 
 
 #### Scenario: Fresh 30-load candidate race
 - **WHEN** a single unique zero-retry 30-load race runs against the frozen same-scale staging dataset
-- **THEN** safe interaction p95 is at most 3,500 ms and maximum at most 5,000 ms, LCP p75 is at most 2,500 ms, bootstrap RPC p95 is at most 800 ms and maximum at most 1,200 ms, and catch-up-to-safe p95 is at most 100 ms and maximum at most 200 ms
+- **THEN** safe interaction p95 is at most 3,500 ms and maximum at most 5,000 ms, pre-navigation Login LCP p75 is at most 2,500 ms, bootstrap RPC p95 is at most 800 ms and maximum at most 1,200 ms, and catch-up-to-safe p95 is at most 100 ms and maximum at most 200 ms
 - **AND** dependency depth is at most two, there is one critical bootstrap RPC, its decoded response is at most 160,992 bytes, and no direct profile, organization, history, report, audit, or `app_state` read occurs before safe interaction
+- **AND** metric-v3 evidence preserves safe-boundary and post-navigation LCP diagnostics plus exactly correlated bootstrap fetch-to-first-byte and response-download phase distributions without replacing the Login LCP or end-to-end RPC gates
