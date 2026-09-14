@@ -1943,6 +1943,9 @@ describe("app_state data gateway", () => {
     await vi.waitFor(() => expect(channel.subscribe).toHaveBeenCalledTimes(1));
     disposeFirst();
     const disposeSecond = gateway.subscribeToAppData(sharedChange, sharedError);
+    await new Promise((resolve) => globalThis.setTimeout(resolve, 5));
+    expect(client.removeChannel).not.toHaveBeenCalled();
+    expect(client.channel).toHaveBeenCalledTimes(1);
     const load = gateway.loadAuthenticatedAppDataSnapshot?.();
     realtimeStatus?.("SUBSCRIBED");
     await expect(load).resolves.toMatchObject({ status: "active", snapshot: { version: 41 } });
@@ -1995,6 +1998,9 @@ describe("app_state data gateway", () => {
     await vi.waitFor(() => expect(channel.subscribe).toHaveBeenCalledTimes(1));
     disposeFirst();
     const disposeSecond = gateway.subscribeToAppData(sharedChange, sharedError);
+    await new Promise((resolve) => globalThis.setTimeout(resolve, 5));
+    expect(client.removeChannel).not.toHaveBeenCalled();
+    expect(client.channel).toHaveBeenCalledTimes(1);
     realtimeStatus?.("CHANNEL_ERROR");
     await new Promise((resolve) => globalThis.setTimeout(resolve, 0));
 

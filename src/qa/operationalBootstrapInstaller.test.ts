@@ -213,7 +213,7 @@ describe("atomic bootstrap staging installer builder", { timeout: 30_000 }, () =
     const fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), "bp-bootstrap-preflight-helper-public-"));
     const preflightPath = path.join(fixtureDir, "preflight.json");
     const value = fixture();
-    value.evidence.realtime_security.access_helper.acl_detail.push({
+    value.evidence.realtime_security.access_helper.acl_detail.unshift({
       grantor: "postgres", grantee: "PUBLIC", privilege_type: "EXECUTE", is_grantable: false
     });
     fs.writeFileSync(preflightPath, JSON.stringify(value));
@@ -343,8 +343,8 @@ describe("atomic bootstrap staging installer builder", { timeout: 30_000 }, () =
       volatility: "v",
       config: null,
       acl_detail: [
-        { grantor: "postgres", grantee: "postgres", privilege_type: "EXECUTE", is_grantable: false },
         { grantor: "postgres", grantee: "PUBLIC", privilege_type: "EXECUTE", is_grantable: false },
+        { grantor: "postgres", grantee: "postgres", privilege_type: "EXECUTE", is_grantable: false },
         { grantor: "postgres", grantee: "authenticated", privilege_type: "EXECUTE", is_grantable: true }
       ]
     };
