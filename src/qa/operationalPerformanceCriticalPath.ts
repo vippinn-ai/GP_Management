@@ -14,6 +14,12 @@ export interface WebVitalsEvidence {
   largestContentfulPaintMs: number;
   largestContentfulPaintElement: string;
   largestContentfulPaintResourcePath: string;
+  largestContentfulPaintSize: number;
+  largestContentfulPaintRenderTimeMs: number;
+  largestContentfulPaintLoadTimeMs: number;
+  largestContentfulPaintElementPresent: boolean;
+  largestContentfulPaintSource: "text" | "resource" | "unknown";
+  firstContentfulPaintMs: number;
   cumulativeLayoutShift: number;
 }
 
@@ -91,49 +97,89 @@ export function installWebVitalsObserver(): void {
     __BP_STARTUP_WEB_VITALS__?: WebVitalsEvidence;
     __BP_FREEZE_STARTUP_WEB_VITALS__?: (boundaryMs: number) => WebVitalsEvidence;
   };
-  type LcpEntry = PerformanceEntry & { element?: Element; url?: string };
+  type LcpEntry = PerformanceEntry & {
+    element?: Element;
+    url?: string;
+    size?: number;
+    renderTime?: number;
+    loadTime?: number;
+  };
 
   const target = globalThis as BrowserVitalsTarget;
   const current: WebVitalsEvidence = {
     largestContentfulPaintMs: 0,
     largestContentfulPaintElement: "",
     largestContentfulPaintResourcePath: "",
+    largestContentfulPaintSize: 0,
+    largestContentfulPaintRenderTimeMs: 0,
+    largestContentfulPaintLoadTimeMs: 0,
+    largestContentfulPaintElementPresent: false,
+    largestContentfulPaintSource: "unknown",
+    firstContentfulPaintMs: 0,
     cumulativeLayoutShift: 0
   };
-  const lcpEntries: LcpEntry[] = [];
+  const lcpEntries: WebVitalsEvidence[] = [];
   let startupBoundaryMs: number | null = null;
 
   const describeLcp = (entry: LcpEntry): WebVitalsEvidence => {
     let resourcePath = "";
     if (entry.url) {
-      const url = new URL(entry.url);
-      resourcePath = `${url.hostname}${url.pathname}`;
+      try {
+        const url = new URL(entry.url);
+        resourcePath = `${url.hostname}${url.pathname}`;
+      } catch {
+        resourcePath = "";
+      }
     }
+    const safeToken = (value: string) => /^[a-z][a-z0-9_-]{0,63}$/i.test(value) ? value : "";
+    const tagName = entry.element ? safeToken(entry.element.tagName.toLowerCase()) : "";
+    const elementId = entry.element?.id ? safeToken(entry.element.id) : "";
+    const classNames = entry.element
+      ? [...entry.element.classList].map(safeToken).filter(Boolean).slice(0, 3)
+      : [];
+    const elementDescription = tagName
+      ? `${tagName}${elementId ? `#${elementId}` : ""}${classNames.map((value) => `.${value}`).join("")}`
+      : "";
     return {
       largestContentfulPaintMs: entry.startTime,
-      largestContentfulPaintElement: entry.element
-        ? `${entry.element.tagName.toLowerCase()}${entry.element.id ? `#${entry.element.id}` : ""}${[...entry.element.classList].slice(0, 3).map((value) => `.${value}`).join("")}`
-        : "",
+      largestContentfulPaintElement: elementDescription,
       largestContentfulPaintResourcePath: resourcePath,
+      largestContentfulPaintSize: Number.isFinite(entry.size) && (entry.size ?? -1) >= 0 ? entry.size! : 0,
+      largestContentfulPaintRenderTimeMs: Number.isFinite(entry.renderTime) && (entry.renderTime ?? -1) >= 0 ? entry.renderTime! : 0,
+      largestContentfulPaintLoadTimeMs: Number.isFinite(entry.loadTime) && (entry.loadTime ?? -1) >= 0 ? entry.loadTime! : 0,
+      largestContentfulPaintElementPresent: Boolean(elementDescription),
+      largestContentfulPaintSource: resourcePath ? "resource" : elementDescription ? "text" : "unknown",
+      firstContentfulPaintMs: current.firstContentfulPaintMs,
       cumulativeLayoutShift: current.cumulativeLayoutShift
     };
   };
   const latestAtOrBefore = (boundaryMs: number) => lcpEntries
-    .filter((entry) => Number.isFinite(entry.startTime) && entry.startTime <= boundaryMs)
-    .sort((left, right) => right.startTime - left.startTime)[0];
+    .filter((entry) => Number.isFinite(entry.largestContentfulPaintMs) && entry.largestContentfulPaintMs <= boundaryMs)
+    .sort((left, right) => right.largestContentfulPaintMs - left.largestContentfulPaintMs)[0];
   const refreshStartupSnapshot = () => {
     if (startupBoundaryMs === null) return;
     const latest = latestAtOrBefore(startupBoundaryMs);
     target.__BP_STARTUP_WEB_VITALS__ = latest
-      ? describeLcp(latest)
-      : { ...current, largestContentfulPaintMs: 0, largestContentfulPaintElement: "", largestContentfulPaintResourcePath: "" };
+      ? { ...latest, firstContentfulPaintMs: current.firstContentfulPaintMs, cumulativeLayoutShift: current.cumulativeLayoutShift }
+      : {
+          ...current,
+          largestContentfulPaintMs: 0,
+          largestContentfulPaintElement: "",
+          largestContentfulPaintResourcePath: "",
+          largestContentfulPaintSize: 0,
+          largestContentfulPaintRenderTimeMs: 0,
+          largestContentfulPaintLoadTimeMs: 0,
+          largestContentfulPaintElementPresent: false,
+          largestContentfulPaintSource: "unknown"
+        };
   };
   const recordLcpEntries = (entries: PerformanceEntry[]) => {
     for (const raw of entries) {
       const entry = raw as LcpEntry;
       if (!Number.isFinite(entry.startTime) || entry.startTime < 0) continue;
-      lcpEntries.push(entry);
-      if (entry.startTime >= current.largestContentfulPaintMs) Object.assign(current, describeLcp(entry));
+      const snapshot = describeLcp(entry);
+      lcpEntries.push(snapshot);
+      if (entry.startTime >= current.largestContentfulPaintMs) Object.assign(current, snapshot);
     }
     refreshStartupSnapshot();
   };
@@ -141,6 +187,13 @@ export function installWebVitalsObserver(): void {
   target.__BP_WEB_VITALS__ = current;
   const lcpObserver = new PerformanceObserver((list) => recordLcpEntries(list.getEntries()));
   lcpObserver.observe({ type: "largest-contentful-paint", buffered: true });
+  new PerformanceObserver((list) => {
+    const firstContentfulPaint = list.getEntries().find((entry) => entry.name === "first-contentful-paint");
+    if (firstContentfulPaint && Number.isFinite(firstContentfulPaint.startTime) && firstContentfulPaint.startTime >= 0) {
+      current.firstContentfulPaintMs = firstContentfulPaint.startTime;
+      refreshStartupSnapshot();
+    }
+  }).observe({ type: "paint", buffered: true });
   target.__BP_FREEZE_STARTUP_WEB_VITALS__ = (boundaryMs: number) => {
     startupBoundaryMs = Number.isFinite(boundaryMs) && boundaryMs >= 0 ? boundaryMs : null;
     recordLcpEntries(lcpObserver.takeRecords());
@@ -165,6 +218,12 @@ export function freezeStartupWebVitals(boundaryMs: number): WebVitalsEvidence {
     largestContentfulPaintMs: 0,
     largestContentfulPaintElement: "",
     largestContentfulPaintResourcePath: "",
+    largestContentfulPaintSize: 0,
+    largestContentfulPaintRenderTimeMs: 0,
+    largestContentfulPaintLoadTimeMs: 0,
+    largestContentfulPaintElementPresent: false,
+    largestContentfulPaintSource: "unknown",
+    firstContentfulPaintMs: 0,
     cumulativeLayoutShift: 0
   };
   if (!Number.isFinite(boundaryMs) || boundaryMs < 0) return empty;

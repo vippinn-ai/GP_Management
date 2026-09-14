@@ -42,6 +42,7 @@ interface InventoryArchiveDraft {
 }
 
 const COMPACT_INVENTORY_MEDIA_QUERY = "(max-width: 720px)";
+export const INVENTORY_CATALOG_PAGE_SIZE = 40;
 
 function initialCompactInventoryLayout() {
   return typeof window !== "undefined" && typeof window.matchMedia === "function"
@@ -233,6 +234,9 @@ export function InventoryPanel(props: {
     getAvailableStock, getInventoryState
   } = props;
   const [compactInventoryLayout, setCompactInventoryLayout] = useState(initialCompactInventoryLayout);
+  const catalogContextKey = `${inventoryArchiveView}\u0000${inventoryItemSearch}`;
+  const [catalogPagination, setCatalogPagination] = useState(() => ({ contextKey: catalogContextKey, page: 1 }));
+  const catalogPage = catalogPagination.contextKey === catalogContextKey ? catalogPagination.page : 1;
   useEffect(() => {
     if (typeof window.matchMedia !== "function") return;
     const media = window.matchMedia(COMPACT_INVENTORY_MEDIA_QUERY);
@@ -243,12 +247,25 @@ export function InventoryPanel(props: {
   const isItemFormCigarette = itemForm.category === "Cigarettes";
   const isEditItemFormCigarette = editItemForm?.category === "Cigarettes";
   const isArchivedView = inventoryArchiveView === "archived";
-  const activeMovementItems = props.inventoryItems.filter((item) => item.active);
+  const activeMovementItems = useMemo(() => props.inventoryItems.filter((item) => item.active), [props.inventoryItems]);
   const comboSellableOptions = props.sellableOptions;
   const archiveDraftItem = props.inventoryArchiveDraft
     ? props.inventoryItems.find((item) => item.id === props.inventoryArchiveDraft?.itemId) ?? null
     : null;
-  const catalogPresentationById = useMemo(() => new Map(filteredInventoryItems.map((item) => {
+  const catalogPageCount = Math.max(1, Math.ceil(filteredInventoryItems.length / INVENTORY_CATALOG_PAGE_SIZE));
+  const effectiveCatalogPage = Math.min(catalogPage, catalogPageCount);
+  const pagedInventoryItems = useMemo(
+    () => filteredInventoryItems.slice(
+      (effectiveCatalogPage - 1) * INVENTORY_CATALOG_PAGE_SIZE,
+      effectiveCatalogPage * INVENTORY_CATALOG_PAGE_SIZE
+    ),
+    [effectiveCatalogPage, filteredInventoryItems]
+  );
+  const inventoryNameById = useMemo(
+    () => new Map(props.inventoryItems.map((item) => [item.id, item.name])),
+    [props.inventoryItems]
+  );
+  const catalogPresentationById = useMemo(() => new Map(pagedInventoryItems.map((item) => {
     const availableStock = getAvailableStock(item);
     return [item.id, {
       availableStock,
@@ -256,7 +273,7 @@ export function InventoryPanel(props: {
       state: getInventoryState(item),
       categoryImage: getCategoryImage(item.category)
     }] as const;
-  })), [filteredInventoryItems, getAvailableStock, getInventoryState]);
+  })), [pagedInventoryItems, getAvailableStock, getInventoryState]);
 
   function formatArchivedAt(item: InventoryItem) {
     return item.archivedAt ? new Date(item.archivedAt).toLocaleString() : "Archived";
@@ -882,7 +899,7 @@ export function InventoryPanel(props: {
                       </td>
                     </tr>
                   )}
-                  {filteredInventoryItems.map((item) => {
+                  {pagedInventoryItems.map((item) => {
                     const presentation = catalogPresentationById.get(item.id)!;
                     const { availableStock, state, categoryImage } = presentation;
                     return (
@@ -949,7 +966,7 @@ export function InventoryPanel(props: {
               {filteredInventoryItems.length === 0 && (
                 <div className="empty-state">No {isArchivedView ? "archived" : "active"} inventory items match this search.</div>
               )}
-              {filteredInventoryItems.map((item) => {
+              {pagedInventoryItems.map((item) => {
                 const { state, availableStock, reservedStock, categoryImage } = catalogPresentationById.get(item.id)!;
                 return (
                   <article key={item.id} className="inventory-mobile-card">
@@ -1012,6 +1029,27 @@ export function InventoryPanel(props: {
                 );
               })}
             </div>}
+            {filteredInventoryItems.length > INVENTORY_CATALOG_PAGE_SIZE && (
+              <div className="button-row inventory-catalog-pagination" aria-label="Inventory catalog pagination">
+                <button
+                  className="ghost-button"
+                  type="button"
+                  disabled={effectiveCatalogPage === 1}
+                  onClick={() => setCatalogPagination({ contextKey: catalogContextKey, page: Math.max(1, effectiveCatalogPage - 1) })}
+                >
+                  Previous
+                </button>
+                <span className="muted">Page {effectiveCatalogPage} of {catalogPageCount} · {filteredInventoryItems.length} items</span>
+                <button
+                  className="ghost-button"
+                  type="button"
+                  disabled={effectiveCatalogPage === catalogPageCount}
+                  onClick={() => setCatalogPagination({ contextKey: catalogContextKey, page: Math.min(catalogPageCount, effectiveCatalogPage + 1) })}
+                >
+                  Next
+                </button>
+              </div>
+            )}
           </div>
         </div>
 
@@ -1071,7 +1109,7 @@ export function InventoryPanel(props: {
             <div className="activity-list">
               {props.stockMovements.slice(0, 10).map((movement) => (
                 <div key={movement.id} className="activity-row">
-                  <strong>{props.inventoryItems.find((item) => item.id === movement.itemId)?.name || "Item"}</strong>
+                  <strong>{inventoryNameById.get(movement.itemId) || "Item"}</strong>
                   <span className="muted">{movement.type} · {movement.quantity} · {movement.reason}</span>
                 </div>
               ))}

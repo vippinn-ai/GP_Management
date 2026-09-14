@@ -318,18 +318,29 @@ export async function loadDeferredNormalizedExpenseAdminData() {
   return loadNormalizedExpenseAdminData(organizationId, client);
 }
 
-export async function loadDeferredNormalizedDashboardContext(explicitOrganizationId?: string) {
+export async function loadDeferredNormalizedDashboardHistory(explicitOrganizationId?: string) {
   const client = getSupabaseClient();
   const organizationId = explicitOrganizationId ?? await resolveNormalizedOrganizationId(client);
-  const [history, auditLogs] = await Promise.all([
-    loadNormalizedBootstrapHistory(organizationId, client),
-    loadNormalizedAuditLogs(
-      organizationId,
-      { limit: NORMALIZED_BOOTSTRAP_RECENT_AUDIT_LOGS },
-      client
-    )
+  return loadNormalizedBootstrapHistory(organizationId, client);
+}
+
+export async function loadDeferredNormalizedDashboardActivity(explicitOrganizationId?: string) {
+  const client = getSupabaseClient();
+  const organizationId = explicitOrganizationId ?? await resolveNormalizedOrganizationId(client);
+  const auditLogs = await loadNormalizedAuditLogs(
+    organizationId,
+    { limit: NORMALIZED_BOOTSTRAP_RECENT_AUDIT_LOGS },
+    client
+  );
+  return { auditLogs };
+}
+
+export async function loadDeferredNormalizedDashboardContext(explicitOrganizationId?: string) {
+  const [history, activity] = await Promise.all([
+    loadDeferredNormalizedDashboardHistory(explicitOrganizationId),
+    loadDeferredNormalizedDashboardActivity(explicitOrganizationId)
   ]);
-  return { ...history, auditLogs };
+  return { ...history, ...activity };
 }
 
 function upsertStartupCustomer(
@@ -662,6 +673,8 @@ export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): 
         },
         (status) => {
           if (generation !== realtimeGeneration) return;
+          const safeStatus = status.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+          if (safeStatus) markBootstrapPerformance(`bp-realtime-status-${safeStatus}`);
           if (settled) {
             if (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") {
               const error = new Error(
@@ -690,6 +703,7 @@ export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): 
           }
         }
       );
+      markBootstrapPerformance("bp-realtime-channel-subscribe-called");
     });
     return realtimeReadyPromise;
   };

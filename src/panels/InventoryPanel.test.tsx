@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { InventoryPanel } from "./InventoryPanel";
+import { INVENTORY_CATALOG_PAGE_SIZE, InventoryPanel } from "./InventoryPanel";
 
 function installMatchMedia(initialMatches: boolean) {
   let matches = initialMatches;
@@ -231,5 +231,53 @@ describe("InventoryPanel normalized report reads", () => {
 
     rendered.unmount();
     expect(matchMedia.removeEventListener).toHaveBeenCalledTimes(1);
+  });
+
+  it("bounds a production-shape catalog while preserving pagination and full-set search", () => {
+    const matchMedia = installMatchMedia(false);
+    const { item, props } = createCatalogProps();
+    const items = Array.from({ length: 112 }, (_, index) => ({
+      ...item,
+      id: `item-${String(index + 1).padStart(3, "0")}`,
+      name: `Inventory Item ${String(index + 1).padStart(3, "0")}`,
+      barcode: `ITEM-${index + 1}`
+    }));
+    const catalogProps = {
+      ...props,
+      inventoryItems: items,
+      filteredInventoryItems: items,
+      activeInventoryCount: items.length
+    };
+    const rendered = render(<InventoryPanel {...catalogProps} />);
+
+    const catalogTable = within(rendered.container.querySelector(".inventory-table-wrap")!);
+    expect(rendered.container.querySelectorAll(".inventory-table-wrap tbody tr")).toHaveLength(INVENTORY_CATALOG_PAGE_SIZE);
+    expect(catalogTable.getByText("Inventory Item 001")).toBeVisible();
+    expect(catalogTable.queryByText("Inventory Item 041")).not.toBeInTheDocument();
+    expect(screen.getByText("Page 1 of 3 · 112 items")).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: "Next" }));
+    expect(catalogTable.queryByText("Inventory Item 001")).not.toBeInTheDocument();
+    expect(catalogTable.getByText("Inventory Item 041")).toBeVisible();
+    expect(screen.getByText("Page 2 of 3 · 112 items")).toBeVisible();
+
+    act(() => matchMedia.setMatches(true));
+    const mobileCatalog = within(rendered.container.querySelector(".inventory-mobile-list")!);
+    expect(rendered.container.querySelectorAll(".inventory-mobile-list .inventory-mobile-card")).toHaveLength(INVENTORY_CATALOG_PAGE_SIZE);
+    expect(mobileCatalog.getByText("Inventory Item 041")).toBeVisible();
+
+    fireEvent.change(screen.getByPlaceholderText("Search active items by name or category"), {
+      target: { value: "112" }
+    });
+    expect(props.onInventoryItemSearchChange).toHaveBeenCalledWith("112");
+    rendered.rerender(
+      <InventoryPanel
+        {...catalogProps}
+        inventoryItemSearch="112"
+        filteredInventoryItems={[items[111]]}
+      />
+    );
+    expect(mobileCatalog.getByText("Inventory Item 112")).toBeVisible();
+    expect(screen.queryByLabelText("Inventory catalog pagination")).not.toBeInTheDocument();
   });
 });

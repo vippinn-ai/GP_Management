@@ -66,7 +66,9 @@ import {
 } from ".";
 import {
   buildRetainedNoncriticalDataOverlay,
+  loadDeferredNormalizedDashboardActivity,
   loadDeferredNormalizedDashboardContext,
+  loadDeferredNormalizedDashboardHistory,
   loadNormalizedBillPages,
   loadNormalizedBootstrapStockMovements,
   mergeNormalizedAppDataOverlay
@@ -904,6 +906,39 @@ describe("app_state data gateway", () => {
     expect(normalizedReadMocks.loadNormalizedStockMovements).not.toHaveBeenCalled();
     expect(normalizedCustomerMocks.loadNormalizedCustomerDirectory).not.toHaveBeenCalled();
     expect(normalizedReadMocks.loadNormalizedAuditLogs).toHaveBeenCalledWith("org-primary", { limit: 20 }, client);
+  });
+
+  it("publishes recent Dashboard activity independently of slower financial history", async () => {
+    let resolveBillPage!: (value: { bills: never[]; payments: never[]; hasMore: boolean }) => void;
+    const delayedBillPage = new Promise<{ bills: never[]; payments: never[]; hasMore: boolean }>((resolve) => {
+      resolveBillPage = resolve;
+    });
+    const client = { id: "client" };
+    backendMocks.getSupabaseClient.mockReturnValue(client);
+    normalizedBillRegisterMocks.loadNormalizedBillRegisterPage.mockReturnValue(delayedBillPage);
+    normalizedBillRegisterMocks.loadNormalizedPendingBills.mockResolvedValue([]);
+    normalizedReportMocks.loadNormalizedReportData.mockResolvedValue({ bills: [], payments: [], expenses: [], billBusinessDates: {} });
+    normalizedReadMocks.loadNormalizedAuditLogs.mockResolvedValue([{
+      id: "audit-fast",
+      action: "session_started",
+      entityType: "session",
+      entityId: "session-1",
+      message: "Started session.",
+      createdAt: "2026-09-14T10:00:00.000Z",
+      userId: "user-1"
+    }]);
+
+    const history = loadDeferredNormalizedDashboardHistory("org-primary");
+    let historySettled = false;
+    void history.finally(() => { historySettled = true; });
+
+    await expect(loadDeferredNormalizedDashboardActivity("org-primary")).resolves.toEqual({
+      auditLogs: [expect.objectContaining({ id: "audit-fast" })]
+    });
+    expect(historySettled).toBe(false);
+
+    resolveBillPage({ bills: [], payments: [], hasMore: false });
+    await expect(history).resolves.toEqual({ bills: [], payments: [], expenses: [] });
   });
 
   it("blocks generic full app-state saves after normalized bootstrap is enabled", async () => {

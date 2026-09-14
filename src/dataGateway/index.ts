@@ -18,7 +18,9 @@ export {
 export { appStateRemoteDataGateway } from "./appStateGateway";
 export {
   buildRetainedNoncriticalDataOverlay,
+  loadDeferredNormalizedDashboardActivity,
   loadDeferredNormalizedDashboardContext,
+  loadDeferredNormalizedDashboardHistory,
   loadDeferredNormalizedExpenseAdminData,
   loadDeferredNormalizedInventoryHistory,
   mergeNormalizedAppDataOverlay

@@ -219,6 +219,8 @@ describe("operational lifecycle v2 Playwright and performance contract", () => {
     );
     expect(spec).toContain("bp-visible-dashboard-ready");
     expect(spec).toContain('expect(marks["bp-realtime-requested"]).toBeLessThan(marks["bp-app-module-ready"])');
+    expect(spec).toContain('expect(marks["bp-realtime-channel-subscribe-called"]).toBeLessThanOrEqual(marks["bp-realtime-status-subscribed"])');
+    expect(spec).toContain('expect(marks["bp-realtime-status-subscribed"]).toBeLessThanOrEqual(marks["bp-realtime-ready"])');
     expect(spec).toContain("bootstrapRpcResponseCount === 1");
     expect(spec).toContain("installVisibleReadyObserver");
     expect(spec).not.toContain("bp-baseline-interactive-observed");

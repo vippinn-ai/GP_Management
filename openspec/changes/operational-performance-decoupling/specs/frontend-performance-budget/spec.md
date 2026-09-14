@@ -18,6 +18,16 @@ History/report/customer/audit data SHALL not block safe dashboard readiness and 
 - **WHEN** authenticated startup has restored configuration, catalog, combos, live operational entities, and buffered realtime changes
 - **THEN** writes become available without waiting for bill history, reports, customer history, stock-movement history, expense administration, or audit history
 
+#### Scenario: Dashboard activity is available before financial history
+- **WHEN** the deferred audit activity read completes while bill, payment, or expense history is still loading
+- **THEN** the Dashboard renders a three-entry one-line recent-activity preview without waiting for financial history
+- **AND** Show All opens the complete Activity screen
+
+#### Scenario: A production-shape Inventory catalog is displayed
+- **WHEN** the complete canonical catalog contains 112 matching items
+- **THEN** Inventory renders no more than 40 rows or cards per page while pagination and full-set search expose every matching item
+- **AND** pagination does not truncate canonical stock, report, export, edit, or movement behavior
+
 #### Scenario: Deferred stock history exceeds one server response page
 - **WHEN** Inventory requests complete normalized stock-movement history containing more rows than the PostgREST response cap
 - **THEN** the application loads the complete requested history into canonical state through bounded, exact-count, deterministically ordered pages and renders the configured recent subset
@@ -31,3 +41,4 @@ The staging candidate SHALL expose browser-clock marks for App import, session, 
 - **THEN** safe interaction p95 is at most 3,500 ms and maximum at most 5,000 ms, pre-navigation Login LCP p75 is at most 2,500 ms, bootstrap RPC p95 is at most 800 ms and maximum at most 1,200 ms, and catch-up-to-safe p95 is at most 100 ms and maximum at most 200 ms
 - **AND** dependency depth is at most two, there is one critical bootstrap RPC, its decoded response is at most 160,992 bytes, and no direct profile, organization, history, report, audit, or `app_state` read occurs before safe interaction
 - **AND** metric-v3 evidence preserves safe-boundary and post-navigation LCP diagnostics plus exactly correlated bootstrap fetch-to-first-byte and response-download phase distributions without replacing the Login LCP or end-to-end RPC gates
+- **AND** Login LCP attribution is snapshotted at observer delivery with a nonempty sanitized selector, finite FCP, and structured app/Dashboard/Inventory profiler evidence

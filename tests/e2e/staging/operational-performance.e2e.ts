@@ -17,7 +17,8 @@ import {
   missingExpectedCriticalResourceKeys,
   requestStartedByBrowserMarkAfterCompletion,
   selectCriticalEvidence,
-  sumCriticalShellTransferBytes
+  sumCriticalShellTransferBytes,
+  type WebVitalsEvidence
 } from "../../../src/qa/operationalPerformanceCriticalPath";
 
 const runId = process.env.E2E_RUN_ID ?? "missing-run-id";
@@ -72,6 +73,14 @@ type RenderEvidence = {
   totalActualDurationMs: number;
   maxActualDurationMs: number;
   updateActualDurationsMs: number[];
+  events: Array<{
+    id: string;
+    phase: "mount" | "update" | "nested-update";
+    actualDurationMs: number;
+    baseDurationMs: number;
+    startTimeMs: number;
+    commitTimeMs: number;
+  }>;
 };
 
 type LoadEvidence = {
@@ -104,6 +113,12 @@ type LoadEvidence = {
   largestContentfulPaintMs: number;
   largestContentfulPaintElement: string;
   largestContentfulPaintResourcePath: string;
+  largestContentfulPaintSize: number;
+  largestContentfulPaintRenderTimeMs: number;
+  largestContentfulPaintLoadTimeMs: number;
+  largestContentfulPaintElementPresent: boolean;
+  largestContentfulPaintSource: WebVitalsEvidence["largestContentfulPaintSource"];
+  firstContentfulPaintMs: number;
   postSafeLargestContentfulPaintMs: number;
   postSafeLargestContentfulPaintElement: string;
   postSafeLargestContentfulPaintResourcePath: string;
@@ -233,7 +248,7 @@ async function resourceEvidence(page: Page, baseOrigin: string): Promise<{ marks
   const rawEvidence = await page.evaluate(() => {
     const allowedMarks = [
       "bp-app-module-requested", "bp-app-module-ready", "bp-session-requested", "bp-session-ready",
-      "bp-realtime-requested", "bp-realtime-ready", "bp-bootstrap-requested",
+      "bp-realtime-requested", "bp-realtime-channel-subscribe-called", "bp-realtime-status-subscribed", "bp-realtime-ready", "bp-bootstrap-requested",
       "bp-bootstrap-rpc-requested", "bp-bootstrap-rpc-response", "bp-bootstrap-mapped",
       "bp-critical-snapshot-ready", "bp-critical-catchup-ready", "bp-safe-interactive",
       "bp-visible-dashboard-ready"
@@ -510,7 +525,7 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
       expect(safeInteractiveMs).toBeGreaterThanOrEqual(0);
       for (const mark of [
         "bp-app-module-requested", "bp-app-module-ready", "bp-session-requested", "bp-session-ready",
-        "bp-realtime-requested", "bp-realtime-ready", "bp-bootstrap-requested",
+        "bp-realtime-requested", "bp-realtime-channel-subscribe-called", "bp-realtime-status-subscribed", "bp-realtime-ready", "bp-bootstrap-requested",
         "bp-bootstrap-rpc-requested", "bp-bootstrap-rpc-response", "bp-bootstrap-mapped",
         "bp-critical-snapshot-ready", "bp-critical-catchup-ready"
       ]) {
@@ -520,6 +535,9 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
       expect(marks["bp-app-module-requested"]).toBeLessThan(marks["bp-app-module-ready"]);
       expect(marks["bp-session-requested"]).toBeLessThanOrEqual(marks["bp-realtime-requested"]);
       expect(marks["bp-realtime-requested"]).toBeLessThan(marks["bp-app-module-ready"]);
+      expect(marks["bp-realtime-requested"]).toBeLessThanOrEqual(marks["bp-realtime-channel-subscribe-called"]);
+      expect(marks["bp-realtime-channel-subscribe-called"]).toBeLessThanOrEqual(marks["bp-realtime-status-subscribed"]);
+      expect(marks["bp-realtime-status-subscribed"]).toBeLessThanOrEqual(marks["bp-realtime-ready"]);
       expect(marks["bp-realtime-ready"]).toBeLessThanOrEqual(marks["bp-bootstrap-rpc-requested"]);
       expect(marks["bp-bootstrap-rpc-requested"]).toBeLessThan(marks["bp-bootstrap-rpc-response"]);
       expect(marks["bp-bootstrap-rpc-response"]).toBeLessThanOrEqual(marks["bp-bootstrap-mapped"]);
@@ -558,16 +576,14 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
     await coldPage.waitForTimeout(500);
     await coldPage.evaluate(freezeStartupWebVitals, safeBoundaryLcpAtMs);
     const safeBoundaryWebVitals = await coldPage.evaluate(() => {
-      type Vitals = { largestContentfulPaintMs: number; largestContentfulPaintElement: string; largestContentfulPaintResourcePath: string; cumulativeLayoutShift: number };
-      return (globalThis as typeof globalThis & { __BP_STARTUP_WEB_VITALS__?: Vitals }).__BP_STARTUP_WEB_VITALS__
-        ?? { largestContentfulPaintMs: 0, largestContentfulPaintElement: "", largestContentfulPaintResourcePath: "", cumulativeLayoutShift: 0 };
+      return (globalThis as typeof globalThis & { __BP_STARTUP_WEB_VITALS__?: WebVitalsEvidence }).__BP_STARTUP_WEB_VITALS__!;
     });
     const loginLcpFrozenAtMs = await coldPage.evaluate(() => performance.now());
     await coldPage.evaluate(freezeStartupWebVitals, loginLcpFrozenAtMs);
     if (mode === "candidate") {
       renderEvidence = await coldPage.evaluate(() => (globalThis as typeof globalThis & { __BP_RENDER_EVIDENCE__?: RenderEvidence }).__BP_RENDER_EVIDENCE__ ?? null);
       expect(renderEvidence, "Candidate staging build must enable VITE_PERFORMANCE_EVIDENCE=true.").not.toBeNull();
-      const panelCommitOffset = renderEvidence!.updateActualDurationsMs.length;
+      const panelCommitOffset = renderEvidence!.events.length;
       const inventoryResponseOffset = responses.length;
       const inventoryHistoryStarted = performance.now();
       await coldPage.getByRole("button", { name: "Inventory", exact: true }).click();
@@ -624,7 +640,10 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
       expect(inventoryRemoteErrorVisible, "Deferred Inventory history must load without a remote error banner.").toBe(false);
       activePanelCommitDurationsMs = await coldPage.evaluate((offset) => (
         globalThis as typeof globalThis & { __BP_RENDER_EVIDENCE__?: RenderEvidence }
-      ).__BP_RENDER_EVIDENCE__?.updateActualDurationsMs.slice(offset) ?? [], panelCommitOffset);
+      ).__BP_RENDER_EVIDENCE__?.events
+        .slice(offset)
+        .filter((entry) => entry.id === "bp-inventory")
+        .map((entry) => entry.actualDurationMs) ?? [], panelCommitOffset);
       expect(activePanelCommitDurationsMs.length).toBeGreaterThan(0);
       const beforeIdle = await coldPage.evaluate(() => (globalThis as typeof globalThis & { __BP_RENDER_EVIDENCE__?: RenderEvidence }).__BP_RENDER_EVIDENCE__?.commits ?? 0);
       await coldPage.waitForTimeout(1_200);
@@ -662,12 +681,10 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
     });
     await coldPage.evaluate(freezeStartupWebVitals, loginLcpFrozenAtMs);
     const webVitals = await coldPage.evaluate(() => {
-      type Vitals = { largestContentfulPaintMs: number; largestContentfulPaintElement: string; largestContentfulPaintResourcePath: string; cumulativeLayoutShift: number };
-      const target = globalThis as typeof globalThis & { __BP_WEB_VITALS__?: Vitals; __BP_STARTUP_WEB_VITALS__?: Vitals };
-      const empty: Vitals = { largestContentfulPaintMs: 0, largestContentfulPaintElement: "", largestContentfulPaintResourcePath: "", cumulativeLayoutShift: 0 };
+      const target = globalThis as typeof globalThis & { __BP_WEB_VITALS__?: WebVitalsEvidence; __BP_STARTUP_WEB_VITALS__?: WebVitalsEvidence };
       return {
-        startup: target.__BP_STARTUP_WEB_VITALS__ ?? empty,
-        postSafe: target.__BP_WEB_VITALS__ ?? empty
+        startup: target.__BP_STARTUP_WEB_VITALS__!,
+        postSafe: target.__BP_WEB_VITALS__!
       };
     });
 
@@ -708,6 +725,12 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
       largestContentfulPaintMs: webVitals.startup.largestContentfulPaintMs,
       largestContentfulPaintElement: webVitals.startup.largestContentfulPaintElement,
       largestContentfulPaintResourcePath: webVitals.startup.largestContentfulPaintResourcePath,
+      largestContentfulPaintSize: webVitals.startup.largestContentfulPaintSize,
+      largestContentfulPaintRenderTimeMs: webVitals.startup.largestContentfulPaintRenderTimeMs,
+      largestContentfulPaintLoadTimeMs: webVitals.startup.largestContentfulPaintLoadTimeMs,
+      largestContentfulPaintElementPresent: webVitals.startup.largestContentfulPaintElementPresent,
+      largestContentfulPaintSource: webVitals.startup.largestContentfulPaintSource,
+      firstContentfulPaintMs: webVitals.startup.firstContentfulPaintMs,
       postSafeLargestContentfulPaintMs: webVitals.postSafe.largestContentfulPaintMs,
       postSafeLargestContentfulPaintElement: webVitals.postSafe.largestContentfulPaintElement,
       postSafeLargestContentfulPaintResourcePath: webVitals.postSafe.largestContentfulPaintResourcePath,
@@ -817,6 +840,8 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
     expect.soft(summary.initialJavascriptBytesMax).toBeLessThanOrEqual(1_000 * 1024);
     expect.soft(summary.initialJavascriptGzipBytesMax).toBeLessThanOrEqual(300 * 1024);
     expect.soft(loads.every((entry) => entry.largestContentfulPaintMs > 0 && entry.largestContentfulPaintMs <= entry.loginLcpFrozenAtMs)).toBe(true);
+    expect.soft(loads.every((entry) => entry.largestContentfulPaintElementPresent && entry.largestContentfulPaintElement.length > 0)).toBe(true);
+    expect.soft(loads.every((entry) => entry.firstContentfulPaintMs > 0 && entry.firstContentfulPaintMs <= entry.largestContentfulPaintMs)).toBe(true);
     expect.soft(summary.lcpP75).toBeGreaterThan(0);
     expect.soft(summary.lcpP75).toBeLessThanOrEqual(2_500);
     expect.soft(summary.clsMax).toBeLessThanOrEqual(0.1);

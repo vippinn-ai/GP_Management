@@ -1,4 +1,4 @@
-import { lazy, Suspense, type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Profiler, Suspense, type FormEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useClock } from "./hooks/useClock";
 import { useAppSync, type RemoteRestoreState } from "./hooks/useAppSync";
 import { Modal } from "./components/Modal";
@@ -47,7 +47,8 @@ import {
   buildFinancialAdjustmentPatch,
   buildFinancialCheckoutPatch,
   clearCachedNormalizedOrganizationId,
-  loadDeferredNormalizedDashboardContext,
+  loadDeferredNormalizedDashboardActivity,
+  loadDeferredNormalizedDashboardHistory,
   loadDeferredNormalizedExpenseAdminData,
   loadDeferredNormalizedInventoryHistory,
   loadInventoryReportSummaryData,
@@ -204,6 +205,24 @@ import {
   getSettlementAmount,
   validateCheckoutPayment
 } from "./billing";
+
+type PerformanceRenderRecorder = (
+  id: string,
+  phase: "mount" | "update" | "nested-update",
+  actualDuration: number,
+  baseDuration: number,
+  startTime: number,
+  commitTime: number
+) => void;
+
+function PerformanceEvidenceBoundary({ id, children }: { id: string; children: ReactNode }) {
+  if (import.meta.env.VITE_PERFORMANCE_EVIDENCE !== "true") return children;
+  const onRender: PerformanceRenderRecorder = (...args) => {
+    const target = globalThis as typeof globalThis & { __BP_RECORD_RENDER_EVIDENCE__?: PerformanceRenderRecorder };
+    target.__BP_RECORD_RENDER_EVIDENCE__?.(...args);
+  };
+  return <Profiler id={id} onRender={onRender}>{children}</Profiler>;
+}
 import {
   applyOperationalMutation,
   createOperationalMutationAcknowledgementRegistry,
@@ -571,7 +590,8 @@ export default function App() {
   const [deferredDashboardContextRefreshSignal, setDeferredDashboardContextRefreshSignal] = useState(0);
   const deferredExpenseAdminLoadedRef = useRef(false);
   const deferredInventoryHistoryLoadedRef = useRef(false);
-  const deferredDashboardContextLoadedRef = useRef(false);
+  const deferredDashboardActivityLoadedRef = useRef(false);
+  const deferredDashboardHistoryLoadedRef = useRef(false);
   const receiptPreviewBlockRef = useRef<HTMLDivElement | null>(null);
   const [, setReceiptPreviewBlockHeight] = useState<number | null>(null);
   const skipRemotePersistRef = useRef(false);
@@ -922,7 +942,8 @@ export default function App() {
       setNormalizedCustomerHistoryRefreshSignal((previous) => previous + 1);
     }
     if (BACKEND_FEATURE_FLAGS.normalizedBootstrap && !snapshot.sourceEventId) {
-      deferredDashboardContextLoadedRef.current = false;
+      deferredDashboardActivityLoadedRef.current = false;
+      deferredDashboardHistoryLoadedRef.current = false;
       setDeferredDashboardContextRefreshSignal((previous) => previous + 1);
     }
     if (rebased.conflicts.length > 0) {
@@ -1276,7 +1297,7 @@ export default function App() {
   const dashboardActivity = useActivityFeed({
     active: Boolean(activeUser && activeTab === "dashboard"),
     remoteEnabled: backendConfigured && BACKEND_FEATURE_FLAGS.activityFeed,
-    pageSize: 10,
+    pageSize: 3,
     auditLogs: appData.auditLogs,
     users: appData.users,
     refreshKey: activityRefreshKey
@@ -1805,7 +1826,8 @@ export default function App() {
 
   useEffect(() => {
     if (!activeUserId) {
-      deferredDashboardContextLoadedRef.current = false;
+      deferredDashboardActivityLoadedRef.current = false;
+      deferredDashboardHistoryLoadedRef.current = false;
       deferredExpenseAdminLoadedRef.current = false;
       deferredInventoryHistoryLoadedRef.current = false;
     }
@@ -1817,14 +1839,35 @@ export default function App() {
       || activeTab !== "dashboard"
       || !activeUserId
       || !canAccessTab("dashboard")
-      || deferredDashboardContextLoadedRef.current
+      || deferredDashboardActivityLoadedRef.current
     ) return;
     let cancelled = false;
-    runQaControlledNormalizedRead("dashboard", loadDeferredNormalizedDashboardContext)
+    runQaControlledNormalizedRead("dashboard", loadDeferredNormalizedDashboardActivity)
       .then((overlay) => {
         if (cancelled) return;
         setAppData((previous) => mergeNormalizedAppDataOverlay(previous, overlay));
-        deferredDashboardContextLoadedRef.current = true;
+        deferredDashboardActivityLoadedRef.current = true;
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) setRemoteError(error instanceof Error ? `Recent activity could not be loaded: ${error.message}` : "Recent activity could not be loaded. Reopen Dashboard to retry.");
+      });
+    return () => { cancelled = true; };
+  }, [activeTab, activeUserId, canAccessTab, deferredDashboardContextRefreshSignal]);
+
+  useEffect(() => {
+    if (
+      !BACKEND_FEATURE_FLAGS.normalizedBootstrap
+      || activeTab !== "dashboard"
+      || !activeUserId
+      || !canAccessTab("dashboard")
+      || deferredDashboardHistoryLoadedRef.current
+    ) return;
+    let cancelled = false;
+    runQaControlledNormalizedRead("dashboard", loadDeferredNormalizedDashboardHistory)
+      .then((overlay) => {
+        if (cancelled) return;
+        setAppData((previous) => mergeNormalizedAppDataOverlay(previous, overlay));
+        deferredDashboardHistoryLoadedRef.current = true;
       })
       .catch((error: unknown) => {
         if (!cancelled) setRemoteError(error instanceof Error ? `Dashboard history could not be loaded: ${error.message}` : "Dashboard history could not be loaded. Reopen Dashboard to retry.");
@@ -8024,6 +8067,7 @@ export default function App() {
 
         <Suspense fallback={<div className="panel"><div className="empty-state">Loading section...</div></div>}>
         {activeTab === "dashboard" && (
+          <PerformanceEvidenceBoundary id="bp-dashboard">
           <DashboardPanel
             stations={stations}
             openCustomerTabs={openCustomerTabs}
@@ -8090,6 +8134,7 @@ export default function App() {
             onStartSession={startSession}
             onCreateDashboardCustomerTab={createDashboardCustomerTab}
           />
+          </PerformanceEvidenceBoundary>
         )}
 
         {activeTab === "sale" && (
@@ -8135,6 +8180,7 @@ export default function App() {
         )}
 
         {activeTab === "inventory" && canAccessTab("inventory") && (
+          <PerformanceEvidenceBoundary id="bp-inventory">
           <InventoryPanel
             inventoryItems={appData.inventoryItems}
             stockMovements={appData.stockMovements}
@@ -8208,6 +8254,7 @@ export default function App() {
             onRestoreInventoryItem={restoreInventoryItem}
             onRecordStockMovement={recordStockMovement}
           />
+          </PerformanceEvidenceBoundary>
         )}
 
         {activeTab === "bills" && canAccessTab("bills") && (

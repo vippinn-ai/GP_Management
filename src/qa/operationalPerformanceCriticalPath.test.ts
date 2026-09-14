@@ -181,13 +181,29 @@ describe("browser-domain operational performance evidence", () => {
     vi.stubGlobal("PerformanceObserver", FakePerformanceObserver);
     installWebVitalsObserver();
     const lcpObserver = FakePerformanceObserver.instances.find((entry) => entry.observedType === "largest-contentful-paint")!;
+    const paintObserver = FakePerformanceObserver.instances.find((entry) => entry.observedType === "paint")!;
+    paintObserver.emit([{ name: "first-contentful-paint", startTime: 20 } as PerformanceEntry]);
     const dashboard = document.createElement("h1");
     dashboard.className = "dashboard-title";
-    lcpObserver.queue([{ startTime: 40, element: dashboard } as unknown as PerformanceEntry]);
+    let dashboardElement: Element | undefined = dashboard;
+    lcpObserver.emit([{
+      startTime: 40,
+      size: 12_000,
+      renderTime: 39,
+      loadTime: 0,
+      get element() { return dashboardElement; }
+    } as unknown as PerformanceEntry]);
+    dashboardElement = undefined;
 
     expect(freezeStartupWebVitals(50)).toMatchObject({
       largestContentfulPaintMs: 40,
-      largestContentfulPaintElement: "h1.dashboard-title"
+      largestContentfulPaintElement: "h1.dashboard-title",
+      largestContentfulPaintElementPresent: true,
+      largestContentfulPaintSize: 12_000,
+      largestContentfulPaintRenderTimeMs: 39,
+      largestContentfulPaintLoadTimeMs: 0,
+      largestContentfulPaintSource: "text",
+      firstContentfulPaintMs: 20
     });
 
     const activity = document.createElement("strong");
@@ -204,6 +220,39 @@ describe("browser-domain operational performance evidence", () => {
     expect(target.__BP_STARTUP_WEB_VITALS__).toMatchObject({
       largestContentfulPaintMs: 45,
       largestContentfulPaintElement: "section.dashboard-grid"
+    });
+  });
+
+  it("sanitizes LCP selectors and resource paths without retaining query strings", () => {
+    class FakePerformanceObserver {
+      static instances: FakePerformanceObserver[] = [];
+      constructor(readonly callback: (list: { getEntries: () => PerformanceEntry[] }) => void) {
+        FakePerformanceObserver.instances.push(this);
+      }
+      observedType = "";
+      observe(options: { type?: string }) { this.observedType = options.type ?? ""; }
+      takeRecords() { return [] as PerformanceEntry[]; }
+      emit(entries: PerformanceEntry[]) { this.callback({ getEntries: () => entries }); }
+    }
+    vi.stubGlobal("PerformanceObserver", FakePerformanceObserver);
+    installWebVitalsObserver();
+    const lcpObserver = FakePerformanceObserver.instances.find((entry) => entry.observedType === "largest-contentful-paint")!;
+    const element = document.createElement("img");
+    element.id = "customer@example.com";
+    element.className = "safe-class unsafe:value";
+    lcpObserver.emit([{
+      startTime: 40,
+      size: 500,
+      renderTime: 0,
+      loadTime: 35,
+      element,
+      url: "https://example.test/assets/logo.png?token=secret#fragment"
+    } as unknown as PerformanceEntry]);
+
+    expect(freezeStartupWebVitals(50)).toMatchObject({
+      largestContentfulPaintElement: "img.safe-class",
+      largestContentfulPaintResourcePath: "example.test/assets/logo.png",
+      largestContentfulPaintSource: "resource"
     });
   });
 

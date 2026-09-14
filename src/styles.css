@@ -3309,6 +3309,12 @@ span.catalog-card-icon-large {
   padding: 0;
 }
 
+.activity-timeline.is-dashboard-preview .activity-event-summary {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .activity-event.is-compact {
   gap: 0.7rem;
   grid-template-columns: 0.55rem minmax(0, 1fr);
