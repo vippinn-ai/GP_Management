@@ -604,8 +604,8 @@ export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): 
   const ensureRealtimeReady = () => {
     if (!_flags.normalizedRealtime) return Promise.resolve();
     if (_flags.atomicBootstrap && atomicFailure) return Promise.reject(atomicFailure);
-    if (realtimeReadyPromise) return realtimeReadyPromise;
     clearScheduledTeardown();
+    if (realtimeReadyPromise) return realtimeReadyPromise;
     const client = getSupabaseClient();
     const generation = ++realtimeGeneration;
     markBootstrapPerformance("bp-realtime-requested");

@@ -93,6 +93,43 @@ $function$`;
 
 type PreflightEvidence = ReturnType<typeof fixture>["evidence"];
 
+const helperDriftCases: Array<[string, (evidence: PreflightEvidence) => void]> = [
+  ["owner", (evidence) => { evidence.installer_role = "migration_role"; }],
+  ["body hash", (evidence) => { evidence.realtime_security.access_helper.body_md5 = "0".repeat(32); }],
+  ["definition hash", (evidence) => { evidence.realtime_security.access_helper.definition_md5 = "0".repeat(32); }],
+  ["definition/body inconsistency", (evidence) => {
+    const helper = evidence.realtime_security.access_helper;
+    helper.definition = helper.definition.replace("false\n  );", "true\n  );");
+    helper.definition_md5 = md5(helper.definition);
+  }],
+  ["security definer", (evidence) => { evidence.realtime_security.access_helper.security_definer = false; }],
+  ["volatility", (evidence) => { evidence.realtime_security.access_helper.volatility = "s"; }],
+  ["config", (evidence) => { evidence.realtime_security.access_helper.config.push("statement_timeout=5s"); }],
+  ["missing owner grant", (evidence) => {
+    evidence.realtime_security.access_helper.acl_detail = evidence.realtime_security.access_helper.acl_detail
+      .filter((grant) => grant.grantee !== "postgres");
+  }],
+  ["missing authenticated grant", (evidence) => {
+    evidence.realtime_security.access_helper.acl_detail = evidence.realtime_security.access_helper.acl_detail
+      .filter((grant) => grant.grantee !== "authenticated");
+  }],
+  ...["anon", "service_role", "staff_reader"].map<[string, (evidence: PreflightEvidence) => void]>((grantee) => [
+    `unauthorized ${grantee} grantee`,
+    (evidence) => { evidence.realtime_security.access_helper.acl_detail.push({
+      grantor: "postgres", grantee, privilege_type: "EXECUTE", is_grantable: false
+    }); }
+  ]),
+  ["wrong privilege", (evidence) => {
+    evidence.realtime_security.access_helper.acl_detail[1].privilege_type = "UPDATE";
+  }],
+  ["owner grant option", (evidence) => {
+    evidence.realtime_security.access_helper.acl_detail[0].is_grantable = true;
+  }],
+  ["authenticated grant option", (evidence) => {
+    evidence.realtime_security.access_helper.acl_detail[1].is_grantable = true;
+  }]
+];
+
 function createCleanSourceRepo(sourceText = fs.readFileSync(path.join(root, "supabase", "operational-bootstrap-v2.sql"), "utf8")) {
   const sourceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "bp-bootstrap-source-"));
   fs.mkdirSync(path.join(sourceRoot, "supabase"), { recursive: true });
@@ -158,15 +195,7 @@ describe("atomic bootstrap staging installer builder", { timeout: 30_000 }, () =
     expect(manifest.rollback.sha256).toBe(sha256(rollback));
   });
 
-  it.each([
-    ["owner", (evidence: PreflightEvidence) => { evidence.installer_role = "migration_role"; }],
-    ["body", (evidence: PreflightEvidence) => { evidence.realtime_security.access_helper.body_md5 = "0".repeat(32); }],
-    ["volatility", (evidence: PreflightEvidence) => { evidence.realtime_security.access_helper.volatility = "s"; }],
-    ["config", (evidence: PreflightEvidence) => { evidence.realtime_security.access_helper.config.push("statement_timeout=5s"); }],
-    ["grantee", (evidence: PreflightEvidence) => { evidence.realtime_security.access_helper.acl_detail.push({
-      grantor: "postgres", grantee: "service_role", privilege_type: "EXECUTE", is_grantable: false
-    }); }]
-  ])("fails closed on access-helper %s drift", (_label, mutate) => {
+  it.each(helperDriftCases)("fails closed on access-helper %s drift", (_label, mutate) => {
     const runId = `normops-20260914-${String(Date.now()).slice(-4)}-helper-drift`;
     const fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), "bp-bootstrap-preflight-helper-"));
     const preflightPath = path.join(fixtureDir, "preflight.json");
@@ -177,6 +206,23 @@ describe("atomic bootstrap staging installer builder", { timeout: 30_000 }, () =
     const { sourceRoot, commit } = createCleanSourceRepo();
 
     expect(() => runBuilder(sourceRoot, commit, runId, preflightPath)).toThrow();
+  });
+
+  it("accepts the canonical optional PUBLIC execute grant and binds it into generated postflight", () => {
+    const runId = `normops-20260914-${String(Date.now()).slice(-4)}-helper-public`;
+    const fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), "bp-bootstrap-preflight-helper-public-"));
+    const preflightPath = path.join(fixtureDir, "preflight.json");
+    const value = fixture();
+    value.evidence.realtime_security.access_helper.acl_detail.push({
+      grantor: "postgres", grantee: "PUBLIC", privilege_type: "EXECUTE", is_grantable: false
+    });
+    fs.writeFileSync(preflightPath, JSON.stringify(value));
+    createdPaths.push(fixtureDir);
+    const { sourceRoot, commit } = createCleanSourceRepo();
+    const outputDir = path.join(sourceRoot, "test-artifacts", "operational-bootstrap-v2", runId);
+
+    expect(() => runBuilder(sourceRoot, commit, runId, preflightPath)).not.toThrow();
+    expect(fs.readFileSync(path.join(outputDir, "staging-postflight.sql"), "utf8")).toContain('"grantee":"PUBLIC"');
   });
 
   it("fails closed when the preflight does not prove realtime tenant isolation", () => {
@@ -296,7 +342,11 @@ describe("atomic bootstrap staging installer builder", { timeout: 30_000 }, () =
       security_definer: false,
       volatility: "v",
       config: null,
-      acl_detail: [{ grantor: "postgres", grantee: "authenticated", privilege_type: "EXECUTE", is_grantable: false }]
+      acl_detail: [
+        { grantor: "postgres", grantee: "postgres", privilege_type: "EXECUTE", is_grantable: false },
+        { grantor: "postgres", grantee: "PUBLIC", privilege_type: "EXECUTE", is_grantable: false },
+        { grantor: "postgres", grantee: "authenticated", privilege_type: "EXECUTE", is_grantable: true }
+      ]
     };
     const runId = `normops-20260914-${String(Date.now()).slice(-4)}-bootstrap-existing`;
     const fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), "bp-bootstrap-preflight-existing-"));
@@ -313,9 +363,12 @@ describe("atomic bootstrap staging installer builder", { timeout: 30_000 }, () =
     expect(rollback).toContain('alter function public.load_operational_bootstrap_v2() owner to "postgres";');
     expect(rollback).toContain('set local role "postgres";');
     expect(rollback).toContain("reset role;");
-    expect(rollback).toContain("grant execute on function public.load_operational_bootstrap_v2() to \"authenticated\";");
+    expect(rollback).toContain("grant execute on function public.load_operational_bootstrap_v2() to \"postgres\";");
+    expect(rollback).toContain("grant execute on function public.load_operational_bootstrap_v2() to public;");
+    expect(rollback).toContain("grant execute on function public.load_operational_bootstrap_v2() to \"authenticated\" with grant option;");
     expect(rollback).toContain("rollback failed to restore the exact prior bootstrap function");
     expect(rollback).toContain(`definition_md5 is distinct from '${md5(definition)}'`);
+    expect(rollback).toContain(`actual_acl is distinct from '${JSON.stringify(prior.acl_detail)}'::jsonb`);
     expect(rollback).not.toContain("drop function public.load_operational_bootstrap_v2();");
   });
 });

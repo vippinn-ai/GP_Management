@@ -1817,6 +1817,196 @@ describe("app_state data gateway", () => {
     disposeSecond();
   });
 
+  it("does not deliver an old hydration success to a same-callback remount", async () => {
+    let realtimeHandler: ((payload: { new: unknown }) => void) | undefined;
+    let realtimeStatus: ((status: string) => void) | undefined;
+    let resolveOldOverlay!: (value: { sessions: never[]; sessionPauseLogs: never[]; customerTabs: never[] }) => void;
+    const oldOverlay = new Promise<{ sessions: never[]; sessionPauseLogs: never[]; customerTabs: never[] }>((resolve) => {
+      resolveOldOverlay = resolve;
+    });
+    const channel = {
+      on: vi.fn((_kind, _config, handler: (payload: { new: unknown }) => void) => {
+        realtimeHandler = handler;
+        return channel;
+      }),
+      subscribe: vi.fn((callback: (status: string) => void) => {
+        realtimeStatus = callback;
+        return channel;
+      })
+    };
+    const client = {
+      auth: { getSession: vi.fn().mockResolvedValue({ data: { session: { user: { id: "user-1" } } }, error: null }) },
+      channel: vi.fn(() => channel),
+      removeChannel: vi.fn(),
+      rpc: vi.fn().mockResolvedValue({ data: {}, error: null })
+    };
+    backendMocks.getSupabaseClient.mockReturnValue(client);
+    normalizedReadMocks.buildOperationalBootstrapRpcResult.mockReturnValue({
+      status: "active",
+      actorId: "user-1",
+      profile: { id: "user-1", name: "Admin", username: "admin", role: "admin", active: true },
+      organization: { id: "org-primary", name: "BreakPerfect", businessProfile: { name: "BreakPerfect" } },
+      version: 41,
+      appData: createAppData()
+    });
+    normalizedReadMocks.loadNormalizedLiveDataByIds.mockReturnValueOnce(oldOverlay).mockResolvedValue({
+      sessions: [], sessionPauseLogs: [], customerTabs: []
+    });
+    const gateway = createRemoteDataGateway({
+      ...DEFAULT_BACKEND_FEATURE_FLAGS,
+      atomicBootstrap: true,
+      normalizedBootstrap: true,
+      normalizedRealtime: true
+    });
+
+    const initialLoad = gateway.loadAuthenticatedAppDataSnapshot?.();
+    await vi.waitFor(() => expect(channel.subscribe).toHaveBeenCalledTimes(1));
+    realtimeStatus?.("SUBSCRIBED");
+    await expect(initialLoad).resolves.toMatchObject({ status: "active" });
+    const sharedChange = vi.fn();
+    const sharedError = vi.fn();
+    const disposeFirst = gateway.subscribeToAppData(sharedChange, sharedError);
+    realtimeHandler?.({
+      new: {
+        organization_id: "org-primary",
+        id: "event-old-success",
+        event_type: "session_updated",
+        entity_type: "session",
+        entity_id: "session-old",
+        created_at: "2026-09-14T04:00:00.000Z",
+        metadata: { changed_rows: { sessions: ["session-old"] } }
+      }
+    });
+    await vi.waitFor(() => expect(normalizedReadMocks.loadNormalizedLiveDataByIds).toHaveBeenCalledTimes(1));
+
+    disposeFirst();
+    const disposeSecond = gateway.subscribeToAppData(sharedChange, sharedError);
+    resolveOldOverlay({ sessions: [], sessionPauseLogs: [], customerTabs: [] });
+    await new Promise((resolve) => globalThis.setTimeout(resolve, 0));
+    expect(sharedChange).not.toHaveBeenCalled();
+    expect(sharedError).not.toHaveBeenCalled();
+
+    realtimeHandler?.({
+      new: {
+        organization_id: "org-primary",
+        id: "event-current-success",
+        event_type: "session_updated",
+        entity_type: "session",
+        entity_id: "session-current",
+        created_at: "2026-09-14T04:01:00.000Z",
+        metadata: { changed_rows: { sessions: ["session-current"] } }
+      }
+    });
+    await vi.waitFor(() => expect(sharedChange).toHaveBeenCalledTimes(1));
+    expect(sharedError).not.toHaveBeenCalled();
+    disposeSecond();
+  });
+
+  it("adopts delayed realtime readiness on a same-callback remount and only the current generation notifies", async () => {
+    let realtimeHandler: ((payload: { new: unknown }) => void) | undefined;
+    let realtimeStatus: ((status: string) => void) | undefined;
+    const channel = {
+      on: vi.fn((_kind, _config, handler: (payload: { new: unknown }) => void) => {
+        realtimeHandler = handler;
+        return channel;
+      }),
+      subscribe: vi.fn((callback: (status: string) => void) => {
+        realtimeStatus = callback;
+        return channel;
+      })
+    };
+    const client = {
+      auth: { getSession: vi.fn().mockResolvedValue({ data: { session: { user: { id: "user-1" } } }, error: null }) },
+      channel: vi.fn(() => channel),
+      removeChannel: vi.fn(),
+      rpc: vi.fn().mockResolvedValue({ data: {}, error: null })
+    };
+    backendMocks.getSupabaseClient.mockReturnValue(client);
+    normalizedReadMocks.buildOperationalBootstrapRpcResult.mockReturnValue({
+      status: "active",
+      actorId: "user-1",
+      profile: { id: "user-1", name: "Admin", username: "admin", role: "admin", active: true },
+      organization: { id: "org-primary", name: "BreakPerfect", businessProfile: { name: "BreakPerfect" } },
+      version: 41,
+      appData: createAppData()
+    });
+    const gateway = createRemoteDataGateway({
+      ...DEFAULT_BACKEND_FEATURE_FLAGS,
+      atomicBootstrap: true,
+      normalizedBootstrap: true,
+      normalizedRealtime: true
+    });
+    const sharedChange = vi.fn();
+    const sharedError = vi.fn();
+
+    const disposeFirst = gateway.subscribeToAppData(sharedChange, sharedError);
+    await vi.waitFor(() => expect(channel.subscribe).toHaveBeenCalledTimes(1));
+    disposeFirst();
+    const disposeSecond = gateway.subscribeToAppData(sharedChange, sharedError);
+    const load = gateway.loadAuthenticatedAppDataSnapshot?.();
+    realtimeStatus?.("SUBSCRIBED");
+    await expect(load).resolves.toMatchObject({ status: "active", snapshot: { version: 41 } });
+    expect(sharedChange).not.toHaveBeenCalled();
+    expect(sharedError).not.toHaveBeenCalled();
+
+    realtimeHandler?.({
+      new: {
+        organization_id: "org-primary",
+        id: "event-current-ready",
+        event_type: "session_updated",
+        entity_type: "session",
+        entity_id: "session-current",
+        created_at: "2026-09-14T04:02:00.000Z",
+        metadata: { changed_rows: { sessions: ["session-current"] } }
+      }
+    });
+    await vi.waitFor(() => expect(sharedChange).toHaveBeenCalledTimes(1));
+    expect(sharedError).not.toHaveBeenCalled();
+    expect(client.channel).toHaveBeenCalledTimes(1);
+    disposeSecond();
+  });
+
+  it("does not deliver an old delayed readiness failure to a same-callback remount", async () => {
+    let realtimeStatus: ((status: string) => void) | undefined;
+    const channel = {
+      on: vi.fn().mockReturnThis(),
+      subscribe: vi.fn((callback: (status: string) => void) => {
+        realtimeStatus = callback;
+        return channel;
+      })
+    };
+    const client = {
+      auth: { getSession: vi.fn().mockResolvedValue({ data: { session: { user: { id: "user-1" } } }, error: null }) },
+      channel: vi.fn(() => channel),
+      removeChannel: vi.fn(),
+      rpc: vi.fn()
+    };
+    backendMocks.getSupabaseClient.mockReturnValue(client);
+    const gateway = createRemoteDataGateway({
+      ...DEFAULT_BACKEND_FEATURE_FLAGS,
+      atomicBootstrap: true,
+      normalizedBootstrap: true,
+      normalizedRealtime: true
+    });
+    const sharedChange = vi.fn();
+    const sharedError = vi.fn();
+
+    const disposeFirst = gateway.subscribeToAppData(sharedChange, sharedError);
+    await vi.waitFor(() => expect(channel.subscribe).toHaveBeenCalledTimes(1));
+    disposeFirst();
+    const disposeSecond = gateway.subscribeToAppData(sharedChange, sharedError);
+    realtimeStatus?.("CHANNEL_ERROR");
+    await new Promise((resolve) => globalThis.setTimeout(resolve, 0));
+
+    expect(sharedChange).not.toHaveBeenCalled();
+    expect(sharedError).not.toHaveBeenCalled();
+    await expect(gateway.prepareAuthenticatedBootstrap?.()).rejects.toThrow(/failed before bootstrap.*CHANNEL_ERROR/i);
+    await expect(gateway.loadAuthenticatedAppDataSnapshot?.()).rejects.toThrow(/failed before bootstrap.*CHANNEL_ERROR/i);
+    expect(client.channel).toHaveBeenCalledTimes(1);
+    expect(client.rpc).not.toHaveBeenCalled();
+    disposeSecond();
+  });
+
   it("tears down the atomic channel and returns no data for an inactive actor", async () => {
     let realtimeStatus: ((status: string) => void) | undefined;
     const channel = {
