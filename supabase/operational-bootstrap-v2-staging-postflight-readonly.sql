@@ -69,7 +69,13 @@ begin
         and policy.permissive = 'PERMISSIVE'
         and policy.roles = array['authenticated']::name[]
         and regexp_replace(lower(coalesce(policy.qual, '')), '\s+', '', 'g')
-          in ('current_user_has_org_access(organization_id)', '(current_user_has_org_access(organization_id))')
+          in (
+            'current_user_has_org_access(organization_id)',
+            '(current_user_has_org_access(organization_id))',
+            'current_user_has_org_access(operational_events.organization_id)',
+            '(current_user_has_org_access(operational_events.organization_id))',
+            '(selectcurrent_user_has_org_access(operational_events.organization_id)ascurrent_user_has_org_access)'
+          )
     )
   then raise exception 'operational_events realtime RLS, publication, or inherited-role policy proof failed'; end if;
   select pg_get_functiondef(helper.oid),
@@ -94,7 +100,20 @@ begin
       where helper.oid = 'public.current_user_has_org_access(text)'::regprocedure
         and (
           (case when acl.grantee = 0 then 'PUBLIC' else pg_get_userbyid(acl.grantee) end
-            not in (access_helper_owner, 'authenticated', 'PUBLIC'))
+            not in (access_helper_owner, 'authenticated', 'PUBLIC')
+            and not (
+              (case when acl.grantee = 0 then 'PUBLIC' else pg_get_userbyid(acl.grantee) end)
+                in ('anon', 'service_role')
+              and exists (
+                select 1
+                from pg_proc public_helper
+                cross join lateral aclexplode(coalesce(public_helper.proacl, acldefault('f', public_helper.proowner))) public_acl
+                where public_helper.oid = 'public.current_user_has_org_access(text)'::regprocedure
+                  and public_acl.grantee = 0
+                  and public_acl.privilege_type = 'EXECUTE'
+                  and not public_acl.is_grantable
+              )
+            ))
           or acl.privilege_type <> 'EXECUTE'
           or acl.is_grantable
         )

@@ -225,6 +225,42 @@ describe("atomic bootstrap staging installer builder", { timeout: 30_000 }, () =
     expect(fs.readFileSync(path.join(outputDir, "staging-postflight.sql"), "utf8")).toContain('"grantee":"PUBLIC"');
   });
 
+  it("accepts the exact catalog-rendered staging policy and redundant grants covered by PUBLIC", () => {
+    const runId = `normops-20260914-${String(Date.now()).slice(-4)}-catalog-policy`;
+    const fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), "bp-bootstrap-preflight-catalog-policy-"));
+    const preflightPath = path.join(fixtureDir, "preflight.json");
+    const value = fixture();
+    value.evidence.realtime_security.policies[0].command = "ALL";
+    value.evidence.realtime_security.policies[0].using =
+      "( SELECT current_user_has_org_access(operational_events.organization_id) AS current_user_has_org_access)";
+    value.evidence.realtime_security.access_helper.acl_detail.unshift({
+      grantor: "postgres", grantee: "PUBLIC", privilege_type: "EXECUTE", is_grantable: false
+    });
+    value.evidence.realtime_security.access_helper.acl_detail.push(
+      { grantor: "postgres", grantee: "anon", privilege_type: "EXECUTE", is_grantable: false },
+      { grantor: "postgres", grantee: "service_role", privilege_type: "EXECUTE", is_grantable: false }
+    );
+    fs.writeFileSync(preflightPath, JSON.stringify(value));
+    createdPaths.push(fixtureDir);
+    const { sourceRoot, commit } = createCleanSourceRepo();
+
+    expect(() => runBuilder(sourceRoot, commit, runId, preflightPath)).not.toThrow();
+  });
+
+  it("rejects a catalog-shaped tenant predicate with an additional permissive clause", () => {
+    const runId = `normops-20260914-${String(Date.now()).slice(-4)}-catalog-policy-drift`;
+    const fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), "bp-bootstrap-preflight-catalog-policy-drift-"));
+    const preflightPath = path.join(fixtureDir, "preflight.json");
+    const value = fixture();
+    value.evidence.realtime_security.policies[0].using =
+      "( SELECT current_user_has_org_access(operational_events.organization_id) OR true)";
+    fs.writeFileSync(preflightPath, JSON.stringify(value));
+    createdPaths.push(fixtureDir);
+    const { sourceRoot, commit } = createCleanSourceRepo();
+
+    expect(() => runBuilder(sourceRoot, commit, runId, preflightPath)).toThrow();
+  });
+
   it("fails closed when the preflight does not prove realtime tenant isolation", () => {
     const runId = `normops-20260914-${String(Date.now()).slice(-4)}-bootstrap-bad`;
     const fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), "bp-bootstrap-preflight-bad-"));

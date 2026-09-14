@@ -35,10 +35,15 @@ function tenantScopedAuthenticatedPolicy(policy) {
     .toLowerCase()
     .replaceAll(/\s+/g, "")
     .replace(/^\((.*)\)$/, "$1");
+  const canonicalTenantPredicates = new Set([
+    "current_user_has_org_access(organization_id)",
+    "current_user_has_org_access(operational_events.organization_id)",
+    "selectcurrent_user_has_org_access(operational_events.organization_id)ascurrent_user_has_org_access"
+  ]);
   return roles.length === 1
     && roles[0] === "authenticated"
     && String(policy.permissive ?? "").toUpperCase() === "PERMISSIVE"
-    && normalizedUsing === "current_user_has_org_access(organization_id)";
+    && canonicalTenantPredicates.has(normalizedUsing);
 }
 
 function gitOutput(root, args) {
@@ -145,7 +150,14 @@ if (accessHelper.owner_name !== preflight.installer_role
   throw new Error("Realtime organization access helper owner, security mode, volatility, or configuration is not canonical.");
 }
 const accessHelperAcl = accessHelper.acl_detail;
-const allowedAccessHelperGrantees = new Set([accessHelper.owner_name, "authenticated", "PUBLIC"]);
+const publicExecuteIsPresent = accessHelperAcl.some((grant) => grant.grantee === "PUBLIC"
+  && grant.privilege_type === "EXECUTE" && grant.is_grantable === false);
+const allowedAccessHelperGrantees = new Set([
+  accessHelper.owner_name,
+  "authenticated",
+  "PUBLIC",
+  ...(publicExecuteIsPresent ? ["anon", "service_role"] : [])
+]);
 if (accessHelperAcl.some((grant) => grant.grantor !== accessHelper.owner_name
     || !allowedAccessHelperGrantees.has(grant.grantee)
     || grant.privilege_type !== "EXECUTE"

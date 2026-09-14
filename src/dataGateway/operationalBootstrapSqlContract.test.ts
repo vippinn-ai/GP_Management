@@ -107,6 +107,7 @@ describe("operational bootstrap staging controls", () => {
     expect(postflight).toContain("not in (function_owner, 'authenticated')");
     expect(postflight).toContain("has_function_privilege('authenticated'");
     expect(postflight).toContain("applicable_select_policies");
+    expect(postflight).toContain("selectcurrent_user_has_org_access(operational_events.organization_id)ascurrent_user_has_org_access");
     expect(postflight).toContain("join pg_auth_members membership");
     expect(postflight).toContain("operational_events realtime RLS, publication, or inherited-role policy proof failed");
     expect(postflight).toContain("organization access helper identity or ACL proof failed");
@@ -130,6 +131,8 @@ describe("operational bootstrap staging controls", () => {
     expect(installer).toContain("previous.definition.trim() + \";\"");
     expect(installer).toContain("definition_md5 is distinct from");
     expect(installer).toContain("authenticatedRoleMemberships");
+    expect(installer).toContain("canonicalTenantPredicates");
+    expect(installer).toContain("publicExecuteIsPresent");
     expect(installer).toContain("drop function public.${FUNCTION}();");
     expect(installer).toContain('flag: "wx"');
     expect(installer).toContain('const postflightPath = path.join(outDir, "staging-postflight.sql")');
