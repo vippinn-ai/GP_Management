@@ -52,6 +52,8 @@ let postflightVerification;
 let profileManifest;
 let baselineManifest;
 let databaseManifest;
+let bootstrapDatabaseManifest;
+let bootstrapPostflightVerification;
 let scaleFixtureManifest;
 let scaleFixtureVerification;
 if (!discoveryOnly) {
@@ -205,6 +207,44 @@ if (!discoveryOnly) {
     if (!sameAppStateIdentity(postflightVerification.value.appState, scaleFixtureVerification.value.appStateBefore)) {
       throw new Error("Candidate postflight and performance scale fixture before-state identities differ.");
     }
+    bootstrapDatabaseManifest = readBoundJson(
+      env.E2E_BOOTSTRAP_DB_MANIFEST_PATH,
+      env.E2E_BOOTSTRAP_DB_MANIFEST_SHA256,
+      "Candidate bootstrap database install manifest"
+    );
+    if (
+      bootstrapDatabaseManifest.value.environment !== "staging"
+      || bootstrapDatabaseManifest.value.projectRef !== STAGING_PROJECT_REF
+      || !/^[a-f0-9]{40}$/i.test(bootstrapDatabaseManifest.value.sourceCommit ?? "")
+    ) {
+      throw new Error("Candidate bootstrap database install manifest is not an exact staging source.");
+    }
+    bootstrapPostflightVerification = readBoundJson(
+      env.E2E_BOOTSTRAP_DB_POSTFLIGHT_VERIFICATION_PATH,
+      env.E2E_BOOTSTRAP_DB_POSTFLIGHT_VERIFICATION_SHA256,
+      "Candidate bootstrap database postflight verification"
+    );
+    if (
+      bootstrapPostflightVerification.value.projectRef !== STAGING_PROJECT_REF
+      || bootstrapPostflightVerification.value.systemIdentifier !== bootstrapDatabaseManifest.value.systemIdentifier
+      || bootstrapPostflightVerification.value.runId !== bootstrapDatabaseManifest.value.runId
+      || bootstrapPostflightVerification.value.sourceCommit !== bootstrapDatabaseManifest.value.sourceCommit
+      || bootstrapPostflightVerification.value.manifestSha256 !== bootstrapDatabaseManifest.sha256
+      || bootstrapPostflightVerification.value.appStateUnchanged !== true
+      || bootstrapPostflightVerification.value.incompleteMutations !== 0
+      || bootstrapPostflightVerification.value.cleanPreflightFloor !== true
+      || bootstrapPostflightVerification.value.installedFunctionBodyMd5 !== bootstrapDatabaseManifest.value.reviewedSql?.bodyMd5
+      || !Number.isInteger(bootstrapPostflightVerification.value.payload?.bytes)
+      || bootstrapPostflightVerification.value.payload.bytes <= 0
+      || bootstrapPostflightVerification.value.payload.bytes > 160_992
+      || bootstrapPostflightVerification.value.payload?.limitBytes !== 160_992
+      || bootstrapPostflightVerification.value.payload?.marginBytes !== 160_992 - bootstrapPostflightVerification.value.payload.bytes
+    ) {
+      throw new Error("Candidate bootstrap postflight verification is not an unchanged staging installation.");
+    }
+    if (!sameAppStateIdentity(bootstrapPostflightVerification.value.appState, scaleFixtureVerification.value.appStateBefore)) {
+      throw new Error("Candidate bootstrap postflight and performance scale fixture before-state identities differ.");
+    }
     baselineManifest = readBoundJson(
       env.E2E_PERFORMANCE_BASELINE_MANIFEST_PATH,
       env.E2E_PERFORMANCE_BASELINE_MANIFEST_SHA256,
@@ -276,6 +316,8 @@ console.log(JSON.stringify({
   datasetManifest: datasetManifest ? { path: path.relative(root, datasetManifest.absolutePath), sha256: datasetManifest.sha256 } : undefined,
   postflightVerification: postflightVerification ? { path: path.relative(root, postflightVerification.absolutePath), sha256: postflightVerification.sha256 } : undefined,
   databaseManifest: databaseManifest ? { path: path.relative(root, databaseManifest.absolutePath), sha256: databaseManifest.sha256 } : undefined,
+  bootstrapPostflightVerification: bootstrapPostflightVerification ? { path: path.relative(root, bootstrapPostflightVerification.absolutePath), sha256: bootstrapPostflightVerification.sha256 } : undefined,
+  bootstrapDatabaseManifest: bootstrapDatabaseManifest ? { path: path.relative(root, bootstrapDatabaseManifest.absolutePath), sha256: bootstrapDatabaseManifest.sha256 } : undefined,
   productionAllowed: false,
   writesAllowed: false,
   workers: 1,
@@ -316,6 +358,8 @@ if (!discoveryOnly) {
     datasetManifest: { path: path.relative(root, datasetManifest.absolutePath), sha256: datasetManifest.sha256 },
     postflightVerification: postflightVerification ? { path: path.relative(root, postflightVerification.absolutePath), sha256: postflightVerification.sha256 } : undefined,
     databaseManifest: databaseManifest ? { path: path.relative(root, databaseManifest.absolutePath), sha256: databaseManifest.sha256 } : undefined,
+    bootstrapPostflightVerification: bootstrapPostflightVerification ? { path: path.relative(root, bootstrapPostflightVerification.absolutePath), sha256: bootstrapPostflightVerification.sha256 } : undefined,
+    bootstrapDatabaseManifest: bootstrapDatabaseManifest ? { path: path.relative(root, bootstrapDatabaseManifest.absolutePath), sha256: bootstrapDatabaseManifest.sha256 } : undefined,
     baseline: mode === "candidate" ? {
       path: env.E2E_PERFORMANCE_BASELINE_PATH,
       sha256: env.E2E_PERFORMANCE_BASELINE_SHA256

@@ -174,6 +174,10 @@ describe("operational lifecycle v2 Playwright and performance contract", () => {
     expect(runner).toContain("E2E_EXPECTED_RECENT_STOCK_MOVEMENTS");
     expect(runner).toContain("dataset.shape_counts");
     expect(runner).toContain("E2E_DB_POSTFLIGHT_VERIFICATION_SHA256");
+    expect(runner).toContain("E2E_BOOTSTRAP_DB_MANIFEST_SHA256");
+    expect(runner).toContain("E2E_BOOTSTRAP_DB_POSTFLIGHT_VERIFICATION_SHA256");
+    expect(runner).toContain("bootstrapPostflightVerification.value.manifestSha256 !== bootstrapDatabaseManifest.sha256");
+    expect(runner).toContain("!sameAppStateIdentity(bootstrapPostflightVerification.value.appState, scaleFixtureVerification.value.appStateBefore)");
     expect(runner).toContain("E2E_PERFORMANCE_PROFILE_MANIFEST_SHA256");
     expect(runner).toContain("E2E_PERFORMANCE_BASELINE_MANIFEST_SHA256");
     expect(spec).toContain("initialJavascriptBytesMax");
