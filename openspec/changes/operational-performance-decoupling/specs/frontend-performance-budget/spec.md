@@ -37,6 +37,11 @@ History/report/customer/audit data SHALL not block safe dashboard readiness and 
 ### Requirement: Atomic bootstrap meets an independently evidenced critical-path budget
 The staging candidate SHALL expose browser-clock marks for App import, session, realtime, RPC, mapping, catch-up, and safe interaction and SHALL retain response/resource correlation evidence.
 
+#### Scenario: Bootstrap preparation starts before mount-only dependencies settle
+- **WHEN** the atomic document entry starts
+- **THEN** it starts one shared authenticated bootstrap preparation beside one dynamic atomic-mount import
+- **AND** React, the selected renderer, `App`, the error boundary, and logo remain owned by that mount module without changing the subscription-before-snapshot boundary
+
 #### Scenario: Fresh 30-load candidate race
 - **WHEN** a single unique zero-retry 30-load race runs against the frozen same-scale staging dataset
 - **THEN** safe interaction p95 is at most 3,500 ms and maximum at most 5,000 ms, pre-navigation Login LCP p75 is at most 2,500 ms, bootstrap RPC p95 is at most 800 ms and maximum at most 1,200 ms, and catch-up-to-safe p95 is at most 100 ms and maximum at most 200 ms

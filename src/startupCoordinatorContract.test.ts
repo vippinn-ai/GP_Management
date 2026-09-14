@@ -3,21 +3,29 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const mainSource = readFileSync(resolve(process.cwd(), "src/main.tsx"), "utf8");
+const atomicMountSource = readFileSync(resolve(process.cwd(), "src/atomicAppMount.tsx"), "utf8");
 const legacyMainSource = readFileSync(resolve(process.cwd(), "src/main-legacy.tsx"), "utf8");
 const viteSource = readFileSync(resolve(process.cwd(), "vite.config.ts"), "utf8");
 const syncSource = readFileSync(resolve(process.cwd(), "src/hooks/useAppSync.ts"), "utf8");
 const appSource = readFileSync(resolve(process.cwd(), "src/App.tsx"), "utf8");
 
 describe("atomic startup coordinator source contract", () => {
-  it("starts one dynamic App import beside the shared bootstrap preparation", () => {
+  it("starts one dynamic mount import beside the shared bootstrap preparation", () => {
     expect(mainSource).not.toMatch(/import App from ["']\.\/App["']/);
-    expect(mainSource.match(/const appModulePromise = import\(["']\.\/App["']\);/g)).toHaveLength(1);
+    expect(mainSource.match(/const appModulePromise = import\(["']\.\/atomicAppMount["']\);/g)).toHaveLength(1);
     expect(mainSource).toContain("defaultRemoteDataGateway.prepareAuthenticatedBootstrap?.()");
-    expect(mainSource.indexOf('import("./App")')).toBeLessThan(
+    expect(mainSource.indexOf('import("./atomicAppMount")')).toBeLessThan(
       mainSource.indexOf("defaultRemoteDataGateway.prepareAuthenticatedBootstrap?.()")
     );
     expect(mainSource).toContain('markStartupPerformance("bp-app-module-requested")');
     expect(mainSource).toContain('markStartupPerformance("bp-app-module-ready")');
+    expect(mainSource).not.toContain('from "react"');
+    expect(mainSource).not.toContain('from "react-dom/client"');
+    expect(mainSource).not.toContain("ErrorBoundary");
+    expect(mainSource).not.toContain("brandLogo");
+    expect(atomicMountSource).toMatch(/import App from ["']\.\/App["']/);
+    expect(atomicMountSource).toContain('from "react-dom/client"');
+    expect(atomicMountSource).toContain("export function mountAtomicApp()");
   });
 
   it("keeps the default-off build on the prior static application entry", () => {

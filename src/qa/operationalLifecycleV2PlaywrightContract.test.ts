@@ -272,14 +272,17 @@ describe("operational lifecycle v2 Playwright and performance contract", () => {
     expect(read("src/dataGateway/normalizedReads.ts")).toContain("const deadlineAt = Date.now() + NORMALIZED_READ_TIMEOUT_MS");
   });
 
-  it("keeps the profiling renderer on the initial graph and renders one responsive Inventory catalog layout", () => {
+  it("keeps the profiling renderer in the single deferred mount graph and renders one responsive Inventory catalog layout", () => {
     const main = read("src/main.tsx");
+    const atomicMount = read("src/atomicAppMount.tsx");
     const vite = read("vite.config.ts");
     const app = read("src/App.tsx");
     const inventory = read("src/panels/InventoryPanel.tsx");
-    expect(main).toContain('import { createRoot } from "react-dom/client"');
-    expect(main).not.toContain('await import("react-dom/profiling")');
-    expect(main).toContain("preloadShellImage(brandLogo)");
+    expect(main).toContain('import("./atomicAppMount")');
+    expect(main).not.toContain('from "react-dom/client"');
+    expect(atomicMount).toContain('import { createRoot } from "react-dom/client"');
+    expect(atomicMount).not.toContain('await import("react-dom/profiling")');
+    expect(atomicMount).toContain("preloadShellImage(brandLogo)");
     expect(vite).toContain('{ find: "react-dom/client", replacement: "react-dom/profiling" }');
     expect(app).toContain('const loadInventoryPanel = () => import("./panels/InventoryPanel")');
     expect(app).toContain("lazy(loadInventoryPanel)");
