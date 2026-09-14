@@ -186,6 +186,10 @@ describe("atomic bootstrap staging installer builder", { timeout: 30_000 }, () =
     expect(postflight).toContain("11111111-2222-4333-8444-555555555555");
     expect(postflight).toContain("1582c0fa10f3c451fee64540e43de6f7");
     expect(postflight).toContain("actual_realtime_security is distinct from");
+    expect(postflight).toMatch(/begin isolation level repeatable read read only;\r?\n\r?\ndo \$\$/i);
+    expect(postflight).not.toMatch(/\bdo \$\r?\n/);
+    expect(postflight).not.toMatch(/\bend \$;\r?\n/);
+    expect(postflight.match(/\bdo \$\$/g)?.length).toBe(postflight.match(/\bend \$\$;/g)?.length);
     expect(install).toContain("exact ACL mismatch");
     expect(install).toContain("replace(replace(btrim(p.prosrc, E' \\t\\n\\r')");
     expect(install).toContain("canonical function-body newline normalization failed");

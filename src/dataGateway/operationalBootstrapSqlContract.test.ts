@@ -136,6 +136,7 @@ describe("operational bootstrap staging controls", () => {
     expect(installer).toContain("drop function public.${FUNCTION}();");
     expect(installer).toContain('flag: "wx"');
     expect(installer).toContain('const postflightPath = path.join(outDir, "staging-postflight.sql")');
+    expect(installer).toContain("reviewedPostflight.replace(\n  transactionMarker,\n  () =>");
     expect(installer).toContain("accessHelper.owner_name !== preflight.installer_role");
     expect(installer).toContain("ACCESS_HELPER_BODY_MD5");
   });

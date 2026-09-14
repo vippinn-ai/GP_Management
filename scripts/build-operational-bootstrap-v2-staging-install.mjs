@@ -294,7 +294,10 @@ begin
 end $$;`;
 const transactionMarker = "begin isolation level repeatable read read only;";
 if (!reviewedPostflight.includes(transactionMarker)) throw new Error("Reviewed postflight transaction marker is missing.");
-const postflight = reviewedPostflight.replace(transactionMarker, `${transactionMarker}\n\n${postflightBinding}`);
+const postflight = reviewedPostflight.replace(
+  transactionMarker,
+  () => `${transactionMarker}\n\n${postflightBinding}`
+);
 
 function installedStateGuard(message) {
   return `select ${normalizedBodySql("p.prosrc")}, pg_get_userbyid(p.proowner), p.prosecdef,
