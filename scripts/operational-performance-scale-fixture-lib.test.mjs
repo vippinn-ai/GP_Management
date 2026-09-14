@@ -18,6 +18,11 @@ import {
   stableScaleIdentity,
   validatePreflight
 } from "./operational-performance-scale-fixture-lib.mjs";
+import {
+  getSellableInventoryOptions,
+  resolveComboChoiceSelections,
+  resolveComboFixedSelections
+} from "../src/utils";
 
 const counts=(value=0)=>Object.fromEntries(SCALE_TABLES.map((table)=>[table,value]));
 const fingerprints=()=>Object.fromEntries(SCALE_TABLES.map((table)=>[table,"a".repeat(32)]));
@@ -132,18 +137,75 @@ describe("operational performance scale fixture",()=>{
     expect(generated.seed).toContain("amount_paid,amount_due");
     expect(generated.seed).toMatch(/insert into public\.combo_fixed_items \([^\r\n]*quantity[^\r\n]*\)\r?\nselect [^\r\n]*,1,jsonb_build_object\('qaScaleRunId'/);
     expect(generated.seed).not.toMatch(/insert into public\.combo_fixed_items \([^\r\n]*quantity[^\r\n]*\)\r?\nselect [^\r\n]*,0,jsonb_build_object\('qaScaleRunId'/);
+    expect(generated.seed).toMatch(/insert into public\.combo_fixed_items \([^\r\n]*sellable_option_id[^\r\n]*\)\r?\nselect [^\r\n]*-inventory-[^\r\n]*::variant::[^\r\n]*-variant-/);
+    expect(generated.seed).toMatch(/insert into public\.combo_choice_options \([^\r\n]*option_id[^\r\n]*\)\r?\nselect [^\r\n]*-combo-group-[^\r\n]*-inventory-[^\r\n]*::variant::[^\r\n]*-variant-/);
+    expect(generated.seed).not.toContain("-sellable-option-");
+    expect(generated.seed).not.toContain("-combo-option-");
+    expect(generated.seed).toContain("coalesce(item.sell_base_item,true)");
+    expect(generated.seed).toContain("item.id||'::variant::'||variant.id");
+    expect(generated.seed).toContain("not coalesce(item.is_reusable,false)");
+    expect(generated.seed).toContain("coalesce(item.category,'')<>'Cigarettes'");
     expect(generated.seed).toMatch(/insert into public\.session_items \([^\r\n]*quantity[^\r\n]*\)\r?\nselect [^\r\n]*,'QA Performance Item',1,0,/);
     expect(generated.seed).toMatch(/insert into public\.customer_tab_items \([^\r\n]*quantity[^\r\n]*\)\r?\nselect [^\r\n]*,'QA Performance Item',1,0,/);
     expect(generated.seed).not.toContain("'name','QA Performance Item','quantity',0,'unitPrice',0");
     expect(generated.seed).toContain("fixture combo fixed-item quantity violates the bootstrap contract");
+    expect(generated.seed).toContain("fixture combo fixed-item option does not resolve");
+    expect(generated.seed).toContain("fixture combo choice option does not resolve");
     expect(generated.seed).toContain("fixture session-item quantity violates the bootstrap contract");
     expect(generated.seed).toContain("fixture tab-item quantity violates the bootstrap contract");
     expect(generated.seed).toContain("quantity<>0) then raise exception 'fixture movement is not inert'");
     expect(generated.cleanup).toContain("scaled dataset drift prevents cleanup");
+    expect(generated.cleanup).toMatch(/delete from public\.combo_choice_options where organization_id='org-primary' and choice_group_id in \(select [^;]*-combo-group-[^;]*generate_series\(1,1\) g\);/);
     expect(generated.cleanup).toContain("disable trigger app_state_set_updated_at");
     expect(generated.cleanup).toContain("enable trigger app_state_set_updated_at");
     expect(generated.cleanup).toContain("cleanup did not restore exact preflight identity");
     expect(generated.proof.trimEnd().endsWith("rollback;")).toBe(true);
+  });
+
+  it("uses application-resolvable composite variant IDs for generated fixed and choice options",()=>{
+    const inventoryItem={
+      id:"normops-unit-inventory-000001",name:"QA Performance Item",category:"QA Performance",price:0,
+      stockQty:0,lowStockThreshold:0,unit:"piece",isReusable:false,active:true,sellBaseItem:false,
+      saleVariants:[{id:"normops-unit-variant-000001",name:"QA Performance Variant",price:0,stockUnitsPerSale:1,active:true}],
+      createdAt:"2026-09-14T00:00:00.000Z",updatedAt:"2026-09-14T00:00:00.000Z"
+    };
+    const optionId=`${inventoryItem.id}::variant::${inventoryItem.saleVariants[0].id}`;
+    const options=getSellableInventoryOptions([inventoryItem]);
+    const combo={
+      id:"combo-1",name:"QA Performance Combo",type:"game",active:true,stationIds:[],price:0,includedMinutes:1,
+      fixedItems:[{id:"fixed-1",sellableOptionId:optionId,quantity:1}],
+      choiceGroups:[{id:"choice-1",label:"Choice",requiredQuantity:1,optionIds:[optionId]}],
+      createdAt:"2026-09-14T00:00:00.000Z",updatedAt:"2026-09-14T00:00:00.000Z"
+    };
+    expect(options.map((option)=>option.id)).toEqual([optionId]);
+    expect(resolveComboFixedSelections(combo,options)).toHaveLength(1);
+    expect(resolveComboChoiceSelections(combo,options,{"choice-1":optionId})).toHaveLength(1);
+
+    for(const invalid of [
+      {...inventoryItem,active:false},
+      {...inventoryItem,isReusable:true},
+      {...inventoryItem,category:"Cigarettes"},
+      {...inventoryItem,saleVariants:[{...inventoryItem.saleVariants[0],active:false}]}
+    ]) expect(getSellableInventoryOptions([invalid])).toEqual([]);
+    expect(resolveComboFixedSelections({...combo,fixedItems:[{id:"fixed-1",sellableOptionId:inventoryItem.saleVariants[0].id,quantity:1}]},options)).toBeNull();
+    expect(resolveComboFixedSelections({...combo,fixedItems:[{id:"fixed-1",sellableOptionId:"missing",quantity:1}]},options)).toBeNull();
+  });
+
+  it("fails closed when combo option deficits have no active synthetic variant anchor",()=>{
+    const targets=counts();
+    Object.assign(targets,{combos:1,combo_fixed_items:1,combo_choice_groups:1,combo_choice_options:1});
+    expect(()=>buildFixturePackage({
+      runId:"normops-20260914-1600-scale-no-option",snapshot:snapshot(),production:production(targets),
+      productionAppStateCounts:appStateCounts(),productionShapeCounts:shapeCounts(),packageBindingSha256:"c".repeat(64)
+    })).toThrow(/without an active synthetic sale variant/);
+
+    const constrainedTargets=counts();
+    Object.assign(constrainedTargets,{inventory_items:1,sale_variants:1,combos:1,combo_choice_groups:1,combo_choice_options:2});
+    expect(()=>buildFixturePackage({
+      runId:"normops-20260914-1601-scale-option-capacity",snapshot:snapshot(),production:production(constrainedTargets),
+      productionAppStateCounts:appStateCounts(),
+      productionShapeCounts:{...shapeCounts(),active_inventory_items:1},packageBindingSha256:"c".repeat(64)
+    })).toThrow(/cannot generate unique combo choice options/);
   });
 
   it("rejects a deliberately unsafe generated cleanup artifact",()=>{
@@ -177,7 +239,7 @@ describe("operational performance scale fixture",()=>{
   it("generates a unique rollover cleanup that retains strict stored identity and exact deletion counts",()=>{
     const original=snapshot();
     const targets=counts();
-    Object.assign(targets,{bills:2,bill_lines:2,payments:1,stock_movements:2,inventory_items:1,audit_logs:1,operational_events:1});
+    Object.assign(targets,{bills:2,bill_lines:2,payments:1,stock_movements:2,inventory_items:1,sale_variants:1,combos:1,combo_choice_groups:2,combo_choice_options:2,audit_logs:1,operational_events:1});
     const fixture=buildFixturePackage({
       runId:"normops-20260913-1400-scale-unit",
       snapshot:original,
@@ -209,6 +271,7 @@ describe("operational performance scale fixture",()=>{
       expect(sql).toContain("staging-operational-performance-scale-rollover-cleanup");
       expect(sql).toContain("get diagnostics v_deleted=row_count");
       expect(sql).toContain("fixture cleanup row count mismatch in bills");
+      expect(sql).toMatch(/delete from public\.combo_choice_options where organization_id='org-primary' and choice_group_id in \(select [^;]*-combo-group-[^;]*generate_series\(1,2\) g\);[\s\S]*?if v_deleted<>2 then raise exception 'fixture cleanup row count mismatch in combo_choice_options'/);
       expect(sql).toContain("-'current_business_day_bills'");
       expect(sql).toContain("-'current_business_day_payments'");
       expect(sql).toContain("-'recent_stock_movements'");

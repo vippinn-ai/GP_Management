@@ -386,7 +386,7 @@ function fixtureIdentifiers(runId, plan) {
     ["session_combo_applications","id","session-combo",c.session_combo_applications],
     ["session_items","id","session-item",c.session_items],
     ["session_pause_logs","id","pause",c.session_pause_logs],
-    ["combo_choice_options","option_id","combo-option",c.combo_choice_options],
+    ["combo_choice_options","choice_group_id","combo-group",c.combo_choice_groups,c.combo_choice_options],
     ["combo_choice_groups","id","combo-group",c.combo_choice_groups],
     ["combo_fixed_items","id","combo-fixed",c.combo_fixed_items],
     ["combo_station_targets","station_id","station-target",c.combo_station_targets],
@@ -411,8 +411,8 @@ function fixtureIdentifiers(runId, plan) {
 }
 
 function floorGuardSql(runId, snapshot, plan) {
-  const collisionChecks = fixtureIdentifiers(runId, plan).map(([table, column, kind, count]) =>
-    `  if exists(select 1 from public.${table} where organization_id='${ORGANIZATION_ID}' and ${column} in (select ${id(runId,kind,"g")} from generate_series(1,${count}) g)) then raise exception 'fixture id collision in ${table}'; end if;`
+  const collisionChecks = fixtureIdentifiers(runId, plan).map(([table, column, kind, identifierCount]) =>
+    `  if exists(select 1 from public.${table} where organization_id='${ORGANIZATION_ID}' and ${column} in (select ${id(runId,kind,"g")} from generate_series(1,${identifierCount}) g)) then raise exception 'fixture id collision in ${table}'; end if;`
   ).join("\n");
   return `do $$
 declare v_identity jsonb;
@@ -455,6 +455,26 @@ select 1 from public.app_state where id='primary' for update;`;
 function insertSql(runId, count, table, columns, selectValues) {
   return `insert into public.${table} (${columns.join(",")})
 select ${selectValues.join(",")} from generate_series(1,${count}) g;`;
+}
+
+function sellableOptionResolutionSql(optionExpression) {
+  return `exists(
+    select 1 from public.inventory_items item
+    where item.organization_id='${ORGANIZATION_ID}' and item.active and (
+      (coalesce(item.sell_base_item,true) and ${optionExpression}=item.id)
+      or (
+        not coalesce(item.is_reusable,false)
+        and coalesce(item.category,'')<>'Cigarettes'
+        and exists(
+          select 1 from public.sale_variants variant
+          where variant.organization_id=item.organization_id
+            and variant.inventory_item_id=item.id
+            and variant.active
+            and ${optionExpression}=item.id||'::variant::'||variant.id
+        )
+      )
+    )
+  )`;
 }
 
 const APP_STATE_OBJECT_COLLECTIONS = [
@@ -538,6 +558,13 @@ function seedStatements(runId, snapshot, plan, production, packageBindingSha256)
   const activeInventory = Math.min(c.inventory_items, plan.shape.insertCounts.active_inventory_items);
   const activeAppInventory = Math.min(appC.inventoryItems, plan.shape.insertCounts.active_inventory_items);
   const recentStockMovements = Math.min(c.stock_movements, plan.shape.insertCounts.recent_stock_movements);
+  const activeSyntheticVariants = Math.min(c.inventory_items, c.sale_variants, activeInventory);
+  if ((c.combo_fixed_items > 0 || c.combo_choice_options > 0) && activeSyntheticVariants === 0) {
+    throw new Error("Scale fixture cannot generate combo options without an active synthetic sale variant.");
+  }
+  if (c.combo_choice_options > c.combo_choice_groups * activeSyntheticVariants) {
+    throw new Error("Scale fixture cannot generate unique combo choice options from the available active synthetic sale variants.");
+  }
   const billAnchor = `${q(`${runId}-bill-`)} || lpad((((g-1) % ${Math.max(1, c.bills)})+1)::text,6,'0')`;
   const sessionAnchor = `${q(`${runId}-session-`)} || lpad((((g-1) % ${Math.max(1, c.sessions)})+1)::text,6,'0')`;
   const tabAnchor = `${q(`${runId}-tab-`)} || lpad((((g-1) % ${Math.max(1, c.customer_tabs)})+1)::text,6,'0')`;
@@ -545,6 +572,10 @@ function seedStatements(runId, snapshot, plan, production, packageBindingSha256)
   const comboAnchor = `${q(`${runId}-combo-`)} || lpad((((g-1) % ${Math.max(1, c.combos)})+1)::text,6,'0')`;
   const optionGroupOrdinal = `(((g-1)%${Math.max(1,c.combo_choice_groups)})+1)`;
   const optionComboAnchor = `${q(`${runId}-combo-`)} || lpad(((((${optionGroupOrdinal})-1)%${Math.max(1,c.combos)})+1)::text,6,'0')`;
+  const sellableOptionOrdinal = `(((g-1)%${Math.max(1,activeSyntheticVariants)})+1)`;
+  const syntheticSellableOptionAnchor = `${id(runId,"inventory",sellableOptionOrdinal)}||'::variant::'||${id(runId,"variant",sellableOptionOrdinal)}`;
+  const choiceSellableOptionOrdinal = `((floor((g-1)::numeric/${Math.max(1,c.combo_choice_groups)})::integer%${Math.max(1,activeSyntheticVariants)})+1)`;
+  const syntheticChoiceSellableOptionAnchor = `${id(runId,"inventory",choiceSellableOptionOrdinal)}||'::variant::'||${id(runId,"variant",choiceSellableOptionOrdinal)}`;
   const templateAnchor = `${q(`${runId}-expense-template-`)} || lpad((((g-1) % ${Math.max(1, c.expense_templates)})+1)::text,6,'0')`;
   const inserts = [];
   inserts.push(insertSql(runId,c.inventory_categories,"inventory_categories",["organization_id","id","name","created_at","updated_at"],[q(ORGANIZATION_ID),id(runId,"category"),`${q("QA Performance Category ")}||g`,oldTime(),oldTime()]));
@@ -554,9 +585,9 @@ function seedStatements(runId, snapshot, plan, production, packageBindingSha256)
   inserts.push(insertSql(runId,c.pricing_rules,"pricing_rules",["organization_id","id","station_id","label","start_minute","end_minute","hourly_rate","raw_data","created_at","updated_at"],[q(ORGANIZATION_ID),id(runId,"pricing"),"null",`${q("QA Performance Pricing ")}||g`,"0","0","0",marker(runId),oldTime(),oldTime()]));
   inserts.push(insertSql(runId,c.combos,"combos",["organization_id","id","name","type","active","price","included_minutes","raw_data","created_at","updated_at"],[q(ORGANIZATION_ID),id(runId,"combo"),`${q("QA Performance Combo ")}||g`,q("game"),"true","0","1",marker(runId),oldTime(),oldTime()]));
   inserts.push(insertSql(runId,c.combo_station_targets,"combo_station_targets",["organization_id","combo_id","station_id","created_at"],[q(ORGANIZATION_ID),comboAnchor,id(runId,"station-target"),oldTime()]));
-  inserts.push(insertSql(runId,c.combo_fixed_items,"combo_fixed_items",["organization_id","combo_id","id","sellable_option_id","quantity","raw_data","created_at","updated_at"],[q(ORGANIZATION_ID),comboAnchor,id(runId,"combo-fixed"),id(runId,"sellable-option"),"1",marker(runId),oldTime(),oldTime()]));
+  inserts.push(insertSql(runId,c.combo_fixed_items,"combo_fixed_items",["organization_id","combo_id","id","sellable_option_id","quantity","raw_data","created_at","updated_at"],[q(ORGANIZATION_ID),comboAnchor,id(runId,"combo-fixed"),syntheticSellableOptionAnchor,"1",marker(runId),oldTime(),oldTime()]));
   inserts.push(insertSql(runId,c.combo_choice_groups,"combo_choice_groups",["organization_id","combo_id","id","label","required_quantity","raw_data","created_at","updated_at"],[q(ORGANIZATION_ID),comboAnchor,id(runId,"combo-group"),`${q("QA Performance Group ")}||g`,"1",marker(runId),oldTime(),oldTime()]));
-  inserts.push(insertSql(runId,c.combo_choice_options,"combo_choice_options",["organization_id","combo_id","choice_group_id","option_id","created_at"],[q(ORGANIZATION_ID),optionComboAnchor,`${q(`${runId}-combo-group-`)}||lpad((${optionGroupOrdinal})::text,6,'0')`,id(runId,"combo-option"),oldTime()]));
+  inserts.push(insertSql(runId,c.combo_choice_options,"combo_choice_options",["organization_id","combo_id","choice_group_id","option_id","created_at"],[q(ORGANIZATION_ID),optionComboAnchor,`${q(`${runId}-combo-group-`)}||lpad((${optionGroupOrdinal})::text,6,'0')`,syntheticChoiceSellableOptionAnchor,oldTime()]));
   inserts.push(insertSql(runId,c.customers,"customers",["organization_id","id","name","phone","first_seen_at","last_visit_at","raw_data","created_at","updated_at"],[q(ORGANIZATION_ID),id(runId,"customer"),`${q("QA Performance Customer ")}||g`,"null",oldTime(),oldTime(),marker(runId),oldTime(),oldTime()]));
   inserts.push(insertSql(runId,c.sessions,"sessions",["organization_id","id","station_id","station_name_snapshot","mode","started_at","ended_at","status","customer_id","customer_name","customer_phone","play_mode","ltp_eligible","pricing_snapshot","pause_log_ids","closed_bill_id","close_disposition","close_reason","raw_data","created_at","updated_at"],[q(ORGANIZATION_ID),id(runId,"session"),"null",q("QA Performance Station"),q("timed"),oldTime(),`${oldTime()}+interval '30 minutes'`,q("closed"),"null",q("QA Performance Customer"),"null",q("group"),"false",q("[]")+"::jsonb",q("[]")+"::jsonb","null",q("rejected"),q("QA performance scale fixture"),marker(runId),oldTime(),oldTime()]));
   inserts.push(insertSql(runId,c.session_pause_logs,"session_pause_logs",["organization_id","id","session_id","paused_at","resumed_at","raw_data","created_at","updated_at"],[q(ORGANIZATION_ID),id(runId,"pause"),sessionAnchor,`${oldTime()}+interval '5 minutes'`,`${oldTime()}+interval '10 minutes'`,marker(runId),oldTime(),oldTime()]));
@@ -620,6 +651,8 @@ ${triggerStateGuardsSql()}
   if exists(select 1 from public.sessions where organization_id='${ORGANIZATION_ID}' and raw_data->>'qaScaleRunId'=${q(runId)} and (close_disposition<>'rejected' or closed_bill_id is not null)) then raise exception 'fixture session is not inert'; end if;
   if exists(select 1 from public.customer_tabs where organization_id='${ORGANIZATION_ID}' and raw_data->>'qaScaleRunId'=${q(runId)} and (close_disposition<>'rejected' or closed_bill_id is not null)) then raise exception 'fixture tab is not inert'; end if;
   if exists(select 1 from public.combo_fixed_items where organization_id='${ORGANIZATION_ID}' and raw_data->>'qaScaleRunId'=${q(runId)} and (quantity<=0 or quantity<>trunc(quantity))) then raise exception 'fixture combo fixed-item quantity violates the bootstrap contract'; end if;
+  if exists(select 1 from public.combo_fixed_items fixed where fixed.organization_id='${ORGANIZATION_ID}' and fixed.raw_data->>'qaScaleRunId'=${q(runId)} and not ${sellableOptionResolutionSql("fixed.sellable_option_id")}) then raise exception 'fixture combo fixed-item option does not resolve'; end if;
+  if exists(select 1 from public.combo_choice_options choice_option join public.combo_choice_groups choice_group on choice_group.organization_id=choice_option.organization_id and choice_group.combo_id=choice_option.combo_id and choice_group.id=choice_option.choice_group_id where choice_group.organization_id='${ORGANIZATION_ID}' and choice_group.raw_data->>'qaScaleRunId'=${q(runId)} and not ${sellableOptionResolutionSql("choice_option.option_id")}) then raise exception 'fixture combo choice option does not resolve'; end if;
   if exists(select 1 from public.session_items where organization_id='${ORGANIZATION_ID}' and raw_data->>'qaScaleRunId'=${q(runId)} and quantity<=0) then raise exception 'fixture session-item quantity violates the bootstrap contract'; end if;
   if exists(select 1 from public.customer_tab_items where organization_id='${ORGANIZATION_ID}' and raw_data->>'qaScaleRunId'=${q(runId)} and quantity<=0) then raise exception 'fixture tab-item quantity violates the bootstrap contract'; end if;
   if exists(select 1 from public.bills where organization_id='${ORGANIZATION_ID}' and raw_data->>'qaScaleRunId'=${q(runId)} and (amount_paid<>0 or status not in ('issued','pending') or (status='issued' and (total<>0 or amount_due<>0)) or (status='pending' and (total<>1 or amount_due<>1)))) then raise exception 'fixture bill shape is unsafe'; end if;
@@ -637,14 +670,14 @@ end $$;`;
 }
 
 function cleanupStatements(runId, snapshot, plan, packageBindingSha256, { rolloverSafe = false } = {}) {
-  const deletes = fixtureIdentifiers(runId, plan).map(([table,column,kind,count]) => rolloverSafe
+  const deletes = fixtureIdentifiers(runId, plan).map(([table,column,kind,identifierCount,expectedRowCount=identifierCount]) => rolloverSafe
     ? `do $$ declare v_deleted integer;
 begin
-  delete from public.${table} where organization_id='${ORGANIZATION_ID}' and ${column} in (select ${id(runId,kind,"g")} from generate_series(1,${count}) g);
+  delete from public.${table} where organization_id='${ORGANIZATION_ID}' and ${column} in (select ${id(runId,kind,"g")} from generate_series(1,${identifierCount}) g);
   get diagnostics v_deleted=row_count;
-  if v_deleted<>${count} then raise exception 'fixture cleanup row count mismatch in ${table}'; end if;
+  if v_deleted<>${expectedRowCount} then raise exception 'fixture cleanup row count mismatch in ${table}'; end if;
 end $$;`
-    : `delete from public.${table} where organization_id='${ORGANIZATION_ID}' and ${column} in (select ${id(runId,kind,"g")} from generate_series(1,${count}) g);`
+    : `delete from public.${table} where organization_id='${ORGANIZATION_ID}' and ${column} in (select ${id(runId,kind,"g")} from generate_series(1,${identifierCount}) g);`
   ).join("\n");
   const seededDriftCondition = rolloverSafe ? stableIdentityMismatchSql("v_live", "v_expected") : "v_live<>v_expected";
   const originalIdentity = jsonb(scaleIdentityFromSnapshot(snapshot));
