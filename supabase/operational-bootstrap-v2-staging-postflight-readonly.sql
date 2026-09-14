@@ -13,8 +13,10 @@ declare
   operational_events_published boolean;
   applicable_select_policies integer;
   access_helper_definition text;
+  access_helper_body_md5 text;
   access_helper_owner text;
   access_helper_security_definer boolean;
+  access_helper_volatility "char";
   access_helper_config text[];
   expected_keys text[] := array[
     'contract_version','status','actor_id','organization_id','actor_profile','organization',
@@ -70,23 +72,48 @@ begin
           in ('current_user_has_org_access(organization_id)', '(current_user_has_org_access(organization_id))')
     )
   then raise exception 'operational_events realtime RLS, publication, or inherited-role policy proof failed'; end if;
-  select pg_get_functiondef(helper.oid), pg_get_userbyid(helper.proowner), helper.prosecdef, helper.proconfig
-  into strict access_helper_definition, access_helper_owner, access_helper_security_definer, access_helper_config
+  select pg_get_functiondef(helper.oid),
+    md5(replace(replace(btrim(helper.prosrc, E' \t\n\r'), E'\r\n', E'\n'), E'\r', E'\n')),
+    pg_get_userbyid(helper.proowner), helper.prosecdef, helper.provolatile, helper.proconfig
+  into strict access_helper_definition, access_helper_body_md5, access_helper_owner,
+    access_helper_security_definer, access_helper_volatility, access_helper_config
   from pg_proc helper
   where helper.oid = 'public.current_user_has_org_access(text)'::regprocedure;
-  if access_helper_owner is null
+  if access_helper_body_md5 is distinct from '1582c0fa10f3c451fee64540e43de6f7'
+    or access_helper_owner is distinct from current_user
     or access_helper_security_definer is distinct from true
+    or access_helper_volatility is distinct from 'v'
     or access_helper_definition !~* 'organization_members'
     or access_helper_definition !~* 'auth\.uid'
     or access_helper_definition !~* 'active[[:space:]]*=[[:space:]]*true'
-    or access_helper_config is null
-    or not ('search_path=public' = any(access_helper_config))
+    or to_jsonb(access_helper_config) is distinct from '["search_path=public"]'::jsonb
     or exists (
       select 1
       from pg_proc helper
       cross join lateral aclexplode(coalesce(helper.proacl, acldefault('f', helper.proowner))) acl
       where helper.oid = 'public.current_user_has_org_access(text)'::regprocedure
-        and (acl.privilege_type <> 'EXECUTE' or acl.is_grantable)
+        and (
+          (case when acl.grantee = 0 then 'PUBLIC' else pg_get_userbyid(acl.grantee) end
+            not in (access_helper_owner, 'authenticated', 'PUBLIC'))
+          or acl.privilege_type <> 'EXECUTE'
+          or acl.is_grantable
+        )
+    )
+    or not exists (
+      select 1
+      from pg_proc helper
+      cross join lateral aclexplode(coalesce(helper.proacl, acldefault('f', helper.proowner))) acl
+      where helper.oid = 'public.current_user_has_org_access(text)'::regprocedure
+        and pg_get_userbyid(acl.grantee) = access_helper_owner
+        and acl.privilege_type = 'EXECUTE' and not acl.is_grantable
+    )
+    or not exists (
+      select 1
+      from pg_proc helper
+      cross join lateral aclexplode(coalesce(helper.proacl, acldefault('f', helper.proowner))) acl
+      where helper.oid = 'public.current_user_has_org_access(text)'::regprocedure
+        and pg_get_userbyid(acl.grantee) = 'authenticated'
+        and acl.privilege_type = 'EXECUTE' and not acl.is_grantable
     )
   then raise exception 'organization access helper identity or ACL proof failed'; end if;
   select profile.id into strict actor_id
@@ -203,6 +230,7 @@ select jsonb_build_object(
     ), '[]'::jsonb),
     'access_helper', (select jsonb_build_object(
       'definition_md5', md5(pg_get_functiondef(oid)),
+      'body_md5', md5(replace(replace(btrim(prosrc, E' \t\n\r'), E'\r\n', E'\n'), E'\r', E'\n')),
       'owner_name', pg_get_userbyid(proowner),
       'security_definer', prosecdef,
       'volatility', provolatile,

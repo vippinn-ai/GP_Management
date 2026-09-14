@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -6,7 +7,11 @@ const sql = readFileSync(resolve(process.cwd(), "supabase/operational-bootstrap-
 const preflight = readFileSync(resolve(process.cwd(), "supabase/operational-bootstrap-v2-staging-preflight-readonly.sql"), "utf8");
 const postflight = readFileSync(resolve(process.cwd(), "supabase/operational-bootstrap-v2-staging-postflight-readonly.sql"), "utf8");
 const installer = readFileSync(resolve(process.cwd(), "scripts/build-operational-bootstrap-v2-staging-install.mjs"), "utf8");
+const phase1Schema = readFileSync(resolve(process.cwd(), "supabase/phase1-normalized-schema.sql"), "utf8");
 const body = sql.match(/as \$\$([\s\S]*?)\$\$;/i)?.[1] ?? "";
+const accessHelperBody = phase1Schema.match(
+  /create or replace function public\.current_user_has_org_access\(target_organization_id text\)[\s\S]*?as \$\$([\s\S]*?)\$\$;/i
+)?.[1].replaceAll("\r\n", "\n").replaceAll("\r", "\n").trim() ?? "";
 
 describe("operational bootstrap v2 SQL contract", () => {
   it("is additive, authenticated-only, stable, bounded, and read-only", () => {
@@ -68,6 +73,10 @@ describe("operational bootstrap v2 SQL contract", () => {
 });
 
 describe("operational bootstrap staging controls", () => {
+  it("binds the canonical access-helper body hash to the normalized schema source", () => {
+    expect(createHash("md5").update(accessHelperBody).digest("hex")).toBe("1582c0fa10f3c451fee64540e43de6f7");
+  });
+
   it("binds preflight evidence to staging, app_state, the prior function, and realtime RLS", () => {
     expect(preflight).toMatch(/begin isolation level repeatable read read only/i);
     expect(preflight).toContain("tkbdyzxwwbhkpztgjjxh");
@@ -81,6 +90,7 @@ describe("operational bootstrap staging controls", () => {
     expect(preflight).toContain("'authenticated_role_memberships'");
     expect(preflight).toContain("join pg_auth_members membership");
     expect(preflight).toContain("'owner_name', pg_get_userbyid(helper.proowner)");
+    expect(preflight).toContain("'body_md5', md5(replace(replace(btrim(helper.prosrc");
     expect(preflight).toContain("canonical function-body newline normalization failed");
     expect(preflight).toContain("current_user_has_org_access(text)");
     expect(preflight).toContain("relrowsecurity");
@@ -100,6 +110,11 @@ describe("operational bootstrap staging controls", () => {
     expect(postflight).toContain("join pg_auth_members membership");
     expect(postflight).toContain("operational_events realtime RLS, publication, or inherited-role policy proof failed");
     expect(postflight).toContain("organization access helper identity or ACL proof failed");
+    expect(postflight).toContain("1582c0fa10f3c451fee64540e43de6f7");
+    expect(postflight).toContain("access_helper_owner is distinct from current_user");
+    expect(postflight).toContain("access_helper_volatility is distinct from 'v'");
+    expect(postflight).toContain("'[\"search_path=public\"]'::jsonb");
+    expect(postflight).toContain("not in (access_helper_owner, 'authenticated', 'PUBLIC')");
     expect(postflight).toContain("'realtime_security'");
     expect(postflight.trimEnd()).toMatch(/rollback;$/i);
   });
@@ -117,5 +132,8 @@ describe("operational bootstrap staging controls", () => {
     expect(installer).toContain("authenticatedRoleMemberships");
     expect(installer).toContain("drop function public.${FUNCTION}();");
     expect(installer).toContain('flag: "wx"');
+    expect(installer).toContain('const postflightPath = path.join(outDir, "staging-postflight.sql")');
+    expect(installer).toContain("accessHelper.owner_name !== preflight.installer_role");
+    expect(installer).toContain("ACCESS_HELPER_BODY_MD5");
   });
 });

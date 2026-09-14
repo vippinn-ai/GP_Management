@@ -189,6 +189,16 @@ describe("operational bootstrap RPC response mapping", () => {
     expect(() => buildOperationalBootstrapRpcResult(malformed)).toThrow(/invalid organization business_profile\.name/i);
   });
 
+  it("rejects unknown tab permissions for the actor and collection profiles", () => {
+    const invalidActor = cloneEnvelope();
+    (invalidActor.actor_profile as Record<string, unknown>).tabPermissions = ["dashboard", "unknown-tab"];
+    expect(() => buildOperationalBootstrapRpcResult(invalidActor)).toThrow(/invalid actor_profile\.tabPermissions\[1\]/i);
+
+    const invalidProfile = cloneEnvelope();
+    (invalidProfile.profiles as Array<Record<string, unknown>>)[0].tabPermissions = ["unknown-tab"];
+    expect(() => buildOperationalBootstrapRpcResult(invalidProfile)).toThrow(/invalid profiles\[0\]\.tabPermissions\[0\]/i);
+  });
+
   it("rejects payloads larger than the fixed decoded-byte budget", () => {
     const envelope = cloneEnvelope();
     (envelope.organization as Record<string, unknown>).business_profile = {

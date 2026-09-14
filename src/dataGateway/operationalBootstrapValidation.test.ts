@@ -98,6 +98,7 @@ describe("operational bootstrap row value contracts", () => {
 
   it.each([
     ["profiles", "active", "yes"],
+    ["profiles", "tabPermissions", ["unknown-tab"]],
     ["inventory_categories", "name", 7],
     ["stations", "mode", "hourly"],
     ["pricing_rules", "hourly_rate", "100"],

@@ -26,7 +26,7 @@ If a rollback-only proof exposes a defect in already-installed v2 function bodie
 1. Execute only the generated manifest-bound install. It installs lifecycle v2 and the exact reviewed `start_session`, `open_customer_tab`, and `link_customer_tab_continuation` actor-safe definitions in one transaction.
 2. Read definitions and grants back from the database.
 3. Prove all three lifecycle v2 bodies have no `app_state` reference and that legacy functions remain executable.
-4. Run the read-only postflight, save its JSON, and run `npm run verify:db:staging:operational-v2 -- --preflight=<saved-preflight> --postflight=<saved-postflight> --manifest=<manifest>`.
+4. Run the immutable `staging-postflight.sql` emitted by the exact preflight-bound installer package, save its JSON, and run `npm run verify:db:staging:operational-v2 -- --preflight=<saved-preflight> --postflight=<saved-postflight> --manifest=<manifest>`. Do not substitute the unbound source template: the generated artifact first compares the complete realtime RLS, role-closure, policy, publication, and access-helper snapshot byte-for-byte with its preflight evidence, then executes the standalone canonical security and response checks inside the same read-only transaction.
 5. Confirm install changed no domain rows or compatibility values.
 6. Keep the existing frontend deployed for the frozen baseline. Do not deploy the candidate until the rollback-only DB proof and baseline performance run below have passed.
 

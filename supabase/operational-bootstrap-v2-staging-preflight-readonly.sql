@@ -68,6 +68,7 @@ with recursive target_function as (
   select jsonb_build_object(
     'definition', pg_get_functiondef(helper.oid),
     'definition_md5', md5(pg_get_functiondef(helper.oid)),
+    'body_md5', md5(replace(replace(btrim(helper.prosrc, E' \t\n\r'), E'\r\n', E'\n'), E'\r', E'\n')),
     'owner_name', pg_get_userbyid(helper.proowner),
     'security_definer', helper.prosecdef,
     'volatility', helper.provolatile,

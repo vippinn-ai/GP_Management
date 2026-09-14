@@ -15,7 +15,25 @@ afterEach(() => {
 });
 
 function fixture(targetFunction: unknown = null) {
-  const accessHelperDefinition = "select 1 from public.organization_members membership where membership.active = true";
+  const accessHelperBody = `select coalesce(
+    (
+      select organization_members.active
+      from public.organization_members
+      where organization_members.organization_id = target_organization_id
+        and organization_members.user_id = (select auth.uid())
+        and organization_members.active = true
+      limit 1
+    ),
+    false
+  );`;
+  const accessHelperDefinition = `CREATE OR REPLACE FUNCTION public.current_user_has_org_access(target_organization_id text)
+ RETURNS boolean
+ LANGUAGE sql
+ VOLATILE SECURITY DEFINER
+ SET search_path TO 'public'
+AS $function$
+  ${accessHelperBody}
+$function$`;
   return {
     evidence: {
       expected_project_ref: "tkbdyzxwwbhkpztgjjxh",
@@ -48,26 +66,41 @@ function fixture(targetFunction: unknown = null) {
         access_helper: {
           definition: accessHelperDefinition,
           definition_md5: md5(accessHelperDefinition),
+          body_md5: md5(accessHelperBody),
           owner_name: "postgres",
           security_definer: true,
           volatility: "v",
           config: ["search_path=public"],
-          acl_detail: [{
-            grantor: "postgres",
-            grantee: "authenticated",
-            privilege_type: "EXECUTE",
-            is_grantable: false
-          }]
+          acl_detail: [
+            {
+              grantor: "postgres",
+              grantee: "postgres",
+              privilege_type: "EXECUTE",
+              is_grantable: false
+            },
+            {
+              grantor: "postgres",
+              grantee: "authenticated",
+              privilege_type: "EXECUTE",
+              is_grantable: false
+            }
+          ]
         }
       }
     }
   };
 }
 
+type PreflightEvidence = ReturnType<typeof fixture>["evidence"];
+
 function createCleanSourceRepo(sourceText = fs.readFileSync(path.join(root, "supabase", "operational-bootstrap-v2.sql"), "utf8")) {
   const sourceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "bp-bootstrap-source-"));
   fs.mkdirSync(path.join(sourceRoot, "supabase"), { recursive: true });
   fs.writeFileSync(path.join(sourceRoot, "supabase", "operational-bootstrap-v2.sql"), sourceText);
+  fs.writeFileSync(
+    path.join(sourceRoot, "supabase", "operational-bootstrap-v2-staging-postflight-readonly.sql"),
+    fs.readFileSync(path.join(root, "supabase", "operational-bootstrap-v2-staging-postflight-readonly.sql"), "utf8")
+  );
   fs.writeFileSync(path.join(sourceRoot, ".gitignore"), "test-artifacts/\n");
   execFileSync("git", ["init"], { cwd: sourceRoot, stdio: "pipe" });
   execFileSync("git", ["config", "user.email", "bootstrap-test@example.invalid"], { cwd: sourceRoot });
@@ -101,6 +134,7 @@ describe("atomic bootstrap staging installer builder", { timeout: 30_000 }, () =
     runBuilder(sourceRoot, commit, runId, preflightPath);
 
     const install = fs.readFileSync(path.join(outputDir, "staging-install.sql"), "utf8");
+    const postflight = fs.readFileSync(path.join(outputDir, "staging-postflight.sql"), "utf8");
     const rollback = fs.readFileSync(path.join(outputDir, "staging-rollback.sql"), "utf8");
     const manifest = JSON.parse(fs.readFileSync(path.join(outputDir, "manifest.json"), "utf8"));
     expect(install).toContain("unexpected bootstrap function appeared after preflight");
@@ -111,12 +145,38 @@ describe("atomic bootstrap staging installer builder", { timeout: 30_000 }, () =
     expect(manifest.previousFunctionExisted).toBe(false);
     expect(manifest.sourceCommit).toBe(commit);
     expect(install).toContain("realtime publication, RLS policy, or access helper changed after preflight");
+    expect(postflight).toContain("realtime publication, RLS policy, or access helper changed after preflight");
+    expect(postflight).toContain("11111111-2222-4333-8444-555555555555");
+    expect(postflight).toContain("1582c0fa10f3c451fee64540e43de6f7");
+    expect(postflight).toContain("actual_realtime_security is distinct from");
     expect(install).toContain("exact ACL mismatch");
     expect(install).toContain("replace(replace(btrim(p.prosrc, E' \\t\\n\\r')");
     expect(install).toContain("canonical function-body newline normalization failed");
     expect(rollback).toContain("owner, configuration, ACL, or security drift");
     expect(manifest.install.sha256).toBe(sha256(install));
+    expect(manifest.postflight.sha256).toBe(sha256(postflight));
     expect(manifest.rollback.sha256).toBe(sha256(rollback));
+  });
+
+  it.each([
+    ["owner", (evidence: PreflightEvidence) => { evidence.installer_role = "migration_role"; }],
+    ["body", (evidence: PreflightEvidence) => { evidence.realtime_security.access_helper.body_md5 = "0".repeat(32); }],
+    ["volatility", (evidence: PreflightEvidence) => { evidence.realtime_security.access_helper.volatility = "s"; }],
+    ["config", (evidence: PreflightEvidence) => { evidence.realtime_security.access_helper.config.push("statement_timeout=5s"); }],
+    ["grantee", (evidence: PreflightEvidence) => { evidence.realtime_security.access_helper.acl_detail.push({
+      grantor: "postgres", grantee: "service_role", privilege_type: "EXECUTE", is_grantable: false
+    }); }]
+  ])("fails closed on access-helper %s drift", (_label, mutate) => {
+    const runId = `normops-20260914-${String(Date.now()).slice(-4)}-helper-drift`;
+    const fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), "bp-bootstrap-preflight-helper-"));
+    const preflightPath = path.join(fixtureDir, "preflight.json");
+    const value = fixture();
+    mutate(value.evidence);
+    fs.writeFileSync(preflightPath, JSON.stringify(value));
+    createdPaths.push(fixtureDir);
+    const { sourceRoot, commit } = createCleanSourceRepo();
+
+    expect(() => runBuilder(sourceRoot, commit, runId, preflightPath)).toThrow();
   });
 
   it("fails closed when the preflight does not prove realtime tenant isolation", () => {

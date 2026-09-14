@@ -6,6 +6,7 @@ import path from "node:path";
 const EXPECTED_PROJECT_REF = "tkbdyzxwwbhkpztgjjxh";
 const EXPECTED_SYSTEM_IDENTIFIER = "7623125441096521075";
 const FUNCTION = "load_operational_bootstrap_v2";
+const ACCESS_HELPER_BODY_MD5 = "1582c0fa10f3c451fee64540e43de6f7";
 
 function argument(name) {
   const marker = `--${name}=`;
@@ -128,6 +129,8 @@ if (applicablePolicies.length !== 1 || !tenantScopedAuthenticatedPolicy(applicab
 const accessHelper = preflight.realtime_security?.access_helper;
 if (!/^[0-9a-f]{32}$/i.test(accessHelper?.definition_md5 ?? "")
   || md5(accessHelper?.definition ?? "") !== accessHelper.definition_md5
+  || accessHelper?.body_md5 !== ACCESS_HELPER_BODY_MD5
+  || md5(extractDeployedBody(accessHelper?.definition ?? "")) !== accessHelper.body_md5
   || typeof accessHelper?.owner_name !== "string" || !accessHelper.owner_name
   || typeof accessHelper?.security_definer !== "boolean"
   || typeof accessHelper?.volatility !== "string" || accessHelper.volatility.length !== 1
@@ -135,7 +138,23 @@ if (!/^[0-9a-f]{32}$/i.test(accessHelper?.definition_md5 ?? "")
   || !Array.isArray(accessHelper?.acl_detail)) {
   throw new Error("Realtime organization access helper evidence is incomplete or inconsistent.");
 }
-if (!/organization_members[\s\S]*membership\.active = true/i.test(accessHelper.definition)) {
+if (accessHelper.owner_name !== preflight.installer_role
+  || accessHelper.security_definer !== true
+  || accessHelper.volatility !== "v"
+  || JSON.stringify(accessHelper.config) !== JSON.stringify(["search_path=public"])) {
+  throw new Error("Realtime organization access helper owner, security mode, volatility, or configuration is not canonical.");
+}
+const accessHelperAcl = accessHelper.acl_detail;
+const allowedAccessHelperGrantees = new Set([accessHelper.owner_name, "authenticated", "PUBLIC"]);
+if (accessHelperAcl.some((grant) => grant.grantor !== accessHelper.owner_name
+    || !allowedAccessHelperGrantees.has(grant.grantee)
+    || grant.privilege_type !== "EXECUTE"
+    || grant.is_grantable !== false)
+  || !accessHelperAcl.some((grant) => grant.grantee === accessHelper.owner_name)
+  || !accessHelperAcl.some((grant) => grant.grantee === "authenticated")) {
+  throw new Error("Realtime organization access helper ACL is not canonical.");
+}
+if (!/organization_members[\s\S]*organization_members\.active = true/i.test(accessHelper.definition)) {
   throw new Error("Realtime organization access helper does not prove active membership.");
 }
 
@@ -158,6 +177,7 @@ const expectedInstalledOwner = previous?.owner_name ?? preflight.installer_role;
 const expectedInstalledConfig = ["search_path=pg_catalog", "statement_timeout=5s"];
 const outDir = path.join(root, "test-artifacts", "operational-bootstrap-v2", runId);
 const installPath = path.join(outDir, "staging-install.sql");
+const postflightPath = path.join(outDir, "staging-postflight.sql");
 const rollbackPath = path.join(outDir, "staging-rollback.sql");
 const manifestPath = path.join(outDir, "manifest.json");
 
@@ -229,6 +249,7 @@ const realtimeSecurityGuard = `select jsonb_build_object(
       select jsonb_build_object(
         'definition', pg_get_functiondef(helper.oid),
         'definition_md5', md5(pg_get_functiondef(helper.oid)),
+        'body_md5', ${normalizedBodySql("helper.prosrc")},
         'owner_name', pg_get_userbyid(helper.proowner),
         'security_definer', helper.prosecdef,
         'volatility', helper.provolatile,
@@ -250,6 +271,18 @@ const realtimeSecurityGuard = `select jsonb_build_object(
   where n.nspname = 'public' and c.relname = 'operational_events';
   if actual_realtime_security is distinct from ${sqlLiteral(JSON.stringify(capturedRealtimeSecurity))}::jsonb
     then raise exception 'realtime publication, RLS policy, or access helper changed after preflight'; end if;`;
+
+const reviewedPostflightPath = path.join(root, "supabase", "operational-bootstrap-v2-staging-postflight-readonly.sql");
+const reviewedPostflight = fs.readFileSync(reviewedPostflightPath, "utf8");
+const postflightBinding = `do $$
+declare actual_realtime_security jsonb;
+begin
+  ${commonIdentityGuard}
+  ${realtimeSecurityGuard}
+end $$;`;
+const transactionMarker = "begin isolation level repeatable read read only;";
+if (!reviewedPostflight.includes(transactionMarker)) throw new Error("Reviewed postflight transaction marker is missing.");
+const postflight = reviewedPostflight.replace(transactionMarker, `${transactionMarker}\n\n${postflightBinding}`);
 
 function installedStateGuard(message) {
   return `select ${normalizedBodySql("p.prosrc")}, pg_get_userbyid(p.proowner), p.prosecdef,
@@ -361,6 +394,7 @@ const rollback = [`-- Exact definition rollback for ${runId}; disable VITE_BACKE
 
 fs.mkdirSync(outDir, { recursive: true });
 fs.writeFileSync(installPath, install, { encoding: "utf8", flag: "wx" });
+fs.writeFileSync(postflightPath, postflight, { encoding: "utf8", flag: "wx" });
 fs.writeFileSync(rollbackPath, rollback, { encoding: "utf8", flag: "wx" });
 const manifest = {
   runId,
@@ -372,6 +406,7 @@ const manifest = {
   reviewedSql: { path: path.relative(root, reviewedPath), sha256: sha256(reviewed), bodyMd5: reviewedBodyMd5 },
   previousFunctionExisted: Boolean(previous),
   install: { path: path.relative(root, installPath), sha256: sha256(install) },
+  postflight: { path: path.relative(root, postflightPath), sha256: sha256(postflight) },
   rollback: { path: path.relative(root, rollbackPath), sha256: sha256(rollback) }
 };
 fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, { encoding: "utf8", flag: "wx" });

@@ -1,7 +1,10 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { getSupabaseClient, type RemoteOrganization, type RemoteProfile } from "../backend";
 import { rememberNormalizedOrganizationId } from "./normalizedOrganization";
-import { validateOperationalBootstrapRow } from "./operationalBootstrapValidation";
+import {
+  validateOperationalBootstrapRow,
+  validateOperationalBootstrapTabPermissions
+} from "./operationalBootstrapValidation";
 import type {
   AppData,
   AuditLog,
@@ -1206,11 +1209,7 @@ function mapBootstrapProfile(value: unknown, label: string): RemoteProfile {
     throw new Error(`Operational bootstrap returned an invalid ${label}.active.`);
   }
   const tabPermissions = row.tabPermissions;
-  if (tabPermissions !== undefined && tabPermissions !== null && (
-    !Array.isArray(tabPermissions) || tabPermissions.some((entry) => typeof entry !== "string")
-  )) {
-    throw new Error(`Operational bootstrap returned invalid ${label}.tabPermissions.`);
-  }
+  validateOperationalBootstrapTabPermissions(tabPermissions, `${label}.tabPermissions`);
   return {
     id: requireBootstrapText(row.id, `${label}.id`),
     name: requireBootstrapText(row.name, `${label}.name`),

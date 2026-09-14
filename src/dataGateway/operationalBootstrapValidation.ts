@@ -75,6 +75,18 @@ const stringArray: ValueValidator = (value, label) => {
   }
 };
 
+const tabId = oneOf(
+  "dashboard", "sale", "inventory", "bills", "reports", "customers", "activity", "settings", "users"
+);
+const tabIdArray: ValueValidator = (value, label) => {
+  if (!Array.isArray(value)) throw new Error(`Operational bootstrap returned an invalid ${label}.`);
+  value.forEach((entry, index) => tabId(entry, `${label}[${index}]`));
+};
+
+export function validateOperationalBootstrapTabPermissions(value: unknown, label: string) {
+  optionalNullable(tabIdArray)(value, label);
+}
+
 function validateKnownFields(
   value: unknown,
   label: string,
@@ -222,7 +234,7 @@ const validators: Record<string, RowValidator> = {
   profiles: withOrganization((row, label) => validateFields(row, label, {
     id: textValue, name: textValue, username: textValue,
     role: oneOf("admin", "manager", "receptionist"), active: booleanValue,
-    tabPermissions: nullable(stringArray)
+    tabPermissions: nullable(tabIdArray)
   })),
   inventory_categories: withOrganization((row, label) => validateFields(row, label, { name: textValue })),
   stations: withOrganization((row, label) => {
