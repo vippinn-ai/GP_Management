@@ -9,6 +9,13 @@ declare
   function_security_definer boolean;
   function_volatility "char";
   function_config text[];
+  operational_events_rls boolean;
+  operational_events_published boolean;
+  applicable_select_policies integer;
+  access_helper_definition text;
+  access_helper_owner text;
+  access_helper_security_definer boolean;
+  access_helper_config text[];
   expected_keys text[] := array[
     'contract_version','status','actor_id','organization_id','actor_profile','organization',
     'app_state_metadata','profiles','inventory_categories','stations','pricing_rules','inventory_items',
@@ -26,6 +33,62 @@ begin
   if md5(replace(replace(btrim(E' \talpha\r\nbeta\rgamma\n ', E' \t\n\r'), E'\r\n', E'\n'), E'\r', E'\n'))
     is distinct from md5(E'alpha\nbeta\ngamma')
   then raise exception 'canonical function-body newline normalization failed'; end if;
+  select c.relrowsecurity, exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'operational_events'
+  )
+  into strict operational_events_rls, operational_events_published
+  from pg_class c join pg_namespace n on n.oid = c.relnamespace
+  where n.nspname = 'public' and c.relname = 'operational_events';
+  with recursive authenticated_roles(role_oid, role_name) as (
+    select role.oid, role.rolname from pg_roles role where role.rolname = 'authenticated'
+    union
+    select granted_role.oid, granted_role.rolname
+    from authenticated_roles inherited_role
+    join pg_auth_members membership on membership.member = inherited_role.role_oid
+    join pg_roles granted_role on granted_role.oid = membership.roleid
+  )
+  select count(*) into strict applicable_select_policies
+  from pg_policies policy
+  where policy.schemaname = 'public' and policy.tablename = 'operational_events'
+    and policy.cmd in ('SELECT', 'ALL')
+    and exists (
+      select 1 from unnest(policy.roles) policy_role
+      where lower(policy_role::text) = 'public'
+        or lower(policy_role::text) in (select lower(role_name) from authenticated_roles)
+    );
+  if operational_events_rls is distinct from true
+    or operational_events_published is distinct from true
+    or applicable_select_policies <> 1
+    or not exists (
+      select 1 from pg_policies policy
+      where policy.schemaname = 'public' and policy.tablename = 'operational_events'
+        and policy.cmd in ('SELECT', 'ALL')
+        and policy.permissive = 'PERMISSIVE'
+        and policy.roles = array['authenticated']::name[]
+        and regexp_replace(lower(coalesce(policy.qual, '')), '\s+', '', 'g')
+          in ('current_user_has_org_access(organization_id)', '(current_user_has_org_access(organization_id))')
+    )
+  then raise exception 'operational_events realtime RLS, publication, or inherited-role policy proof failed'; end if;
+  select pg_get_functiondef(helper.oid), pg_get_userbyid(helper.proowner), helper.prosecdef, helper.proconfig
+  into strict access_helper_definition, access_helper_owner, access_helper_security_definer, access_helper_config
+  from pg_proc helper
+  where helper.oid = 'public.current_user_has_org_access(text)'::regprocedure;
+  if access_helper_owner is null
+    or access_helper_security_definer is distinct from true
+    or access_helper_definition !~* 'organization_members'
+    or access_helper_definition !~* 'auth\.uid'
+    or access_helper_definition !~* 'active[[:space:]]*=[[:space:]]*true'
+    or access_helper_config is null
+    or not ('search_path=public' = any(access_helper_config))
+    or exists (
+      select 1
+      from pg_proc helper
+      cross join lateral aclexplode(coalesce(helper.proacl, acldefault('f', helper.proowner))) acl
+      where helper.oid = 'public.current_user_has_org_access(text)'::regprocedure
+        and (acl.privilege_type <> 'EXECUTE' or acl.is_grantable)
+    )
+  then raise exception 'organization access helper identity or ACL proof failed'; end if;
   select profile.id into strict actor_id
   from public.profiles profile
   join public.organization_members membership on membership.user_id = profile.id
@@ -76,10 +139,20 @@ begin
   perform set_config('normops.bootstrap_postflight_payload', payload::text, true);
 end $$;
 
-with target as (
+with recursive target as (
   select p.* from pg_proc p join pg_namespace n on n.oid = p.pronamespace
   where n.nspname = 'public' and p.proname = 'load_operational_bootstrap_v2'
     and pg_get_function_identity_arguments(p.oid) = ''
+), authenticated_roles(role_oid, role_name) as (
+  select role.oid, role.rolname from pg_roles role where role.rolname = 'authenticated'
+  union
+  select granted_role.oid, granted_role.rolname
+  from authenticated_roles inherited_role
+  join pg_auth_members membership on membership.member = inherited_role.role_oid
+  join pg_roles granted_role on granted_role.oid = membership.roleid
+), access_helper as (
+  select helper.* from pg_proc helper
+  where helper.oid = 'public.current_user_has_org_access(text)'::regprocedure
 ), payload as (
   select current_setting('normops.bootstrap_postflight_payload')::jsonb value
 )
@@ -108,6 +181,43 @@ select jsonb_build_object(
       from aclexplode(coalesce(proacl, acldefault('f', proowner))) acl
     )
   ) from target),
+  'realtime_security', jsonb_build_object(
+    'rls_enabled', (
+      select c.relrowsecurity from pg_class c join pg_namespace n on n.oid = c.relnamespace
+      where n.nspname = 'public' and c.relname = 'operational_events'
+    ),
+    'published', exists (
+      select 1 from pg_publication_tables
+      where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'operational_events'
+    ),
+    'authenticated_role_memberships', (
+      select jsonb_agg(role_name order by role_name) from authenticated_roles
+    ),
+    'policies', coalesce((
+      select jsonb_agg(jsonb_build_object(
+        'name', policyname, 'permissive', permissive, 'roles', roles,
+        'command', cmd, 'using', qual, 'check', with_check
+      ) order by policyname)
+      from pg_policies
+      where schemaname = 'public' and tablename = 'operational_events'
+    ), '[]'::jsonb),
+    'access_helper', (select jsonb_build_object(
+      'definition_md5', md5(pg_get_functiondef(oid)),
+      'owner_name', pg_get_userbyid(proowner),
+      'security_definer', prosecdef,
+      'volatility', provolatile,
+      'config', proconfig,
+      'acl_detail', (
+        select jsonb_agg(jsonb_build_object(
+          'grantor', case when acl.grantor = 0 then 'PUBLIC' else pg_get_userbyid(acl.grantor) end,
+          'grantee', case when acl.grantee = 0 then 'PUBLIC' else pg_get_userbyid(acl.grantee) end,
+          'privilege_type', acl.privilege_type,
+          'is_grantable', acl.is_grantable
+        ) order by acl.grantee, acl.privilege_type)
+        from aclexplode(coalesce(access_helper.proacl, acldefault('f', access_helper.proowner))) acl
+      )
+    ) from access_helper)
+  ),
   'payload', (select jsonb_build_object(
     'bytes', octet_length(value::text),
     'contract_version', value -> 'contract_version',

@@ -471,6 +471,7 @@ export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): 
   let scheduledTeardownId: ReturnType<typeof globalThis.setTimeout> | null = null;
   let realtimeSnapshotListener: ((snapshot: RemoteAppDataSnapshot) => void) | null = null;
   let realtimeErrorListener: ((error: Error) => void) | null = null;
+  let realtimeListenerGeneration = 0;
   let preparedAtomicBootstrap: Promise<{ status: "no-session" } | { status: "session"; userId: string }> | null = null;
   let preparedAtomicBootstrapGeneration: number | null = null;
   let atomicBootstrapAttempt: ReturnType<NonNullable<RemoteDataGateway["loadAuthenticatedAppDataSnapshot"]>> | null = null;
@@ -532,7 +533,12 @@ export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): 
     atomicBootstrapAttempt = failedAttempt;
   };
 
-  const applyRealtimeEvent = async (event: OperationalEventRow, notify: boolean, validateAttempt?: () => void) => {
+  const applyRealtimeEvent = async (
+    event: OperationalEventRow,
+    notify: boolean,
+    validateAttempt?: () => void,
+    listenerGeneration?: number
+  ) => {
     validateAttempt?.();
     if (processedRealtimeEventIds.has(event.id)) return;
     if (selectedOrganizationId && event.organization_id !== selectedOrganizationId) return;
@@ -576,7 +582,9 @@ export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): 
         status: "success",
         skippedFullSnapshot: true
       });
-      if (notify) realtimeSnapshotListener?.(lastSnapshot);
+      if (notify && (listenerGeneration === undefined || listenerGeneration === realtimeListenerGeneration)) {
+        realtimeSnapshotListener?.(lastSnapshot);
+      }
     } catch (error) {
       recordCompactRealtimeTelemetry({
         eventPayload: event,
@@ -633,17 +641,22 @@ export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): 
             }
             return Promise.resolve();
           }
+          const eventListenerGeneration = realtimeListenerGeneration;
+          const eventErrorListener = realtimeErrorListener;
           realtimeEventPipeline = realtimeEventPipeline
             .then(() => applyRealtimeEvent(event, true, () => {
               if (generation !== realtimeGeneration) {
                 throw new Error("Realtime event belonged to a superseded subscription.");
               }
-            }))
+            }, eventListenerGeneration))
             .catch((error) => {
-              if (generation !== realtimeGeneration) return;
+              if (
+                generation !== realtimeGeneration
+                || eventListenerGeneration !== realtimeListenerGeneration
+              ) return;
               const normalizedError = error instanceof Error ? error : new Error("Unable to apply compact realtime event.");
               console.warn("Unable to apply compact realtime event.", normalizedError);
-              realtimeErrorListener?.(normalizedError);
+              eventErrorListener?.(normalizedError);
             });
           return realtimeEventPipeline;
         },
@@ -892,19 +905,25 @@ export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): 
     },
     subscribeToAppData(onChange, onError) {
       if (_flags.normalizedRealtime) {
+        const listenerGeneration = ++realtimeListenerGeneration;
         realtimeSnapshotListener = onChange;
         realtimeErrorListener = onError ?? null;
         const readiness = ensureRealtimeReady();
-        const listenerGeneration = realtimeGeneration;
+        const channelGeneration = realtimeGeneration;
         void readiness.catch((error) => {
-          if (listenerGeneration !== realtimeGeneration || realtimeErrorListener !== (onError ?? null)) return;
+          if (
+            channelGeneration !== realtimeGeneration
+            || listenerGeneration !== realtimeListenerGeneration
+          ) return;
           const normalizedError = error instanceof Error ? error : new Error("Unable to prepare normalized realtime.");
           console.warn("Unable to prepare normalized realtime.", normalizedError);
-          realtimeErrorListener?.(normalizedError);
+          (onError ?? null)?.(normalizedError);
         });
         return () => {
-          if (realtimeSnapshotListener === onChange) realtimeSnapshotListener = null;
-          if (realtimeErrorListener === onError) realtimeErrorListener = null;
+          if (listenerGeneration !== realtimeListenerGeneration) return;
+          realtimeListenerGeneration += 1;
+          realtimeSnapshotListener = null;
+          realtimeErrorListener = null;
           if (_flags.atomicBootstrap) scheduleAuthenticatedBootstrapCancellation();
           else resetRealtimeAttempt();
         };

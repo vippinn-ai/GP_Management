@@ -36,6 +36,7 @@ function fixture(targetFunction: unknown = null) {
       realtime_security: {
         rls_enabled: true,
         published: true,
+        authenticated_role_memberships: ["authenticated"],
         policies: [{
           name: "operational_events_select",
           permissive: "PERMISSIVE",
@@ -44,8 +45,20 @@ function fixture(targetFunction: unknown = null) {
           using: "current_user_has_org_access(organization_id)",
           check: null
         }],
-        access_helper_definition: accessHelperDefinition,
-        access_helper_md5: md5(accessHelperDefinition)
+        access_helper: {
+          definition: accessHelperDefinition,
+          definition_md5: md5(accessHelperDefinition),
+          owner_name: "postgres",
+          security_definer: true,
+          volatility: "v",
+          config: ["search_path=public"],
+          acl_detail: [{
+            grantor: "postgres",
+            grantee: "authenticated",
+            privilege_type: "EXECUTE",
+            is_grantable: false
+          }]
+        }
       }
     }
   };
@@ -110,8 +123,8 @@ describe("atomic bootstrap staging installer builder", { timeout: 30_000 }, () =
     const runId = `normops-20260914-${String(Date.now()).slice(-4)}-bootstrap-bad`;
     const fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), "bp-bootstrap-preflight-bad-"));
     const preflightPath = path.join(fixtureDir, "preflight.json");
-    const invalid = fixture() as { evidence: { realtime_security: { access_helper_definition: string } } };
-    invalid.evidence.realtime_security.access_helper_definition = "select true";
+    const invalid = fixture() as { evidence: { realtime_security: { access_helper: { definition: string } } } };
+    invalid.evidence.realtime_security.access_helper.definition = "select true";
     fs.writeFileSync(preflightPath, JSON.stringify(invalid));
     createdPaths.push(fixtureDir);
     const { sourceRoot, commit } = createCleanSourceRepo();
@@ -128,6 +141,33 @@ describe("atomic bootstrap staging installer builder", { timeout: 30_000 }, () =
       name: "permissive_public_select",
       permissive: "PERMISSIVE",
       roles: ["PUBLIC"],
+      command: "SELECT",
+      using: "true"
+    });
+    fs.writeFileSync(preflightPath, JSON.stringify(invalid));
+    createdPaths.push(fixtureDir);
+    const { sourceRoot, commit } = createCleanSourceRepo();
+
+    expect(() => runBuilder(sourceRoot, commit, runId, preflightPath)).toThrow();
+  });
+
+  it("fails closed when a SELECT policy applies through an inherited authenticated role", () => {
+    const runId = `normops-20260914-${String(Date.now()).slice(-4)}-bootstrap-inherited-policy`;
+    const fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), "bp-bootstrap-preflight-inherited-policy-"));
+    const preflightPath = path.join(fixtureDir, "preflight.json");
+    const invalid = fixture() as {
+      evidence: {
+        realtime_security: {
+          authenticated_role_memberships: string[];
+          policies: unknown[];
+        };
+      };
+    };
+    invalid.evidence.realtime_security.authenticated_role_memberships.push("staff_reader");
+    invalid.evidence.realtime_security.policies.push({
+      name: "inherited_staff_select",
+      permissive: "PERMISSIVE",
+      roles: ["staff_reader"],
       command: "SELECT",
       using: "true"
     });
@@ -215,6 +255,7 @@ describe("atomic bootstrap staging installer builder", { timeout: 30_000 }, () =
     expect(rollback).toContain("reset role;");
     expect(rollback).toContain("grant execute on function public.load_operational_bootstrap_v2() to \"authenticated\";");
     expect(rollback).toContain("rollback failed to restore the exact prior bootstrap function");
+    expect(rollback).toContain(`definition_md5 is distinct from '${md5(definition)}'`);
     expect(rollback).not.toContain("drop function public.load_operational_bootstrap_v2();");
   });
 });

@@ -78,6 +78,9 @@ describe("operational bootstrap staging controls", () => {
     expect(preflight).toContain("'installer_role', current_user");
     expect(preflight).toContain("replace(replace(btrim(prosrc, E' \\t\\n\\r')");
     expect(preflight).toContain("'permissive', permissive");
+    expect(preflight).toContain("'authenticated_role_memberships'");
+    expect(preflight).toContain("join pg_auth_members membership");
+    expect(preflight).toContain("'owner_name', pg_get_userbyid(helper.proowner)");
     expect(preflight).toContain("canonical function-body newline normalization failed");
     expect(preflight).toContain("current_user_has_org_access(text)");
     expect(preflight).toContain("relrowsecurity");
@@ -93,6 +96,11 @@ describe("operational bootstrap staging controls", () => {
     expect(postflight).toContain("'service_role_execute'");
     expect(postflight).toContain("not in (function_owner, 'authenticated')");
     expect(postflight).toContain("has_function_privilege('authenticated'");
+    expect(postflight).toContain("applicable_select_policies");
+    expect(postflight).toContain("join pg_auth_members membership");
+    expect(postflight).toContain("operational_events realtime RLS, publication, or inherited-role policy proof failed");
+    expect(postflight).toContain("organization access helper identity or ACL proof failed");
+    expect(postflight).toContain("'realtime_security'");
     expect(postflight.trimEnd()).toMatch(/rollback;$/i);
   });
 
@@ -105,6 +113,8 @@ describe("operational bootstrap staging controls", () => {
     expect(installer).toContain("Source worktree must be clean before staging artifacts are built.");
     expect(installer).toContain('const sourceCommit = argument("source-commit")');
     expect(installer).toContain("previous.definition.trim() + \";\"");
+    expect(installer).toContain("definition_md5 is distinct from");
+    expect(installer).toContain("authenticatedRoleMemberships");
     expect(installer).toContain("drop function public.${FUNCTION}();");
     expect(installer).toContain('flag: "wx"');
   });

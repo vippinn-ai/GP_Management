@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { getSupabaseClient, type RemoteOrganization, type RemoteProfile } from "../backend";
 import { rememberNormalizedOrganizationId } from "./normalizedOrganization";
+import { validateOperationalBootstrapRow } from "./operationalBootstrapValidation";
 import type {
   AppData,
   AuditLog,
@@ -1155,6 +1156,7 @@ function requireBootstrapRows<T>(
     ) {
       throw new Error(`Operational bootstrap returned malformed or unexpected ${key}[${index}] fields.`);
     }
+    validateOperationalBootstrapRow(key, record, `${key}[${index}]`);
     return record as unknown as T;
   });
 }
@@ -1276,11 +1278,33 @@ export function buildOperationalBootstrapRpcResult(rawPayload: unknown): Operati
   ) {
     throw new Error("Operational bootstrap returned an invalid organization business profile.");
   }
+  if (organizationRow.business_profile !== null) {
+    const businessProfile = organizationRow.business_profile as Record<string, unknown>;
+    assertNoUnexpectedBootstrapKeys(
+      businessProfile,
+      ["name", "logoText", "address", "primaryPhone", "secondaryPhone", "receiptFooter"]
+    );
+    for (const key of ["name", "logoText", "address", "primaryPhone", "receiptFooter"]) {
+      if (key in businessProfile && typeof businessProfile[key] !== "string") {
+        throw new Error(`Operational bootstrap returned an invalid organization business_profile.${key}.`);
+      }
+    }
+    if (
+      "secondaryPhone" in businessProfile
+      && businessProfile.secondaryPhone !== null
+      && typeof businessProfile.secondaryPhone !== "string"
+    ) {
+      throw new Error("Operational bootstrap returned an invalid organization business_profile.secondaryPhone.");
+    }
+  }
   const metadata = requireBootstrapRecord(payload.app_state_metadata, "app_state_metadata");
   assertNoUnexpectedBootstrapKeys(metadata, ["version", "updated_at"]);
   const version = Number(metadata.version);
   if (!Number.isSafeInteger(version) || version < 0) {
     throw new Error("Operational bootstrap returned an invalid app-state version.");
+  }
+  if (typeof metadata.updated_at !== "string" || Number.isNaN(Date.parse(metadata.updated_at))) {
+    throw new Error("Operational bootstrap returned an invalid app-state updated_at timestamp.");
   }
 
   const profileRows = requireBootstrapRows<Record<string, unknown>>(payload, "profiles", 100);

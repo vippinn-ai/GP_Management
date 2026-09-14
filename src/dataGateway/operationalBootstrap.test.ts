@@ -177,6 +177,18 @@ describe("operational bootstrap RPC response mapping", () => {
     expect(() => buildOperationalBootstrapRpcResult(extra)).toThrow(/malformed or unexpected inventory_categories/i);
   });
 
+  it("rejects malformed app-state metadata timestamps", () => {
+    const malformed = cloneEnvelope();
+    (malformed.app_state_metadata as Record<string, unknown>).updated_at = "not-a-timestamp";
+    expect(() => buildOperationalBootstrapRpcResult(malformed)).toThrow(/invalid app-state updated_at timestamp/i);
+  });
+
+  it("rejects malformed organization business-profile values before mapping", () => {
+    const malformed = cloneEnvelope();
+    (malformed.organization as Record<string, unknown>).business_profile = { name: 42 };
+    expect(() => buildOperationalBootstrapRpcResult(malformed)).toThrow(/invalid organization business_profile\.name/i);
+  });
+
   it("rejects payloads larger than the fixed decoded-byte budget", () => {
     const envelope = cloneEnvelope();
     (envelope.organization as Record<string, unknown>).business_profile = {

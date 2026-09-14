@@ -21,11 +21,11 @@ const quoteRole = (role) => role === "PUBLIC" ? "public" : `"${String(role).repl
 const normalizeBody = (body) => body.replaceAll("\r\n", "\n").replaceAll("\r", "\n").trim();
 const normalizedBodySql = (expression) => `md5(replace(replace(btrim(${expression}, E' \\t\\n\\r'), E'\\r\\n', E'\\n'), E'\\r', E'\\n'))`;
 
-function applicableSelectPolicy(policy) {
+function applicableSelectPolicy(policy, authenticatedRoles) {
   const command = String(policy.command ?? "").toUpperCase();
   const roles = Array.isArray(policy.roles) ? policy.roles.map((role) => String(role).toLowerCase()) : [];
   return (command === "SELECT" || command === "ALL")
-    && roles.some((role) => role === "authenticated" || role === "public" || role === "anon");
+    && roles.some((role) => role === "public" || authenticatedRoles.has(role));
 }
 
 function tenantScopedAuthenticatedPolicy(policy) {
@@ -113,15 +113,29 @@ if (!Number.isInteger(preflight.app_state?.version) || !/^[0-9a-f]{32}$/i.test(p
 if (!preflight.installer_role || typeof preflight.installer_role !== "string") throw new Error("Preflight installer role is missing.");
 if (preflight.realtime_security?.rls_enabled !== true || !Array.isArray(preflight.realtime_security?.policies)) throw new Error("Preflight realtime RLS evidence is incomplete.");
 if (preflight.realtime_security.published !== true) throw new Error("Operational events is not published to staging realtime.");
-const applicablePolicies = preflight.realtime_security.policies.filter(applicableSelectPolicy);
+const authenticatedRoleMemberships = preflight.realtime_security?.authenticated_role_memberships;
+if (!Array.isArray(authenticatedRoleMemberships)
+  || authenticatedRoleMemberships.length === 0
+  || authenticatedRoleMemberships.some((role) => typeof role !== "string" || !role.trim())
+  || !authenticatedRoleMemberships.some((role) => role.toLowerCase() === "authenticated")) {
+  throw new Error("Preflight authenticated role-membership evidence is incomplete.");
+}
+const authenticatedRoles = new Set(authenticatedRoleMemberships.map((role) => role.toLowerCase()));
+const applicablePolicies = preflight.realtime_security.policies.filter((policy) => applicableSelectPolicy(policy, authenticatedRoles));
 if (applicablePolicies.length !== 1 || !tenantScopedAuthenticatedPolicy(applicablePolicies[0])) {
   throw new Error("Operational events SELECT policies do not prove exactly one permissive tenant-scoped authenticated-only policy.");
 }
-if (!/^[0-9a-f]{32}$/i.test(preflight.realtime_security?.access_helper_md5 ?? "")
-  || md5(preflight.realtime_security?.access_helper_definition ?? "") !== preflight.realtime_security.access_helper_md5) {
+const accessHelper = preflight.realtime_security?.access_helper;
+if (!/^[0-9a-f]{32}$/i.test(accessHelper?.definition_md5 ?? "")
+  || md5(accessHelper?.definition ?? "") !== accessHelper.definition_md5
+  || typeof accessHelper?.owner_name !== "string" || !accessHelper.owner_name
+  || typeof accessHelper?.security_definer !== "boolean"
+  || typeof accessHelper?.volatility !== "string" || accessHelper.volatility.length !== 1
+  || !(accessHelper?.config === null || Array.isArray(accessHelper?.config))
+  || !Array.isArray(accessHelper?.acl_detail)) {
   throw new Error("Realtime organization access helper evidence is incomplete or inconsistent.");
 }
-if (!/organization_members[\s\S]*membership\.active = true/i.test(preflight.realtime_security?.access_helper_definition ?? "")) {
+if (!/organization_members[\s\S]*membership\.active = true/i.test(accessHelper.definition)) {
   throw new Error("Realtime organization access helper does not prove active membership.");
 }
 
@@ -183,7 +197,8 @@ const capturedRealtimeSecurity = {
   rls_enabled: preflight.realtime_security.rls_enabled,
   published: preflight.realtime_security.published,
   policies: preflight.realtime_security.policies,
-  access_helper_md5: preflight.realtime_security.access_helper_md5
+  authenticated_role_memberships: preflight.realtime_security.authenticated_role_memberships,
+  access_helper: preflight.realtime_security.access_helper
 };
 const realtimeSecurityGuard = `select jsonb_build_object(
     'rls_enabled', c.relrowsecurity,
@@ -199,7 +214,37 @@ const realtimeSecurityGuard = `select jsonb_build_object(
       from pg_policies
       where schemaname = 'public' and tablename = 'operational_events'
     ), '[]'::jsonb),
-    'access_helper_md5', md5(pg_get_functiondef('public.current_user_has_org_access(text)'::regprocedure))
+    'authenticated_role_memberships', (
+      with recursive inherited_roles(role_oid, role_name) as (
+        select role.oid, role.rolname from pg_roles role where role.rolname = 'authenticated'
+        union
+        select granted_role.oid, granted_role.rolname
+        from inherited_roles inherited_role
+        join pg_auth_members membership on membership.member = inherited_role.role_oid
+        join pg_roles granted_role on granted_role.oid = membership.roleid
+      )
+      select jsonb_agg(role_name order by role_name) from inherited_roles
+    ),
+    'access_helper', (
+      select jsonb_build_object(
+        'definition', pg_get_functiondef(helper.oid),
+        'definition_md5', md5(pg_get_functiondef(helper.oid)),
+        'owner_name', pg_get_userbyid(helper.proowner),
+        'security_definer', helper.prosecdef,
+        'volatility', helper.provolatile,
+        'config', to_jsonb(helper.proconfig),
+        'acl_detail', (
+          select jsonb_agg(jsonb_build_object(
+            'grantor', case when acl.grantor = 0 then 'PUBLIC' else pg_get_userbyid(acl.grantor) end,
+            'grantee', case when acl.grantee = 0 then 'PUBLIC' else pg_get_userbyid(acl.grantee) end,
+            'privilege_type', acl.privilege_type, 'is_grantable', acl.is_grantable
+          ) order by acl.grantee, acl.privilege_type)
+          from aclexplode(coalesce(helper.proacl, acldefault('f', helper.proowner))) acl
+        )
+      )
+      from pg_proc helper
+      where helper.oid = 'public.current_user_has_org_access(text)'::regprocedure
+    )
   ) into actual_realtime_security
   from pg_class c join pg_namespace n on n.oid = c.relnamespace
   where n.nspname = 'public' and c.relname = 'operational_events';
@@ -277,10 +322,10 @@ const restore = previous
     ]
   : [`drop function public.${FUNCTION}();`];
 const restoredStateGuard = previous
-  ? `do $$ declare body_md5 text; actual_owner text; actual_security_definer boolean;
+  ? `do $$ declare definition_md5 text; body_md5 text; actual_owner text; actual_security_definer boolean;
       actual_volatility "char"; actual_config jsonb; actual_acl jsonb;
     begin
-      select ${normalizedBodySql("p.prosrc")}, quote_ident(pg_get_userbyid(p.proowner)), p.prosecdef,
+      select md5(pg_get_functiondef(p.oid)), ${normalizedBodySql("p.prosrc")}, quote_ident(pg_get_userbyid(p.proowner)), p.prosecdef,
         p.provolatile, to_jsonb(p.proconfig), (
           select jsonb_agg(jsonb_build_object(
             'grantor', case when acl.grantor = 0 then 'PUBLIC' else pg_get_userbyid(acl.grantor) end,
@@ -289,10 +334,11 @@ const restoredStateGuard = previous
           ) order by acl.grantee, acl.privilege_type)
           from aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) acl
         )
-      into strict body_md5, actual_owner, actual_security_definer, actual_volatility, actual_config, actual_acl
+      into strict definition_md5, body_md5, actual_owner, actual_security_definer, actual_volatility, actual_config, actual_acl
       from pg_proc p join pg_namespace n on n.oid = p.pronamespace
       where n.nspname = 'public' and p.proname = '${FUNCTION}' and pg_get_function_identity_arguments(p.oid) = '';
-      if body_md5 is distinct from ${sqlLiteral(previous.body_md5)}
+      if definition_md5 is distinct from ${sqlLiteral(previous.definition_md5)}
+        or body_md5 is distinct from ${sqlLiteral(previous.body_md5)}
         or actual_owner is distinct from ${sqlLiteral(previous.owner)}
         or actual_security_definer is distinct from ${previous.security_definer === true ? "true" : "false"}
         or actual_volatility is distinct from ${sqlLiteral(previous.volatility)}

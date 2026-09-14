@@ -18,7 +18,7 @@ begin
   then raise exception 'canonical function-body newline normalization failed'; end if;
 end $$;
 
-with target_function as (
+with recursive target_function as (
   select p.*, n.nspname
   from pg_proc p
   join pg_namespace n on n.oid = p.pronamespace
@@ -55,6 +55,35 @@ with target_function as (
     'updated_by', updated_by
   ) as value
   from public.app_state where id = 'primary'
+), authenticated_roles(role_oid, role_name) as (
+  select role.oid, role.rolname
+  from pg_roles role
+  where role.rolname = 'authenticated'
+  union
+  select granted_role.oid, granted_role.rolname
+  from authenticated_roles inherited_role
+  join pg_auth_members membership on membership.member = inherited_role.role_oid
+  join pg_roles granted_role on granted_role.oid = membership.roleid
+), access_helper as (
+  select jsonb_build_object(
+    'definition', pg_get_functiondef(helper.oid),
+    'definition_md5', md5(pg_get_functiondef(helper.oid)),
+    'owner_name', pg_get_userbyid(helper.proowner),
+    'security_definer', helper.prosecdef,
+    'volatility', helper.provolatile,
+    'config', to_jsonb(helper.proconfig),
+    'acl_detail', (
+      select jsonb_agg(jsonb_build_object(
+        'grantor', case when acl.grantor = 0 then 'PUBLIC' else pg_get_userbyid(acl.grantor) end,
+        'grantee', case when acl.grantee = 0 then 'PUBLIC' else pg_get_userbyid(acl.grantee) end,
+        'privilege_type', acl.privilege_type,
+        'is_grantable', acl.is_grantable
+      ) order by acl.grantee, acl.privilege_type)
+      from aclexplode(coalesce(helper.proacl, acldefault('f', helper.proowner))) acl
+    )
+  ) as value
+  from pg_proc helper
+  where helper.oid = 'public.current_user_has_org_access(text)'::regprocedure
 ), realtime_security as (
   select jsonb_build_object(
     'rls_enabled', c.relrowsecurity,
@@ -70,8 +99,10 @@ with target_function as (
       from pg_policies
       where schemaname = 'public' and tablename = 'operational_events'
     ), '[]'::jsonb),
-    'access_helper_definition', pg_get_functiondef('public.current_user_has_org_access(text)'::regprocedure),
-    'access_helper_md5', md5(pg_get_functiondef('public.current_user_has_org_access(text)'::regprocedure))
+    'authenticated_role_memberships', (
+      select jsonb_agg(role_name order by role_name) from authenticated_roles
+    ),
+    'access_helper', (select value from access_helper)
   ) as value
   from pg_class c join pg_namespace n on n.oid = c.relnamespace
   where n.nspname = 'public' and c.relname = 'operational_events'

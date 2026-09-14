@@ -1746,6 +1746,77 @@ describe("app_state data gateway", () => {
     expect(client.rpc).toHaveBeenCalledTimes(2);
   });
 
+  it("does not deliver an old hydration failure to a same-callback remount", async () => {
+    let realtimeHandler: ((payload: { new: unknown }) => void) | undefined;
+    let realtimeStatus: ((status: string) => void) | undefined;
+    let rejectOverlay!: (error: Error) => void;
+    const overlay = new Promise<never>((_resolve, reject) => {
+      rejectOverlay = reject;
+    });
+    const channel = {
+      on: vi.fn((_kind, _config, handler: (payload: { new: unknown }) => void) => {
+        realtimeHandler = handler;
+        return channel;
+      }),
+      subscribe: vi.fn((callback: (status: string) => void) => {
+        realtimeStatus = callback;
+        return channel;
+      })
+    };
+    const client = {
+      auth: { getSession: vi.fn().mockResolvedValue({ data: { session: { user: { id: "user-1" } } }, error: null }) },
+      channel: vi.fn(() => channel),
+      removeChannel: vi.fn(),
+      rpc: vi.fn().mockResolvedValue({ data: {}, error: null })
+    };
+    backendMocks.getSupabaseClient.mockReturnValue(client);
+    normalizedReadMocks.buildOperationalBootstrapRpcResult.mockReturnValue({
+      status: "active",
+      actorId: "user-1",
+      profile: { id: "user-1", name: "Admin", username: "admin", role: "admin", active: true },
+      organization: { id: "org-primary", name: "BreakPerfect", businessProfile: { name: "BreakPerfect" } },
+      version: 41,
+      appData: createAppData()
+    });
+    normalizedReadMocks.loadNormalizedLiveDataByIds.mockReturnValueOnce(overlay);
+    const gateway = createRemoteDataGateway({
+      ...DEFAULT_BACKEND_FEATURE_FLAGS,
+      atomicBootstrap: true,
+      normalizedBootstrap: true,
+      normalizedRealtime: true
+    });
+
+    const initialLoad = gateway.loadAuthenticatedAppDataSnapshot?.();
+    await vi.waitFor(() => expect(channel.subscribe).toHaveBeenCalledTimes(1));
+    realtimeStatus?.("SUBSCRIBED");
+    await expect(initialLoad).resolves.toMatchObject({ status: "active" });
+    const sharedChange = vi.fn();
+    const sharedError = vi.fn();
+    const disposeFirst = gateway.subscribeToAppData(sharedChange, sharedError);
+    realtimeHandler?.({
+      new: {
+        organization_id: "org-primary",
+        id: "event-old-listener",
+        event_type: "session_updated",
+        entity_type: "session",
+        entity_id: "session-1",
+        created_at: "2026-09-14T04:00:00.000Z",
+        metadata: { changed_rows: { sessions: ["session-1"] } }
+      }
+    });
+    await vi.waitFor(() => expect(normalizedReadMocks.loadNormalizedLiveDataByIds).toHaveBeenCalledTimes(1));
+
+    disposeFirst();
+    const disposeSecond = gateway.subscribeToAppData(sharedChange, sharedError);
+    rejectOverlay(new Error("Old hydration failed."));
+    await new Promise((resolve) => globalThis.setTimeout(resolve, 0));
+
+    expect(sharedChange).not.toHaveBeenCalled();
+    expect(sharedError).not.toHaveBeenCalled();
+    expect(client.channel).toHaveBeenCalledTimes(1);
+    disposeSecond();
+  });
+
   it("tears down the atomic channel and returns no data for an inactive actor", async () => {
     let realtimeStatus: ((status: string) => void) | undefined;
     const channel = {
