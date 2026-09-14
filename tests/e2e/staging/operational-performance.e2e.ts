@@ -90,6 +90,7 @@ type LoadEvidence = {
   criticalResponses: ResponseEvidence[];
   criticalRequestCount: number;
   bootstrapRpcResponseCount: number;
+  activityFeedResponseCount: number;
   criticalApiBytes: number;
   coldShellBytes: number;
   initialJavascriptBytes: number;
@@ -218,6 +219,7 @@ function readBaseline(browserVersion: string) {
   if (baseline.mode !== "baseline" || baseline.sampleCount !== sampleCount || !baseline.summary?.p95 || !baseline.summary?.criticalApiBytesP95) {
     throw new Error("Performance baseline shape or sample count is incompatible.");
   }
+  if (baseline.activityFeedEnabled !== true) throw new Error("Performance baseline did not enable the Activity feed.");
   if (baseline.datasetManifestSha256 !== process.env.E2E_PERFORMANCE_DATASET_MANIFEST_SHA256?.toLowerCase()) {
     throw new Error("Candidate and baseline are not bound to the same staging dataset manifest.");
   }
@@ -498,6 +500,7 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
 
     await coldPage.goto("/", { waitUntil: "domcontentloaded" });
     await expect(coldPage.getByRole("heading", { name: "Live Dashboard", exact: true })).toBeVisible();
+    await expect(coldPage.getByRole("button", { name: "Show All", exact: true })).toBeVisible();
     await expect.poll(() => coldPage.evaluate(() => performance.getEntriesByName("bp-visible-dashboard-ready", "mark").length)).toBe(1);
     if (mode === "candidate") {
       await expect(coldPage.locator('[data-app-safe-interactive="true"]')).toBeVisible();
@@ -569,7 +572,7 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
     });
     const deferredHistoryPath = (path: string) =>
       /\/rest\/v1\/(?:bills|bill_lines|bill_discounts|bill_line_discounts|payments|expenses|audit_logs|stock_movements|customers)(?:$|\/)/.test(path)
-      || /\/rest\/v1\/rpc\/(?:.*report.*|.*customer.*history.*|.*customer.*search.*)(?:$|\/)/.test(path);
+      || /\/rest\/v1\/rpc\/(?:list_activity_events|.*report.*|.*customer.*history.*|.*customer.*search.*)(?:$|\/)/.test(path);
     const deferralBoundary = mode === "candidate" ? safeInteractiveMs : comparisonReadyMark;
     const requestedHistoryBeforeSafeInteractive = resources.some((entry) =>
       entry.startTime <= deferralBoundary && deferredHistoryPath(entry.path)
@@ -673,6 +676,11 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
     const bootstrapRpcResponseCount = responses.filter((entry) =>
       entry.path.endsWith("/rest/v1/rpc/load_operational_bootstrap_v2")
     ).length;
+    const activityFeedResponseCount = responses.filter((entry) =>
+      entry.path.endsWith("/rest/v1/rpc/list_activity_events")
+      && entry.status >= 200
+      && entry.status < 400
+    ).length;
     const bootstrapRpcResources = criticalResources.filter((entry) =>
       entry.path.endsWith("/rest/v1/rpc/load_operational_bootstrap_v2")
     );
@@ -726,6 +734,7 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
       criticalResponses,
       criticalRequestCount: criticalResources.length,
       bootstrapRpcResponseCount,
+      activityFeedResponseCount,
       criticalApiBytes,
       coldShellBytes,
       initialJavascriptBytes,
@@ -788,6 +797,7 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
     cachePolicy: "new-context-cold-cache-service-workers-blocked",
     profileId: process.env.E2E_PERFORMANCE_PROFILE_ID,
     networkProfile: process.env.E2E_NETWORK_PROFILE,
+    activityFeedEnabled: true,
     datasetIdentity: observedDatasetIdentity,
     summary,
     baseline,
@@ -799,6 +809,7 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
   expect.soft(loads.every((entry) => entry.criticalEvidenceErrors.length === 0)).toBe(true);
   expect.soft(loads.every((entry) => entry.criticalResponses.every(isSuccessfulCriticalResponse))).toBe(true);
   expect.soft(loads.every((entry) => !entry.requestedExportChunk)).toBe(true);
+  expect.soft(loads.every((entry) => entry.activityFeedResponseCount >= 1)).toBe(true);
   const expectedAppStateVersion = Number(process.env.E2E_EXPECTED_APP_STATE_VERSION);
   expect.soft(Number.isInteger(expectedAppStateVersion)).toBe(true);
   expect.soft(loads.every((entry) => {
@@ -829,6 +840,7 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
     ))).toBe(true);
     expect.soft(loads.every((entry) => entry.bootstrapDependencyDepth !== null && entry.bootstrapDependencyDepth <= 2)).toBe(true);
     expect.soft(loads.every((entry) => entry.bootstrapRpcResponseCount === 1)).toBe(true);
+    expect.soft(loads.every((entry) => entry.activityFeedResponseCount === 1)).toBe(true);
     expect.soft(loads.every((entry) =>
       entry.bootstrapRpcFetchToFirstByteMs !== null
       && Number.isFinite(entry.bootstrapRpcFetchToFirstByteMs)
@@ -843,6 +855,7 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
       );
       const forbiddenDirectReads = entry.criticalResponses.filter((response) =>
         /\/rest\/v1\/(?:app_state|profiles|organizations|inventory_categories|stations|pricing_rules|inventory_items|sale_variants|combos|sessions|customer_tabs|bills|payments|expenses|audit_logs|stock_movements)(?:$|\/)/.test(response.path)
+        || response.path.endsWith("/rest/v1/rpc/list_activity_events")
       );
       return bootstrapCalls.length === 1
         && bootstrapCalls[0].bodyBytes > 0

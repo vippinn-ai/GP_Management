@@ -495,6 +495,7 @@ export default function App() {
   const [loginError, setLoginError] = useState("");
   const [remoteLoading, setRemoteLoading] = useState(backendConfigured);
   const [remoteRestoreState, setRemoteRestoreState] = useState<RemoteRestoreState>(backendConfigured ? "checking" : "ready");
+  const [safeInteractiveReady, setSafeInteractiveReady] = useState(!backendConfigured);
   const [restoreRetrySignal, setRestoreRetrySignal] = useState(0);
   const [hasCachedAppData] = useState(() => hasStoredAppData({ useStoredCache: !backendConfigured }));
   const [remoteError, setRemoteError] = useState("");
@@ -1295,7 +1296,7 @@ export default function App() {
   const isManagerReadOnly = activeUser?.role === "manager";
   const activityRefreshKey = `${remoteVersion}:${latestActivityEventId}:${appData.auditLogs[0]?.id ?? "none"}:${appData.auditLogs.length}`;
   const dashboardActivity = useActivityFeed({
-    active: Boolean(activeUser && activeTab === "dashboard"),
+    active: Boolean(activeUser && activeTab === "dashboard" && safeInteractiveReady),
     remoteEnabled: backendConfigured && BACKEND_FEATURE_FLAGS.activityFeed,
     pageSize: 3,
     auditLogs: appData.auditLogs,
@@ -1701,9 +1702,9 @@ export default function App() {
       activeUser
       && !remoteLoading
       && remoteRestoreState === "ready"
-      && typeof performance.mark === "function"
     ) {
-      performance.mark("bp-safe-interactive");
+      if (typeof performance.mark === "function") performance.mark("bp-safe-interactive");
+      setSafeInteractiveReady(true);
       const preload = () => { void loadInventoryPanel(); };
       if (typeof window.requestIdleCallback === "function") {
         const idleId = window.requestIdleCallback(preload, { timeout: 1_500 });
@@ -1712,6 +1713,7 @@ export default function App() {
       const timerId = window.setTimeout(preload, 1);
       return () => window.clearTimeout(timerId);
     }
+    setSafeInteractiveReady(false);
   }, [activeUser, remoteLoading, remoteRestoreState]);
 
   const normalizedBillRegisterQueryKey = useMemo(
@@ -1836,6 +1838,7 @@ export default function App() {
   useEffect(() => {
     if (
       !BACKEND_FEATURE_FLAGS.normalizedBootstrap
+      || (backendConfigured && BACKEND_FEATURE_FLAGS.activityFeed)
       || activeTab !== "dashboard"
       || !activeUserId
       || !canAccessTab("dashboard")
@@ -1852,7 +1855,7 @@ export default function App() {
         if (!cancelled) setRemoteError(error instanceof Error ? `Recent activity could not be loaded: ${error.message}` : "Recent activity could not be loaded. Reopen Dashboard to retry.");
       });
     return () => { cancelled = true; };
-  }, [activeTab, activeUserId, canAccessTab, deferredDashboardContextRefreshSignal]);
+  }, [activeTab, activeUserId, backendConfigured, canAccessTab, deferredDashboardContextRefreshSignal]);
 
   useEffect(() => {
     if (

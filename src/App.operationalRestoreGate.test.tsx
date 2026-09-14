@@ -157,50 +157,39 @@ describe("App operational restore dispatch gate", () => {
     void history.promise.finally(() => { historySettled = true; });
     mocks.loadAppDataSnapshot.mockResolvedValue(createSnapshot());
     mocks.loadDeferredNormalizedDashboardHistory.mockReturnValue(history.promise);
-    mocks.loadDeferredNormalizedDashboardActivity.mockResolvedValue({
-      auditLogs: [{
-        id: "audit-fast",
+    mocks.loadActivityFeedPage.mockResolvedValue({
+      items: [{
+        id: "activity-fast",
+        occurredAt: "2026-09-14T10:00:00.000Z",
+        actorUserId: activeProfile.id,
+        actorName: activeProfile.name,
+        actorUsername: activeProfile.username,
+        actorRole: activeProfile.role,
         action: "session_updated",
+        category: "session",
         entityType: "session",
         entityId: "session-fast",
-        message: "Activity available before financial history",
-        createdAt: "2026-09-14T10:00:00.000Z",
-        userId: activeProfile.id
-      }]
+        summary: "Activity available before financial history",
+        details: {},
+        sourceKind: "audit_log",
+        legacy: false
+      }],
+      actors: [],
+      hasMore: false,
+      nextCursor: null
     });
-    mocks.loadActivityFeedPage
-      .mockResolvedValueOnce({ items: [], actors: [], hasMore: false, nextCursor: null })
-      .mockResolvedValue({
-        items: [{
-          id: "activity-fast",
-          occurredAt: "2026-09-14T10:00:00.000Z",
-          actorUserId: activeProfile.id,
-          actorName: activeProfile.name,
-          actorUsername: activeProfile.username,
-          actorRole: activeProfile.role,
-          action: "session_updated",
-          category: "session",
-          entityType: "session",
-          entityId: "session-fast",
-          summary: "Activity available before financial history",
-          details: {},
-          sourceKind: "audit_log",
-          legacy: false
-        }],
-        actors: [],
-        hasMore: false,
-        nextCursor: null
-      });
 
     render(<App />);
 
-    await waitFor(() => expect(mocks.loadDeferredNormalizedDashboardActivity).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(screen.getByText("Activity available before financial history")).toBeVisible());
+    expect(mocks.loadDeferredNormalizedDashboardActivity).not.toHaveBeenCalled();
+    expect(mocks.loadActivityFeedPage).toHaveBeenCalledTimes(1);
     expect(mocks.loadDeferredNormalizedDashboardHistory).toHaveBeenCalledTimes(1);
     expect(historySettled).toBe(false);
 
     fireEvent.click(screen.getByRole("button", { name: "Show All" }));
     await waitFor(() => expect(screen.getByRole("heading", { name: "Detailed Activity" })).toBeVisible());
+    await waitFor(() => expect(mocks.loadActivityFeedPage).toHaveBeenCalledTimes(2));
     expect(historySettled).toBe(false);
 
     await act(async () => { history.resolve({ bills: [], payments: [], expenses: [] }); });

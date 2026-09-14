@@ -19,9 +19,10 @@ History/report/customer/audit data SHALL not block safe dashboard readiness and 
 - **THEN** writes become available without waiting for bill history, reports, customer history, stock-movement history, expense administration, or audit history
 
 #### Scenario: Dashboard activity is available before financial history
-- **WHEN** the deferred audit activity read completes while bill, payment, or expense history is still loading
+- **WHEN** the one deferred remote Activity read completes while bill, payment, or expense history is still loading
 - **THEN** the Dashboard renders a three-entry one-line recent-activity preview without waiting for financial history
 - **AND** Show All opens the complete Activity screen
+- **AND** the legacy normalized audit overlay does not run or retrigger the Dashboard Activity feed
 
 #### Scenario: A production-shape Inventory catalog is displayed
 - **WHEN** the complete canonical catalog contains 112 matching items
@@ -40,6 +41,7 @@ The staging candidate SHALL expose browser-clock marks for App import, session, 
 - **WHEN** a single unique zero-retry 30-load race runs against the frozen same-scale staging dataset
 - **THEN** safe interaction p95 is at most 3,500 ms and maximum at most 5,000 ms, pre-navigation Login LCP p75 is at most 2,500 ms, bootstrap RPC p95 is at most 800 ms and maximum at most 1,200 ms, and catch-up-to-safe p95 is at most 100 ms and maximum at most 200 ms
 - **AND** dependency depth is at most two, there is one critical bootstrap RPC, its decoded response is at most 160,992 bytes, and no direct profile, organization, history, report, audit, or `app_state` read occurs before safe interaction
+- **AND** baseline and candidate both expose the Activity UI under the same enabled feature flag, with at least one successful post-safe Activity response in each load and exactly one Dashboard Activity RPC in each candidate load
 - **AND** metric-v3 evidence preserves safe-boundary and post-navigation LCP diagnostics plus exactly correlated bootstrap fetch-to-first-byte and response-download phase distributions without replacing the Login LCP or end-to-end RPC gates
 - **AND** Login LCP attribution is snapshotted at observer delivery with a nonempty sanitized selector, finite FCP, and structured app/Dashboard/Inventory profiler evidence
 - **AND** missing, invalid, non-finite, negative, inverted, unsanitized, or incomplete Web Vitals, realtime-status, or Profiler evidence fails the run

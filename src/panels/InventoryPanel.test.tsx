@@ -284,8 +284,22 @@ describe("InventoryPanel normalized report reads", () => {
 
     act(() => matchMedia.setMatches(true));
     const mobileCatalog = within(rendered.container.querySelector(".inventory-mobile-list")!);
+    const currentMobileNames = () => Array.from(rendered.container.querySelectorAll(".inventory-mobile-list .inventory-mobile-card"))
+      .map((card) => card.querySelector("strong")?.textContent ?? "");
     expect(rendered.container.querySelectorAll(".inventory-mobile-list .inventory-mobile-card")).toHaveLength(32);
     expect(mobileCatalog.getByText("Inventory Item 081")).toBeVisible();
+    const observedMobileNames = [...currentMobileNames()];
+    fireEvent.click(screen.getByRole("button", { name: "Previous" }));
+    expect(screen.getByText("Page 2 of 3 · 112 items")).toBeVisible();
+    observedMobileNames.push(...currentMobileNames());
+    fireEvent.click(screen.getByRole("button", { name: "Previous" }));
+    expect(screen.getByText("Page 1 of 3 · 112 items")).toBeVisible();
+    observedMobileNames.push(...currentMobileNames());
+    expect(observedMobileNames).toHaveLength(112);
+    expect(new Set(observedMobileNames)).toEqual(new Set(items.map((entry) => entry.name)));
+    fireEvent.click(screen.getByRole("button", { name: "Next" }));
+    fireEvent.click(screen.getByRole("button", { name: "Next" }));
+    expect(screen.getByText("Page 3 of 3 · 112 items")).toBeVisible();
 
     fireEvent.change(screen.getByPlaceholderText("Search active items by name or category"), {
       target: { value: "112" }

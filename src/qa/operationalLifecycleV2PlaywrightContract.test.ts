@@ -156,6 +156,9 @@ describe("operational lifecycle v2 Playwright and performance contract", () => {
     expect(spec).toContain("requestedFullAppStateData");
     expect(spec).toContain("Live normalized content fingerprints drifted from the immutable dataset snapshot.");
     expect(spec).toContain("requestedHistoryBeforeSafeInteractive");
+    expect(spec).toContain("list_activity_events");
+    expect(spec).toContain("activityFeedResponseCount === 1");
+    expect(spec).toContain("activityFeedEnabled: true");
     expect(spec).toContain("measureBootstrapDependencyDepth");
     expect(spec).not.toContain("bootstrapDependencyDepth: 3");
     expect(spec).toContain("criticalApiBytesP95");
