@@ -51,6 +51,7 @@ function sameJson(left, right) {
 }
 
 const root = process.cwd();
+const safeDirectory = root.replaceAll("\\", "/");
 const preflightPath = argument("preflight");
 const postflightPath = argument("postflight");
 const manifestPath = argument("manifest");
@@ -82,13 +83,13 @@ if (path.isAbsolute(reviewedGitPath) || reviewedGitPath.startsWith("../") || rev
   throw new Error("Reviewed bootstrap SQL path is not a repository-relative source path.");
 }
 try {
-  execFileSync("git", ["-c", `safe.directory=${root}`, "cat-file", "-e", `${manifest.sourceCommit}^{commit}`], { cwd: root, stdio: "pipe" });
+  execFileSync("git", ["-c", `safe.directory=${safeDirectory}`, "cat-file", "-e", `${manifest.sourceCommit}^{commit}`], { cwd: root, stdio: "pipe" });
 } catch {
   throw new Error("Bootstrap manifest source commit does not exist in this repository.");
 }
 const committedReviewedSqlBytes = execFileSync(
   "git",
-  ["-c", `safe.directory=${root}`, "show", `${manifest.sourceCommit}:${reviewedGitPath}`],
+  ["-c", `safe.directory=${safeDirectory}`, "show", `${manifest.sourceCommit}:${reviewedGitPath}`],
   { cwd: root, encoding: null, stdio: ["ignore", "pipe", "pipe"] }
 );
 if (sha256(committedReviewedSqlBytes) !== manifest.reviewedSql.blobSha256) {
@@ -108,7 +109,7 @@ if (path.isAbsolute(reviewedPostflightGitPath) || reviewedPostflightGitPath.star
 }
 const committedReviewedPostflightSqlBytes = execFileSync(
   "git",
-  ["-c", `safe.directory=${root}`, "show", `${manifest.sourceCommit}:${reviewedPostflightGitPath}`],
+  ["-c", `safe.directory=${safeDirectory}`, "show", `${manifest.sourceCommit}:${reviewedPostflightGitPath}`],
   { cwd: root, encoding: null, stdio: ["ignore", "pipe", "pipe"] }
 );
 if (sha256(committedReviewedPostflightSqlBytes) !== manifest.reviewedPostflightSql.blobSha256) {

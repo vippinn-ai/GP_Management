@@ -154,6 +154,16 @@ function runVerifier(fixture: ReturnType<typeof createFixture>) {
 }
 
 describe("atomic bootstrap staging postflight verifier", { timeout: 15_000 }, () => {
+  it("normalizes the verifier safe-directory path for Git on Windows", () => {
+    const verifier = fs.readFileSync(
+      path.join(root, "scripts", "verify-operational-bootstrap-v2-staging-postflight.mjs"),
+      "utf8"
+    );
+    expect(verifier).toContain('const safeDirectory = root.replaceAll("\\\\", "/");');
+    expect(verifier).not.toContain("`safe.directory=${root}`");
+    expect(verifier.match(/`safe\.directory=\$\{safeDirectory\}`/g)).toHaveLength(3);
+  });
+
   it("creates a manifest-bound verification accepted by the performance runner contract", () => {
     const fixture = createFixture();
     const result = runVerifier(fixture);
