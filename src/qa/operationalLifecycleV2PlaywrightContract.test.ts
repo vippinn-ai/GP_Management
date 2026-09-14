@@ -226,6 +226,10 @@ describe("operational lifecycle v2 Playwright and performance contract", () => {
     expect(spec).not.toContain("bp-baseline-interactive-observed");
     expect(spec).toContain("sumCriticalShellTransferBytes");
     expect(spec).toContain("largestContentfulPaintElement");
+    expect(spec).toContain("getWebVitalsEvidenceErrors");
+    expect(spec).toContain("getPerformanceRenderEvidenceErrors");
+    expect(spec).toContain('["bp-app", "bp-dashboard", "bp-inventory"]');
+    expect(spec).toContain("realtimeStatuses");
     expect(spec).toContain("freezeStartupWebVitals");
     expect(spec).toContain("__BP_STARTUP_WEB_VITALS__");
     expect(spec).toContain("postSafeLargestContentfulPaintMs");

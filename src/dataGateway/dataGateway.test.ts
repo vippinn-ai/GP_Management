@@ -1199,6 +1199,54 @@ describe("app_state data gateway", () => {
     expect(client.rpc).not.toHaveBeenCalled();
   });
 
+  it("marks the subscribe call before a synchronous SUBSCRIBED callback and the sole bootstrap RPC", async () => {
+    const marks: string[] = [];
+    vi.spyOn(performance, "mark").mockImplementation((name) => {
+      marks.push(String(name));
+      return {} as PerformanceMark;
+    });
+    const channel = {
+      on: vi.fn().mockReturnThis(),
+      subscribe: vi.fn((callback: (status: string) => void) => {
+        callback("SUBSCRIBED");
+        return channel;
+      })
+    };
+    const client = {
+      auth: { getSession: vi.fn().mockResolvedValue({ data: { session: { user: { id: "user-1" } } }, error: null }) },
+      channel: vi.fn(() => channel),
+      removeChannel: vi.fn(),
+      rpc: vi.fn().mockResolvedValue({ data: { contract_version: 1 }, error: null })
+    };
+    backendMocks.getSupabaseClient.mockReturnValue(client);
+    normalizedReadMocks.buildOperationalBootstrapRpcResult.mockReturnValue({
+      status: "active",
+      actorId: "user-1",
+      profile: { id: "user-1", name: "Admin", username: "admin", role: "admin", active: true },
+      organization: { id: "org-primary", name: "BreakPerfect", businessProfile: { name: "BreakPerfect" } },
+      version: 44,
+      appData: createAppData()
+    });
+    const gateway = createRemoteDataGateway({
+      ...DEFAULT_BACKEND_FEATURE_FLAGS,
+      atomicBootstrap: true,
+      normalizedBootstrap: true,
+      normalizedRealtime: true
+    });
+
+    await expect(gateway.loadAuthenticatedAppDataSnapshot?.()).resolves.toMatchObject({ status: "active" });
+
+    const subscribeCall = marks.indexOf("bp-realtime-channel-subscribe-called");
+    const subscribed = marks.indexOf("bp-realtime-status-subscribed");
+    const ready = marks.indexOf("bp-realtime-ready");
+    const rpc = marks.indexOf("bp-bootstrap-rpc-requested");
+    expect(subscribeCall).toBeGreaterThanOrEqual(0);
+    expect(subscribeCall).toBeLessThan(subscribed);
+    expect(subscribed).toBeLessThan(ready);
+    expect(ready).toBeLessThan(rpc);
+    expect(client.rpc).toHaveBeenCalledTimes(1);
+  });
+
   it("rechecks the session after a no-session preparation so a later sign-in can bootstrap", async () => {
     let realtimeStatus: ((status: string) => void) | undefined;
     const channel = {

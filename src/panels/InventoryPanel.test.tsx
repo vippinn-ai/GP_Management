@@ -251,20 +251,41 @@ describe("InventoryPanel normalized report reads", () => {
     const rendered = render(<InventoryPanel {...catalogProps} />);
 
     const catalogTable = within(rendered.container.querySelector(".inventory-table-wrap")!);
+    const currentDesktopNames = () => Array.from(rendered.container.querySelectorAll(".inventory-table-wrap tbody tr"))
+      .map((row) => row.querySelector("td")?.textContent ?? "");
     expect(rendered.container.querySelectorAll(".inventory-table-wrap tbody tr")).toHaveLength(INVENTORY_CATALOG_PAGE_SIZE);
     expect(catalogTable.getByText("Inventory Item 001")).toBeVisible();
     expect(catalogTable.queryByText("Inventory Item 041")).not.toBeInTheDocument();
     expect(screen.getByText("Page 1 of 3 · 112 items")).toBeVisible();
+    const observedNames = [...currentDesktopNames()];
 
     fireEvent.click(screen.getByRole("button", { name: "Next" }));
     expect(catalogTable.queryByText("Inventory Item 001")).not.toBeInTheDocument();
     expect(catalogTable.getByText("Inventory Item 041")).toBeVisible();
     expect(screen.getByText("Page 2 of 3 · 112 items")).toBeVisible();
+    observedNames.push(...currentDesktopNames());
+
+    fireEvent.click(screen.getByRole("button", { name: "Next" }));
+    expect(rendered.container.querySelectorAll(".inventory-table-wrap tbody tr")).toHaveLength(32);
+    expect(catalogTable.getByText("Inventory Item 081")).toBeVisible();
+    expect(catalogTable.getByText("Inventory Item 112")).toBeVisible();
+    expect(screen.getByText("Page 3 of 3 · 112 items")).toBeVisible();
+    observedNames.push(...currentDesktopNames());
+    expect(observedNames).toHaveLength(112);
+    expect(new Set(observedNames)).toEqual(new Set(items.map((entry) => entry.name)));
+
+    const offPageRow = catalogTable.getByText("Inventory Item 081").closest("tr")!;
+    fireEvent.click(within(offPageRow).getByRole("button", { name: "Edit" }));
+    expect(props.onBeginEditInventoryItem).toHaveBeenCalledWith(items[80]);
+
+    const movementItemSelect = screen.getByRole("combobox", { name: "Item" });
+    expect(within(movementItemSelect).getAllByRole("option")).toHaveLength(113);
+    expect(within(movementItemSelect).getByRole("option", { name: "Inventory Item 112" })).toHaveValue(items[111].id);
 
     act(() => matchMedia.setMatches(true));
     const mobileCatalog = within(rendered.container.querySelector(".inventory-mobile-list")!);
-    expect(rendered.container.querySelectorAll(".inventory-mobile-list .inventory-mobile-card")).toHaveLength(INVENTORY_CATALOG_PAGE_SIZE);
-    expect(mobileCatalog.getByText("Inventory Item 041")).toBeVisible();
+    expect(rendered.container.querySelectorAll(".inventory-mobile-list .inventory-mobile-card")).toHaveLength(32);
+    expect(mobileCatalog.getByText("Inventory Item 081")).toBeVisible();
 
     fireEvent.change(screen.getByPlaceholderText("Search active items by name or category"), {
       target: { value: "112" }
@@ -279,5 +300,49 @@ describe("InventoryPanel normalized report reads", () => {
     );
     expect(mobileCatalog.getByText("Inventory Item 112")).toBeVisible();
     expect(screen.queryByLabelText("Inventory catalog pagination")).not.toBeInTheDocument();
-  });
+
+    fireEvent.change(screen.getByPlaceholderText("Search active items by name or category"), {
+      target: { value: "" }
+    });
+    rendered.rerender(<InventoryPanel {...catalogProps} />);
+    expect(screen.getByText("Page 1 of 3 · 112 items")).toBeVisible();
+    expect(mobileCatalog.getByText("Inventory Item 001")).toBeVisible();
+    expect(mobileCatalog.queryByText("Inventory Item 041")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Next" }));
+    expect(screen.getByText("Page 2 of 3 · 112 items")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Archived (0)" }));
+    rendered.rerender(<InventoryPanel {...catalogProps} inventoryArchiveView="archived" />);
+    expect(screen.getByText("Page 1 of 3 · 112 items")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Next" }));
+    fireEvent.click(screen.getByRole("button", { name: "Active Items (112)" }));
+    rendered.rerender(<InventoryPanel {...catalogProps} />);
+    expect(screen.getByText("Page 1 of 3 · 112 items")).toBeVisible();
+
+    rendered.rerender(
+      <InventoryPanel
+        {...catalogProps}
+        inventoryPanelView="report"
+        inventoryReport={{
+          ...catalogProps.inventoryReport,
+          summary: { ...catalogProps.inventoryReport.summary, touchedItems: 1 },
+          rows: [{
+            itemId: items[111].id,
+            itemName: items[111].name,
+            category: items[111].category,
+            active: true,
+            added: 5,
+            deducted: 2,
+            manualAdjustments: 0,
+            reversals: 0,
+            netChange: 3,
+            currentStock: items[111].stockQty,
+            reserved: 0,
+            movementCount: 2
+          }]
+        }}
+      />
+    );
+    expect(within(rendered.container.querySelector(".inventory-report-table-wrap")!).getByText("Inventory Item 112")).toBeVisible();
+  }, 15_000);
 });

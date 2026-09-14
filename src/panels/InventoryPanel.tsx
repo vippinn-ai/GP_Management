@@ -868,14 +868,20 @@ export function InventoryPanel(props: {
               <button
                 type="button"
                 className={inventoryArchiveView === "active" ? "is-active" : ""}
-                onClick={() => props.onInventoryArchiveViewChange("active")}
+                onClick={() => {
+                  setCatalogPagination({ contextKey: `active\u0000${inventoryItemSearch}`, page: 1 });
+                  props.onInventoryArchiveViewChange("active");
+                }}
               >
                 Active Items ({props.activeInventoryCount})
               </button>
               <button
                 type="button"
                 className={inventoryArchiveView === "archived" ? "is-active" : ""}
-                onClick={() => props.onInventoryArchiveViewChange("archived")}
+                onClick={() => {
+                  setCatalogPagination({ contextKey: `archived\u0000${inventoryItemSearch}`, page: 1 });
+                  props.onInventoryArchiveViewChange("archived");
+                }}
               >
                 Archived ({props.archivedInventoryCount})
               </button>
@@ -883,7 +889,10 @@ export function InventoryPanel(props: {
             <input
               className="search-input"
               value={inventoryItemSearch}
-              onChange={(event) => props.onInventoryItemSearchChange(event.target.value)}
+              onChange={(event) => {
+                setCatalogPagination({ contextKey: `${inventoryArchiveView}\u0000${event.target.value}`, page: 1 });
+                props.onInventoryItemSearchChange(event.target.value);
+              }}
               placeholder={`Search ${isArchivedView ? "archived" : "active"} items by name or category`}
             />
             {!compactInventoryLayout && <div className="table-wrap inventory-table-wrap">

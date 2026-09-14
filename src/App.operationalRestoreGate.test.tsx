@@ -1,4 +1,4 @@
-import { cleanup, render, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RemoteAppDataSnapshot, RemoteProfile } from "./backend";
 import type { OperationalMutation } from "./operationalSync";
@@ -10,7 +10,10 @@ const mocks = vi.hoisted(() => ({
   loadAppDataSnapshot: vi.fn(),
   saveAppData: vi.fn(),
   subscribeToAppData: vi.fn(),
-  commitOperationalMutation: vi.fn()
+  commitOperationalMutation: vi.fn(),
+  loadDeferredNormalizedDashboardActivity: vi.fn(),
+  loadDeferredNormalizedDashboardHistory: vi.fn(),
+  loadActivityFeedPage: vi.fn()
 }));
 
 vi.mock("./backend", async (importOriginal) => {
@@ -32,15 +35,23 @@ vi.mock("./dataGateway", async (importOriginal) => {
       normalizedLiveReads: true,
       normalizedRealtime: true,
       rpcOperationalWrites: true,
-      operationalRpcV2: true
+      operationalRpcV2: true,
+      activityFeed: true
     }),
     defaultRemoteDataGateway: {
       loadAppDataSnapshot: mocks.loadAppDataSnapshot,
       saveAppData: mocks.saveAppData,
       subscribeToAppData: mocks.subscribeToAppData,
       commitOperationalMutation: mocks.commitOperationalMutation
-    }
+    },
+    loadDeferredNormalizedDashboardActivity: mocks.loadDeferredNormalizedDashboardActivity,
+    loadDeferredNormalizedDashboardHistory: mocks.loadDeferredNormalizedDashboardHistory
   };
+});
+
+vi.mock("./dataGateway/activityFeed", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./dataGateway/activityFeed")>();
+  return { ...actual, loadActivityFeedPage: mocks.loadActivityFeedPage };
 });
 
 import App from "./App";
@@ -112,6 +123,9 @@ describe("App operational restore dispatch gate", () => {
       entityId: "session-seeded",
       canonicalHydrated: true
     });
+    mocks.loadDeferredNormalizedDashboardActivity.mockResolvedValue({ auditLogs: [] });
+    mocks.loadDeferredNormalizedDashboardHistory.mockResolvedValue({ bills: [], payments: [], expenses: [] });
+    mocks.loadActivityFeedPage.mockResolvedValue({ items: [], actors: [], hasMore: false, nextCursor: null });
     window.localStorage.setItem(PENDING_OPERATION_STORAGE_KEY, JSON.stringify([createPendingMutation()]));
   });
 
@@ -135,5 +149,60 @@ describe("App operational restore dispatch gate", () => {
     await waitFor(() => expect(mocks.commitOperationalMutation).toHaveBeenCalledTimes(1));
     await new Promise((resolve) => window.setTimeout(resolve, 20));
     expect(mocks.commitOperationalMutation).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders recent activity while financial history is pending and preserves Show All navigation", async () => {
+    const history = deferred<{ bills: []; payments: []; expenses: [] }>();
+    let historySettled = false;
+    void history.promise.finally(() => { historySettled = true; });
+    mocks.loadAppDataSnapshot.mockResolvedValue(createSnapshot());
+    mocks.loadDeferredNormalizedDashboardHistory.mockReturnValue(history.promise);
+    mocks.loadDeferredNormalizedDashboardActivity.mockResolvedValue({
+      auditLogs: [{
+        id: "audit-fast",
+        action: "session_updated",
+        entityType: "session",
+        entityId: "session-fast",
+        message: "Activity available before financial history",
+        createdAt: "2026-09-14T10:00:00.000Z",
+        userId: activeProfile.id
+      }]
+    });
+    mocks.loadActivityFeedPage
+      .mockResolvedValueOnce({ items: [], actors: [], hasMore: false, nextCursor: null })
+      .mockResolvedValue({
+        items: [{
+          id: "activity-fast",
+          occurredAt: "2026-09-14T10:00:00.000Z",
+          actorUserId: activeProfile.id,
+          actorName: activeProfile.name,
+          actorUsername: activeProfile.username,
+          actorRole: activeProfile.role,
+          action: "session_updated",
+          category: "session",
+          entityType: "session",
+          entityId: "session-fast",
+          summary: "Activity available before financial history",
+          details: {},
+          sourceKind: "audit_log",
+          legacy: false
+        }],
+        actors: [],
+        hasMore: false,
+        nextCursor: null
+      });
+
+    render(<App />);
+
+    await waitFor(() => expect(mocks.loadDeferredNormalizedDashboardActivity).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.getByText("Activity available before financial history")).toBeVisible());
+    expect(mocks.loadDeferredNormalizedDashboardHistory).toHaveBeenCalledTimes(1);
+    expect(historySettled).toBe(false);
+
+    fireEvent.click(screen.getByRole("button", { name: "Show All" }));
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Detailed Activity" })).toBeVisible());
+    expect(historySettled).toBe(false);
+
+    await act(async () => { history.resolve({ bills: [], payments: [], expenses: [] }); });
   });
 });

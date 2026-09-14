@@ -636,6 +636,7 @@ export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): 
         globalThis.clearTimeout(timeoutId);
         reject(error);
       };
+      markBootstrapPerformance("bp-realtime-channel-subscribe-called");
       realtimeUnsubscribe = subscribeToOperationalEvents(
         client,
         (event) => {
@@ -703,7 +704,6 @@ export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): 
           }
         }
       );
-      markBootstrapPerformance("bp-realtime-channel-subscribe-called");
     });
     return realtimeReadyPromise;
   };

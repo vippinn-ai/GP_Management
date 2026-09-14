@@ -9,6 +9,8 @@ import {
   assertCompatiblePerformanceMetricVersion,
   CRITICAL_RESOURCE_TIMING_SETTLE_TIMEOUT_MS,
   freezeStartupWebVitals,
+  getPerformanceRenderEvidenceErrors,
+  getWebVitalsEvidenceErrors,
   measureBootstrapDependencyDepth,
   measureResourceTimingPhases,
   installWebVitalsObserver,
@@ -18,6 +20,7 @@ import {
   requestStartedByBrowserMarkAfterCompletion,
   selectCriticalEvidence,
   sumCriticalShellTransferBytes,
+  type PerformanceRenderEventEvidence,
   type WebVitalsEvidence
 } from "../../../src/qa/operationalPerformanceCriticalPath";
 
@@ -73,14 +76,7 @@ type RenderEvidence = {
   totalActualDurationMs: number;
   maxActualDurationMs: number;
   updateActualDurationsMs: number[];
-  events: Array<{
-    id: string;
-    phase: "mount" | "update" | "nested-update";
-    actualDurationMs: number;
-    baseDurationMs: number;
-    startTimeMs: number;
-    commitTimeMs: number;
-  }>;
+  events: PerformanceRenderEventEvidence[];
 };
 
 type LoadEvidence = {
@@ -89,6 +85,7 @@ type LoadEvidence = {
   safeInteractiveMs: number;
   playwrightObservedSafeInteractiveMs: number;
   bootstrapMarks: Record<string, number>;
+  realtimeStatuses: Array<{ name: string; startTimeMs: number }>;
   criticalResources: ResourceEvidence[];
   criticalResponses: ResponseEvidence[];
   criticalRequestCount: number;
@@ -124,6 +121,8 @@ type LoadEvidence = {
   postSafeLargestContentfulPaintResourcePath: string;
   cumulativeLayoutShift: number;
   renderEvidence: RenderEvidence | null;
+  profilerEvidenceErrors: string[];
+  webVitalsEvidenceErrors: string[];
   activePanelCommitDurationsMs: number[];
   idleRootCommits: number | null;
   inventoryStockMovementCount: number | null;
@@ -244,7 +243,11 @@ function nextCorrelationKey(url: string, occurrences: Map<string, number>) {
   return `${crypto.createHash("sha256").update(url).digest("hex")}:${occurrence}`;
 }
 
-async function resourceEvidence(page: Page, baseOrigin: string): Promise<{ marks: Record<string, number>; resources: ResourceEvidence[] }> {
+async function resourceEvidence(page: Page, baseOrigin: string): Promise<{
+  marks: Record<string, number>;
+  realtimeStatuses: Array<{ name: string; startTimeMs: number }>;
+  resources: ResourceEvidence[];
+}> {
   const rawEvidence = await page.evaluate(() => {
     const allowedMarks = [
       "bp-app-module-requested", "bp-app-module-ready", "bp-session-requested", "bp-session-ready",
@@ -254,6 +257,10 @@ async function resourceEvidence(page: Page, baseOrigin: string): Promise<{ marks
       "bp-visible-dashboard-ready"
     ];
     const marks = Object.fromEntries(allowedMarks.map((name) => [name, performance.getEntriesByName(name, "mark").at(-1)?.startTime ?? -1]));
+    const realtimeStatuses = performance.getEntriesByType("mark")
+      .filter((entry) => /^bp-realtime-status-[a-z0-9-]+$/.test(entry.name))
+      .map((entry) => ({ name: entry.name, startTimeMs: entry.startTime }))
+      .sort((left, right) => left.startTimeMs - right.startTimeMs);
     const resources = [...performance.getEntriesByType("navigation"), ...performance.getEntriesByType("resource")].map((raw) => {
       const entry = raw as PerformanceResourceTiming | PerformanceNavigationTiming;
       const url = new URL(entry.name);
@@ -269,11 +276,12 @@ async function resourceEvidence(page: Page, baseOrigin: string): Promise<{ marks
         decodedBodySize: entry.decodedBodySize
       };
     });
-    return { marks, resources };
+    return { marks, realtimeStatuses, resources };
   });
   const occurrences = new Map<string, number>();
   return {
     marks: rawEvidence.marks,
+    realtimeStatuses: rawEvidence.realtimeStatuses,
     resources: rawEvidence.resources.map(({ url, ...entry }) => {
       const parsed = new URL(url);
       const api = /\/(?:rest|auth)\/v1\//.test(parsed.pathname);
@@ -293,7 +301,11 @@ async function settledResourceEvidence(
   page: Page,
   baseOrigin: string,
   expectedCriticalRequestKeys: ReadonlySet<string>
-): Promise<{ marks: Record<string, number>; resources: ResourceEvidence[] }> {
+): Promise<{
+  marks: Record<string, number>;
+  realtimeStatuses: Array<{ name: string; startTimeMs: number }>;
+  resources: ResourceEvidence[];
+}> {
   const deadline = Date.now() + CRITICAL_RESOURCE_TIMING_SETTLE_TIMEOUT_MS;
   let evidence = await resourceEvidence(page, baseOrigin);
   while (
@@ -519,7 +531,7 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
       await responseEvidenceCompletion;
     });
     await Promise.all(criticalRequestTasks);
-    const { marks, resources } = await settledResourceEvidence(coldPage, baseOrigin, expectedCriticalRequestKeys);
+    const { marks, realtimeStatuses, resources } = await settledResourceEvidence(coldPage, baseOrigin, expectedCriticalRequestKeys);
     const comparisonReadyMark = visibleReadyMs;
     if (mode === "candidate") {
       expect(safeInteractiveMs).toBeGreaterThanOrEqual(0);
@@ -564,6 +576,7 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
     );
 
     let renderEvidence: RenderEvidence | null = null;
+    let profilerEvidenceErrors: string[] = [];
     let activePanelCommitDurationsMs: number[] = [];
     let idleRootCommits: number | null = null;
     let inventoryStockMovementCount: number | null = null;
@@ -645,6 +658,12 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
         .filter((entry) => entry.id === "bp-inventory")
         .map((entry) => entry.actualDurationMs) ?? [], panelCommitOffset);
       expect(activePanelCommitDurationsMs.length).toBeGreaterThan(0);
+      renderEvidence = await coldPage.evaluate(() => (
+        globalThis as typeof globalThis & { __BP_RENDER_EVIDENCE__?: RenderEvidence }
+      ).__BP_RENDER_EVIDENCE__ ?? null);
+      profilerEvidenceErrors = renderEvidence
+        ? getPerformanceRenderEvidenceErrors(renderEvidence.events, ["bp-app", "bp-dashboard", "bp-inventory"])
+        : ["Profiler evidence is missing."];
       const beforeIdle = await coldPage.evaluate(() => (globalThis as typeof globalThis & { __BP_RENDER_EVIDENCE__?: RenderEvidence }).__BP_RENDER_EVIDENCE__?.commits ?? 0);
       await coldPage.waitForTimeout(1_200);
       const afterIdle = await coldPage.evaluate(() => (globalThis as typeof globalThis & { __BP_RENDER_EVIDENCE__?: RenderEvidence }).__BP_RENDER_EVIDENCE__?.commits ?? 0);
@@ -687,6 +706,7 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
         postSafe: target.__BP_WEB_VITALS__!
       };
     });
+    const webVitalsEvidenceErrors = getWebVitalsEvidenceErrors(webVitals.startup);
 
     const responseEvidenceErrors = criticalResponses.flatMap((entry) => entry.evidenceError
       ? [`Critical response ${entry.requestKey} has invalid decoded-body evidence (${entry.evidenceError}).`]
@@ -701,6 +721,7 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
       safeInteractiveMs,
       playwrightObservedSafeInteractiveMs,
       bootstrapMarks: marks,
+      realtimeStatuses,
       criticalResources,
       criticalResponses,
       criticalRequestCount: criticalResources.length,
@@ -736,6 +757,8 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
       postSafeLargestContentfulPaintResourcePath: webVitals.postSafe.largestContentfulPaintResourcePath,
       cumulativeLayoutShift: webVitals.postSafe.cumulativeLayoutShift,
       renderEvidence,
+      profilerEvidenceErrors,
+      webVitalsEvidenceErrors,
       activePanelCommitDurationsMs,
       idleRootCommits,
       inventoryStockMovementCount,
@@ -786,6 +809,12 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
     return identities.length > 0 && identities.every((response) => response.appStateVersion === expectedAppStateVersion);
   })).toBe(true);
   if (mode === "candidate") {
+    expect.soft(loads.every((entry) => entry.profilerEvidenceErrors.length === 0)).toBe(true);
+    expect.soft(loads.every((entry) => entry.webVitalsEvidenceErrors.length === 0)).toBe(true);
+    expect.soft(loads.every((entry) => entry.realtimeStatuses.length === 1
+      && entry.realtimeStatuses[0].name === "bp-realtime-status-subscribed"
+      && Number.isFinite(entry.realtimeStatuses[0].startTimeMs)
+      && entry.realtimeStatuses[0].startTimeMs >= 0)).toBe(true);
     expect.soft(loads.every((entry) => !entry.requestedFullAppStateData)).toBe(true);
     expect.soft(loads.every((entry) => !entry.requestedHistoryBeforeSafeInteractive)).toBe(true);
     expect.soft(loads.every((entry) => entry.postSafeResponses.some((response) =>

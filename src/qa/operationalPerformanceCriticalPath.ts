@@ -23,6 +23,84 @@ export interface WebVitalsEvidence {
   cumulativeLayoutShift: number;
 }
 
+export interface PerformanceRenderEventEvidence {
+  id: string;
+  phase: "mount" | "update" | "nested-update";
+  actualDurationMs: number;
+  baseDurationMs: number;
+  startTimeMs: number;
+  commitTimeMs: number;
+}
+
+export function getWebVitalsEvidenceErrors(evidence: WebVitalsEvidence): string[] {
+  const errors: string[] = [];
+  const nonnegativeFields: Array<[string, number]> = [
+    ["largestContentfulPaintMs", evidence.largestContentfulPaintMs],
+    ["largestContentfulPaintSize", evidence.largestContentfulPaintSize],
+    ["largestContentfulPaintRenderTimeMs", evidence.largestContentfulPaintRenderTimeMs],
+    ["largestContentfulPaintLoadTimeMs", evidence.largestContentfulPaintLoadTimeMs],
+    ["firstContentfulPaintMs", evidence.firstContentfulPaintMs],
+    ["cumulativeLayoutShift", evidence.cumulativeLayoutShift]
+  ];
+  for (const [field, value] of nonnegativeFields) {
+    if (!Number.isFinite(value) || value < 0) errors.push(`${field} must be finite and nonnegative.`);
+  }
+  if (!(evidence.largestContentfulPaintMs > 0)) errors.push("largestContentfulPaintMs must be positive.");
+  if (!(evidence.firstContentfulPaintMs > 0)) errors.push("firstContentfulPaintMs must be positive.");
+  if (Number.isFinite(evidence.firstContentfulPaintMs)
+    && Number.isFinite(evidence.largestContentfulPaintMs)
+    && evidence.firstContentfulPaintMs > evidence.largestContentfulPaintMs) {
+    errors.push("firstContentfulPaintMs must not occur after largestContentfulPaintMs.");
+  }
+  if (!evidence.largestContentfulPaintElementPresent || !evidence.largestContentfulPaintElement) {
+    errors.push("LCP element attribution must be present.");
+  }
+  if (evidence.largestContentfulPaintElement
+    && !/^[a-z][a-z0-9_-]*(?:#[a-z][a-z0-9_-]*)?(?:\.[a-z][a-z0-9_-]*){0,3}$/i.test(evidence.largestContentfulPaintElement)) {
+    errors.push("LCP selector is not sanitized.");
+  }
+  if (/[?#]/.test(evidence.largestContentfulPaintResourcePath)) errors.push("LCP resource path is not sanitized.");
+  if (!["text", "resource", "unknown"].includes(evidence.largestContentfulPaintSource)) {
+    errors.push("LCP source is invalid.");
+  }
+  return errors;
+}
+
+export function getPerformanceRenderEvidenceErrors(
+  events: PerformanceRenderEventEvidence[],
+  requiredIds: readonly string[]
+): string[] {
+  const errors: string[] = [];
+  if (!Array.isArray(events) || events.length === 0) return ["Profiler events are missing."];
+  const observedIds = new Set<string>();
+  events.forEach((event, index) => {
+    if (!event || typeof event !== "object") {
+      errors.push(`Profiler event ${index} is invalid.`);
+      return;
+    }
+    if (typeof event.id !== "string" || !event.id) errors.push(`Profiler event ${index} has no ID.`);
+    else observedIds.add(event.id);
+    if (!["mount", "update", "nested-update"].includes(event.phase)) errors.push(`Profiler event ${index} has an invalid phase.`);
+    for (const [field, value] of [
+      ["actualDurationMs", event.actualDurationMs],
+      ["baseDurationMs", event.baseDurationMs],
+      ["startTimeMs", event.startTimeMs],
+      ["commitTimeMs", event.commitTimeMs]
+    ] as const) {
+      if (!Number.isFinite(value) || value < 0) errors.push(`Profiler event ${index} ${field} must be finite and nonnegative.`);
+    }
+    if (Number.isFinite(event.startTimeMs)
+      && Number.isFinite(event.commitTimeMs)
+      && event.commitTimeMs < event.startTimeMs) {
+      errors.push(`Profiler event ${index} commitTimeMs precedes startTimeMs.`);
+    }
+  });
+  for (const id of requiredIds) {
+    if (!observedIds.has(id)) errors.push(`Required Profiler boundary ${id} is missing.`);
+  }
+  return errors;
+}
+
 export const INVENTORY_RENDER_POLL_INTERVAL_MS = 25;
 export const CRITICAL_RESOURCE_TIMING_SETTLE_TIMEOUT_MS = 1_000;
 

@@ -3,6 +3,8 @@ import {
   assertCompatiblePerformanceMetricVersion,
   CRITICAL_RESOURCE_TIMING_SETTLE_TIMEOUT_MS,
   freezeStartupWebVitals,
+  getPerformanceRenderEvidenceErrors,
+  getWebVitalsEvidenceErrors,
   measureBootstrapDependencyDepth,
   measureResourceTimingPhases,
   installWebVitalsObserver,
@@ -254,6 +256,68 @@ describe("browser-domain operational performance evidence", () => {
       largestContentfulPaintResourcePath: "example.test/assets/logo.png",
       largestContentfulPaintSource: "resource"
     });
+  });
+
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, -1, 0])("fails closed on invalid FCP evidence (%s)", (firstContentfulPaintMs) => {
+    const errors = getWebVitalsEvidenceErrors({
+      largestContentfulPaintMs: 40,
+      largestContentfulPaintElement: "strong.activity-event-summary",
+      largestContentfulPaintResourcePath: "",
+      largestContentfulPaintSize: 500,
+      largestContentfulPaintRenderTimeMs: 40,
+      largestContentfulPaintLoadTimeMs: 0,
+      largestContentfulPaintElementPresent: true,
+      largestContentfulPaintSource: "text",
+      firstContentfulPaintMs,
+      cumulativeLayoutShift: 0
+    });
+
+    expect(errors.some((error) => error.includes("firstContentfulPaintMs"))).toBe(true);
+  });
+
+  it("accepts complete Web Vitals evidence and rejects unsanitized attribution", () => {
+    const valid = {
+      largestContentfulPaintMs: 40,
+      largestContentfulPaintElement: "strong.activity-event-summary",
+      largestContentfulPaintResourcePath: "example.test/assets/logo.png",
+      largestContentfulPaintSize: 500,
+      largestContentfulPaintRenderTimeMs: 40,
+      largestContentfulPaintLoadTimeMs: 35,
+      largestContentfulPaintElementPresent: true,
+      largestContentfulPaintSource: "resource" as const,
+      firstContentfulPaintMs: 20,
+      cumulativeLayoutShift: 0
+    };
+    expect(getWebVitalsEvidenceErrors(valid)).toEqual([]);
+    expect(getWebVitalsEvidenceErrors({
+      ...valid,
+      largestContentfulPaintElement: "strong.customer@example.com",
+      largestContentfulPaintResourcePath: "example.test/logo.png?token=secret"
+    })).toEqual(expect.arrayContaining([
+      "LCP selector is not sanitized.",
+      "LCP resource path is not sanitized."
+    ]));
+  });
+
+  it("requires complete finite structured Profiler evidence for every boundary", () => {
+    const validEvents = ["bp-app", "bp-dashboard", "bp-inventory"].map((id) => ({
+      id,
+      phase: "mount" as const,
+      actualDurationMs: 2,
+      baseDurationMs: 3,
+      startTimeMs: 10,
+      commitTimeMs: 13
+    }));
+    expect(getPerformanceRenderEvidenceErrors(validEvents, ["bp-app", "bp-dashboard", "bp-inventory"])).toEqual([]);
+    expect(getPerformanceRenderEvidenceErrors([
+      { ...validEvents[0], actualDurationMs: Number.NaN, commitTimeMs: 9 },
+      { ...validEvents[1], phase: "invalid" as never }
+    ], ["bp-app", "bp-dashboard", "bp-inventory"])).toEqual(expect.arrayContaining([
+      "Profiler event 0 actualDurationMs must be finite and nonnegative.",
+      "Profiler event 0 commitTimeMs precedes startTimeMs.",
+      "Profiler event 1 has an invalid phase.",
+      "Required Profiler boundary bp-inventory is missing."
+    ]));
   });
 
   it.each([

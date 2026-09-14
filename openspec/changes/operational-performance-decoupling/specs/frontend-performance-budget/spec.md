@@ -42,3 +42,4 @@ The staging candidate SHALL expose browser-clock marks for App import, session, 
 - **AND** dependency depth is at most two, there is one critical bootstrap RPC, its decoded response is at most 160,992 bytes, and no direct profile, organization, history, report, audit, or `app_state` read occurs before safe interaction
 - **AND** metric-v3 evidence preserves safe-boundary and post-navigation LCP diagnostics plus exactly correlated bootstrap fetch-to-first-byte and response-download phase distributions without replacing the Login LCP or end-to-end RPC gates
 - **AND** Login LCP attribution is snapshotted at observer delivery with a nonempty sanitized selector, finite FCP, and structured app/Dashboard/Inventory profiler evidence
+- **AND** missing, invalid, non-finite, negative, inverted, unsanitized, or incomplete Web Vitals, realtime-status, or Profiler evidence fails the run
