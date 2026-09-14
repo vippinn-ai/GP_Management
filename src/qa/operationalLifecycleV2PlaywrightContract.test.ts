@@ -305,6 +305,8 @@ describe("operational lifecycle v2 Playwright and performance contract", () => {
     const fixtureBuilder = read("scripts/build-operational-performance-scale-fixture.mjs");
     const fixtureLibrary = read("scripts/operational-performance-scale-fixture-lib.mjs");
     const fixtureVerifier = read("scripts/verify-operational-performance-scale-fixture.mjs");
+    const rolloverBuilder = read("scripts/build-operational-performance-scale-rollover-cleanup.mjs");
+    const rolloverVerifier = read("scripts/verify-operational-performance-scale-rollover-cleanup.mjs");
     const runner = read("scripts/run-operational-performance-staging-e2e.mjs");
     for (const marker of [
       "7623125441096521075",
@@ -331,6 +333,13 @@ describe("operational lifecycle v2 Playwright and performance contract", () => {
     expect(fixtureVerifier).toContain('mode==="apply"');
     expect(fixtureVerifier).toContain("Applied fixture workload-shape counts differ from the manifest.");
     expect(fixtureBuilder).toContain("Scale fixture packages must be generated from a clean committed worktree.");
+    expect(rolloverBuilder).toContain("Rollover cleanup packages must be generated from a clean committed worktree.");
+    expect(rolloverBuilder).toContain("Current fixture differs from the applied fixture outside clock-derived shape counters.");
+    expect(rolloverVerifier).toContain('mode === "proof"');
+    expect(rolloverVerifier).toContain("exactStoredIdentityRestored: true");
+    expect(fixtureLibrary).toContain("TEMPORAL_SHAPE_COUNT_KEYS");
+    expect(fixtureLibrary).toContain("get diagnostics v_deleted=row_count");
+    expect(rolloverBuilder).toContain("strictApplyAndDatasetShapeGatesUnchanged");
     expect(runner).toContain("scaleFixtureVerification.value.appStateBefore");
     expect(runner).toContain("scaleFixtureVerification.value.appStateAfter");
     expect(runner).toContain("E2E_PERFORMANCE_DATASET_RPC = SCALE_RPC");

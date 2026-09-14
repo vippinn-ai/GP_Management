@@ -32,6 +32,10 @@ export const SHAPE_COUNT_KEYS = [
   "pending_bills", "recent_stock_movements"
 ].sort();
 
+export const TEMPORAL_SHAPE_COUNT_KEYS = [
+  "current_business_day_bills", "current_business_day_payments", "recent_stock_movements"
+].sort();
+
 const SUPPRESSED_TRIGGERS = [
   ["audit_logs", "audit_logs_append_activity"],
   ["operational_events", "operational_events_append_activity"],
@@ -134,6 +138,36 @@ export function extractProductionShapeCountsFromCopy(bytes, capturedAt) {
 
 export function unwrapEvidence(value) {
   return value?.evidence ?? value?.[0]?.evidence ?? value;
+}
+
+const canonicalize = (value) => Array.isArray(value)
+  ? value.map(canonicalize)
+  : value && typeof value === "object"
+    ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonicalize(value[key])]))
+    : value;
+
+export const sameCanonical = (left, right) => JSON.stringify(canonicalize(left)) === JSON.stringify(canonicalize(right));
+
+function validateShapeCounts(shapeCounts) {
+  if (
+    JSON.stringify(Object.keys(shapeCounts ?? {}).sort()) !== JSON.stringify(SHAPE_COUNT_KEYS)
+    || Object.values(shapeCounts ?? {}).some((value) => !Number.isInteger(value) || value < 0)
+  ) throw new Error("Scale fixture workload-shape identity is invalid.");
+  return shapeCounts;
+}
+
+export function stableScaleIdentity(identity) {
+  const shapeCounts = validateShapeCounts(identity?.shape_counts);
+  return {
+    ...identity,
+    shape_counts: Object.fromEntries(Object.entries(shapeCounts).filter(([key]) => !TEMPORAL_SHAPE_COUNT_KEYS.includes(key)))
+  };
+}
+
+export function assertRolloverStableIdentity(current, expected, label = "Scale fixture") {
+  if (!sameCanonical(stableScaleIdentity(current), stableScaleIdentity(expected))) {
+    throw new Error(`${label} stored identity drift is not a clock-only workload-shape rollover.`);
+  }
 }
 
 export function validateRunId(runId) {
@@ -306,6 +340,10 @@ const rpcIdentitySql = () => `(select case when to_regprocedure('public.${SCALE_
   'definition_md5',(select md5(replace(replace(pg_get_functiondef(to_regprocedure('public.${SCALE_RPC}(jsonb)')),chr(13)||chr(10),chr(10)),chr(13),chr(10)))
 )) end)`;
 const identitySql = () => `jsonb_build_object('organization_id','${ORGANIZATION_ID}','app_state',${appStateSql()},'public_counts',${countObjectSql()},'public_fingerprints',${fingerprintObjectSql()},'auxiliary_counts',${auxiliaryCountObjectSql()},'auxiliary_fingerprints',${auxiliaryFingerprintObjectSql()},'shape_counts',${shapeCountObjectSql()},'scale_fixture_rpc',${rpcIdentitySql()})`;
+const stableIdentityMismatchSql = (left, right) => {
+  const withoutTemporalShape = (expression) => `((${expression}->'shape_counts')${TEMPORAL_SHAPE_COUNT_KEYS.map((key) => `-'${key}'`).join("")})`;
+  return `((${left})-'shape_counts')<>((${right})-'shape_counts') or ${withoutTemporalShape(left)}<>${withoutTemporalShape(right)}`;
+};
 const scaleRpcBodySql = () => `declare v_org text:=nullif(payload->>'organization_id',''); v_actor uuid:=auth.uid();
 begin
   if v_org is distinct from '${ORGANIZATION_ID}' or v_actor is null or not public.current_user_has_org_access('${ORGANIZATION_ID}') then perform public.raise_operational_rpc_error('organization_access_denied','You do not have access to this organization.',jsonb_build_object('organization_id',v_org)); end if;
@@ -316,7 +354,7 @@ const marker = (runId, expression = "g") => `jsonb_build_object('qaScaleRunId',$
 const oldTime = (expression = "g") => `'2020-01-01T00:00:00Z'::timestamptz + (${expression} * interval '1 second')`;
 const recentTime = (expression = "g") => `clock_timestamp() - ((${expression}) % 30) * interval '1 day'`;
 
-const snapshotIdentity = (snapshot) => ({
+export const scaleIdentityFromSnapshot = (snapshot) => ({
   organization_id: snapshot.organization_id,
   app_state: snapshot.app_state,
   public_counts: snapshot.public_counts,
@@ -394,7 +432,7 @@ begin
 ${triggerStateGuardsSql()}
   if (select tgenabled from pg_trigger where tgrelid='public.app_state'::regclass and tgname='app_state_set_updated_at')<>'O' then raise exception 'app_state trigger drift'; end if;
   v_identity := ${identitySql()};
-  if v_identity<>${jsonb(snapshotIdentity(snapshot))} then raise exception 'scale fixture preflight identity drift'; end if;
+  if v_identity<>${jsonb(scaleIdentityFromSnapshot(snapshot))} then raise exception 'scale fixture preflight identity drift'; end if;
 ${collisionChecks}
 end $$;`;
 }
@@ -595,10 +633,20 @@ ${triggerStateGuardsSql()}
 end $$;`;
 }
 
-function cleanupStatements(runId, snapshot, plan, packageBindingSha256) {
-  const deletes = fixtureIdentifiers(runId, plan).map(([table,column,kind,count]) =>
-    `delete from public.${table} where organization_id='${ORGANIZATION_ID}' and ${column} in (select ${id(runId,kind,"g")} from generate_series(1,${count}) g);`
+function cleanupStatements(runId, snapshot, plan, packageBindingSha256, { rolloverSafe = false } = {}) {
+  const deletes = fixtureIdentifiers(runId, plan).map(([table,column,kind,count]) => rolloverSafe
+    ? `do $$ declare v_deleted integer;
+begin
+  delete from public.${table} where organization_id='${ORGANIZATION_ID}' and ${column} in (select ${id(runId,kind,"g")} from generate_series(1,${count}) g);
+  get diagnostics v_deleted=row_count;
+  if v_deleted<>${count} then raise exception 'fixture cleanup row count mismatch in ${table}'; end if;
+end $$;`
+    : `delete from public.${table} where organization_id='${ORGANIZATION_ID}' and ${column} in (select ${id(runId,kind,"g")} from generate_series(1,${count}) g);`
   ).join("\n");
+  const seededDriftCondition = rolloverSafe ? stableIdentityMismatchSql("v_live", "v_expected") : "v_live<>v_expected";
+  const originalIdentity = jsonb(scaleIdentityFromSnapshot(snapshot));
+  const restoredDriftCondition = rolloverSafe ? stableIdentityMismatchSql("v_identity", originalIdentity) : `v_identity<>${originalIdentity}`;
+  const restoredDriftMessage = rolloverSafe ? "scale fixture cleanup did not restore exact stored preflight identity" : "scale fixture cleanup did not restore exact preflight identity";
   return `do $$ declare v_expected jsonb; v_live jsonb;
 begin
   if current_database()<>'postgres' or (select system_identifier::text from pg_control_system())<>'${STAGING_SYSTEM_IDENTIFIER}' then raise exception 'physical database is not the approved staging cluster'; end if;
@@ -607,7 +655,7 @@ begin
   select seeded_identity into v_expected from ${SCALE_SCHEMA}.fixture_registry where run_id=${q(runId)} and organization_id='${ORGANIZATION_ID}' and package_binding_sha256=${q(packageBindingSha256)} and status='active' for update;
   if v_expected is null then raise exception 'scale fixture registry identity mismatch'; end if;
   v_live:=${identitySql()};
-  if v_live<>v_expected then raise exception 'scaled dataset drift prevents cleanup'; end if;
+  if ${seededDriftCondition} then raise exception 'scaled dataset drift prevents cleanup'; end if;
 ${triggerStateGuardsSql()}
   if (select tgenabled from pg_trigger where tgrelid='public.app_state'::regclass and tgname='app_state_set_updated_at')<>'O' then raise exception 'app_state trigger drift'; end if;
 end $$;
@@ -623,7 +671,7 @@ begin
 ${triggerStateGuardsSql()}
   if (select tgenabled from pg_trigger where tgrelid='public.app_state'::regclass and tgname='app_state_set_updated_at')<>'O' then raise exception 'app_state trigger was not restored'; end if;
   v_identity:=${identitySql()};
-  if v_identity<>${jsonb(snapshotIdentity(snapshot))} then raise exception 'scale fixture cleanup did not restore exact preflight identity'; end if;
+  if ${restoredDriftCondition} then raise exception '${restoredDriftMessage}'; end if;
   if (select data ? '${SCALE_KEY}' from public.app_state where id='primary') then raise exception 'scale fixture app_state key remains'; end if;
 end $$;
 drop table ${SCALE_SCHEMA}.fixture_registry;
@@ -655,4 +703,39 @@ export function buildFixturePackage({ runId, snapshot, production, productionApp
     assertSafeGeneratedSql(name,sql);
   }
   return { plan, seed, cleanup, proof };
+}
+
+export function buildRolloverCleanupPackage({ rolloverRunId, fixtureManifest, originalSnapshot, appliedSnapshot, currentSnapshot }) {
+  validateRunId(rolloverRunId);
+  if (
+    fixtureManifest?.operation !== "staging-operational-performance-scale-fixture"
+    || fixtureManifest?.target?.projectRef !== STAGING_PROJECT_REF
+    || fixtureManifest?.target?.identityNonce !== STAGING_IDENTITY_NONCE
+    || fixtureManifest?.target?.organizationId !== ORGANIZATION_ID
+    || fixtureManifest?.productionAllowed !== false
+    || fixtureManifest?.automaticRetryAllowed !== false
+    || !/^[0-9a-f]{64}$/.test(fixtureManifest?.packageBindingSha256 ?? "")
+  ) throw new Error("Rollover cleanup source manifest is not an approved staging fixture.");
+  const currentIdentity = scaleIdentityFromSnapshot(currentSnapshot);
+  const appliedIdentity = scaleIdentityFromSnapshot(appliedSnapshot);
+  assertRolloverStableIdentity(currentIdentity, appliedIdentity, "Applied fixture");
+  for (const field of ["open_sessions", "open_customer_tabs", "recoverable_hopped_sessions", "processing_financial_mutations", "processing_operational_mutations"]) {
+    if (currentSnapshot?.[field] !== 0) throw new Error(`Rollover cleanup snapshot has a dirty ${field} floor.`);
+  }
+  if (currentSnapshot?.scale_fixture_absent !== false || currentSnapshot?.scale_fixture_key_absent !== false || currentSnapshot?.scale_fixture_rpc_absent !== false) {
+    throw new Error("Rollover cleanup snapshot does not contain the applied fixture.");
+  }
+  const cleanupCore = `${minimalEnvironmentGuardSql()}\n${lockSql()}\n${cleanupStatements(fixtureManifest.runId, originalSnapshot, fixtureManifest.plan, fixtureManifest.packageBindingSha256, { rolloverSafe: true })}`;
+  const header = `-- Generated staging-only rollover-safe cleanup for an aged performance fixture.\n-- Rollover run: ${rolloverRunId}\n-- Fixture run: ${fixtureManifest.runId}\n-- Fixture package binding: ${fixtureManifest.packageBindingSha256}\n`;
+  const settings = `set local lock_timeout='3s';\nset local statement_timeout='5min';\n`;
+  const evidence = (mode) => `select jsonb_build_object('status','passed','operation','staging-operational-performance-scale-rollover-cleanup','rollover_run_id',${q(rolloverRunId)},'fixture_run_id',${q(fixtureManifest.runId)},'fixture_package_binding_sha256',${q(fixtureManifest.packageBindingSha256)},'production_write_allowed',false,'cleanup_complete',${mode === "cleanup" ? "true" : "false"},'rollback_only',${mode === "proof" ? "true" : "false"},'identity',${identitySql()}) as evidence;`;
+  const cleanup = `${header}begin;\n${settings}${cleanupCore}\n${evidence("cleanup")}\ncommit;\n`;
+  const proof = `${header}begin;\n${settings}${cleanupCore}\n${evidence("proof")}\nrollback;\n`;
+  for (const [name, sql] of Object.entries({ cleanup, proof })) assertSafeGeneratedSql(name, sql);
+  return {
+    cleanup,
+    proof,
+    temporalShapeBefore: Object.fromEntries(TEMPORAL_SHAPE_COUNT_KEYS.map((key) => [key, appliedSnapshot.shape_counts[key]])),
+    temporalShapeNow: Object.fromEntries(TEMPORAL_SHAPE_COUNT_KEYS.map((key) => [key, currentSnapshot.shape_counts[key]]))
+  };
 }

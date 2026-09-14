@@ -3,14 +3,19 @@ import {
   AUXILIARY_IDENTITY_TABLES,
   APP_STATE_COLLECTIONS,
   SCALE_TABLES,
+  TEMPORAL_SHAPE_COUNT_KEYS,
+  assertRolloverStableIdentity,
   assertSafeGeneratedSql,
   buildFixturePackage,
+  buildRolloverCleanupPackage,
   computeAppStateScalePlan,
   computeScalePlan,
   estimateRepresentativeAppStateUpperBoundBytes,
   extractAppStateCollectionCountsFromCopy,
   extractProductionShapeCountsFromCopy,
   parseJsonBytes,
+  scaleIdentityFromSnapshot,
+  stableScaleIdentity,
   validatePreflight
 } from "./operational-performance-scale-fixture-lib.mjs";
 
@@ -136,5 +141,73 @@ describe("operational performance scale fixture",()=>{
   it("rejects a deliberately unsafe generated cleanup artifact",()=>{
     expect(()=>assertSafeGeneratedSql("unsafe","begin; drop schema qa_performance_scale cascade; rollback;")).toThrow(/unsafe cleanup SQL/);
     expect(()=>assertSafeGeneratedSql("unsafe","begin; delete from public.bills where id like 'x%'; rollback;")).toThrow(/unsafe cleanup SQL/);
+  });
+
+  it("accepts only clock-derived workload-shape ageing as a rollover-stable identity",()=>{
+    const applied=snapshot({
+      scale_fixture_absent:false,scale_fixture_key_absent:false,scale_fixture_rpc_absent:false,
+      scale_fixture_rpc:{owner:"postgres"},
+      shape_counts:{active_inventory_items:112,current_business_day_bills:1,current_business_day_payments:1,pending_bills:36,recent_stock_movements:1506}
+    });
+    const aged={...applied,shape_counts:{...applied.shape_counts,current_business_day_bills:0,current_business_day_payments:0,recent_stock_movements:1462}};
+    expect(TEMPORAL_SHAPE_COUNT_KEYS).toEqual(["current_business_day_bills","current_business_day_payments","recent_stock_movements"]);
+    expect(stableScaleIdentity(scaleIdentityFromSnapshot(aged))).toEqual(stableScaleIdentity(scaleIdentityFromSnapshot(applied)));
+    expect(()=>assertRolloverStableIdentity(scaleIdentityFromSnapshot(aged),scaleIdentityFromSnapshot(applied))).not.toThrow();
+    for(const drifted of [
+      {...aged,app_state:{...aged.app_state,md5:"e".repeat(32)}},
+      {...aged,public_counts:{...aged.public_counts,bills:1}},
+      {...aged,public_fingerprints:{...aged.public_fingerprints,bills:"e".repeat(32)}},
+      {...aged,auxiliary_counts:{...aged.auxiliary_counts,activity_events:1}},
+      {...aged,auxiliary_fingerprints:{...aged.auxiliary_fingerprints,activity_events:"e".repeat(32)}},
+      {...aged,scale_fixture_rpc:{owner:"unexpected"}},
+      {...aged,shape_counts:{...aged.shape_counts,active_inventory_items:111}},
+      {...aged,shape_counts:{...aged.shape_counts,pending_bills:35}}
+    ]) expect(()=>assertRolloverStableIdentity(scaleIdentityFromSnapshot(drifted),scaleIdentityFromSnapshot(applied))).toThrow(/not a clock-only/);
+    expect(()=>stableScaleIdentity({...scaleIdentityFromSnapshot(aged),shape_counts:{}})).toThrow(/workload-shape identity is invalid/);
+  });
+
+  it("generates a unique rollover cleanup that retains strict stored identity and exact deletion counts",()=>{
+    const original=snapshot();
+    const targets=counts();
+    Object.assign(targets,{bills:2,bill_lines:2,payments:1,stock_movements:2,inventory_items:1,audit_logs:1,operational_events:1});
+    const fixture=buildFixturePackage({
+      runId:"normops-20260913-1400-scale-unit",
+      snapshot:original,
+      production:production(targets),
+      productionAppStateCounts:appStateCounts(1),
+      productionShapeCounts:{active_inventory_items:1,current_business_day_bills:1,current_business_day_payments:1,pending_bills:2,recent_stock_movements:2},
+      packageBindingSha256:"c".repeat(64)
+    });
+    const fixtureManifest={
+      operation:"staging-operational-performance-scale-fixture",runId:"normops-20260913-1400-scale-unit",
+      target:{projectRef:"tkbdyzxwwbhkpztgjjxh",identityNonce:"f9bc0aed-b6c4-410f-ba2a-572522d03869",organizationId:"org-primary"},
+      packageBindingSha256:"c".repeat(64),plan:fixture.plan,productionAllowed:false,automaticRetryAllowed:false
+    };
+    const applied={
+      ...original,scale_fixture_absent:false,scale_fixture_key_absent:false,scale_fixture_rpc_absent:false,
+      app_state:{...original.app_state,version:8,bytes:500000,md5:"c".repeat(32)},
+      public_counts:fixture.plan.targetCounts,
+      shape_counts:fixture.plan.shape.targetCounts,
+      scale_fixture_rpc:{owner:"postgres",security_definer:true}
+    };
+    const aged={...applied,shape_counts:{...applied.shape_counts,current_business_day_bills:0,current_business_day_payments:0,recent_stock_movements:1}};
+    const rollover=buildRolloverCleanupPackage({
+      rolloverRunId:"normops-20260914-1300-scale-rollover-cleanup-unit",
+      fixtureManifest,originalSnapshot:original,appliedSnapshot:applied,currentSnapshot:aged
+    });
+    expect(rollover.cleanup.trimEnd().endsWith("commit;")).toBe(true);
+    expect(rollover.proof.trimEnd().endsWith("rollback;")).toBe(true);
+    for(const sql of [rollover.cleanup,rollover.proof]){
+      expect(sql).toContain("staging-operational-performance-scale-rollover-cleanup");
+      expect(sql).toContain("get diagnostics v_deleted=row_count");
+      expect(sql).toContain("fixture cleanup row count mismatch in bills");
+      expect(sql).toContain("-'current_business_day_bills'");
+      expect(sql).toContain("-'current_business_day_payments'");
+      expect(sql).toContain("-'recent_stock_movements'");
+      expect(sql).toContain("scaled dataset drift prevents cleanup");
+      expect(sql).toContain("cleanup did not restore exact stored preflight identity");
+      expect(sql).not.toContain("v_live<>v_expected");
+      expect(sql).not.toContain("drop schema qa_performance_scale cascade");
+    }
   });
 });
