@@ -91,6 +91,13 @@ type LoadEvidence = {
   criticalRequestCount: number;
   bootstrapRpcResponseCount: number;
   activityFeedResponseCount: number;
+  activityFeedSuccessfulResponseCount: number;
+  activityFeedResponses: Array<{
+    requestKey: string;
+    status: number;
+    evidenceError: string | null;
+    startMinusSafeMs: number;
+  }>;
   criticalApiBytes: number;
   coldShellBytes: number;
   initialJavascriptBytes: number;
@@ -352,9 +359,11 @@ async function collectResponseEvidence(
     : undefined;
   if (api || javascript || (shell && contentLengthBytes === 0)) {
     const operationalBootstrapResponse = url.pathname.endsWith("/rest/v1/rpc/load_operational_bootstrap_v2");
+    const activityFeedResponse = url.pathname.endsWith("/rest/v1/rpc/list_activity_events");
     const requiresJson = url.pathname.endsWith("/rest/v1/app_state")
       || url.pathname.endsWith("/rest/v1/stock_movements")
-      || operationalBootstrapResponse;
+      || operationalBootstrapResponse
+      || activityFeedResponse;
     const decoded = await readDecodedResponseBody(() => response.body(), requiresJson);
     bodyBytes = decoded.bodyBytes;
     evidenceError = decoded.error;
@@ -676,10 +685,19 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
     const bootstrapRpcResponseCount = responses.filter((entry) =>
       entry.path.endsWith("/rest/v1/rpc/load_operational_bootstrap_v2")
     ).length;
-    const activityFeedResponseCount = responses.filter((entry) =>
-      entry.path.endsWith("/rest/v1/rpc/list_activity_events")
-      && entry.status >= 200
+    const activityFeedResponses = responses
+      .filter((entry) => entry.path.endsWith("/rest/v1/rpc/list_activity_events"))
+      .map((entry) => ({
+        requestKey: entry.requestKey,
+        status: entry.status,
+        evidenceError: entry.evidenceError ?? null,
+        startMinusSafeMs: entry.requestStartMs - browserBoundary.timeOrigin - deferralBoundary
+      }));
+    const activityFeedResponseCount = activityFeedResponses.length;
+    const activityFeedSuccessfulResponseCount = activityFeedResponses.filter((entry) =>
+      entry.status >= 200
       && entry.status < 400
+      && entry.evidenceError === null
     ).length;
     const bootstrapRpcResources = criticalResources.filter((entry) =>
       entry.path.endsWith("/rest/v1/rpc/load_operational_bootstrap_v2")
@@ -735,6 +753,8 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
       criticalRequestCount: criticalResources.length,
       bootstrapRpcResponseCount,
       activityFeedResponseCount,
+      activityFeedSuccessfulResponseCount,
+      activityFeedResponses,
       criticalApiBytes,
       coldShellBytes,
       initialJavascriptBytes,
@@ -809,7 +829,15 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
   expect.soft(loads.every((entry) => entry.criticalEvidenceErrors.length === 0)).toBe(true);
   expect.soft(loads.every((entry) => entry.criticalResponses.every(isSuccessfulCriticalResponse))).toBe(true);
   expect.soft(loads.every((entry) => !entry.requestedExportChunk)).toBe(true);
-  expect.soft(loads.every((entry) => entry.activityFeedResponseCount >= 1)).toBe(true);
+  expect.soft(loads.every((entry) =>
+    entry.activityFeedResponseCount >= 1
+    && entry.activityFeedSuccessfulResponseCount === entry.activityFeedResponseCount
+    && entry.activityFeedResponses.every((response) =>
+      response.status >= 200
+      && response.status < 400
+      && response.evidenceError === null
+    )
+  )).toBe(true);
   const expectedAppStateVersion = Number(process.env.E2E_EXPECTED_APP_STATE_VERSION);
   expect.soft(Number.isInteger(expectedAppStateVersion)).toBe(true);
   expect.soft(loads.every((entry) => {
@@ -840,7 +868,13 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
     ))).toBe(true);
     expect.soft(loads.every((entry) => entry.bootstrapDependencyDepth !== null && entry.bootstrapDependencyDepth <= 2)).toBe(true);
     expect.soft(loads.every((entry) => entry.bootstrapRpcResponseCount === 1)).toBe(true);
-    expect.soft(loads.every((entry) => entry.activityFeedResponseCount === 1)).toBe(true);
+    expect.soft(loads.every((entry) =>
+      entry.activityFeedResponseCount === 1
+      && entry.activityFeedSuccessfulResponseCount === 1
+      && entry.activityFeedResponses.length === 1
+      && Number.isFinite(entry.activityFeedResponses[0].startMinusSafeMs)
+      && entry.activityFeedResponses[0].startMinusSafeMs > 0
+    )).toBe(true);
     expect.soft(loads.every((entry) =>
       entry.bootstrapRpcFetchToFirstByteMs !== null
       && Number.isFinite(entry.bootstrapRpcFetchToFirstByteMs)

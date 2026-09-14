@@ -158,6 +158,9 @@ describe("operational lifecycle v2 Playwright and performance contract", () => {
     expect(spec).toContain("requestedHistoryBeforeSafeInteractive");
     expect(spec).toContain("list_activity_events");
     expect(spec).toContain("activityFeedResponseCount === 1");
+    expect(spec).toContain("activityFeedSuccessfulResponseCount === 1");
+    expect(spec).toContain("entry.activityFeedResponses[0].startMinusSafeMs > 0");
+    expect(spec).toContain("response.evidenceError === null");
     expect(spec).toContain("activityFeedEnabled: true");
     expect(spec).toContain("measureBootstrapDependencyDepth");
     expect(spec).not.toContain("bootstrapDependencyDepth: 3");
