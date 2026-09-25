@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import type { Page } from "@playwright/test";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createDiagnosticRecorder, createEvidenceTaskTracker, endpointClass, errorClass, observePerformancePage, runDiagnosticSample, writeExclusiveEvidence } from "../../tests/e2e/staging/support/performanceDiagnostics";
+import { captureSettledPageDiagnostics, createDiagnosticRecorder, createEvidenceTaskTracker, endpointClass, errorClass, observePerformancePage, runDiagnosticSample, writeExclusiveEvidence } from "../../tests/e2e/staging/support/performanceDiagnostics";
 import { assessPerformanceSampleEvidence, collectPerformanceEvidenceFiles } from "../../scripts/operational-performance-evidence-files.mjs";
 
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
@@ -16,7 +16,7 @@ describe("bounded private performance diagnostics", () => {
     tracker.track(async () => { throw new Error("private network headers failed"); });
     tracker.track(async () => undefined);
     const result = await tracker.settle();
-    expect(result).toEqual({ complete: false, timedOut: false, pending: 0, failures: { timeout: 0, websocket: 0, network: 1, other: 0 }, failureDetails: [{ endpoint: "other", stage: "headers", failureClass: "network" }], droppedFailures: 0 });
+    expect(result).toEqual({ complete: false, timedOut: false, pending: 0, failures: { timeout: 0, websocket: 0, network: 1, other: 0 }, failureDetails: [{ endpoint: "other", stage: "headers", failureClass: "network" }], droppedFailures: 0, lateCollectors: 0 });
     expect(JSON.stringify(result)).not.toMatch(/private|headers failed/);
   });
 
@@ -30,6 +30,38 @@ describe("bounded private performance diagnostics", () => {
     expect(await pending).toMatchObject({ complete: false, timedOut: true, pending: 1 });
     reject(new Error("private interrupted body"));
     expect(await tracker.settle()).toMatchObject({ complete: false, pending: 0, failures: { other: 1 } });
+  });
+
+  it("fails closed on a late collector while page capture is pending even after empty settlement", async () => {
+    const tracker = createEvidenceTaskTracker();
+    const detach = vi.fn();
+    let finishPage!: (value: { complete: boolean }) => void;
+    const pending = captureSettledPageDiagnostics(() => new Promise<{ complete: boolean }>((resolve) => { finishPage = resolve; }), tracker, detach);
+    expect(detach).toHaveBeenCalledTimes(1);
+    await tracker.settle(); // The original pending set is empty and has settled.
+    const lateAction = vi.fn().mockRejectedValue(new Error("must not start"));
+    tracker.track(lateAction, "bootstrap-rpc");
+    finishPage({ complete: true });
+    expect(await pending).toMatchObject({ complete: false, collectors: { lateCollectors: 1 } });
+    expect(lateAction).not.toHaveBeenCalled();
+  });
+
+  it("detaches the response listener before capture and includes admitted collector failure", async () => {
+    const tracker = createEvidenceTaskTracker();
+    const page = new EventEmitter();
+    let rejectCollector!: (error: Error) => void;
+    const collect = vi.fn(() => tracker.track(() => new Promise<void>((_resolve, reject) => { rejectCollector = reject; }), "auth"));
+    page.on("response", collect);
+    page.emit("response");
+    await Promise.resolve();
+    const evidence = await captureSettledPageDiagnostics(async () => {
+      expect(page.listenerCount("response")).toBe(0);
+      page.emit("response");
+      rejectCollector(new Error("private headers"));
+      return { complete: true };
+    }, tracker, () => page.off("response", collect));
+    expect(collect).toHaveBeenCalledTimes(1);
+    expect(evidence).toMatchObject({ complete: false, collectors: { failures: { other: 1 } } });
   });
 
   it.each(["headers", "timing", "status"] as const)("records %s collector failure without an unhandled rejection", async (stage) => {

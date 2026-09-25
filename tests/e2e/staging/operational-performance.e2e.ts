@@ -3,7 +3,7 @@ import crypto from "node:crypto";
 import { gzipSync } from "node:zlib";
 import { expect, test, type Page, type Request, type Response } from "@playwright/test";
 import { attachJson, captureAuthenticatedRestRequests, credentials, signIn } from "./support/app";
-import { createEvidenceTaskTracker, endpointClass, observePerformancePage, runDiagnosticSample, writeExclusiveEvidence, type EvidenceStage } from "./support/performanceDiagnostics";
+import { captureSettledPageDiagnostics, createEvidenceTaskTracker, endpointClass, observePerformancePage, runDiagnosticSample, writeExclusiveEvidence, type EvidenceStage } from "./support/performanceDiagnostics";
 import { parsePostgrestPageEvidence } from "../../../src/qa/operationalPerformancePageEvidence";
 import { isSuccessfulCriticalResponse, readDecodedResponseBody } from "../../../src/qa/operationalPerformanceResponseEvidence";
 import {
@@ -486,10 +486,7 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
     const coldPage = await context.newPage();
     const capturePage = observePerformancePage(coldPage);
     const responseCollectors = createEvidenceTaskTracker();
-    captureDiagnostics = async () => {
-      const [pageEvidence, collectors] = await Promise.all([capturePage(), responseCollectors.settle()]);
-      return { ...pageEvidence, collectors, complete: pageEvidence.complete && collectors.complete };
-    };
+    captureDiagnostics = () => captureSettledPageDiagnostics(capturePage, responseCollectors, () => coldPage.off("response", collectResponse));
     const started = performance.now();
     const failedRequestPaths: string[] = [];
     const requests = new Map<Request, string>();
@@ -518,7 +515,7 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
       }
       requestedExportChunk ||= /(?:xlsx|jspdf)[^/]*-[^/]+\.js$/i.test(url.pathname);
     });
-    coldPage.on("response", (response) => {
+    function collectResponse(response: Response) {
       responseCollectors.track(async (setStage) => {
         try {
           await collectResponseEvidence(
@@ -531,7 +528,8 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
           );
         } finally { responseResolvers.get(response.request())?.(); }
       }, endpointClass(response.url()));
-    });
+    }
+    coldPage.on("response", collectResponse);
     coldPage.on("requestfinished", (request) => {
       requestLifecycleResolvers.get(request)?.();
     });

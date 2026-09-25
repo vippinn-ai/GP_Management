@@ -82,8 +82,17 @@ export function createEvidenceTaskTracker() {
   const failures: Record<ReturnType<typeof errorClass>, number> = { timeout: 0, websocket: 0, network: 0, other: 0 };
   const failureDetails: { endpoint: ReturnType<typeof endpointClass>; stage: EvidenceStage; failureClass: ReturnType<typeof errorClass> }[] = [];
   let droppedFailures = 0;
+  let sealed = false;
+  let lateCollectors = 0;
+  const snapshot = (timedOut = false) => ({
+    complete: !timedOut && pending.size === 0 && lateCollectors === 0 && Object.values(failures).every((count) => count === 0),
+    timedOut, pending: pending.size, failures: { ...failures }, failureDetails: [...failureDetails], droppedFailures, lateCollectors
+  });
   return {
+    seal() { sealed = true; },
+    snapshot,
     track(action: (setStage: (stage: EvidenceStage) => void) => Promise<void>, endpoint: ReturnType<typeof endpointClass> = "other") {
+      if (sealed) { lateCollectors += 1; return; }
       let stage: EvidenceStage = "headers";
       const task = Promise.resolve().then(() => action((value) => { stage = value; })).catch((error: unknown) => {
         const failureClass = errorClass(error);
@@ -98,12 +107,21 @@ export function createEvidenceTaskTracker() {
       let timedOut = false;
       try { await bounded(() => Promise.all([...pending]), 750); }
       catch { timedOut = true; }
-      return {
-        complete: !timedOut && pending.size === 0 && Object.values(failures).every((count) => count === 0),
-        timedOut, pending: pending.size, failures: { ...failures }, failureDetails: [...failureDetails], droppedFailures
-      };
+      return snapshot(timedOut);
     }
   };
+}
+
+export async function captureSettledPageDiagnostics<T extends { complete: boolean }>(
+  capturePage: () => Promise<T>, collectors: ReturnType<typeof createEvidenceTaskTracker>, detach: () => void
+) {
+  // Seal admission and detach synchronously, before either asynchronous snapshot.
+  collectors.seal();
+  detach();
+  const [pageEvidence, settlement] = await Promise.all([capturePage(), collectors.settle()]);
+  // Read again after both await paths so even an illicit late track call fails closed.
+  const collectorEvidence = collectors.snapshot(settlement.timedOut);
+  return { ...pageEvidence, collectors: collectorEvidence, complete: pageEvidence.complete && collectorEvidence.complete };
 }
 
 export function observePerformancePage(page: Page) {
