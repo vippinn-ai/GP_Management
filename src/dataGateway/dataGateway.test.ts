@@ -1321,6 +1321,115 @@ describe("app_state data gateway", () => {
     expect(client.auth.getSession).toHaveBeenCalledTimes(2);
   });
 
+  function createReadinessTimerFixture() {
+    const statuses: Array<(status: string) => void> = [];
+    const channel = {
+      on: vi.fn().mockReturnThis(),
+      subscribe: vi.fn((callback: (status: string) => void) => { statuses.push(callback); return channel; })
+    };
+    const client = {
+      auth: { getSession: vi.fn().mockResolvedValue({ data: { session: { user: { id: "user-1" } } }, error: null }) },
+      channel: vi.fn(() => channel), removeChannel: vi.fn(),
+      rpc: vi.fn().mockResolvedValue({ data: { contract_version: 1 }, error: null })
+    };
+    backendMocks.getSupabaseClient.mockReturnValue(client);
+    normalizedReadMocks.buildOperationalBootstrapRpcResult.mockReturnValue({
+      status: "active", actorId: "user-1",
+      profile: { id: "user-1", name: "Admin", username: "admin", role: "admin", active: true },
+      organization: { id: "org-primary", name: "BreakPerfect", businessProfile: { name: "BreakPerfect" } },
+      version: 44, appData: createAppData()
+    });
+    const gateway = createRemoteDataGateway({
+      ...DEFAULT_BACKEND_FEATURE_FLAGS, atomicBootstrap: true, normalizedBootstrap: true, normalizedRealtime: true
+    });
+    return { gateway, client, statuses };
+  }
+
+  it("fails a silent subscription exactly at 10 seconds and allows only manual-reset recovery", async () => {
+    vi.useFakeTimers();
+    const { gateway, client, statuses } = createReadinessTimerFixture();
+    try {
+      let rejected = false;
+      const load = gateway.loadAuthenticatedAppDataSnapshot!().catch((error: unknown) => { rejected = true; return error; });
+      await vi.advanceTimersByTimeAsync(9_999);
+      expect(rejected).toBe(false);
+      expect(client.channel).toHaveBeenCalledTimes(1);
+      expect(client.rpc).not.toHaveBeenCalled();
+      expect(client.removeChannel).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      const failure = await load;
+      expect(failure).toEqual(new Error("Normalized realtime subscription did not become ready within 10 seconds."));
+      expect(client.removeChannel).toHaveBeenCalledTimes(1);
+      for (const status of ["SUBSCRIBED", "TIMED_OUT", "CHANNEL_ERROR", "CLOSED"]) statuses[0](status);
+      await expect(gateway.prepareAuthenticatedBootstrap!()).rejects.toBe(failure);
+      await expect(gateway.loadAuthenticatedAppDataSnapshot!()).rejects.toBe(failure);
+      const dispose = gateway.subscribeToAppData(vi.fn(), vi.fn());
+      dispose();
+      const disposeAgain = gateway.subscribeToAppData(vi.fn(), vi.fn());
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(client.auth.getSession).toHaveBeenCalledTimes(1);
+      expect(client.channel).toHaveBeenCalledTimes(1);
+      expect(client.rpc).not.toHaveBeenCalled();
+      disposeAgain();
+      gateway.resetAuthenticatedBootstrapAttempt!();
+      const recovered = gateway.loadAuthenticatedAppDataSnapshot!();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(client.channel).toHaveBeenCalledTimes(2);
+      statuses[0]("SUBSCRIBED");
+      statuses[0]("CHANNEL_ERROR");
+      await vi.advanceTimersByTimeAsync(0);
+      expect(client.rpc).not.toHaveBeenCalled();
+      statuses[1]("SUBSCRIBED");
+      await expect(recovered).resolves.toMatchObject({ status: "active" });
+      expect(client.rpc).toHaveBeenCalledTimes(1);
+      expect(client.auth.getSession).toHaveBeenCalledTimes(2);
+    } finally { gateway.resetAuthenticatedBootstrapAttempt!(); vi.useRealTimers(); }
+  });
+
+  it.each(["before", "same-time-first", "same-time-last"] as const)("characterizes %s readiness at the watchdog boundary", async (ordering) => {
+    vi.useFakeTimers();
+    const { gateway, client, statuses } = createReadinessTimerFixture();
+    try {
+      if (ordering === "same-time-first") setTimeout(() => statuses[0]("SUBSCRIBED"), 10_000);
+      const load = gateway.loadAuthenticatedAppDataSnapshot!().catch((error: unknown) => error);
+      await vi.advanceTimersByTimeAsync(0);
+      if (ordering === "same-time-last") setTimeout(() => statuses[0]("SUBSCRIBED"), 10_000);
+      await vi.advanceTimersByTimeAsync(9_999);
+      expect(client.rpc).not.toHaveBeenCalled();
+      if (ordering === "before") statuses[0]("SUBSCRIBED");
+      await vi.advanceTimersByTimeAsync(2);
+      const result = await load;
+      if (ordering === "same-time-last") {
+        expect(result).toEqual(new Error("Normalized realtime subscription did not become ready within 10 seconds."));
+        expect(client.rpc).not.toHaveBeenCalled();
+        expect(client.removeChannel).toHaveBeenCalledTimes(1);
+      } else {
+        expect(result).toMatchObject({ status: "active" });
+        expect(client.rpc).toHaveBeenCalledTimes(1);
+        expect(client.removeChannel).not.toHaveBeenCalled();
+      }
+    } finally { gateway.resetAuthenticatedBootstrapAttempt!(); vi.useRealTimers(); }
+  });
+
+  it.each(["TIMED_OUT", "CHANNEL_ERROR", "CLOSED"])("distinguishes provider %s from the silent watchdog and caches its failure", async (status) => {
+    vi.useFakeTimers();
+    const { gateway, client, statuses } = createReadinessTimerFixture();
+    try {
+      const load = gateway.loadAuthenticatedAppDataSnapshot!().catch((error: unknown) => error);
+      await vi.advanceTimersByTimeAsync(250);
+      statuses[0](status);
+      const failure = await load;
+      expect(failure).toEqual(new Error(`Normalized realtime subscription failed before bootstrap (${status}).`));
+      await vi.advanceTimersByTimeAsync(20_000);
+      statuses[0]("SUBSCRIBED");
+      await expect(gateway.prepareAuthenticatedBootstrap!()).rejects.toBe(failure);
+      await expect(gateway.loadAuthenticatedAppDataSnapshot!()).rejects.toBe(failure);
+      expect(client.channel).toHaveBeenCalledTimes(1);
+      expect(client.rpc).not.toHaveBeenCalled();
+      expect(client.removeChannel).toHaveBeenCalledTimes(1);
+    } finally { gateway.resetAuthenticatedBootstrapAttempt!(); vi.useRealTimers(); }
+  });
+
   it("shares one session, channel, buffer, and RPC across concurrent atomic bootstrap callers", async () => {
     let realtimeHandler: ((payload: { new: unknown }) => void) | undefined;
     let realtimeStatus: ((status: string) => void) | undefined;

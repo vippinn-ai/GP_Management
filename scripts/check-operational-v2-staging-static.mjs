@@ -6,6 +6,8 @@ const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "
 const selectedSpecs = [
   "operational-lifecycle-v2.e2e.ts",
   "operational-lifecycle-v2-concurrency.e2e.ts",
+  "operational-performance.e2e.ts",
+  "support/performanceDiagnostics.ts",
   "operational-lifecycle-v2-continuations.e2e.ts",
   "operational-lifecycle-v2-recovery-realtime.e2e.ts",
   "operational-lifecycle-v2-downstream-parity.e2e.ts",

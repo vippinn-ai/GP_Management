@@ -104,3 +104,7 @@ The full-table fingerprint helper is staging-only test instrumentation and is no
 - On a 112-item production-shape catalog, prove each desktop/mobile page mounts at most 40 items, pagination exposes all 112 without duplicates, full-set search finds an item outside the current page and resets pagination, actions target the selected canonical item, and report/export/stock state remains complete. Executable responsive tests cover initial desktop, initial mobile, breakpoint transitions, one-layout-only content/action parity, and listener cleanup.
 
 Every case is passed, failed, blocked, or not run. Any required blocked/not-run case is NO-GO unless the approved spec explicitly narrows it with recorded risk acceptance.
+
+## Failure evidence follow-up (25 September 2026)
+
+The [realtime diagnostics contract](realtime-diagnostics-2026-09-25.md) adds per-load immutable evidence, privacy/bounds checks, failure-safe teardown and exact watchdog characterization. It requires a fresh same-harness baseline/candidate pair; it does not relax any performance gate or establish the timeout's cause.

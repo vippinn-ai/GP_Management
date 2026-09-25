@@ -7,6 +7,7 @@ import { gzipSync } from "node:zlib";
 import { AUXILIARY_IDENTITY_TABLES, SCALE_RPC, SCALE_TABLES, SHAPE_COUNT_KEYS } from "./operational-performance-scale-fixture-lib.mjs";
 import { sameAppStateIdentity, sameJsonValue } from "./json-value-equality.mjs";
 import { assertBootstrapPerformanceBinding } from "./operational-performance-bootstrap-binding.mjs";
+import { assessPerformanceSampleEvidence, collectPerformanceEvidenceFiles } from "./operational-performance-evidence-files.mjs";
 import {
   assertMatchingOperationalPerformanceHarness,
   buildOperationalPerformanceHarnessIdentity
@@ -320,26 +321,18 @@ const result = spawnSync(process.execPath, [cli, "test", "--config=playwright.op
   shell: false
 });
 
+let exitCode = result.status ?? 1;
 if (!discoveryOnly) {
-  const files = [];
-  const visit = (entryPath) => {
-    if (!fs.existsSync(entryPath)) return;
-    const stat = fs.statSync(entryPath);
-    if (stat.isDirectory()) {
-      for (const name of fs.readdirSync(entryPath).sort()) visit(path.join(entryPath, name));
-      return;
-    }
-    const bytes = fs.readFileSync(entryPath);
-    files.push({ path: path.relative(root, entryPath), bytes: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") });
-  };
-  visit(outputDir);
-  visit(summaryPath);
+  const files = collectPerformanceEvidenceFiles(root, [outputDir, summaryPath]);
+  const sampleEvidence = assessPerformanceSampleEvidence(files, 30);
+  if (!sampleEvidence.complete) exitCode = exitCode || 1;
   fs.writeFileSync(manifestPath, JSON.stringify({
     runId: env.E2E_RUN_ID,
     mode: env.E2E_PERFORMANCE_MODE,
     sampleCount: 30,
     createdAt: new Date().toISOString(),
-    exitCode: result.status ?? 1,
+    exitCode,
+    sampleEvidence,
     deployedArtifact,
     profileId: env.E2E_PERFORMANCE_PROFILE_ID,
     profileManifest: { path: path.relative(root, profileManifest.absolutePath), sha256: profileManifest.sha256 },
@@ -357,4 +350,4 @@ if (!discoveryOnly) {
   }, null, 2) + "\n", { encoding: "utf8", flag: "wx" });
 }
 
-process.exit(result.status ?? 1);
+process.exit(exitCode);

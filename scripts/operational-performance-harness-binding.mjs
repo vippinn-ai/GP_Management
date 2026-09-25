@@ -6,7 +6,9 @@ import { isDeepStrictEqual } from "node:util";
 export const OPERATIONAL_PERFORMANCE_HARNESS_FILES = Object.freeze([
   "playwright.operational-performance.staging.config.ts",
   "scripts/run-operational-performance-staging-e2e.mjs",
-  "tests/e2e/staging/operational-performance.e2e.ts"
+  "scripts/operational-performance-evidence-files.mjs",
+  "tests/e2e/staging/operational-performance.e2e.ts",
+  "tests/e2e/staging/support/performanceDiagnostics.ts"
 ]);
 
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");

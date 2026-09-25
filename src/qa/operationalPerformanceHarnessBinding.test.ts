@@ -5,7 +5,8 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   assertMatchingOperationalPerformanceHarness,
-  buildOperationalPerformanceHarnessIdentity
+  buildOperationalPerformanceHarnessIdentity,
+  OPERATIONAL_PERFORMANCE_HARNESS_FILES
 } from "../../scripts/operational-performance-harness-binding.mjs";
 
 const created: string[] = [];
@@ -28,6 +29,20 @@ function fixture() {
 }
 
 describe("operational performance harness evidence binding", () => {
+  it("binds the diagnostic helper into the default identity and rejects a changed helper", () => {
+    const { root } = fixture();
+    const helper = "tests/e2e/staging/support/performanceDiagnostics.ts";
+    expect(OPERATIONAL_PERFORMANCE_HARNESS_FILES).toContain(helper);
+    for (const relative of OPERATIONAL_PERFORMANCE_HARNESS_FILES) {
+      const file = path.join(root, relative);
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, "fixture\n");
+    }
+    const baseline = buildOperationalPerformanceHarnessIdentity(root);
+    fs.appendFileSync(path.join(root, helper), "changed\n");
+    expect(() => assertMatchingOperationalPerformanceHarness(baseline, buildOperationalPerformanceHarnessIdentity(root)))
+      .toThrow(/identities differ/);
+  });
   it("records deterministic exact file hashes and accepts an identical baseline", () => {
     const { root, files } = fixture();
     const identity = buildOperationalPerformanceHarnessIdentity(root, files);

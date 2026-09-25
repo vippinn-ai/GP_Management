@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 import { gzipSync } from "node:zlib";
 import { expect, test, type Page, type Request, type Response } from "@playwright/test";
 import { attachJson, captureAuthenticatedRestRequests, credentials, signIn } from "./support/app";
+import { createEvidenceTaskTracker, endpointClass, observePerformancePage, runDiagnosticSample, writeExclusiveEvidence, type EvidenceStage } from "./support/performanceDiagnostics";
 import { parsePostgrestPageEvidence } from "../../../src/qa/operationalPerformancePageEvidence";
 import { isSuccessfulCriticalResponse, readDecodedResponseBody } from "../../../src/qa/operationalPerformanceResponseEvidence";
 import {
@@ -332,13 +333,15 @@ async function collectResponseEvidence(
   requestCompletion: Promise<void>,
   requestKeys: Map<Request, string>,
   baseOrigin: string,
-  sink: ResponseEvidence[]
+  sink: ResponseEvidence[],
+  setStage: (stage: EvidenceStage) => void
 ) {
   const url = new URL(response.url());
   const api = /\/(?:rest|auth)\/v1\//.test(url.pathname);
   const shell = url.origin === baseOrigin && !api;
   if (!api && !shell) return;
   const headers = await response.allHeaders();
+  setStage("request-metadata");
   const requestHeaders = response.request().headers();
   const contentLengthBytes = Number(headers["content-length"] ?? 0);
   let bodyBytes = 0;
@@ -364,6 +367,7 @@ async function collectResponseEvidence(
       || url.pathname.endsWith("/rest/v1/stock_movements")
       || operationalBootstrapResponse
       || activityFeedResponse;
+    setStage("body");
     const decoded = await readDecodedResponseBody(() => response.body(), requiresJson);
     bodyBytes = decoded.bodyBytes;
     evidenceError = decoded.error;
@@ -391,8 +395,12 @@ async function collectResponseEvidence(
       }
     }
   }
+  setStage("request-completion");
   await requestCompletion;
+  setStage("timing");
   const requestTiming = response.request().timing();
+  setStage("status");
+  const responseStatus = response.status();
   sink.push({
     requestKey: requestKeys.get(response.request()) ?? "missing-request-correlation",
     path: `${url.hostname}${url.pathname}`,
@@ -400,7 +408,7 @@ async function collectResponseEvidence(
     responseEndMs: requestTiming.responseEnd >= 0 ? requestTiming.startTime + requestTiming.responseEnd : Number.NaN,
     playwrightResponseStartOffsetMs: requestTiming.responseStart,
     playwrightResponseEndOffsetMs: requestTiming.responseEnd,
-    status: response.status(),
+    status: responseStatus,
     bodyBytes,
     evidenceError,
     contentLengthBytes,
@@ -446,6 +454,21 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
   const baseOrigin = new URL(process.env.E2E_BASE_URL!).origin;
 
   for (let sample = 1; sample <= sampleCount; sample += 1) {
+    let sampleContext: import("@playwright/test").BrowserContext | undefined;
+    let captureDiagnostics: (() => Promise<unknown>) = async () => ({ browserCapture: "not-created" });
+    await runDiagnosticSample({
+      capture: () => captureDiagnostics(),
+      validate: (evidence) => {
+        if (!(evidence as { complete?: boolean }).complete) throw new Error("Per-load diagnostics are incomplete.");
+      },
+      persist: (diagnostics) => writeExclusiveEvidence(testInfo.outputPath(`sample-${sample}-diagnostics.json`), {
+        schemaVersion: 1, runId, mode, sample, completedSamples: loads.length, ...diagnostics
+      }),
+      close: async () => { await sampleContext?.close(); },
+      persistTerminal: (terminal) => writeExclusiveEvidence(testInfo.outputPath(`sample-${sample}-terminal.json`), {
+        schemaVersion: 1, runId, mode, sample, completedSamples: loads.length, ...terminal
+      }),
+      body: async () => {
     const context = await browser.newContext({
       baseURL: process.env.E2E_BASE_URL,
       storageState,
@@ -454,12 +477,19 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
       viewport: { width: 1440, height: 900 },
       serviceWorkers: "block"
     });
+    sampleContext = context;
     await context.addInitScript(installWebVitalsObserver);
     await context.addInitScript(installVisibleReadyObserver, {
       markName: "bp-visible-dashboard-ready",
       headingText: "Live Dashboard"
     });
     const coldPage = await context.newPage();
+    const capturePage = observePerformancePage(coldPage);
+    const responseCollectors = createEvidenceTaskTracker();
+    captureDiagnostics = async () => {
+      const [pageEvidence, collectors] = await Promise.all([capturePage(), responseCollectors.settle()]);
+      return { ...pageEvidence, collectors, complete: pageEvidence.complete && collectors.complete };
+    };
     const started = performance.now();
     const failedRequestPaths: string[] = [];
     const requests = new Map<Request, string>();
@@ -489,14 +519,18 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
       requestedExportChunk ||= /(?:xlsx|jspdf)[^/]*-[^/]+\.js$/i.test(url.pathname);
     });
     coldPage.on("response", (response) => {
-      const task = collectResponseEvidence(
-        response,
-        requestLifecycleTasks.get(response.request()) ?? Promise.resolve(),
-        requestKeys,
-        baseOrigin,
-        responses
-      );
-      void task.finally(() => responseResolvers.get(response.request())?.());
+      responseCollectors.track(async (setStage) => {
+        try {
+          await collectResponseEvidence(
+            response,
+            requestLifecycleTasks.get(response.request()) ?? Promise.resolve(),
+            requestKeys,
+            baseOrigin,
+            responses,
+            setStage
+          );
+        } finally { responseResolvers.get(response.request())?.(); }
+      }, endpointClass(response.url()));
     });
     coldPage.on("requestfinished", (request) => {
       requestLifecycleResolvers.get(request)?.();
@@ -799,7 +833,11 @@ test("30 cold authenticated loads meet the safe-interactive and critical-path bu
       criticalEvidenceErrors: [...timingErrors, ...criticalSelection.errors, ...responseEvidenceErrors],
       postSafeResponses
     });
-    await context.close();
+    writeExclusiveEvidence(testInfo.outputPath(`sample-${sample}-measurement.json`), {
+      schemaVersion: 1, runId, mode, sample, status: "completed", measurement: loads[loads.length - 1]
+    });
+      }
+    });
   }
 
   const summary = summarize(loads);

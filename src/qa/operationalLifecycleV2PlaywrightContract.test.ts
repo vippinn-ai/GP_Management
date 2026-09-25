@@ -195,6 +195,17 @@ describe("operational lifecycle v2 Playwright and performance contract", () => {
     expect(harnessBinding).toContain("scripts/run-operational-performance-staging-e2e.mjs");
     expect(harnessBinding).toContain("playwright.operational-performance.staging.config.ts");
     expect(harnessBinding).toContain("tests/e2e/staging/operational-performance.e2e.ts");
+    expect(harnessBinding).toContain("tests/e2e/staging/support/performanceDiagnostics.ts");
+    expect(harnessBinding).toContain("scripts/operational-performance-evidence-files.mjs");
+    expect(runner).toContain("collectPerformanceEvidenceFiles(root, [outputDir, summaryPath])");
+    expect(runner).toContain("assessPerformanceSampleEvidence(files, 30)");
+    expect(runner).toContain("if (!sampleEvidence.complete) exitCode = exitCode || 1");
+    expect(runner).toContain("sampleEvidence,");
+    expect(spec).toContain("responseCollectors.track");
+    expect(spec).not.toContain("void task.finally");
+    const diagnosticStaticGate = read("scripts/check-operational-v2-staging-static.mjs");
+    expect(diagnosticStaticGate).toContain('"operational-performance.e2e.ts"');
+    expect(diagnosticStaticGate).toContain('"support/performanceDiagnostics.ts"');
     expect(runner).toContain("E2E_PERFORMANCE_PROFILE_MANIFEST_SHA256");
     expect(runner).toContain("E2E_PERFORMANCE_BASELINE_MANIFEST_SHA256");
     expect(spec).toContain("initialJavascriptBytesMax");
