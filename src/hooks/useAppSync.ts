@@ -1,4 +1,4 @@
-import { useEffect, type MutableRefObject } from "react";
+import { useEffect, useRef, type MutableRefObject } from "react";
 import {
   resolveRemoteSessionProfile,
   type RemoteAppDataSnapshot,
@@ -98,6 +98,8 @@ export function useAppSync(params: {
     applyRemoteSnapshot,
     dataGateway = defaultRemoteDataGateway
   } = params;
+  const remoteRestoreStateRef = useRef(remoteRestoreState);
+  remoteRestoreStateRef.current = remoteRestoreState;
 
   useEffect(() => {
     if (!backendConfigured) {
@@ -222,12 +224,15 @@ export function useAppSync(params: {
         setAppData(normalizeAppDataCustomers(snapshot.appData));
         setRemoteVersion(snapshot.version);
       }
-      if (remoteRestoreState !== "ready") {
+      if (remoteRestoreStateRef.current !== "ready") {
         setRemoteError("");
       }
       setRemoteRestoreState("ready");
+    }, (error) => {
+      setRemoteError(`${error.message} Cached data is read-only until retry succeeds.`);
+      setRemoteRestoreState("stale-cache");
     });
-  }, [activeUserId, backendConfigured, dataGateway, remoteRestoreState]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [activeUserId, backendConfigured, dataGateway]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!backendConfigured) {

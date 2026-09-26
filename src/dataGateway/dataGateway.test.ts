@@ -13,6 +13,11 @@ const backendMocks = vi.hoisted(() => ({
 
 vi.mock("../backend", () => backendMocks);
 
+vi.mock("./normalizedOrganization", () => ({
+  resolveNormalizedOrganizationId: vi.fn(async () => "org-primary"),
+  clearCachedNormalizedOrganizationId: vi.fn()
+}));
+
 const normalizedReadMocks = vi.hoisted(() => ({
   loadNormalizedAppDataOverlay: vi.fn(),
   loadNormalizedAuditLogs: vi.fn(),
@@ -319,6 +324,7 @@ describe("data gateway feature flags", () => {
       normalizedBillHistoryReads: false,
       normalizedRealtime: false,
       rpcOperationalWrites: false,
+      operationalRpcV2: false,
       rpcFinancialWrites: false,
       financialRpcV2: false,
       activityFeed: false
@@ -960,7 +966,10 @@ describe("app_state data gateway", () => {
     const unsubscribe = vi.fn();
     const channel = {
       on: vi.fn().mockReturnThis(),
-      subscribe: vi.fn().mockReturnThis()
+      subscribe: vi.fn(function (this: unknown, onStatus?: (status: string) => void) {
+        onStatus?.("SUBSCRIBED");
+        return this;
+      })
     };
     const client = {
       channel: vi.fn(() => channel),
@@ -1006,7 +1015,10 @@ describe("app_state data gateway", () => {
         realtimeHandler = handler;
         return channel;
       }),
-      subscribe: vi.fn().mockReturnThis()
+      subscribe: vi.fn(function (this: unknown, onStatus?: (status: string) => void) {
+        onStatus?.("SUBSCRIBED");
+        return this;
+      })
     };
     const client = {
       channel: vi.fn(() => channel),
@@ -1066,7 +1078,10 @@ describe("app_state data gateway", () => {
         realtimeHandler = handler;
         return channel;
       }),
-      subscribe: vi.fn().mockReturnThis()
+      subscribe: vi.fn(function (this: unknown, onStatus?: (status: string) => void) {
+        onStatus?.("SUBSCRIBED");
+        return this;
+      })
     };
     const client = {
       channel: vi.fn(() => channel),
@@ -1114,7 +1129,10 @@ describe("app_state data gateway", () => {
         realtimeHandler = handler;
         return channel;
       }),
-      subscribe: vi.fn().mockReturnThis()
+      subscribe: vi.fn(function (this: unknown, onStatus?: (status: string) => void) {
+        onStatus?.("SUBSCRIBED");
+        return this;
+      })
     };
     const client = {
       channel: vi.fn(() => channel),
@@ -1193,7 +1211,10 @@ describe("app_state data gateway", () => {
         realtimeHandler = handler;
         return channel;
       }),
-      subscribe: vi.fn().mockReturnThis()
+      subscribe: vi.fn(function (this: unknown, onStatus?: (status: string) => void) {
+        onStatus?.("SUBSCRIBED");
+        return this;
+      })
     };
     const client = {
       channel: vi.fn(() => channel),

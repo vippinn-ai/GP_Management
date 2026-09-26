@@ -14,7 +14,8 @@ import { loadNormalizedCustomerDirectory } from "./normalizedCustomerSearch";
 import {
   emitGenericAppStateSaveEvent,
   loadNormalizedRealtimeOverlay,
-  subscribeToOperationalEvents
+  subscribeToOperationalEvents,
+  type OperationalEventRow
 } from "./normalizedRealtime";
 import {
   loadNormalizedAppDataOverlay,
@@ -23,6 +24,7 @@ import {
   loadNormalizedStockMovements
 } from "./normalizedReads";
 import { invokeOperationalMutationRpc } from "./rpcClient";
+import { clearCachedNormalizedOrganizationId, resolveNormalizedOrganizationId } from "./normalizedOrganization";
 import type { RemoteDataGateway } from "./types";
 import {
   fetchProfiles,
@@ -41,6 +43,8 @@ const NORMALIZED_BOOTSTRAP_PAGE_SIZE = 200;
 const NORMALIZED_BOOTSTRAP_MAX_RECENT_BILLS = 5_000;
 const NORMALIZED_BOOTSTRAP_MAX_STOCK_MOVEMENTS = 5_000;
 const NORMALIZED_BOOTSTRAP_RECENT_AUDIT_LOGS = 20;
+const MAX_PROCESSED_REALTIME_EVENT_IDS = 2_000;
+const MAX_BUFFERED_BOOTSTRAP_EVENTS = 1_000;
 
 function mergeLiveSessions(baseSessions: Session[], normalizedSessions: Session[]): Session[] {
   const baseSessionsById = new Map(baseSessions.map((session) => [session.id, session]));
@@ -395,24 +399,269 @@ async function loadNormalizedBootstrapSnapshot(): Promise<RemoteAppDataSnapshot>
 
 export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): RemoteDataGateway {
   let lastSnapshot: RemoteAppDataSnapshot | null = null;
-  const gateway: RemoteDataGateway = {
-    async loadAppDataSnapshot() {
-      if (_flags.normalizedBootstrap) {
-        lastSnapshot = await loadNormalizedBootstrapSnapshot();
-        return lastSnapshot;
+  let snapshotAttempt: Promise<RemoteAppDataSnapshot> | null = null;
+  let realtimeEventPipeline: Promise<void> = Promise.resolve();
+  let bootstrapInFlight = false;
+  const bufferedBootstrapEvents: OperationalEventRow[] = [];
+  let bootstrapBufferError: Error | null = null;
+  const processedRealtimeEventIds = new Set<string>();
+  let realtimeReadyPromise: Promise<void> | null = null;
+  let realtimeReadyReject: ((error: Error) => void) | null = null;
+  let realtimeUnsubscribe: (() => void) | null = null;
+  let realtimeGeneration = 0;
+  let selectedOrganizationId: string | null = null;
+  let realtimeSnapshotListener: ((snapshot: RemoteAppDataSnapshot) => void) | null = null;
+  let realtimeErrorListener: ((error: Error) => void) | null = null;
+  let realtimeListenerGeneration = 0;
+
+  const resetRealtimeAttempt = () => {
+    const rejectPendingReady = realtimeReadyReject;
+    realtimeReadyReject = null;
+    realtimeGeneration += 1;
+    const unsubscribe = realtimeUnsubscribe;
+    realtimeUnsubscribe = null;
+    realtimeReadyPromise = null;
+    selectedOrganizationId = null;
+    lastSnapshot = null;
+    snapshotAttempt = null;
+    bootstrapInFlight = false;
+    bootstrapBufferError = null;
+    bufferedBootstrapEvents.length = 0;
+    processedRealtimeEventIds.clear();
+    clearCachedNormalizedOrganizationId();
+    realtimeEventPipeline = Promise.resolve();
+    unsubscribe?.();
+    rejectPendingReady?.(new Error("Normalized realtime preparation was superseded."));
+  };
+
+  const applyRealtimeEvent = async (
+    event: OperationalEventRow,
+    notify: boolean,
+    validateAttempt?: () => void,
+    listenerGeneration?: number
+  ) => {
+    validateAttempt?.();
+    if (processedRealtimeEventIds.has(event.id)) return;
+    if (selectedOrganizationId && event.organization_id !== selectedOrganizationId) return;
+    const client = getSupabaseClient();
+    const startedAt = Date.now();
+    try {
+      if (!lastSnapshot) throw new Error("Normalized realtime received an event without a base snapshot.");
+      const overlay = await loadNormalizedRealtimeOverlay(event, _flags, client);
+      validateAttempt?.();
+      if (overlay.requiresFullRefresh) {
+        if (_flags.normalizedBootstrap || bootstrapInFlight) {
+          throw new Error("A full-refresh event requires an explicit normalized restore.");
+        }
+        // Preserve the existing compatibility-mode full refresh. Normalized
+        // authority must never fall back to that compatibility document.
+        const refreshedSnapshot = await gateway.loadAppDataSnapshot();
+        validateAttempt?.();
+        lastSnapshot = {
+          ...refreshedSnapshot,
+          sourceMutationId: overlay.sourceMutationId,
+          sourceEventId: event.id,
+          refreshedSlices: ["full_app_state"]
+        };
+        processedRealtimeEventIds.add(event.id);
+        if (notify && (listenerGeneration === undefined || listenerGeneration === realtimeListenerGeneration)) {
+          realtimeSnapshotListener?.(lastSnapshot);
+        }
+        return;
       }
-      const snapshot = await appStateRemoteDataGateway.loadAppDataSnapshot();
-      const overlay = await loadNormalizedAppDataOverlay({
-        normalizedConfigReads: _flags.normalizedConfigReads,
-        normalizedCatalogReads: _flags.normalizedCatalogReads,
-        normalizedComboReads: _flags.normalizedComboReads,
-        normalizedLiveReads: _flags.normalizedLiveReads
-      });
+      const removedCustomerIds = new Set(overlay.removedCustomerIds);
+      const snapshotBeforeOverlay = removedCustomerIds.size > 0
+        ? {
+            ...lastSnapshot.appData,
+            customers: lastSnapshot.appData.customers.filter((customer) => !removedCustomerIds.has(customer.id))
+          }
+        : lastSnapshot.appData;
       lastSnapshot = {
-        ...snapshot,
-        appData: mergeNormalizedAppDataOverlay(snapshot.appData, overlay.appData)
+        ...lastSnapshot,
+        appData: mergeNormalizedAppDataOverlay(snapshotBeforeOverlay, overlay.appData),
+        version: overlay.appStateVersion ?? lastSnapshot.version,
+        sourceMutationId: overlay.sourceMutationId,
+        sourceEventId: event.id,
+        refreshedSlices: overlay.refreshedSlices
       };
-      return lastSnapshot;
+      processedRealtimeEventIds.add(event.id);
+      while (processedRealtimeEventIds.size > MAX_PROCESSED_REALTIME_EVENT_IDS) {
+        const oldestEventId = processedRealtimeEventIds.values().next().value;
+        if (typeof oldestEventId !== "string") break;
+        processedRealtimeEventIds.delete(oldestEventId);
+      }
+      recordCompactRealtimeTelemetry({
+        eventPayload: event,
+        eventType: event.event_type,
+        entityType: event.entity_type,
+        entityId: event.entity_id,
+        refreshedSlices: overlay.refreshedSlices,
+        startedAt,
+        status: "success",
+        skippedFullSnapshot: true
+      });
+      if (notify && (listenerGeneration === undefined || listenerGeneration === realtimeListenerGeneration)) {
+        realtimeSnapshotListener?.(lastSnapshot);
+      }
+    } catch (error) {
+      recordCompactRealtimeTelemetry({
+        eventPayload: event,
+        eventType: event.event_type,
+        entityType: event.entity_type,
+        entityId: event.entity_id,
+        refreshedSlices: [],
+        startedAt,
+        status: "error",
+        errorMessage: error instanceof Error ? error.message : "Unable to refresh compact realtime event.",
+        skippedFullSnapshot: true
+      });
+      throw error;
+    }
+  };
+
+  const ensureRealtimeReady = () => {
+    if (!_flags.normalizedRealtime) return Promise.resolve();
+    if (realtimeReadyPromise) return realtimeReadyPromise;
+    const client = getSupabaseClient();
+    const generation = ++realtimeGeneration;
+    realtimeReadyPromise = new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const timeoutId = globalThis.setTimeout(() => {
+        if (settled || generation !== realtimeGeneration) return;
+        settled = true;
+        realtimeReadyReject = null;
+        const error = new Error("Normalized realtime subscription did not become ready within 10 seconds.");
+        reject(error);
+      }, 10_000);
+      realtimeReadyReject = (error) => {
+        if (settled) return;
+        settled = true;
+        globalThis.clearTimeout(timeoutId);
+        reject(error);
+      };
+      realtimeUnsubscribe = subscribeToOperationalEvents(
+        client,
+        (event) => {
+          if (generation !== realtimeGeneration) return Promise.resolve();
+          if (processedRealtimeEventIds.has(event.id)) return Promise.resolve();
+          if (selectedOrganizationId && event.organization_id !== selectedOrganizationId) return Promise.resolve();
+          if (bootstrapInFlight || !lastSnapshot) {
+            if (!bufferedBootstrapEvents.some((entry) => entry.id === event.id)) {
+              if (bufferedBootstrapEvents.length >= MAX_BUFFERED_BOOTSTRAP_EVENTS) {
+                bootstrapBufferError = new Error("Normalized realtime bootstrap buffer exceeded its safe limit.");
+                return Promise.resolve();
+              }
+              bufferedBootstrapEvents.push(event);
+            }
+            return Promise.resolve();
+          }
+          const eventListenerGeneration = realtimeListenerGeneration;
+          const eventErrorListener = realtimeErrorListener;
+          realtimeEventPipeline = realtimeEventPipeline
+            .then(() => applyRealtimeEvent(event, true, () => {
+              if (generation !== realtimeGeneration) {
+                throw new Error("Realtime event belonged to a superseded subscription.");
+              }
+            }, eventListenerGeneration))
+            .catch((error) => {
+              if (
+                generation !== realtimeGeneration
+                || eventListenerGeneration !== realtimeListenerGeneration
+              ) return;
+              const normalizedError = error instanceof Error ? error : new Error("Unable to apply compact realtime event.");
+              console.warn("Unable to apply compact realtime event.", normalizedError);
+              eventErrorListener?.(normalizedError);
+            });
+          return realtimeEventPipeline;
+        },
+        (status) => {
+          if (generation !== realtimeGeneration) return;
+          if (settled) {
+            if (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") {
+              const error = new Error(
+                `Normalized realtime disconnected (${status}); a fresh restore is required.`
+              );
+              resetRealtimeAttempt();
+              realtimeErrorListener?.(error);
+            }
+            return;
+          }
+          if (status === "SUBSCRIBED") {
+            settled = true;
+            realtimeReadyReject = null;
+            globalThis.clearTimeout(timeoutId);
+            resolve();
+          } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") {
+            settled = true;
+            realtimeReadyReject = null;
+            globalThis.clearTimeout(timeoutId);
+            const error = new Error(`Normalized realtime subscription failed before bootstrap (${status}).`);
+            reject(error);
+          }
+        }
+      );
+    });
+    return realtimeReadyPromise;
+  };
+
+  const loadSnapshot = async (): Promise<RemoteAppDataSnapshot> => {
+      bootstrapInFlight = true;
+      let generation = realtimeGeneration;
+      const assertCurrent = () => {
+        if (generation !== realtimeGeneration) throw new Error("Normalized restore was superseded.");
+        if (bootstrapBufferError) throw bootstrapBufferError;
+      };
+      try {
+        const readiness = ensureRealtimeReady();
+        generation = realtimeGeneration;
+        await readiness;
+        assertCurrent();
+        if (_flags.normalizedRealtime) {
+          selectedOrganizationId = await resolveNormalizedOrganizationId();
+          assertCurrent();
+        }
+        if (_flags.normalizedBootstrap) {
+          const snapshot = await loadNormalizedBootstrapSnapshot();
+          assertCurrent();
+          lastSnapshot = snapshot;
+        } else {
+          const snapshot = await appStateRemoteDataGateway.loadAppDataSnapshot();
+          assertCurrent();
+          const overlay = await loadNormalizedAppDataOverlay({
+            normalizedConfigReads: _flags.normalizedConfigReads,
+            normalizedCatalogReads: _flags.normalizedCatalogReads,
+            normalizedComboReads: _flags.normalizedComboReads,
+            normalizedLiveReads: _flags.normalizedLiveReads
+          });
+          assertCurrent();
+          lastSnapshot = {
+            ...snapshot,
+            appData: mergeNormalizedAppDataOverlay(snapshot.appData, overlay.appData)
+          };
+        }
+        while (bufferedBootstrapEvents.length > 0) {
+          assertCurrent();
+          await applyRealtimeEvent(bufferedBootstrapEvents.shift()!, false, assertCurrent);
+        }
+        assertCurrent();
+        return lastSnapshot;
+      } catch (error) {
+        if (generation === realtimeGeneration) resetRealtimeAttempt();
+        throw error;
+      } finally {
+        if (generation === realtimeGeneration) bootstrapInFlight = false;
+      }
+  };
+  const gateway: RemoteDataGateway = {
+    loadAppDataSnapshot() {
+      if (snapshotAttempt) return snapshotAttempt;
+      const attempt = loadSnapshot();
+      snapshotAttempt = attempt;
+      const clear = () => {
+        if (snapshotAttempt === attempt) snapshotAttempt = null;
+      };
+      void attempt.then(clear, clear);
+      return attempt;
     },
     async saveAppData(appData, activeUserId, expectedVersion, telemetryOptions) {
       if (_flags.normalizedBootstrap) {
@@ -435,63 +684,37 @@ export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): 
       }
       return nextVersion;
     },
-    subscribeToAppData(onChange) {
+    subscribeToAppData(onChange, onError) {
       if (_flags.normalizedRealtime) {
-        const client = getSupabaseClient();
-        return subscribeToOperationalEvents(client, async (event) => {
-          const startedAt = Date.now();
-          try {
-            if (!lastSnapshot) {
-              lastSnapshot = await gateway.loadAppDataSnapshot();
-            }
-            const overlay = await loadNormalizedRealtimeOverlay(event, _flags, client);
-            if (overlay.requiresFullRefresh) {
-              lastSnapshot = {
-                ...(await gateway.loadAppDataSnapshot()),
-                refreshedSlices: overlay.refreshedSlices
-              };
-            } else {
-              lastSnapshot = {
-                ...lastSnapshot,
-                appData: mergeNormalizedAppDataOverlay(lastSnapshot.appData, overlay.appData),
-                version: overlay.appStateVersion ?? lastSnapshot.version,
-                sourceMutationId: overlay.sourceMutationId,
-                refreshedSlices: overlay.refreshedSlices
-              };
-            }
-            lastSnapshot = { ...lastSnapshot, sourceEventId: event.id };
-            recordCompactRealtimeTelemetry({
-              eventPayload: event,
-              eventType: event.event_type,
-              entityType: event.entity_type,
-              entityId: event.entity_id,
-              refreshedSlices: overlay.refreshedSlices,
-              startedAt,
-              status: "success",
-              skippedFullSnapshot: !overlay.requiresFullRefresh
-            });
-            onChange(lastSnapshot);
-          } catch (error) {
-            recordCompactRealtimeTelemetry({
-              eventPayload: event,
-              eventType: event.event_type,
-              entityType: event.entity_type,
-              entityId: event.entity_id,
-              refreshedSlices: [],
-              startedAt,
-              status: "error",
-              errorMessage: error instanceof Error ? error.message : "Unable to refresh compact realtime event.",
-              skippedFullSnapshot: true
-            });
-            console.warn("Unable to apply compact realtime event.", error);
-          }
+        const listenerGeneration = ++realtimeListenerGeneration;
+        realtimeSnapshotListener = onChange;
+        realtimeErrorListener = onError ?? null;
+        const readiness = ensureRealtimeReady();
+        const channelGeneration = realtimeGeneration;
+        void readiness.catch((error) => {
+          if (
+            channelGeneration !== realtimeGeneration
+            || listenerGeneration !== realtimeListenerGeneration
+          ) return;
+          const normalizedError = error instanceof Error ? error : new Error("Unable to prepare normalized realtime.");
+          console.warn("Unable to prepare normalized realtime.", normalizedError);
+          (onError ?? null)?.(normalizedError);
         });
+        return () => {
+          if (listenerGeneration !== realtimeListenerGeneration) return;
+          realtimeListenerGeneration += 1;
+          realtimeSnapshotListener = null;
+          realtimeErrorListener = null;
+          resetRealtimeAttempt();
+        };
       }
-      return appStateRemoteDataGateway.subscribeToAppData(onChange);
+      return appStateRemoteDataGateway.subscribeToAppData(onChange, onError);
     }
   };
   if (_flags.rpcOperationalWrites) {
-    gateway.commitOperationalMutation = (mutation) => invokeOperationalMutationRpc(mutation);
+    gateway.commitOperationalMutation = (mutation) => invokeOperationalMutationRpc(mutation, {
+      useV2: _flags.operationalRpcV2
+    });
   }
   if (_flags.rpcFinancialWrites || _flags.financialRpcV2) {
     gateway.commitFinancialCheckout = (patch) => invokeFinancialCheckoutRpc(patch, { useV2: _flags.financialRpcV2 });

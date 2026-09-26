@@ -15,6 +15,7 @@ interface ImportMetaEnv {
   readonly VITE_BACKEND_NORMALIZED_BILL_HISTORY_READS?: string;
   readonly VITE_BACKEND_NORMALIZED_REALTIME?: string;
   readonly VITE_BACKEND_RPC_OPERATIONAL_WRITES?: string;
+  readonly VITE_BACKEND_OPERATIONAL_RPC_V2?: string;
   readonly VITE_BACKEND_RPC_FINANCIAL_WRITES?: string;
   readonly VITE_BACKEND_FINANCIAL_RPC_V2?: string;
   readonly VITE_BACKEND_ACTIVITY_FEED?: string;

@@ -681,8 +681,11 @@ export default function App() {
   const filteredInventoryItems = visibleInventoryItems.filter((item) =>
     `${item.name} ${item.category}`.toLowerCase().includes(inventoryItemSearch.trim().toLowerCase())
   );
-  const remoteReadOnly =
-    backendConfigured && (remoteRestoreState === "stale-cache" || remoteRestoreState === "retrying");
+  const remoteReadOnly = backendConfigured && remoteRestoreState !== "ready";
+  const operationalDispatchReadyRef = useRef(false);
+  operationalDispatchReadyRef.current = Boolean(
+    backendConfigured && activeUserId && online && !remoteLoading && remoteRestoreState === "ready"
+  );
   const remoteReadOnlyMessage =
     "Latest remote data is still loading. Cached data is read-only until sync recovers.";
 
@@ -831,8 +834,11 @@ export default function App() {
     mutation: OperationalMutation,
     result: OperationalRpcCommitResult
   ) {
+    const canonicalSource = result.normalizedPatch
+      ? mergeNormalizedAppDataOverlay(source, result.normalizedPatch)
+      : source;
     const identityReconciledSource = reconcileOperationalServerIdentity(
-      source,
+      canonicalSource,
       mutation,
       result.changedRows
     );
@@ -1067,17 +1073,20 @@ export default function App() {
     setRemoteLoading,
     setRemoteError,
     setRemoteSaving,
-    setRemoteRestoreState,
+    setRemoteRestoreState: (state) => {
+      if (state !== "ready") operationalDispatchReadyRef.current = false;
+      setRemoteRestoreState(state);
+    },
     setRestoreRetrySignal,
     setActiveTab,
     applyRemoteSnapshot: applyRemoteSnapshotWithPending
   });
 
   useEffect(() => {
-    if (online && activeUserId && backendConfigured) {
+    if (online && activeUserId && backendConfigured && !remoteLoading && remoteRestoreState === "ready") {
       scheduleOperationalSync(0);
     }
-  }, [activeUserId, backendConfigured, online]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [activeUserId, backendConfigured, online, remoteLoading, remoteRestoreState]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function refreshRemoteState(options?: { keepUser?: boolean }) {
     const snapshot = await defaultRemoteDataGateway.loadAppDataSnapshot();
@@ -2411,7 +2420,8 @@ export default function App() {
   }
 
   async function syncOperationalQueue() {
-    if (!backendConfigured || !activeUserId || !online || remoteReadOnly || operationalSyncInFlightRef.current) {
+    if (!backendConfigured || !activeUserId || !online || remoteLoading ||
+      remoteRestoreState !== "ready" || remoteReadOnly || operationalSyncInFlightRef.current) {
       return;
     }
     let syncableMutations = pendingOperationalMutationsRef.current.filter(
@@ -2436,6 +2446,15 @@ export default function App() {
         const failedMutations: OperationalMutation[] = [];
         const conflictMutations: OperationalMutation[] = [];
         for (let syncIndex = 0; syncIndex < syncableMutations.length; syncIndex += 1) {
+          if (!operationalDispatchReadyRef.current) {
+            const undispatchedIds = new Set(syncableMutations.slice(syncIndex).map((entry) => entry.id));
+            updatePendingOperationalMutations((previous) => previous.map((entry) =>
+              undispatchedIds.has(entry.id) && entry.status === "syncing"
+                ? { ...entry, status: "pending" as const }
+                : entry
+            ));
+            break;
+          }
           const mutation = getOperationalMutationForDispatch(
             pendingOperationalMutationsRef.current,
             syncableMutations[syncIndex].id
@@ -2447,7 +2466,8 @@ export default function App() {
             const result = await defaultRemoteDataGateway.commitOperationalMutation(mutation);
             const lineReconciliation = getCustomerTabLineIdReconciliation(mutation, result);
             let reconciledData = reconcileOperationalRpcResult(appDataRef.current, mutation, result);
-            if (mutation.optimistic === false || shouldReapplyAcknowledgedOperationalMutation(mutation.kind)) {
+            if (!result.canonicalHydrated &&
+              (mutation.optimistic === false || shouldReapplyAcknowledgedOperationalMutation(mutation.kind))) {
               reconciledData = applyOperationalMutation(reconciledData, mutation, { skipValidation: true });
             }
             if (result.appStateVersion) {
@@ -2554,7 +2574,8 @@ export default function App() {
           );
           const failureMessage = failedMutations.map((mutation) => mutation.failureReason).filter(Boolean).join(" ");
           const remainingConflicts = getOperationalConflictMessages(pendingOperationalMutationsRef.current);
-          setRemoteError(failureMessage || (remainingConflicts.length > 0 ? remainingConflicts.join(" ") : ""));
+          const queueError = failureMessage || (remainingConflicts.length > 0 ? remainingConflicts.join(" ") : "");
+          if (queueError || operationalDispatchReadyRef.current) setRemoteError(queueError);
         }
         syncedIds.forEach((mutationId) => {
           settleOperationalMutationAcknowledgement(
@@ -2840,11 +2861,14 @@ export default function App() {
         return outcome;
       }
 
-      const confirmedData = applyOperationalMutation(appDataRef.current, mutation, { skipValidation: true });
-      skipRemotePersistRef.current = true;
-      appDataRef.current = confirmedData;
-      setAppData(confirmedData);
-      saveAppData(confirmedData);
+      if (!(BACKEND_FEATURE_FLAGS.operationalRpcV2 &&
+        (mutation.kind === "hopSession" || mutation.kind === "rejectSession" || mutation.kind === "rejectCustomerTab"))) {
+        const confirmedData = applyOperationalMutation(appDataRef.current, mutation, { skipValidation: true });
+        skipRemotePersistRef.current = true;
+        appDataRef.current = confirmedData;
+        setAppData(confirmedData);
+        saveAppData(confirmedData);
+      }
       return outcome;
     } finally {
       criticalOperationalActionsRef.current.delete(actionKey);
@@ -4279,7 +4303,7 @@ export default function App() {
     setStartSessionDraft(createStartSessionDraft());
   }
 
-  function linkCustomerTabContinuation(
+  async function linkCustomerTabContinuation(
     customerTabId: string,
     continuedFromSessionIds: string[],
     onSuccess?: (tab: CustomerTab) => void
@@ -4306,7 +4330,15 @@ export default function App() {
         userId: activeUser.id
       };
     });
-    const committed = commitOperationalChange(createOperationalMutation(
+    const retryMutation = pendingOperationalMutationsRef.current.find((mutation) => {
+      const payload = mutation.payload as { customerTabId?: string; continuedFromSessionIds?: string[] };
+      return mutation.kind === "linkCustomerTabContinuation"
+        && mutation.entityId === targetTab.id
+        && mutation.retryPolicy === "manual"
+        && mutation.status === "failed"
+        && JSON.stringify([...(payload.continuedFromSessionIds ?? [])].sort()) === JSON.stringify([...continuationIds].sort());
+    });
+    const mutation = retryMutation ?? createOperationalMutation(
       "linkCustomerTabContinuation",
       "Linking customer tab...",
       "customer_tab",
@@ -4315,15 +4347,23 @@ export default function App() {
         customerTabId: targetTab.id,
         continuedFromSessionIds: continuationIds,
         auditLogs
-      }
-    ), (nextAppData) => {
-      const updatedTab = nextAppData.customerTabs.find((tab) => tab.id === targetTab.id) ?? targetTab;
-      onSuccess?.(updatedTab);
-    });
-    if (!committed) {
-      window.alert(remoteError || "Unable to link the hopped session to this customer tab.");
+      },
+      { retryPolicy: "manual", optimistic: false, acknowledgementRequired: true }
+    );
+    const outcome = await commitCriticalOperationalChange(
+      mutation,
+      `hop-tab-continuation:${continuationIds.join(":")}`,
+      { existingMutation: Boolean(retryMutation) }
+    );
+    if (outcome.status !== "synced") {
+      window.alert(outcome.status === "conflict"
+        ? "The hopped session was claimed or changed in another browser. Refresh and review before continuing."
+        : `Unable to link the hopped session to this customer tab. ${outcome.failureReason}`);
+      return false;
     }
-    return committed;
+    const updatedTab = appDataRef.current.customerTabs.find((tab) => tab.id === targetTab.id) ?? targetTab;
+    onSuccess?.(updatedTab);
+    return true;
   }
 
   async function openOrCreateCustomerTab(
@@ -4357,7 +4397,7 @@ export default function App() {
     );
     if (existing) {
       if (options?.continuedFromSessionIds?.length) {
-        linkCustomerTabContinuation(existing.id, options.continuedFromSessionIds, () => {
+        await linkCustomerTabContinuation(existing.id, options.continuedFromSessionIds, () => {
           setSelectedCustomerTabId(existing.id);
           if (options?.updateSaleDraft) {
             setCustomerTabDraft({
@@ -4408,10 +4448,10 @@ export default function App() {
       setPendingWarningDraft({ pendingBills: pendingForCustomer, customerLabel: label, intent: { type: "tab", draftValue: resolvedDraft, options } });
       return;
     }
-    doCommitTabDirect(resolvedDraft, options);
+    await doCommitTabDirect(resolvedDraft, options);
   }
 
-  function doCommitTabDirect(
+  async function doCommitTabDirect(
     draftValue: CustomerTabDraft,
     options?: { updateSaleDraft?: boolean; clearDraft?: boolean; switchToSale?: boolean; continuedFromSessionIds?: string[]; onSuccess?: () => void }
   ) {
@@ -4420,13 +4460,28 @@ export default function App() {
     }
     const customerName = draftValue.customerName.trim();
     const customerPhone = draftValue.customerPhone.trim();
-    const tabId = createId("customer-tab");
+    const continuationIds = Array.from(new Set(options?.continuedFromSessionIds?.filter(Boolean) ?? [])).sort();
+    const retryMutation = continuationIds.length > 0
+      ? pendingOperationalMutationsRef.current.find((entry) => {
+          const retryPayload = entry.payload as {
+            tab?: { customerId?: string; customerName?: string; customerPhone?: string; continuedFromSessionIds?: string[] };
+          };
+          return entry.kind === "openCustomerTab"
+            && entry.retryPolicy === "manual"
+            && entry.status === "failed"
+            && retryPayload.tab?.customerName?.trim() === customerName
+            && (retryPayload.tab?.customerPhone?.trim() ?? "") === customerPhone
+            && (retryPayload.tab?.customerId ?? draftValue.customerId) === draftValue.customerId
+            && JSON.stringify([...(retryPayload.tab?.continuedFromSessionIds ?? [])].sort()) === JSON.stringify(continuationIds);
+        })
+      : undefined;
+    const tabId = retryMutation?.entityId ?? createId("customer-tab");
     let resolvedCustomerId = draftValue.customerId;
     const createdAt = new Date().toISOString();
     const continuedFromSession = options?.continuedFromSessionIds?.[0]
       ? appData.sessions.find((session) => session.id === options.continuedFromSessionIds![0])
       : undefined;
-    commitOperationalChange(createOperationalMutation(
+    const mutation = retryMutation ?? createOperationalMutation(
       "openCustomerTab",
       "Opening customer tab",
       "customer_tab",
@@ -4439,8 +4494,8 @@ export default function App() {
           status: "open",
           createdAt,
           items: [],
-          continuedFromSessionIds: options?.continuedFromSessionIds?.length
-            ? Array.from(new Set(options.continuedFromSessionIds))
+          continuedFromSessionIds: continuationIds.length
+            ? continuationIds
             : undefined
         },
         customer: customerName || customerPhone
@@ -4457,8 +4512,12 @@ export default function App() {
           createdAt,
           userId: activeUser.id
         }
-      }
-    ), (nextAppData) => {
+      },
+      options?.continuedFromSessionIds?.length
+        ? { retryPolicy: "manual", optimistic: false, acknowledgementRequired: true }
+        : undefined
+    );
+    const finishOpen = (nextAppData: AppData) => {
       resolvedCustomerId = nextAppData.customerTabs.find((tab) => tab.id === tabId)?.customerId;
       setSelectedCustomerTabId(tabId);
       if (options?.updateSaleDraft) {
@@ -4471,7 +4530,23 @@ export default function App() {
         setActiveTab("sale");
       }
       options?.onSuccess?.();
-    });
+    };
+    if (options?.continuedFromSessionIds?.length) {
+      const outcome = await commitCriticalOperationalChange(
+        mutation,
+        `hop-new-tab-continuation:${continuationIds.join(":")}`,
+        { existingMutation: Boolean(retryMutation) }
+      );
+      if (outcome.status !== "synced") {
+        window.alert(outcome.status === "conflict"
+          ? "The hopped session was claimed or changed in another browser. Refresh and review before continuing."
+          : `The consumables tab was not opened. ${outcome.failureReason}`);
+        return;
+      }
+      finishOpen(appDataRef.current);
+      return;
+    }
+    commitOperationalChange(mutation, finishOpen);
   }
 
   function createDashboardCustomerTab(event: FormEvent<HTMLFormElement>) {
@@ -5210,7 +5285,7 @@ export default function App() {
     });
   }
 
-  function confirmPostHopCustomerTabLink() {
+  async function confirmPostHopCustomerTabLink() {
     if (!postHopTabLinkDraft) {
       return;
     }
@@ -5229,7 +5304,7 @@ export default function App() {
       });
       return;
     }
-    linkCustomerTabContinuation(
+    await linkCustomerTabContinuation(
       selectedTab.id,
       postHopTabLinkDraft.continuedFromSessionIds,
       completePostHopConsumablesTabSelection
@@ -9778,7 +9853,7 @@ export default function App() {
                 if (intent.type === "session") {
                   doStartSessionDirect(intent.draftValue);
                 } else {
-                  doCommitTabDirect(intent.draftValue, intent.options);
+                  void doCommitTabDirect(intent.draftValue, intent.options);
                 }
               }}
             >

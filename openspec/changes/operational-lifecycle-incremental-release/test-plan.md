@@ -1,0 +1,30 @@
+# Focused independent testing contract
+
+Use a separate clean candidate worktree for independent testing. Record passed/failed/blocked/not-run against exact candidate, deployed bundle/SQL definitions, unique run IDs and immutable evidence. Reuse existing Playwright suites with zero retries, physical staging guards and exact-ID reconciliation; no manual app-browser testing.
+
+## Local candidate gates
+
+- TypeScript, lint without new warnings, complete unit regression, default-off and v2-enabled builds.
+- Only three kinds route to v2; all others and local-browser mode retain their existing behavior.
+- Canonical hydration and no stale reapplication; closed session/tab anti-resurrection.
+- Non-atomic realtime readiness, overflow before/during catch-up, concurrent snapshot single-flight, serial/deduped events, disposed generation/listener, disconnect and organization change.
+- App queue sends nothing before restore; disconnect during mutation one prevents mutation two until authoritative restore, preserving identity and pending status.
+- Pure SQL contracts cover app_state avoidance, actor/tenant checks, payload discriminators, billed/pause rejection, continuation locks and replay identity. Text assertions do not execute SQL.
+
+## Staging correctness
+
+Port and bind the existing guarded lifecycle installer/proof/reconciliation scripts to this release before execution. Read-only production SQL definition verification is still pending. Preserve 49-case historical DB-proof assertions but rerun against exact candidate/installation where changed.
+
+Seven core live cases come from the existing continuation (2), recovery/realtime (2), hop-mutation (1), same-target race (1) and downstream parity (1) suites. Include timed/unit-sale and edited/paused sessions, tab items/variants/combos, continuation into new/existing consumers, single consumption/recovery, lost response/manual same-ID retry, real acknowledgement timeout, response/realtime ordering, offline/duplicate/unmount/reconnect, receipt/bill/payment/stock parity, refresh/mobile/logout-login. Retain checkout-versus-hop/reject coverage and actor/role/tenant checks where affected.
+
+Keep the existing 50 reload/mutation overlap pairs as convergence/lost-update evidence, not a startup benchmark. Close every failed/ambiguous case by read-only reconciliation; never hide it with a new-ID automatic replay.
+
+## Operation performance
+
+Retain 20 observations per lifecycle class, unrelated-target overlap and calibrated pairs, same-scale v1 comparison and size sensitivity. Existing limits: DB p95 <500 ms/max <2 s; HTTP/UI acknowledgement p95 <2 s/max <5 s; outer <7 s; v2 p95 >=50% better than same-scale v1 and size sensitivity <=20% or 250 ms. Use guarded production-logical-scale staging fixtures for any app-size-independence claim. If a smaller useful gain warrants different prospective acceptance, agree it explicitly before a new run; do not rewrite a failed verdict.
+
+Do not require the unrelated global 30-cold-load/40-percent startup benchmark or atomic-bootstrap RPC for this release. Smaller scope does not remove security, data integrity, concurrency or rollback gates.
+
+## Final gate
+
+Fresh exact-ID cleanup and postflight, independent reviewer AND tester release acceptance for the exact candidate, rollback/backup verification, then immediate owner approval for production. Old discovery output containing an empty tests array is not live test evidence.

@@ -30,6 +30,8 @@ export interface OperationalRpcCommitResult {
   appStateVersion?: number;
   serverDurationMs?: number;
   changedRows?: Record<string, unknown>;
+  normalizedPatch?: Partial<AppData>;
+  canonicalHydrated?: boolean;
   raw?: unknown;
 }
 
@@ -187,5 +189,8 @@ export interface RemoteDataGateway {
   commitFinancialCheckout?(patch: FinancialCheckoutPatch): Promise<FinancialCheckoutCommitResult>;
   commitFinancialAdjustment?(patch: FinancialAdjustmentPatch): Promise<FinancialAdjustmentCommitResult>;
   commitAdminDataChange?(patch: AdminDataChangePatch): Promise<AdminDataChangeCommitResult>;
-  subscribeToAppData(onChange: (snapshot: RemoteAppDataSnapshot) => void): () => void;
+  subscribeToAppData(
+    onChange: (snapshot: RemoteAppDataSnapshot) => void,
+    onError?: (error: Error) => void
+  ): () => void;
 }

@@ -131,12 +131,16 @@ export {
 } from "./financialRpcClient";
 export {
   buildOperationalRpcPayload,
+  buildOperationalLifecycleV2Payload,
   getOperationalRpcFunctionName,
+  isOperationalLifecycleV2Kind,
   invokeOperationalMutationRpc,
   mapOperationalRpcResult,
   OPERATIONAL_RPC_FUNCTION_NAMES,
+  OPERATIONAL_RPC_V2_FUNCTION_NAMES,
   OperationalRpcError,
-  type OperationalRpcPayloadEnvelope
+  type OperationalRpcPayloadEnvelope,
+  type OperationalLifecycleV2PayloadEnvelope
 } from "./rpcClient";
 export type {
   AdminDataChangeCommitResult,

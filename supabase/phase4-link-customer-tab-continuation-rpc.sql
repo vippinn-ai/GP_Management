@@ -13,6 +13,8 @@ declare
   v_mutation_id text := nullif(payload->>'mutation_id', '');
   v_mutation_kind text := nullif(payload->>'mutation_kind', '');
   v_user_id text := nullif(payload->>'user_id', '');
+  v_actor uuid := auth.uid();
+  v_actor_role public.app_role;
   v_customer_tab_id text := nullif(payload #>> '{payload,customerTabId}', '');
   v_session_ids_payload jsonb := coalesce(payload #> '{payload,continuedFromSessionIds}', '[]'::jsonb);
   v_audit_logs jsonb := coalesce(payload #> '{payload,auditLogs}', '[]'::jsonb);
@@ -21,17 +23,30 @@ declare
   v_unlinked_session_ids text[];
   v_invalid_session_ids text[];
   v_already_continued_session_ids text[];
+  v_mismatched_session_ids text[];
+  v_target_customer_id text;
+  v_target_customer_phone_key text;
+  v_target_customer_name_key text;
   v_next_continuation_ids jsonb;
   v_audit_log_ids jsonb := '[]'::jsonb;
   v_changed_rows jsonb;
   v_event_id text;
   v_event_metadata jsonb := '{}'::jsonb;
+  v_event_actor text;
+  v_request_fingerprint text;
+  v_inserted_audit_count integer := 0;
 begin
   if v_organization_id is null then
     perform public.raise_operational_rpc_error('invalid_payload', 'The operational change is missing an organization.', '{}'::jsonb);
   end if;
 
-  if not (select public.current_user_has_org_access(v_organization_id)) then
+  v_actor_role := public.current_user_org_role(v_organization_id);
+  if v_actor is null
+    or not (select public.current_user_has_org_access(v_organization_id))
+    or v_user_id is distinct from v_actor::text
+    or v_actor_role is null
+    or v_actor_role not in ('admin'::public.app_role, 'manager'::public.app_role, 'receptionist'::public.app_role)
+  then
     perform public.raise_operational_rpc_error(
       'organization_access_denied',
       'You do not have access to this organization.',
@@ -63,39 +78,18 @@ begin
     );
   end if;
 
-  select operational_events.id, operational_events.metadata
-  into v_event_id, v_event_metadata
-  from public.operational_events
-  where operational_events.organization_id = v_organization_id
-    and operational_events.metadata->>'mutation_id' = v_mutation_id
-  order by operational_events.created_at desc
-  limit 1;
-
-  if v_event_id is not null then
-    return jsonb_build_object(
-      'mutation_id', v_mutation_id,
-      'organization_id', v_organization_id,
-      'entity_type', 'customer_tab',
-      'entity_id', v_customer_tab_id,
-      'event_id', v_event_id,
-      'server_time', timezone('utc', now()),
-      'idempotent', true,
-      'changed_rows', coalesce(v_event_metadata->'changed_rows', jsonb_build_object(
-        'customer_tabs', jsonb_build_array(v_customer_tab_id),
-        'sessions', coalesce(v_event_metadata->'session_ids', '[]'::jsonb),
-        'audit_logs', coalesce(v_event_metadata->'audit_log_ids', '[]'::jsonb),
-        'operational_events', jsonb_build_array(v_event_id)
-      ))
-    );
-  end if;
-
-  select coalesce(array_agg(session_id order by ordinality), array[]::text[])
+  select coalesce(array_agg(session_id order by first_ordinality), array[]::text[])
   into v_session_ids
   from (
-    select nullif(trim(value), '') as session_id, ordinality
-    from jsonb_array_elements_text(v_session_ids_payload) with ordinality as session_values(value, ordinality)
+    select session_id, min(ordinality) as first_ordinality
+    from (
+      select nullif(trim(value), '') as session_id, ordinality
+      from jsonb_array_elements_text(v_session_ids_payload) with ordinality as session_values(value, ordinality)
+    ) requested_sessions
+    where session_id is not null
+    group by session_id
   ) session_values
-  where session_id is not null;
+  ;
 
   if coalesce(array_length(v_session_ids, 1), 0) = 0 then
     perform public.raise_operational_rpc_error(
@@ -105,11 +99,48 @@ begin
     );
   end if;
 
-  perform 1
+  if jsonb_typeof(v_audit_logs) <> 'array'
+    or exists(select 1 from jsonb_array_elements(v_audit_logs) audit where nullif(audit->>'id','') is null)
+    or exists(select 1 from jsonb_array_elements(v_audit_logs) audit group by audit->>'id' having count(*)>1)
+    or jsonb_array_length(v_audit_logs) <> coalesce(array_length(v_session_ids,1),0)
+  then
+    perform public.raise_operational_rpc_error('invalid_payload', 'Continuation audit IDs must be present, unique, and match the selected sessions.', jsonb_build_object('customer_tab_id', v_customer_tab_id));
+  end if;
+  v_request_fingerprint := md5(jsonb_build_object(
+    'mutation_kind', v_mutation_kind,
+    'customer_tab_id', v_customer_tab_id,
+    'session_ids', to_jsonb(v_session_ids),
+    'audit_logs', v_audit_logs
+  )::text);
+
+  perform pg_advisory_xact_lock(hashtextextended(v_organization_id || chr(31) || v_mutation_id, 0));
+
+  select operational_events.id, operational_events.metadata, operational_events.created_by into v_event_id, v_event_metadata, v_event_actor
+  from public.operational_events
+  where operational_events.organization_id=v_organization_id and operational_events.metadata->>'mutation_id'=v_mutation_id
+  order by operational_events.created_at desc limit 1;
+  if v_event_id is not null then
+    if v_event_actor is distinct from v_actor::text then
+      perform public.raise_operational_rpc_error('mutation_actor_mismatch', 'This mutation ID belongs to another authenticated actor.', jsonb_build_object('mutation_id', v_mutation_id));
+    end if;
+    if v_event_metadata->>'request_fingerprint' is distinct from v_request_fingerprint then
+      perform public.raise_operational_rpc_error('mutation_identity_mismatch', 'This mutation ID belongs to a different continuation intent.', jsonb_build_object('mutation_id', v_mutation_id));
+    end if;
+    return jsonb_build_object('mutation_id',v_mutation_id,'organization_id',v_organization_id,'entity_type','customer_tab','entity_id',v_customer_tab_id,'event_id',v_event_id,'server_time',timezone('utc',now()),'idempotent',true,'changed_rows',v_event_metadata->'changed_rows');
+  end if;
+
+  perform pg_advisory_xact_lock(hashtextextended(v_organization_id||chr(31)||'hop-source'||chr(31)||source_id,0))
+  from unnest(v_session_ids) source_ids(source_id) order by source_id;
+
+  select customer_tabs.customer_id,
+    nullif(regexp_replace(coalesce(customer_tabs.customer_phone,''),'\D','','g'),''),
+    nullif(lower(regexp_replace(trim(coalesce(customer_tabs.customer_name,'')),'\s+',' ','g')),'')
+  into v_target_customer_id, v_target_customer_phone_key, v_target_customer_name_key
   from public.customer_tabs
   where customer_tabs.organization_id = v_organization_id
     and customer_tabs.id = v_customer_tab_id
     and customer_tabs.status = 'open'
+    and customer_tabs.closed_bill_id is null
   for update;
 
   if not found then
@@ -118,6 +149,20 @@ begin
       'The customer tab is no longer open.',
       jsonb_build_object('customer_tab_id', v_customer_tab_id)
     );
+  end if;
+
+  select operational_events.id, operational_events.metadata, operational_events.created_by into v_event_id, v_event_metadata, v_event_actor
+  from public.operational_events
+  where operational_events.organization_id=v_organization_id and operational_events.metadata->>'mutation_id'=v_mutation_id
+  order by operational_events.created_at desc limit 1;
+  if v_event_id is not null then
+    if v_event_actor is distinct from v_actor::text then
+      perform public.raise_operational_rpc_error('mutation_actor_mismatch', 'This mutation ID belongs to another authenticated actor.', jsonb_build_object('mutation_id', v_mutation_id));
+    end if;
+    if v_event_metadata->>'request_fingerprint' is distinct from v_request_fingerprint then
+      perform public.raise_operational_rpc_error('mutation_identity_mismatch', 'This mutation ID belongs to a different continuation intent.', jsonb_build_object('mutation_id', v_mutation_id));
+    end if;
+    return jsonb_build_object('mutation_id',v_mutation_id,'organization_id',v_organization_id,'entity_type','customer_tab','entity_id',v_customer_tab_id,'event_id',v_event_id,'server_time',timezone('utc',now()),'idempotent',true,'changed_rows',v_event_metadata->'changed_rows');
   end if;
 
   select coalesce(array_agg(current_session_id order by ordinality), array[]::text[])
@@ -218,6 +263,59 @@ begin
         )
       );
     end if;
+
+    select coalesce(array_agg(requested.session_id order by requested.session_id), array[]::text[])
+    into v_mismatched_session_ids
+    from unnest(v_unlinked_session_ids) as requested(session_id)
+    join public.sessions
+      on sessions.organization_id = v_organization_id
+      and sessions.id = requested.session_id
+    where case
+      when nullif(sessions.customer_id, '') is not null then
+        v_target_customer_id is distinct from nullif(sessions.customer_id, '')
+      when nullif(regexp_replace(coalesce(sessions.customer_phone, ''), '\D', '', 'g'), '') is not null then
+        v_target_customer_phone_key is distinct from
+          nullif(regexp_replace(coalesce(sessions.customer_phone, ''), '\D', '', 'g'), '')
+      when nullif(
+        lower(regexp_replace(trim(coalesce(sessions.customer_name, '')), '\s+', ' ', 'g')),
+        ''
+      ) is not null then
+        v_target_customer_name_key is distinct from
+          nullif(
+            lower(regexp_replace(trim(coalesce(sessions.customer_name, '')), '\s+', ' ', 'g')),
+            ''
+          )
+      else
+        v_target_customer_id is not null
+        or v_target_customer_phone_key is not null
+        or v_target_customer_name_key is not null
+    end;
+
+    if coalesce(array_length(v_mismatched_session_ids, 1), 0) > 0 then
+      perform public.raise_operational_rpc_error(
+        'hopped_session_customer_mismatch',
+        'The customer tab does not match the hopped session customer.',
+        jsonb_build_object('customer_tab_id', v_customer_tab_id, 'session_ids', v_mismatched_session_ids)
+      );
+    end if;
+  end if;
+
+  perform pg_advisory_xact_lock(hashtextextended(v_organization_id||chr(31)||'audit'||chr(31)||(audit_log->>'id'),0))
+  from jsonb_array_elements(v_audit_logs) as audit_values(audit_log)
+  order by audit_log->>'id';
+
+  if exists (
+    select 1
+    from public.audit_logs
+    join jsonb_array_elements(v_audit_logs) as audit_values(audit_log)
+      on audit_logs.organization_id = v_organization_id
+      and audit_logs.id = audit_log->>'id'
+  ) then
+    perform public.raise_operational_rpc_error(
+      'audit_id_conflict',
+      'A continuation audit ID is already in use.',
+      jsonb_build_object('customer_tab_id', v_customer_tab_id)
+    );
   end if;
 
   select coalesce(jsonb_agg(to_jsonb(session_id) order by first_seen), '[]'::jsonb)
@@ -248,8 +346,7 @@ begin
   where customer_tabs.organization_id = v_organization_id
     and customer_tabs.id = v_customer_tab_id;
 
-  if jsonb_typeof(v_audit_logs) = 'array' then
-    insert into public.audit_logs (
+  insert into public.audit_logs (
       organization_id,
       id,
       action,
@@ -268,17 +365,25 @@ begin
       nullif(audit_log->>'entityId', ''),
       nullif(audit_log->>'message', ''),
       nullif(audit_log->>'createdAt', '')::timestamptz,
-      nullif(audit_log->>'userId', ''),
-      audit_log
+      v_actor::text,
+      jsonb_set(audit_log, '{userId}', to_jsonb(v_actor::text), true)
     from jsonb_array_elements(v_audit_logs) as audit_values(audit_log)
     where nullif(audit_log->>'id', '') is not null
     on conflict (organization_id, id) do nothing;
+
+    get diagnostics v_inserted_audit_count = row_count;
+    if v_inserted_audit_count <> jsonb_array_length(v_audit_logs) then
+      perform public.raise_operational_rpc_error(
+        'audit_id_conflict',
+        'A continuation audit ID was claimed concurrently.',
+        jsonb_build_object('customer_tab_id', v_customer_tab_id)
+      );
+    end if;
 
     select coalesce(jsonb_agg(audit_log->>'id'), '[]'::jsonb)
     into v_audit_log_ids
     from jsonb_array_elements(v_audit_logs) as audit_values(audit_log)
     where nullif(audit_log->>'id', '') is not null;
-  end if;
 
   v_changed_rows := jsonb_build_object(
     'customer_tabs', jsonb_build_array(v_customer_tab_id),
@@ -300,10 +405,11 @@ begin
     'link_customer_tab_continuation',
     'customer_tab',
     v_customer_tab_id,
-    v_user_id,
+    v_actor::text,
     jsonb_build_object(
       'mutation_id', v_mutation_id,
       'mutation_kind', v_mutation_kind,
+      'request_fingerprint', v_request_fingerprint,
       'customer_tab_id', v_customer_tab_id,
       'session_ids', coalesce((select jsonb_agg(session_id) from unnest(v_session_ids) as session_values(session_id)), '[]'::jsonb),
       'audit_log_ids', v_audit_log_ids,
