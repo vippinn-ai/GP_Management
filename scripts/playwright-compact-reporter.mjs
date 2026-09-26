@@ -10,7 +10,9 @@ export default class CompactEvidenceReporter {
 
   onTestEnd(test, result) {
     this.tests.push({
-      title: test.titlePath().slice(1).join(" > "),
+      file: path.relative(this.testDir, test.location.file).replaceAll("\\", "/"),
+      project: test.parent.project()?.name ?? "",
+      title: test.titlePath().slice(1).filter(Boolean).join(" > "),
       status: result.status,
       durationMs: result.duration,
       retry: result.retry,
@@ -21,6 +23,10 @@ export default class CompactEvidenceReporter {
         path: attachment.path ? path.relative(process.cwd(), attachment.path) : undefined
       }))
     });
+  }
+
+  onBegin(config) {
+    this.testDir = config.rootDir;
   }
 
   onEnd(result) {
@@ -34,7 +40,7 @@ export default class CompactEvidenceReporter {
       tests: this.tests
     };
     const output = path.join(directory, `summary-${this.runId}.json`);
-    fs.writeFileSync(output, `${JSON.stringify(summary, null, 2)}\n`, "utf8");
+    fs.writeFileSync(output, `${JSON.stringify(summary, null, 2)}\n`, { encoding: "utf8", flag: "wx" });
     console.log(`Compact Playwright evidence: ${path.relative(process.cwd(), output)}`);
   }
 }

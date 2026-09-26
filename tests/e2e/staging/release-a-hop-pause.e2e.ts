@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { createFailurePreservingCleanup } from "../../../src/qa/failurePreservingCleanup";
 import {
   assertNoPageErrors,
   attachFailureScreenshot,
@@ -24,6 +25,7 @@ const hopStation = process.env.E2E_HOP_STATION?.trim() || "Playstation";
 
 test.describe.serial("Release A staging two-browser operational maintenance", () => {
   test("pause edit propagates to an independent browser and survives refresh", async ({ browser, page }, testInfo) => {
+    const finalization = createFailurePreservingCleanup();
     const observer = await createObserver(browser);
     const rpcEvidence: RpcEvidence[] = [];
     const originErrors = capturePageErrors(page);
@@ -41,7 +43,7 @@ test.describe.serial("Release A staging two-browser operational maintenance", ()
       sessionStarted = true;
       await expect(stationCard(observer.page, pauseStation)).toContainText(customerName);
 
-      let modal = await openManagedSession(page, pauseStation);
+      const modal = await openManagedSession(page, pauseStation);
       await modal.getByRole("button", { name: "Edit Customer Details", exact: true }).click();
       const earlierStart = await browserDateTimeLocal(page, -10);
       await modal.getByLabel("Session Start Time", { exact: true }).fill(earlierStart);
@@ -96,24 +98,26 @@ test.describe.serial("Release A staging two-browser operational maintenance", ()
           cleanupError = error instanceof Error ? error.message : "Unknown pause cleanup failure";
         }
       }
-      await attachJson(testInfo, "release-a-pause-edit-evidence", {
+      await finalization.run("final evidence", () => attachJson(testInfo, "release-a-pause-edit-evidence", {
         runId,
         customerName,
         station: pauseStation,
         cleanupRejected,
         cleanupError,
         rpcEvidence
-      });
-      await attachFailureScreenshot(testInfo, page, "origin-failure");
-      await attachFailureScreenshot(testInfo, observer.page, "observer-failure");
-      await observer.context.close();
-      if (cleanupError || (sessionStarted && !cleanupRejected)) {
-        throw new Error(`Pause test cleanup was not confirmed. ${cleanupError ?? "Session remained open."}`);
-      }
+      }));
+      await finalization.run("origin failure screenshot", () => attachFailureScreenshot(testInfo, page, "origin-failure"));
+      await finalization.run("observer failure screenshot", () => attachFailureScreenshot(testInfo, observer.page, "observer-failure"));
+      await finalization.run("observer context close", () => observer.context.close());
+    }
+    finalization.throwIfFailed();
+    if (cleanupError || (sessionStarted && !cleanupRejected)) {
+      throw new Error(`Pause test cleanup was not confirmed. ${cleanupError ?? "Session remained open."}`);
     }
   });
 
   test("hop and detach propagate, then the newest hopped session is billed for cleanup", async ({ browser, page }, testInfo) => {
+    const finalization = createFailurePreservingCleanup();
     const observer = await createObserver(browser);
     const rpcEvidence: RpcEvidence[] = [];
     const originErrors = capturePageErrors(page);
@@ -145,10 +149,10 @@ test.describe.serial("Release A staging two-browser operational maintenance", ()
       await waitForSynced(page);
 
       await expect.poll(() => {
-        const checkout = rpcEvidence.findLast((entry) => entry.rpc === "commit_checkout_bill" && entry.status < 300);
+        const checkout = rpcEvidence.findLast((entry) => entry.rpc.startsWith("commit_checkout_bill") && entry.status < 300);
         return Boolean(checkout?.billId && hopSessionId && changedRowIds(checkout, "sessions").includes(hopSessionId));
       }).toBe(true);
-      const checkoutEvidence = rpcEvidence.findLast((entry) => entry.rpc === "commit_checkout_bill" && entry.status < 300);
+      const checkoutEvidence = rpcEvidence.findLast((entry) => entry.rpc.startsWith("commit_checkout_bill") && entry.status < 300);
       cleanupBillId = checkoutEvidence!.billId;
       cleanupBilled = true;
     }
@@ -159,7 +163,7 @@ test.describe.serial("Release A staging two-browser operational maintenance", ()
       sessionStarted = true;
       await expect(stationCard(observer.page, hopStation)).toContainText(customerName);
 
-      let modal = await openManagedSession(page, hopStation);
+      const modal = await openManagedSession(page, hopStation);
       await modal.getByRole("button", { name: "Edit Customer Details", exact: true }).click();
       await modal.getByLabel("Session Start Time", { exact: true }).fill(await browserDateTimeLocal(page, -10));
       await modal.getByRole("button", { name: "Save Session Details", exact: true }).click();
@@ -181,18 +185,18 @@ test.describe.serial("Release A staging two-browser operational maintenance", ()
       await expect(page.getByText(new RegExp(`Detached post-hop continuation.*${hopStation}`)).first()).toBeVisible();
       await expect(observer.page.getByText(new RegExp(`Detached post-hop continuation.*${hopStation}`)).first()).toBeVisible();
 
-      await expect.poll(() => rpcEvidence.findLast((entry) => entry.rpc === "hop_session" && entry.status < 300)?.entityId).toBeTruthy();
-      const hopEvidence = rpcEvidence.findLast((entry) => entry.rpc === "hop_session" && entry.status < 300);
+      await expect.poll(() => rpcEvidence.findLast((entry) => entry.rpc.startsWith("hop_session") && entry.status < 300)?.entityId).toBeTruthy();
+      const hopEvidence = rpcEvidence.findLast((entry) => entry.rpc.startsWith("hop_session") && entry.status < 300);
       hopSessionId = hopEvidence!.entityId;
-      expect(rpcEvidence.some((entry) => entry.rpc === "record_session_audit" && entry.status < 300)).toBe(true);
+      expect(hopEvidence?.changedRows?.audit_logs).toEqual(expect.any(Array));
       await billNewestHoppedSession();
       await observer.page.reload({ waitUntil: "domcontentloaded" });
       await expect(stationCard(observer.page, hopStation)).toContainText("Available");
       assertNoPageErrors(originErrors, observerErrors);
     } finally {
       sessionStarted = sessionStarted || rpcEvidence.some((entry) => entry.rpc === "start_session" && entry.status < 300);
-      hopSessionId ??= rpcEvidence.findLast((entry) => entry.rpc === "hop_session" && entry.status < 300)?.entityId;
-      const committedCheckout = rpcEvidence.findLast((entry) => entry.rpc === "commit_checkout_bill" && entry.status < 300);
+      hopSessionId ??= rpcEvidence.findLast((entry) => entry.rpc.startsWith("hop_session") && entry.status < 300)?.entityId;
+      const committedCheckout = rpcEvidence.findLast((entry) => entry.rpc.startsWith("commit_checkout_bill") && entry.status < 300);
       if (hopSessionId && committedCheckout?.billId && changedRowIds(committedCheckout, "sessions").includes(hopSessionId)) {
         cleanupBillId = committedCheckout.billId;
         cleanupBilled = true;
@@ -209,7 +213,7 @@ test.describe.serial("Release A staging two-browser operational maintenance", ()
       } catch (error) {
         cleanupError = error instanceof Error ? error.message : "Unknown hop cleanup failure";
       }
-      await attachJson(testInfo, "release-a-hop-detach-evidence", {
+      await finalization.run("final evidence", () => attachJson(testInfo, "release-a-hop-detach-evidence", {
         runId,
         customerName,
         station: hopStation,
@@ -221,13 +225,14 @@ test.describe.serial("Release A staging two-browser operational maintenance", ()
         cleanupBillId,
         cleanupError,
         rpcEvidence
-      });
-      await attachFailureScreenshot(testInfo, page, "origin-failure");
-      await attachFailureScreenshot(testInfo, observer.page, "observer-failure");
-      await observer.context.close();
-      if (cleanupError || (sessionStarted && !cleanupBilled && !cleanupRejected)) {
-        throw new Error(`Hop test cleanup was not confirmed. ${cleanupError ?? "Session remained unresolved."}`);
-      }
+      }));
+      await finalization.run("origin failure screenshot", () => attachFailureScreenshot(testInfo, page, "origin-failure"));
+      await finalization.run("observer failure screenshot", () => attachFailureScreenshot(testInfo, observer.page, "observer-failure"));
+      await finalization.run("observer context close", () => observer.context.close());
+    }
+    finalization.throwIfFailed();
+    if (cleanupError || (sessionStarted && !cleanupBilled && !cleanupRejected)) {
+      throw new Error(`Hop test cleanup was not confirmed. ${cleanupError ?? "Session remained unresolved."}`);
     }
   });
 });

@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { expect, test, type Download } from "@playwright/test";
 import * as XLSX from "xlsx";
+import { createFailurePreservingCleanup } from "../../../src/qa/failurePreservingCleanup";
 import {
   assertNoPageErrors,
   attachFailureScreenshot,
@@ -19,6 +20,7 @@ async function readDownload(download: Download): Promise<Buffer> {
 }
 
 test("normalized reports export complete CSV, Excel, and PDF files", async ({ page }, testInfo) => {
+  const finalization = createFailurePreservingCleanup();
   const errors = capturePageErrors(page);
 
   try {
@@ -77,6 +79,7 @@ test("normalized reports export complete CSV, Excel, and PDF files", async ({ pa
       verifiedBillNumber: "BILL-20260820-006"
     });
   } finally {
-    await attachFailureScreenshot(testInfo, page, "report-export-failure");
+    await finalization.run("failure screenshot", () => attachFailureScreenshot(testInfo, page, "report-export-failure"));
   }
+  finalization.throwIfFailed();
 });

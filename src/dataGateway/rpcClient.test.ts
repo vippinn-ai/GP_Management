@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { OperationalMutation } from "../operationalSync";
 import { clearCachedNormalizedOrganizationIdForTests } from "./normalizedOrganization";
 import {
+  OPERATIONAL_RPC_FUNCTION_NAMES,
   buildOperationalRpcPayload,
   buildOperationalLifecycleV2Payload,
   getOperationalRpcFunctionName,
@@ -9,6 +10,13 @@ import {
   mapOperationalRpcResult,
   type OperationalRpcError
 } from "./rpcClient";
+
+const normalizedReadMocks = vi.hoisted(() => ({
+  loadNormalizedLiveDataByIds: vi.fn(),
+  loadNormalizedAuditLogsByIds: vi.fn()
+}));
+
+vi.mock("./normalizedReads", () => normalizedReadMocks);
 
 function createMutation(overrides: Partial<OperationalMutation> = {}): OperationalMutation {
   return {
@@ -48,7 +56,14 @@ function createMutation(overrides: Partial<OperationalMutation> = {}): Operation
 
 describe("operational RPC client", () => {
   beforeEach(() => {
+    vi.clearAllMocks();
     clearCachedNormalizedOrganizationIdForTests();
+    normalizedReadMocks.loadNormalizedLiveDataByIds.mockResolvedValue({
+      sessions: [],
+      sessionPauseLogs: [],
+      customerTabs: []
+    });
+    normalizedReadMocks.loadNormalizedAuditLogsByIds.mockResolvedValue([]);
   });
 
   it("maps operational mutation kinds to stable RPC function names", () => {
@@ -229,6 +244,185 @@ describe("operational RPC client", () => {
     expect(payload).not.toHaveProperty("user_id");
     expect(payload).not.toHaveProperty("base_app_state_version");
     expect(payload.payload).not.toHaveProperty("session");
+  });
+
+  it.each([
+    {
+      kind: "hopSession" as const,
+      rpcName: "hop_session_v2",
+      entityType: "session" as const,
+      entityId: "session-hop",
+      payload: {
+        session: { endedAt: "2026-07-25T10:30:00.000Z" },
+        auditLog: { id: "audit-hop" }
+      },
+      changedRows: { sessions: ["session-hop"], audit_logs: ["audit-hop"] },
+      expectedPayload: {
+        effective_ended_at: "2026-07-25T10:30:00.000Z",
+        reason: undefined,
+        audit_log_id: "audit-hop"
+      }
+    },
+    {
+      kind: "rejectSession" as const,
+      rpcName: "reject_session_v2",
+      entityType: "session" as const,
+      entityId: "session-reject",
+      payload: {
+        session: {
+          endedAt: "2026-07-25T10:31:00.000Z",
+          closeReason: "Incorrect booking"
+        },
+        auditLog: { id: "audit-reject-session" }
+      },
+      changedRows: { sessions: ["session-reject"], audit_logs: ["audit-reject-session"] },
+      expectedPayload: {
+        effective_ended_at: "2026-07-25T10:31:00.000Z",
+        reason: "Incorrect booking",
+        audit_log_id: "audit-reject-session"
+      }
+    },
+    {
+      kind: "rejectCustomerTab" as const,
+      rpcName: "reject_customer_tab_v2",
+      entityType: "customer_tab" as const,
+      entityId: "tab-reject",
+      payload: {
+        tab: {
+          closedAt: "2026-07-25T10:32:00.000Z",
+          closeReason: "Duplicate tab"
+        },
+        auditLog: { id: "audit-reject-tab" }
+      },
+      changedRows: { customer_tabs: ["tab-reject"], audit_logs: ["audit-reject-tab"] },
+      expectedPayload: {
+        effective_closed_at: "2026-07-25T10:32:00.000Z",
+        reason: "Duplicate tab",
+        audit_log_id: "audit-reject-tab"
+      }
+    }
+  ])("routes $kind to $rpcName and hydrates its canonical normalized patch", async ({
+    kind,
+    rpcName,
+    entityType,
+    entityId,
+    payload,
+    changedRows,
+    expectedPayload
+  }) => {
+    const mutation = createMutation({ kind, entityType, entityId, payload: payload as never });
+    const livePatch = entityType === "session"
+      ? { sessions: [{ id: entityId }], sessionPauseLogs: [], customerTabs: [] }
+      : { sessions: [], sessionPauseLogs: [], customerTabs: [{ id: entityId }] };
+    const auditPatch = [{ id: expectedPayload.audit_log_id }];
+    normalizedReadMocks.loadNormalizedLiveDataByIds.mockResolvedValueOnce(livePatch);
+    normalizedReadMocks.loadNormalizedAuditLogsByIds.mockResolvedValueOnce(auditPatch);
+    const rpc = vi.fn().mockResolvedValue({
+      data: {
+        mutation_id: mutation.id,
+        organization_id: "org-primary",
+        entity_type: entityType,
+        entity_id: entityId,
+        changed_rows: changedRows
+      },
+      error: null
+    });
+    const client = { rpc } as never;
+
+    await expect(invokeOperationalMutationRpc(mutation, {
+      organizationId: "org-primary",
+      client,
+      useV2: true
+    })).resolves.toMatchObject({
+      rpcName,
+      canonicalHydrated: true,
+      normalizedPatch: {
+        ...livePatch,
+        auditLogs: auditPatch
+      }
+    });
+
+    expect(rpc).toHaveBeenCalledTimes(1);
+    expect(rpc).toHaveBeenCalledWith(rpcName, {
+      payload: {
+        organization_id: "org-primary",
+        mutation_id: mutation.id,
+        mutation_kind: kind,
+        label: mutation.label,
+        entity_type: entityType,
+        entity_id: entityId,
+        client_created_at: mutation.createdAt,
+        payload: expectedPayload
+      }
+    });
+    expect(normalizedReadMocks.loadNormalizedLiveDataByIds).toHaveBeenCalledWith(
+      "org-primary",
+      {
+        sessionIds: entityType === "session" ? [entityId] : [],
+        customerTabIds: entityType === "customer_tab" ? [entityId] : []
+      },
+      client
+    );
+    expect(normalizedReadMocks.loadNormalizedAuditLogsByIds)
+      .toHaveBeenCalledWith("org-primary", [expectedPayload.audit_log_id], client);
+  });
+
+  it.each([
+    ["hopSession", "session", { session: { endedAt: "2026-07-25T10:30:00.000Z" } }],
+    ["rejectSession", "session", { session: { endedAt: "2026-07-25T10:31:00.000Z" } }],
+    ["rejectCustomerTab", "customer_tab", { tab: { closedAt: "2026-07-25T10:32:00.000Z" } }]
+  ] as const)("rejects %s before RPC when its stable audit ID is missing", async (kind, entityType, payload) => {
+    const rpc = vi.fn();
+    await expect(invokeOperationalMutationRpc(createMutation({
+      kind,
+      entityType,
+      entityId: entityType === "session" ? "session-1" : "tab-1",
+      payload: payload as never
+    }), {
+      organizationId: "org-primary",
+      client: { rpc } as never,
+      useV2: true
+    })).rejects.toThrow("Operational v2 requires a stable audit ID.");
+
+    expect(rpc).not.toHaveBeenCalled();
+    expect(normalizedReadMocks.loadNormalizedLiveDataByIds).not.toHaveBeenCalled();
+    expect(normalizedReadMocks.loadNormalizedAuditLogsByIds).not.toHaveBeenCalled();
+  });
+
+  it("keeps every non-lifecycle kind on its existing RPC when the v2 option is enabled", async () => {
+    const lifecycleKinds = new Set(["hopSession", "rejectSession", "rejectCustomerTab"]);
+    const legacyEntries = Object.entries(OPERATIONAL_RPC_FUNCTION_NAMES)
+      .filter(([kind]) => !lifecycleKinds.has(kind));
+    const rpc = vi.fn(async (_rpcName: string, { payload }: { payload: { mutation_id: string; entity_type: string; entity_id: string } }) => ({
+      data: {
+        mutation_id: payload.mutation_id,
+        organization_id: "org-primary",
+        entity_type: payload.entity_type,
+        entity_id: payload.entity_id
+      },
+      error: null
+    }));
+
+    for (const [kind, rpcName] of legacyEntries) {
+      const mutation = createMutation({
+        id: `op-${kind}`,
+        kind: kind as OperationalMutation["kind"]
+      });
+      const result = await invokeOperationalMutationRpc(mutation, {
+        organizationId: "org-primary",
+        client: { rpc } as never,
+        useV2: true
+      });
+      expect(result).toMatchObject({ rpcName });
+      expect(result).not.toHaveProperty("canonicalHydrated");
+      expect(rpc).toHaveBeenLastCalledWith(rpcName, {
+        payload: buildOperationalRpcPayload(mutation, "org-primary")
+      });
+    }
+
+    expect(rpc).toHaveBeenCalledTimes(legacyEntries.length);
+    expect(normalizedReadMocks.loadNormalizedLiveDataByIds).not.toHaveBeenCalled();
+    expect(normalizedReadMocks.loadNormalizedAuditLogsByIds).not.toHaveBeenCalled();
   });
 
   it("resolves organization once when the caller does not provide an organization id", async () => {

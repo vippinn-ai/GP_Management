@@ -3,9 +3,18 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 const source = readFileSync(path.join(process.cwd(), "supabase/operational-lifecycle-v2.sql"), "utf8");
+const stagingDatasetIdentity = readFileSync(path.join(process.cwd(), "supabase/operational-performance-dataset-identity-staging.sql"), "utf8");
 const customerTabSource = readFileSync(path.join(process.cwd(), "supabase/phase4-customer-tab-rpcs.sql"), "utf8");
 const startSessionSource = readFileSync(path.join(process.cwd(), "supabase/phase4-start-session-rpc.sql"), "utf8");
 const linkContinuationSource = readFileSync(path.join(process.cwd(), "supabase/phase4-link-customer-tab-continuation-rpc.sql"), "utf8");
+const preflight = readFileSync(path.join(process.cwd(), "supabase/operational-lifecycle-v2-staging-preflight-readonly.sql"), "utf8");
+const postflight = readFileSync(path.join(process.cwd(), "supabase/operational-lifecycle-v2-staging-postflight-readonly.sql"), "utf8");
+const stagingEnvironmentIdentity = readFileSync(path.join(process.cwd(), "supabase/operational-v2-staging-environment-identity.sql"), "utf8");
+const installer = readFileSync(path.join(process.cwd(), "scripts/build-operational-lifecycle-v2-staging-install.mjs"), "utf8");
+const reinstallBuilder = readFileSync(path.join(process.cwd(), "scripts/build-operational-lifecycle-v2-staging-reinstall.mjs"), "utf8");
+const postflightVerifier = readFileSync(path.join(process.cwd(), "scripts/verify-operational-lifecycle-v2-staging-postflight.mjs"), "utf8");
+const transactionalProof = readFileSync(path.join(process.cwd(), "supabase/operational-lifecycle-v2-transactional-proof.sql"), "utf8");
+const transactionalProofBuilder = readFileSync(path.join(process.cwd(), "scripts/build-operational-v2-transactional-proof.mjs"), "utf8");
 
 function body(name: string) {
   const match = source.match(new RegExp(`create or replace function public\\.${name}\\(payload jsonb\\)[\\s\\S]*?as \\$\\$([\\s\\S]*?)\\$\\$;`, "i"));
@@ -32,6 +41,13 @@ describe("normalized lifecycle v2 SQL contract", () => {
       expect(source).toContain(`revoke execute on function public.${name}(jsonb) from anon`);
       expect(source).toContain(`grant execute on function public.${name}(jsonb) to authenticated`);
     }
+  });
+
+  it("keeps the expensive dataset fingerprint RPC in staging-only test instrumentation", () => {
+    expect(source).not.toContain("get_operational_performance_dataset_identity");
+    expect(stagingDatasetIdentity).toContain("get_operational_performance_dataset_identity");
+    expect(stagingDatasetIdentity).toContain("PII-free exact dataset identity");
+    expect(installer).toContain("operational-performance-dataset-identity-staging.sql");
   });
 
   it("returns the application error contract for non-object envelopes without invoking object iterators on arrays", () => {
@@ -91,6 +107,25 @@ describe("normalized lifecycle v2 SQL contract", () => {
     expect(functionBody).toMatch(/closed_bill_id\s+is\s+null/i);
   });
 
+  it("keeps preflight and postflight read-only and compatibility-hash aware", () => {
+    for (const probe of [preflight, postflight]) {
+      expect(probe).toMatch(/begin isolation level repeatable read read only/i);
+      expect(probe).toMatch(/rollback;\s*$/i);
+      expect(probe).toMatch(/md5\(data::text\)/i);
+      expect(probe).not.toMatch(/\b(?:insert\s+into|update|delete\s+from|alter\s+table|drop\s+table|create\s+table)\s+public\./i);
+    }
+  });
+
+  it("atomically anchors the exact physical staging cluster and refuses lookalike databases", () => {
+    expect(stagingEnvironmentIdentity).toContain("system_identifier::text from pg_control_system()");
+    expect(stagingEnvironmentIdentity).toContain("system_id <> '7623125441096521075'");
+    expect(stagingEnvironmentIdentity).toContain("physical database is not the approved staging cluster");
+    expect(stagingEnvironmentIdentity).toMatch(/organizations where id='org-primary' and active is true/i);
+    expect(stagingEnvironmentIdentity).not.toContain("rrdwbxvuwrbxefarxnse");
+    expect(stagingEnvironmentIdentity).toMatch(/^begin;[\s\S]*commit;\s*$/im);
+    expect(stagingEnvironmentIdentity).not.toMatch(/alter database|set_config|app\.settings\.api_url/i);
+  });
+
   it("binds continuation-chain actors to the authenticated principal", () => {
     for (const functionSource of [startSessionSource, customerTabSource, linkContinuationSource]) {
       expect(functionSource).toMatch(/auth\.uid\(\)/i);
@@ -113,6 +148,92 @@ describe("normalized lifecycle v2 SQL contract", () => {
       expect(mutationLock, `${name} mutation lock`).toBeGreaterThanOrEqual(0);
       expect(replayLookup, `${name} replay lookup`).toBeGreaterThan(mutationLock);
     }
+  });
+
+  it("builds immutable preflight-bound install and rollback evidence", () => {
+    expect(installer).toMatch(/argument\("preflight"\)/i);
+    expect(installer).toMatch(/deployed definition drift/i);
+    expect(installer).toMatch(/actual_owner/i);
+    expect(installer).toMatch(/actual_config/i);
+    expect(installer).toMatch(/actual_acl/i);
+    expect(preflight).toContain("system_identifier::text from pg_control_system()");
+    expect(preflight).toContain("recoverable_hopped_sessions");
+    expect(postflight).toContain("system_identifier::text from pg_control_system()");
+    expect(installer).toMatch(/staging-rollback\.sql/i);
+    expect(installer).toContain("aclexplode(coalesce(p.proacl,acldefault('f',p.proowner)))");
+    expect(installer).toMatch(/flag:\s*"wx"/i);
+    expect(installer).toMatch(/install changed compatibility app_state/i);
+    expect(postflight).toMatch(/operational_mutations_rls/i);
+    expect(postflightVerifier).toMatch(/appStateUnchanged:\s*true/i);
+    expect(postflightVerifier).toMatch(/Compatibility app_state .* changed/i);
+    expect(postflightVerifier).toContain("physical database identity drift");
+    expect(postflightVerifier).toContain("installed definition, owner, configuration, or ACL drift");
+    expect(postflight).toContain("acl_detail");
+    expect(preflight).toContain("get_operational_performance_dataset_identity");
+  });
+
+  it("provides a narrow guarded reinstall for already-installed v2 corrections", () => {
+    expect(reinstallBuilder).toContain('const PATCHED_FUNCTIONS = ["hop_session_v2", "reject_session_v2", "reject_customer_tab_v2"]');
+    expect(reinstallBuilder).toContain("for (const name of VERIFIED_FUNCTIONS) validateFunctionEvidence");
+    expect(reinstallBuilder).toContain("deployed definition, owner, configuration, or ACL drift");
+    expect(reinstallBuilder).toContain("btrim(replace(replace(p.prosrc,chr(13)||chr(10),chr(10)),chr(13),chr(10)), E' \\\\t\\\\n\\\\r')");
+    expect(reinstallBuilder).toContain("installed definition, owner, configuration, or ACL mismatch");
+    expect(reinstallBuilder).toContain("app_state changed after approved preflight");
+    expect(reinstallBuilder).toContain("reinstall changed compatibility app_state");
+    expect(reinstallBuilder).toContain('flag: "wx"');
+    expect(reinstallBuilder).toContain('operation: "staging-v2-function-reinstall"');
+  });
+
+  it("provides an immutable rollback-only transactional proof for all lifecycle v2 functions", () => {
+    expect(transactionalProof).toContain("OPERATIONAL_LIFECYCLE_V2_TRANSACTIONAL_PROOF");
+    for (const functionName of ["hop_session_v2", "reject_session_v2", "reject_customer_tab_v2"]) {
+      expect(transactionalProof).toContain(`public.${functionName}`);
+    }
+    for (const proofCase of [
+      "Same mutation ID with different intent",
+      "Malformed hop payload",
+      "Future session end",
+      "Client actor spoof field",
+      "Late audit collision",
+      "Inactive actor",
+      "Anonymous actor",
+      "Wrong organization",
+      "missing-mutation-id",
+      "missing-mutation-kind",
+      "missing-entity-type",
+      "empty-hop-mutation-kind",
+      "empty-hop-entity-type",
+      "missing-reject-session-mutation-kind",
+      "missing-reject-session-entity-type",
+      "empty-reject-session-mutation-kind",
+      "empty-reject-session-entity-type",
+      "missing-reject-tab-mutation-kind",
+      "missing-reject-tab-entity-type",
+      "empty-reject-tab-mutation-kind",
+      "empty-reject-tab-entity-type",
+      "same-id-different-kind",
+      "same-id-different-entity",
+      "same-id-different-audit"
+    ]) expect(transactionalProof).toContain(proofCase);
+    expect(transactionalProof.match(/pg_temp\.qa_expect_rpc_error\('/g)).toHaveLength(48);
+    expect(transactionalProof).toContain("insert into qa_negative_results values('unsupported-role'");
+    expect(transactionalProof).toContain("original_sqlstate = RETURNED_SQLSTATE");
+    expect(transactionalProof).toContain("qa_error_code('not-json', '23502') = '23502'");
+    expect(transactionalProof).toContain("a.id not like c.run_id||'-v1-audit-%'");
+    expect(transactionalProof).toContain("Operational v2 changed app_state during original compatibility-document cases");
+    expect(transactionalProof).toContain("Operational v2 changed app_state during small compatibility-document cases");
+    expect(transactionalProof).toContain("ctid::text app_state_ctid");
+    expect(transactionalProof).toContain("ctid::text row_ctid");
+    expect(transactionalProof).toContain("v2_app_state_unchanged");
+    expect(transactionalProof).toContain("app_state_compatibility_fields_restored");
+    expect(transactionalProof).toContain("fixture_app_state_touched");
+    expect(transactionalProof).not.toContain("'fixture_app_state_touched',true");
+    expect(transactionalProof).not.toContain("'app_state_unchanged',true");
+    expect(transactionalProof).not.toContain("state.updated_at=c.app_state_updated_at and state.updated_by is not distinct from c.app_state_updated_by from public.app_state state cross join qa_context c where state.id='primary'), 'Operational v2 changed app_state.'");
+    expect(transactionalProof).toMatch(/rollback;\s*$/i);
+    expect(transactionalProof).not.toMatch(/\bcommit\s*;/i);
+    expect(transactionalProofBuilder).toContain('flag: "wx"');
+    expect(transactionalProofBuilder).toContain("rollbackOnly: true");
   });
 
   it("keeps the v2 audit cardinality separate from frozen-v1 comparisons while detecting leaked failures", () => {
@@ -144,4 +265,29 @@ describe("normalized lifecycle v2 SQL contract", () => {
     expect(sameLogicalAndPhysicalState(before, afterNoOpUpdate)).toBe(false);
   });
 
+  it("places v2 invariance checkpoints around both proof-controlled compatibility documents", () => {
+    const rowLock = transactionalProof.indexOf("perform id from public.app_state where id='primary' for update;");
+    const originalSnapshot = transactionalProof.indexOf("create temp table qa_app_state_original");
+    const largeLoop = transactionalProof.indexOf("for sample in 1..20 loop");
+    const largeLoopEnd = transactionalProof.indexOf("end $$;", largeLoop);
+    const originalCheck = transactionalProof.indexOf("Operational v2 changed app_state during original compatibility-document cases");
+    const firstFixtureWrite = transactionalProof.indexOf("update public.app_state set data=jsonb_build_object");
+    const smallSnapshot = transactionalProof.indexOf("create temp table qa_app_state_small");
+    const smallLoop = transactionalProof.indexOf("for sample in 1..10 loop");
+    const smallLoopEnd = transactionalProof.indexOf("end $$;", smallLoop);
+    const smallCheck = transactionalProof.indexOf("Operational v2 changed app_state during small compatibility-document cases");
+    const firstRestore = transactionalProof.indexOf("update public.app_state state set data=original.data");
+
+    expect(rowLock).toBeGreaterThan(-1);
+    expect(originalSnapshot).toBeGreaterThan(rowLock);
+    expect(largeLoop).toBeGreaterThan(originalSnapshot);
+    expect(largeLoopEnd).toBeGreaterThan(largeLoop);
+    expect(originalCheck).toBeGreaterThan(largeLoopEnd);
+    expect(originalCheck).toBeLessThan(firstFixtureWrite);
+    expect(smallSnapshot).toBeGreaterThan(firstFixtureWrite);
+    expect(smallSnapshot).toBeLessThan(smallLoop);
+    expect(smallLoopEnd).toBeGreaterThan(smallLoop);
+    expect(smallCheck).toBeGreaterThan(smallLoopEnd);
+    expect(smallCheck).toBeLessThan(firstRestore);
+  });
 });

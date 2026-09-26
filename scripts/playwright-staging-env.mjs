@@ -82,3 +82,11 @@ export function sanitizeRunId(value = "") {
   }
   return candidate;
 }
+
+export function assertOperationalRunId(value = "") {
+  const runId = sanitizeRunId(value);
+  if (!/^normops-\d{8}-\d{4}-[A-Za-z0-9_-]+$/.test(runId)) {
+    throw new Error("Operational staging E2E_RUN_ID must match normops-YYYYMMDD-HHMM-<slug>.");
+  }
+  return runId;
+}

@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { expect, test } from "@playwright/test";
+import { createFailurePreservingCleanup } from "../../../src/qa/failurePreservingCleanup";
 import {
   attachFailureScreenshot,
   attachJson,
@@ -91,6 +92,7 @@ function prepareCheckoutCommand(captured: CapturedRpcRequest, suffix: "A" | "B" 
 
 test.describe.serial("Release B admin multi-hop checkout concurrency", () => {
   test("one three-session hop chain can enter only one bill", async ({ browser, page }, testInfo) => {
+    const finalization = createFailurePreservingCleanup();
     const observer = await createObserver(browser);
     const rpcEvidence: RpcEvidence[] = [];
     const originErrors = capturePageErrors(page);
@@ -113,7 +115,7 @@ test.describe.serial("Release B admin multi-hop checkout concurrency", () => {
     let raceResolved = false;
     let primaryError: unknown;
     let cleanupError: string | undefined;
-    let pendingOperationalMutations: unknown = [];
+    let pendingOperationalMutations: unknown;
     let raceEvidence: Record<string, unknown> | undefined;
     let originCommand: Awaited<ReturnType<typeof interceptSingleRpcCommand>> | undefined;
     let observerCommand: Awaited<ReturnType<typeof interceptSingleRpcCommand>> | undefined;
@@ -593,14 +595,13 @@ test.describe.serial("Release B admin multi-hop checkout concurrency", () => {
       expect(errorCaptures[loserIndex].pageErrors[0]).toMatch(/The primary session is no longer billable\.?/i);
     } catch (error) {
       primaryError = error;
-      throw error;
     } finally {
-      page.off("dialog", dismissDialog);
-      observer.page.off("dialog", dismissDialog);
-      await Promise.all([
+      await finalization.run("origin dialog cleanup", () => page.off("dialog", dismissDialog));
+      await finalization.run("observer dialog cleanup", () => observer.page.off("dialog", dismissDialog));
+      await finalization.run("command disposal", () => Promise.all([
         originCommand ? originCommand.dispose() : Promise.resolve(),
         observerCommand ? observerCommand.dispose() : Promise.resolve()
-      ]);
+      ]).then(() => undefined));
       sessionStarted = sessionStarted || rpcEvidence.some(
         (entry) => entry.rpc === "start_session" && entry.status < 300
       );
@@ -639,10 +640,10 @@ test.describe.serial("Release B admin multi-hop checkout concurrency", () => {
       } else if (raceStarted && !raceResolved) {
         cleanupError = "Multi-hop checkout commands were sent; reconcile both mutation IDs before any cleanup or retry.";
       }
-      pendingOperationalMutations = await readPendingOperationalMutations(page).catch((error) => ({
-        captureError: error instanceof Error ? error.message : "Unable to read the pending operational queue."
-      }));
-      await attachJson(testInfo, "release-b-multihop-concurrency-v2-evidence", {
+      await finalization.run("pending mutation ledger", async () => {
+        pendingOperationalMutations = await readPendingOperationalMutations(page);
+      });
+      await finalization.run("final evidence", () => attachJson(testInfo, "release-b-multihop-concurrency-v2-evidence", {
         runId,
         station,
         customerName,
@@ -657,15 +658,18 @@ test.describe.serial("Release B admin multi-hop checkout concurrency", () => {
         observerErrors,
         raceEvidence,
         rpcEvidence
-      });
-      await attachFailureScreenshot(testInfo, page, "multihop-race-origin-failure");
-      await attachFailureScreenshot(testInfo, observer.page, "multihop-race-observer-failure");
-      await observer.context.close();
-      if (!primaryError && cleanupError) throw new Error(cleanupError);
+      }));
+      await finalization.run("origin failure screenshot", () => attachFailureScreenshot(testInfo, page, "multihop-race-origin-failure"));
+      await finalization.run("observer failure screenshot", () => attachFailureScreenshot(testInfo, observer.page, "multihop-race-observer-failure"));
+      await finalization.run("observer context close", () => observer.context.close());
     }
+    if (primaryError) throw primaryError;
+    finalization.throwIfFailed();
+    if (cleanupError) throw new Error(cleanupError);
   });
 
   test("guardedly bills one exact abandoned hopped QA session", async ({ page }, testInfo) => {
+    const finalization = createFailurePreservingCleanup();
     test.skip(
       !guardedCleanupSessionId || !guardedCleanupCustomer || !guardedCleanupStation,
       "Exact guarded cleanup identity was not supplied."
@@ -939,14 +943,13 @@ test.describe.serial("Release B admin multi-hop checkout concurrency", () => {
       expect(pageErrors).toEqual({ consoleErrors: [], pageErrors: [] });
     } catch (error) {
       primaryError = error;
-      throw error;
     } finally {
-      command?.cancel();
-      await page.unroute("**/rest/v1/rpc/commit_checkout_bill_v2").catch(() => undefined);
+      await finalization.run("checkout command cancellation", () => command?.cancel());
+      await finalization.run("checkout route cleanup", () => page.unroute("**/rest/v1/rpc/commit_checkout_bill_v2"));
       if (checkoutSent && !checkoutResolved) {
         cleanupError = "Guarded hopped-session checkout was sent; reconcile its mutation ID before any cleanup or retry.";
       }
-      await attachJson(testInfo, "release-b-guarded-hopped-cleanup-evidence", {
+      await finalization.run("final evidence", () => attachJson(testInfo, "release-b-guarded-hopped-cleanup-evidence", {
         runId,
         guardedCleanupSessionId,
         guardedCleanupSourceSessionIds,
@@ -959,9 +962,11 @@ test.describe.serial("Release B admin multi-hop checkout concurrency", () => {
         pageErrors,
         cleanupEvidence,
         rpcEvidence
-      });
-      await attachFailureScreenshot(testInfo, page, "guarded-hopped-cleanup-failure");
-      if (!primaryError && cleanupError) throw new Error(cleanupError);
+      }));
+      await finalization.run("failure screenshot", () => attachFailureScreenshot(testInfo, page, "guarded-hopped-cleanup-failure"));
     }
+    if (primaryError) throw primaryError;
+    finalization.throwIfFailed();
+    if (cleanupError) throw new Error(cleanupError);
   });
 });

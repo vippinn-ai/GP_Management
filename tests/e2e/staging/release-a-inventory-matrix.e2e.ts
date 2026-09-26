@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { createFailurePreservingCleanup } from "../../../src/qa/failurePreservingCleanup";
 import {
   assertNoPageErrors,
   attachFailureScreenshot,
@@ -41,6 +42,7 @@ async function openQaTab(page: Parameters<typeof capturePageErrors>[0], customer
 
 test.describe.serial("Release A staging inventory matrix", () => {
   test("catalog exposes a combo, sale variant, and cigarette pack fixture", async ({ page }, testInfo) => {
+    const finalization = createFailurePreservingCleanup();
     const errors = capturePageErrors(page);
 
     try {
@@ -70,11 +72,13 @@ test.describe.serial("Release A staging inventory matrix", () => {
         saleCombos
       });
     } finally {
-      await attachFailureScreenshot(testInfo, page, "inventory-fixture-failure");
+      await finalization.run("failure screenshot", () => attachFailureScreenshot(testInfo, page, "inventory-fixture-failure"));
     }
+    finalization.throwIfFailed();
   });
 
   test("combo, variant, and cigarette reservations agree in two browsers and after refresh", async ({ browser, page }, testInfo) => {
+    const finalization = createFailurePreservingCleanup();
     const observer = await createObserver(browser);
     const rpcEvidence: RpcEvidence[] = [];
     const originErrors = capturePageErrors(page);
@@ -95,7 +99,7 @@ test.describe.serial("Release A staging inventory matrix", () => {
       await page.getByRole("button", { name: "Reject Tab", exact: true }).click();
       await waitForSynced(page);
       await expect(page.locator("button.tab-chip").filter({ hasText: customerName })).toHaveCount(0);
-      cleanupConfirmed = rpcEvidence.some((entry) => entry.rpc === "reject_customer_tab" && entry.status < 300);
+      cleanupConfirmed = rpcEvidence.some((entry) => entry.rpc.startsWith("reject_customer_tab") && entry.status < 300);
     }
 
     try {
@@ -197,7 +201,7 @@ test.describe.serial("Release A staging inventory matrix", () => {
 
       expect(rpcEvidence.filter((entry) => entry.rpc === "add_customer_tab_item" && entry.status < 300)).toHaveLength(2);
       expect(rpcEvidence.filter((entry) => entry.rpc === "apply_customer_tab_combo" && entry.status < 300)).toHaveLength(1);
-      expect(rpcEvidence.filter((entry) => entry.rpc === "reject_customer_tab" && entry.status < 300)).toHaveLength(1);
+      expect(rpcEvidence.filter((entry) => entry.rpc === "reject_customer_tab_v2" && entry.status < 300)).toHaveLength(1);
       assertNoPageErrors(originErrors, observerErrors);
 
       await attachJson(testInfo, "release-a-inventory-matrix-evidence", {
@@ -212,9 +216,8 @@ test.describe.serial("Release A staging inventory matrix", () => {
       });
     } catch (error) {
       primaryError = error;
-      throw error;
     } finally {
-      tabOpened = tabOpened || rpcEvidence.some((entry) => entry.rpc === "open_customer_tab" && entry.status < 300);
+      tabOpened = tabOpened || rpcEvidence.some((entry) => entry.rpc.startsWith("open_customer_tab") && entry.status < 300);
       if (tabOpened && !cleanupAttempted) {
         try {
           await rejectExactQaTab();
@@ -222,20 +225,22 @@ test.describe.serial("Release A staging inventory matrix", () => {
           cleanupError = error instanceof Error ? error.message : "Unknown inventory cleanup failure";
         }
       }
-      await attachJson(testInfo, "release-a-inventory-cleanup", {
+      await finalization.run("cleanup evidence", () => attachJson(testInfo, "release-a-inventory-cleanup", {
         runId,
         customerName,
         cleanupAttempted,
         cleanupConfirmed,
         cleanupError,
         rpcEvidence
-      });
-      await attachFailureScreenshot(testInfo, page, "inventory-origin-failure");
-      await attachFailureScreenshot(testInfo, observer.page, "inventory-observer-failure");
-      await observer.context.close();
-      if (!primaryError && (cleanupError || (tabOpened && !cleanupConfirmed))) {
-        throw new Error(`Inventory test cleanup was not confirmed. ${cleanupError ?? "Customer tab remained open."}`);
-      }
+      }));
+      await finalization.run("origin failure screenshot", () => attachFailureScreenshot(testInfo, page, "inventory-origin-failure"));
+      await finalization.run("observer failure screenshot", () => attachFailureScreenshot(testInfo, observer.page, "inventory-observer-failure"));
+      await finalization.run("observer context close", () => observer.context.close());
+    }
+    if (primaryError) throw primaryError;
+    finalization.throwIfFailed();
+    if (cleanupError || (tabOpened && !cleanupConfirmed)) {
+      throw new Error(`Inventory test cleanup was not confirmed. ${cleanupError ?? "Customer tab remained open."}`);
     }
   });
 });

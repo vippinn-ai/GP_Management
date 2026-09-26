@@ -1,0 +1,347 @@
+import fs from "node:fs";
+import path from "node:path";
+import { createSourceFile, forEachChild, ScriptKind, ScriptTarget, SyntaxKind } from "typescript";
+import { describe, expect, it } from "vitest";
+
+const SELECTED_OPERATIONAL_SPECS = [
+  "operational-lifecycle-v2.e2e.ts",
+  "operational-lifecycle-v2-concurrency.e2e.ts",
+  "operational-lifecycle-v2-continuations.e2e.ts",
+  "operational-lifecycle-v2-recovery-realtime.e2e.ts",
+  "operational-lifecycle-v2-downstream-parity.e2e.ts",
+  "operational-lifecycle-v2-hop-mutation-races.e2e.ts",
+  "release-a-hop-pause.e2e.ts",
+  "release-a-inventory-matrix.e2e.ts",
+  "release-a-report-exports.e2e.ts",
+  "release-b-checkout-reject-race-v2.e2e.ts",
+  "release-b-checkout-hop-race-v2.e2e.ts",
+  "release-b-hopped-concurrency-v2.e2e.ts",
+  "release-b-multihop-concurrency-v2.e2e.ts",
+  "release-b-role-checkout-hop-timing-v2.e2e.ts"
+] as const;
+
+function read(relativePath: string) {
+  return fs.readFileSync(path.join(process.cwd(), relativePath), "utf8");
+}
+
+describe("operational lifecycle v2 Playwright and performance contract", () => {
+  it("locks the reusable runner to staging, the v2 dependency flags, and zero retries", () => {
+    const runner = read("scripts/run-operational-v2-staging-e2e.mjs");
+    const config = read("playwright.operational-v2.staging.config.ts");
+    expect(runner).toContain("assertStagingSupabaseEnvironment(stagingEnv, true)");
+    expect(runner).toContain("VITE_BACKEND_OPERATIONAL_RPC_V2");
+    expect(runner).toContain("bundle.includes(PRODUCTION_PROJECT_REF)");
+    expect(runner).toContain("E2E_EXPECTED_BUNDLE_SHA256");
+    expect(runner).toContain("E2E_DB_MANIFEST_SHA256");
+    expect(runner).toContain("E2E_DB_PROOF_MANIFEST_SHA256");
+    expect(runner).toContain("E2E_DB_PROOF_RESULT_SHA256");
+    expect(runner).toContain("E2E_DB_PROOF_ROLLBACK_VERIFICATION_SHA256");
+    expect(runner).toContain("rollbackProven");
+    expect(runner).toContain("REQUIRED_NEGATIVE_CASES");
+    expect(runner).toContain("Object.keys(proofNegativeCases).sort()");
+    const negativeMatrixSource = runner.match(/const REQUIRED_NEGATIVE_CASES = \[([\s\S]*?)\]\.sort\(\);/)?.[1];
+    expect(negativeMatrixSource).toBeDefined();
+    const requiredNegativeCases = [...negativeMatrixSource!.matchAll(/"([^"]+)"/g)].map((match) => match[1]);
+    expect(requiredNegativeCases).toHaveLength(49);
+    expect(new Set(requiredNegativeCases).size).toBe(49);
+    for (const negativeCase of [
+      "missing-mutation-id",
+      "missing-mutation-kind",
+      "missing-entity-type",
+      "empty-hop-mutation-kind",
+      "empty-hop-entity-type",
+      "missing-reject-session-mutation-kind",
+      "missing-reject-session-entity-type",
+      "empty-reject-session-mutation-kind",
+      "empty-reject-session-entity-type",
+      "missing-reject-tab-mutation-kind",
+      "missing-reject-tab-entity-type",
+      "empty-reject-tab-mutation-kind",
+      "empty-reject-tab-entity-type",
+      "same-id-different-kind",
+      "same-id-different-entity",
+      "same-id-different-audit"
+    ]) expect(runner).toContain(negativeCase);
+    expect(runner).toContain("postflightVerification.manifestSha256 !== actualManifestSha");
+    expect(runner).toContain("evidence-manifest-");
+    expect(runner).toContain('productionAllowed: false');
+    expect(read("scripts/playwright-compact-reporter.mjs")).toContain('flag: "wx"');
+    expect(config).toMatch(/retries:\s*0/);
+    expect(config).toMatch(/workers:\s*1/);
+    expect(config).toMatch(/fullyParallel:\s*false/);
+    expect(config).toContain("operational-lifecycle-v2.e2e.ts");
+    expect(config).toContain("operational-lifecycle-v2-concurrency.e2e.ts");
+    expect(config).toContain("operational-lifecycle-v2-continuations.e2e.ts");
+    expect(config).toContain("operational-lifecycle-v2-recovery-realtime.e2e.ts");
+    expect(config).toContain("operational-lifecycle-v2-downstream-parity.e2e.ts");
+    expect(config).toContain("operational-lifecycle-v2-hop-mutation-races.e2e.ts");
+    for (const regressionSpec of [
+      "release-a-hop-pause.e2e.ts",
+      "release-a-inventory-matrix.e2e.ts",
+      "release-a-report-exports.e2e.ts",
+      "release-b-checkout-reject-race-v2.e2e.ts",
+      "release-b-checkout-hop-race-v2.e2e.ts",
+      "release-b-hopped-concurrency-v2.e2e.ts",
+      "release-b-multihop-concurrency-v2.e2e.ts",
+      "release-b-role-checkout-hop-timing-v2.e2e.ts"
+    ]) expect(config).toContain(regressionSpec);
+  });
+
+  it("keeps every selected staging spec free of failure-masking finally control flow", () => {
+    const config = read("playwright.operational-v2.staging.config.ts");
+    const staticGate = read("scripts/check-operational-v2-staging-static.mjs");
+    const unsafeCleanupControlFlow: string[] = [];
+    const configuredSpecs = [...config.matchAll(/"([^"]+\.e2e\.ts)"/g)].map((match) => match[1]);
+
+    expect(configuredSpecs).toEqual([...SELECTED_OPERATIONAL_SPECS]);
+
+    for (const specName of SELECTED_OPERATIONAL_SPECS) {
+      expect(config).toContain(`"${specName}"`);
+      expect(staticGate).toContain(`"${specName}"`);
+      const relativePath = `tests/e2e/staging/${specName}`;
+      const sourceText = read(relativePath);
+      const sourceFile = createSourceFile(relativePath, sourceText, ScriptTarget.Latest, true, ScriptKind.TS);
+
+      const collectUnsafeCleanup = (node: import("typescript").Node, rejectionContained = false) => {
+        if (node.kind === SyntaxKind.AwaitExpression && /^await\s+finalization\.run\s*\(/.test(node.getText(sourceFile))) {
+          return;
+        }
+        if (node.kind === SyntaxKind.ThrowStatement) {
+          const line = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1;
+          unsafeCleanupControlFlow.push(`${relativePath}:${line}:throw`);
+        }
+        if (node.kind === SyntaxKind.AwaitExpression && !rejectionContained) {
+          const line = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1;
+          unsafeCleanupControlFlow.push(`${relativePath}:${line}:await`);
+        }
+        if (node.kind === SyntaxKind.TryStatement) {
+          const statement = node as import("typescript").TryStatement;
+          collectUnsafeCleanup(statement.tryBlock, rejectionContained || Boolean(statement.catchClause));
+          if (statement.catchClause) collectUnsafeCleanup(statement.catchClause, rejectionContained);
+          if (statement.finallyBlock) collectUnsafeCleanup(statement.finallyBlock, rejectionContained);
+          return;
+        }
+        forEachChild(node, (child) => collectUnsafeCleanup(child, rejectionContained));
+      };
+
+      const inspect = (node: import("typescript").Node) => {
+        if (node.kind === SyntaxKind.TryStatement) {
+          const finallyBlock = (node as import("typescript").TryStatement).finallyBlock;
+          if (finallyBlock) collectUnsafeCleanup(finallyBlock);
+        }
+        forEachChild(node, inspect);
+      };
+
+      inspect(sourceFile);
+    }
+
+    expect(unsafeCleanupControlFlow).toEqual([]);
+    expect(staticGate).toContain('"--target", "ES2023"');
+    expect(staticGate).toContain('"--types", "node,@playwright/test,vite/client"');
+  });
+
+  it("keeps the database proof on the approved strict latency budget", () => {
+    const proof = read("supabase/operational-lifecycle-v2-transactional-proof.sql");
+    const runner = read("scripts/run-operational-v2-staging-e2e.mjs");
+    const runbook = read("openspec/changes/operational-lifecycle-incremental-release/staging-runbook.md");
+    expect(proof).toContain("p95_ms>=500 or max_ms>=2000");
+    expect(runner).toContain("p95_ms) < 500");
+    expect(runner).toContain("max_ms) < 2_000");
+    expect(runbook).toContain("database p95 below 500 ms and maximum below 2 seconds");
+  });
+
+  it("uses the intent-only lifecycle envelope in every selected checkout race and role case", () => {
+    for (const scenario of [
+      "tests/e2e/staging/release-b-checkout-hop-race-v2.e2e.ts",
+      "tests/e2e/staging/release-b-checkout-reject-race-v2.e2e.ts",
+      "tests/e2e/staging/release-b-role-checkout-hop-timing-v2.e2e.ts"
+    ]) {
+      const source = read(scenario);
+      expect(source).toContain("payload.entity_id");
+      expect(source).toContain("audit_log_id");
+      expect(source).not.toMatch(/payload\.payload\.(?:session|auditLog)\b/);
+    }
+    const hopPause = read("tests/e2e/staging/release-a-hop-pause.e2e.ts");
+    expect(hopPause).toContain('rpc.startsWith("commit_checkout_bill")');
+  });
+
+  it("covers canonical hop, paused rejection, same-ID replay, mismatch, actor, realtime, cleanup, and app_state invariance", () => {
+    const spec = read("tests/e2e/staging/operational-lifecycle-v2.e2e.ts");
+    for (const marker of [
+      "hop_session_v2",
+      "reject_session_v2",
+      "mutation_identity_mismatch",
+      "idempotent: true",
+      "authenticatedJwtSubject",
+      "operational_events",
+      "appStateBefore",
+      "appStateAfter",
+      "cleanupBillId",
+      "serverDurationMs",
+      "acknowledgementMs",
+      "observer.page.reload"
+    ]) expect(spec).toContain(marker);
+  });
+
+  it("runs real independent-connection lifecycle races and fifty reload-versus-unrelated mutation pairs", () => {
+    const spec = read("tests/e2e/staging/operational-lifecycle-v2-concurrency.e2e.ts");
+    expect(spec).toContain('["hop", "hop"]');
+    expect(spec).toContain('["reject", "reject"]');
+    expect(spec).toContain('["hop", "reject"]');
+    expect(spec).toContain("for (let iteration = 1; iteration <= 50; iteration += 1)");
+    expect(spec).toContain('"session/session"');
+    expect(spec).toContain('"session/tab"');
+    expect(spec).toContain('"tab/tab"');
+    expect(spec).toContain("observer.page.reload");
+    expect(spec).toContain("appStateSnapshot");
+    expect(spec).toContain("operational_events");
+    expect(spec).toContain("directRpcEvidence");
+    expect(spec).toContain("expectTargetsVisible");
+    expect(spec).toContain("expectTargetsAbsent");
+    expect(spec).toContain("winnerActorId");
+    expect(spec).toContain("requires distinct authenticated actors");
+    expect(spec).toContain("latency.serverP95Ms");
+    expect(spec).toContain("latency.clientP95Ms");
+    expect(spec).toContain("latency.browserCompletionMaxMs");
+    expect(spec).toContain("ten calibrated unrelated pairs");
+    expect(spec).toContain("Concurrent wall time must beat isolated sequential calibration");
+    expect(spec).toContain("Concurrent calibration submissions must begin together");
+    expect(spec).toContain("directRpcEvidence");
+    expect(spec).toContain("full two-browser convergence");
+    expect(spec).toContain("twenty browser-observed samples per lifecycle target class");
+    expect(spec).toContain("operational-v2-20x3-lifecycle-latency");
+    expect(spec).toContain("targetSummary.httpP95Ms");
+  });
+
+  it("covers unit-sale and every continuation consumer topology with terminal cleanup", () => {
+    const spec = read("tests/e2e/staging/operational-lifecycle-v2-continuations.e2e.ts");
+    for (const marker of [
+      "unit-sale session can hop",
+      '"new-tab", "existing-tab"',
+      "triple-consumer",
+      "reject-vs-consumer",
+      "activeConsumers",
+      "billRecoverableSource",
+      "hopped_session_unavailable",
+      "Continuation races require distinct actors",
+      "itemsAfterStart.map(canonicalItem)",
+      "inventoryAfterHop).toEqual(inventoryAfterStart)",
+      "billedItems).toEqual(itemsAfterStart.map(canonicalItem))",
+      "inventoryAfterBill",
+      "must decrement exactly once",
+      "billStockMovements",
+      "directRpcEvidence",
+      "event cardinality",
+      "audit cardinality",
+      "unresolvedSourceIds",
+      "consoleErrors: [], pageErrors: []"
+    ]) expect(spec).toContain(marker);
+  });
+
+  it("proves same-ID lost-response recovery and both realtime ordering directions", () => {
+    const spec = read("tests/e2e/staging/operational-lifecycle-v2-recovery-realtime.e2e.ts");
+    for (const marker of [
+      "No automatic resend may occur before manual recovery",
+      "Retry Game Hop",
+      "Exactly one manual same-ID replay is allowed",
+      "configured 20-second boundary",
+      "observerSawRealtimeBeforeOriginResponse",
+      "responseBeforeRealtime",
+      "observerOfflineGapRecovered",
+      "duplicateSameIdWasIdempotent",
+      "duplicateRealtimeFrameDelivered",
+      "observerPanelUnmountedDuringDuplicate"
+    ]) expect(spec).toContain(marker);
+    expect(spec).toContain("unresolvedSessionIds");
+    expect(spec).toContain("consoleErrors: [], pageErrors: []");
+  });
+
+  it("reconstructs the same bill and receipt after refresh, mobile resize, and logout-login", () => {
+    const spec = read("tests/e2e/staging/operational-lifecycle-v2-downstream-parity.e2e.ts");
+    for (const marker of [
+      "Bill Register",
+      "thermal-receipt-preview",
+      "width: 390, height: 844",
+      "Sign Out",
+      "afterRefresh.receiptText",
+      "afterLogin.receiptText",
+      "bill_lines",
+      "payments"
+    ]) expect(spec).toContain(marker);
+  });
+
+  it("serializes hop against all five live session mutation classes", () => {
+    const spec = read("tests/e2e/staging/operational-lifecycle-v2-hop-mutation-races.e2e.ts");
+    for (const marker of [
+      '"timing", "pause", "resume", "add-item", "remove-item"',
+      "save_live_session_details",
+      "pause_session",
+      "resume_session",
+      "add_session_item",
+      "remove_session_item",
+      "legal serialized outcome",
+      "Bill Hopped Session",
+      "Hop mutation races require distinct authenticated actors",
+      "session_not_open",
+      "close_disposition: \"hopped\"",
+      "must not leave an open pause",
+      "Rejected timing mutation must leave canonical start unchanged",
+      "Rejected pause mutation must not create a pause row",
+      "mutation event cardinality",
+      "mutation audit cardinality",
+      "itemsAfterBill",
+      "billLines",
+      "unresolvedSourceIds",
+      "consoleErrors: [], pageErrors: []"
+    ]) expect(spec).toContain(marker);
+    const safeEvidence = spec.slice(spec.indexOf("function safeCommandEvidence"), spec.indexOf("async function timedSubmit"));
+    expect(safeEvidence).toContain("urlPath");
+    expect(safeEvidence).not.toContain("headers");
+    expect(spec).not.toMatch(/\bcapturedHop,\s*\n\s*capturedMutation\b/);
+  });
+
+  it("provides a read-only exact-run post-test reconciliation and immutable verifier", () => {
+    const sql = read("supabase/operational-v2-staging-posttest-readonly.sql");
+    const builder = read("scripts/build-operational-v2-posttest-reconciliation.mjs");
+    const verifier = read("scripts/verify-operational-v2-posttest-reconciliation.mjs");
+    expect(sql).toContain("repeatable read read only");
+    expect(sql.trimEnd().endsWith("rollback;")).toBe(true);
+    expect(sql).toContain("qa_live_residuals");
+    expect(sql).toContain("qa_terminal_evidence");
+    expect(sql).toContain("same_target_race_integrity");
+    expect(builder).toContain("expectedFunctionDefinitionMd5");
+    expect(builder).toContain('flag: "wx"');
+    expect(verifier).toContain("browserEvidenceManifestSha256");
+    expect(verifier).toContain("Compatibility app_state changed");
+    expect(verifier).toContain("Same-target races did not retain exactly one committed");
+  });
+
+  it("proves the rollback-only SQL left no exact proof-run residue before browser execution", () => {
+    const sql = read("supabase/operational-v2-proof-postrollback-readonly.sql");
+    const builder = read("scripts/build-operational-v2-proof-postrollback.mjs");
+    const verifier = read("scripts/verify-operational-v2-proof-postrollback.mjs");
+    expect(sql).toContain("repeatable read read only");
+    expect(sql).toContain("__PROOF_RUN_ID__");
+    expect(sql).toContain("identity_nonce='__IDENTITY_NONCE__'::uuid");
+    expect(sql).toContain("'identity_nonce','__IDENTITY_NONCE__'");
+    expect(builder).toContain("rollbackOnly !== true");
+    expect(builder).toContain("proofManifest.target?.identityNonce");
+    expect(builder).toContain('.replaceAll("__IDENTITY_NONCE__", identityNonce)');
+    expect(read("scripts/build-operational-v2-transactional-proof.mjs")).toContain("assertBalancedStatementParentheses(generated)");
+    expect(verifier).toContain("Transactional proof rollback left ${name} rows.");
+    expect(verifier).toContain("observed.identity_nonce !== identityNonce");
+    expect(verifier).toContain("appStateRestored: true");
+  });
+
+  it("binds the rollback-only proof to exact installed v2 and pre-install legacy definitions", () => {
+    const builder = read("scripts/build-operational-v2-transactional-proof.mjs");
+    const proof = read("supabase/operational-lifecycle-v2-transactional-proof.sql");
+    expect(builder).toContain("installManifest.preflight.sha256");
+    expect(builder).toContain('const legacyFunctionNames = ["hop_session", "reject_session", "reject_customer_tab"]');
+    expect(builder).toContain("legacyFunctionDefinitionMd5");
+    expect(proof).toContain("performance_comparison");
+    expect(proof).toContain("v2_at_least_50_percent_faster");
+    expect(proof).toContain("large_small_within_budget");
+    expect(proof).toContain("qa_expect_rpc_error");
+  });
+});

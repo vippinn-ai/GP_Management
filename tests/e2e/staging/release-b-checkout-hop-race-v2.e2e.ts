@@ -1,4 +1,5 @@
 import { expect, test, type APIResponse } from "@playwright/test";
+import { createFailurePreservingCleanup } from "../../../src/qa/failurePreservingCleanup";
 import {
   attachFailureScreenshot,
   attachJson,
@@ -62,6 +63,7 @@ test.describe.serial("Release B admin checkout versus game-hop concurrency", () 
         : "simultaneous checkout and hop resolve to one bill without an orphan";
 
     test(title, async ({ browser, page }, testInfo) => {
+      const finalization = createFailurePreservingCleanup();
       const observer = await createObserver(browser);
       const rpcEvidence: RpcEvidence[] = [];
       const originErrors = capturePageErrors(page);
@@ -118,7 +120,7 @@ test.describe.serial("Release B admin checkout versus game-hop concurrency", () 
         await expect(hopCheckout.getByRole("button", { name: "Confirm Game Hop", exact: true })).toBeEnabled();
 
         checkoutCommand = await interceptSingleRpcCommand(page, "**/rest/v1/rpc/commit_checkout_bill_v2");
-        hopCommand = await interceptSingleRpcCommand(observer.page, "**/rest/v1/rpc/hop_session");
+        hopCommand = await interceptSingleRpcCommand(observer.page, "**/rest/v1/rpc/hop_session*");
         observer.page.on("dialog", dismissObserverDialog);
         await Promise.all([
           checkout.getByRole("button", { name: "Issue Bill", exact: true }).click(),
@@ -137,17 +139,18 @@ test.describe.serial("Release B admin checkout versus game-hop concurrency", () 
           payload: {
             organization_id: string;
             mutation_id: string;
-            payload: { session: { id: string }; auditLog: { id: string } };
+            entity_id: string;
+            payload: { effective_ended_at: string; audit_log_id: string };
           };
         };
         sessionId = checkoutIdentity.payload.payload.source_session_ids[0];
         expect(sessionId).toBeTruthy();
-        expect(hopIdentity.payload.payload.session.id).toBe(sessionId);
+        expect(hopIdentity.payload.entity_id).toBe(sessionId);
         const billId = checkoutIdentity.payload.payload.primary_bill.id;
         const checkoutMutationId = checkoutIdentity.payload.mutation_id;
         const hopMutationId = hopIdentity.payload.mutation_id;
         const checkoutAuditIds = checkoutIdentity.payload.payload.audit_logs.map((audit) => audit.id);
-        const hopAuditId = hopIdentity.payload.payload.auditLog.id;
+        const hopAuditId = hopIdentity.payload.payload.audit_log_id;
         expect(checkoutAuditIds.length).toBeGreaterThan(0);
         const checkoutActorId = authenticatedJwtSubject(capturedCheckout.headers);
         const hopActorId = authenticatedJwtSubject(capturedHop.headers);
@@ -419,7 +422,7 @@ test.describe.serial("Release B admin checkout versus game-hop concurrency", () 
         }
         observer.page.off("dialog", dismissObserverDialog);
         await page.unroute("**/rest/v1/rpc/commit_checkout_bill_v2");
-        await observer.page.unroute("**/rest/v1/rpc/hop_session");
+        await observer.page.unroute("**/rest/v1/rpc/hop_session*");
         await Promise.all([
           page.reload({ waitUntil: "domcontentloaded" }),
           observer.page.reload({ waitUntil: "domcontentloaded" })
@@ -440,13 +443,12 @@ test.describe.serial("Release B admin checkout versus game-hop concurrency", () 
         expect(observerErrors).toEqual({ consoleErrors: [], pageErrors: [] });
       } catch (error) {
         primaryError = error;
-        throw error;
       } finally {
-        observer.page.off("dialog", dismissObserverDialog);
-        checkoutCommand?.cancel();
-        hopCommand?.cancel();
-        await page.unroute("**/rest/v1/rpc/commit_checkout_bill_v2").catch(() => undefined);
-        await observer.page.unroute("**/rest/v1/rpc/hop_session").catch(() => undefined);
+        await finalization.run("observer dialog cleanup", () => observer.page.off("dialog", dismissObserverDialog));
+        await finalization.run("checkout command cancellation", () => checkoutCommand?.cancel());
+        await finalization.run("hop command cancellation", () => hopCommand?.cancel());
+        await finalization.run("checkout route cleanup", () => page.unroute("**/rest/v1/rpc/commit_checkout_bill_v2"));
+        await finalization.run("hop route cleanup", () => observer.page.unroute("**/rest/v1/rpc/hop_session*"));
         sessionStarted = sessionStarted || rpcEvidence.some(
           (entry) => entry.rpc === "start_session" && entry.status < 300
         );
@@ -469,7 +471,7 @@ test.describe.serial("Release B admin checkout versus game-hop concurrency", () 
         } else if (raceStarted && !raceResolved) {
           cleanupError = "Checkout/hop commands were sent; reconcile their mutation IDs before any cleanup or retry.";
         }
-        await attachJson(testInfo, `release-b-checkout-hop-${ordering}-evidence`, {
+        await finalization.run("final evidence", () => attachJson(testInfo, `release-b-checkout-hop-${ordering}-evidence`, {
           runId,
           ordering,
           station,
@@ -484,12 +486,14 @@ test.describe.serial("Release B admin checkout versus game-hop concurrency", () 
           observerErrors,
           raceEvidence,
           rpcEvidence
-        });
-        await attachFailureScreenshot(testInfo, page, `checkout-hop-${ordering}-origin-failure`);
-        await attachFailureScreenshot(testInfo, observer.page, `checkout-hop-${ordering}-observer-failure`);
-        await observer.context.close();
-        if (!primaryError && cleanupError) throw new Error(cleanupError);
+        }));
+        await finalization.run("origin failure screenshot", () => attachFailureScreenshot(testInfo, page, `checkout-hop-${ordering}-origin-failure`));
+        await finalization.run("observer failure screenshot", () => attachFailureScreenshot(testInfo, observer.page, `checkout-hop-${ordering}-observer-failure`));
+        await finalization.run("observer context close", () => observer.context.close());
       }
+      if (primaryError) throw primaryError;
+      finalization.throwIfFailed();
+      if (cleanupError) throw new Error(cleanupError);
     });
   }
 });
