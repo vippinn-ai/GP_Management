@@ -96,6 +96,23 @@ select jsonb_build_object(
   'processing_financial_mutations', (select count(*) from public.financial_mutations where status<>'committed'),
   'processing_operational_mutations', current_setting('normops.processing_operational_mutations')::integer,
   'operational_mutations_table_exists', to_regclass('public.operational_mutations') is not null,
+  'operational_mutations_rls',(select relrowsecurity from pg_class where oid=to_regclass('public.operational_mutations')),
+  'operational_mutations_force_rls',(select relforcerowsecurity from pg_class where oid=to_regclass('public.operational_mutations')),
+  'operational_mutations_owner',(select pg_get_userbyid(relowner) from pg_class where oid=to_regclass('public.operational_mutations')),
+  'operational_mutations_acl',(select jsonb_agg(jsonb_build_object(
+    'grantor',case when a.grantor=0 then 'PUBLIC' else pg_get_userbyid(a.grantor) end,
+    'grantee',case when a.grantee=0 then 'PUBLIC' else pg_get_userbyid(a.grantee) end,
+    'privilege_type',a.privilege_type,'is_grantable',a.is_grantable)
+    order by (case when a.grantee=0 then 'PUBLIC' else pg_get_userbyid(a.grantee) end) collate "C",a.privilege_type collate "C",
+      (case when a.grantor=0 then 'PUBLIC' else pg_get_userbyid(a.grantor) end) collate "C",a.is_grantable)
+    from pg_class c cross join lateral aclexplode(coalesce(c.relacl,acldefault('r',c.relowner))) a
+    where c.oid=to_regclass('public.operational_mutations')),
+  'operational_mutations_policies',(select coalesce(jsonb_agg(jsonb_build_object(
+    'name',polname,'permissive',polpermissive,
+    'roles',(select jsonb_agg(case when role_id=0 then 'PUBLIC' else pg_get_userbyid(role_id) end
+      order by (case when role_id=0 then 'PUBLIC' else pg_get_userbyid(role_id) end) collate "C") from unnest(polroles) role_id),'command',polcmd,
+    'using',pg_get_expr(polqual,polrelid),'check',pg_get_expr(polwithcheck,polrelid)) order by polname),'[]'::jsonb)
+    from pg_policy where polrelid=to_regclass('public.operational_mutations')),
   'app_state', (select value from app_state_evidence),
   'functions', (select value from function_evidence)
 ) as evidence;

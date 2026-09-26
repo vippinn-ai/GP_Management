@@ -33,6 +33,22 @@ The live runner requires E2E_RUN_ID, E2E_EXPECTED_COMMIT, E2E_EXPECTED_SOURCE_SH
 
 ## Local commands (no staging execution)
 
+### Explicit staging ACL convergence (26 September predecessor)
+
+The complete 15:12 UTC read-only capture found matching bodies for all ten functions, but additional direct non-grantable service_role EXECUTE on the seven candidate functions and eight service_role privileges on operational_mutations. Owner, RLS, forced-RLS and policies match. Do not bypass the existing install/reinstall contracts or replace matching business functions.
+
+Use the separate `build-operational-lifecycle-v2-staging-acl-convergence.mjs` only after independent source/test approval and freezing a clean commit. Required arguments are `--run-id=normops-YYYYMMDD-HHMM-slug`, `--expected-commit=<full SHA>` and `--preflight=<immutable complete raw JSON>`. It binds source, physical staging cluster, identity nonce, org-primary, exact PostgreSQL 170006, all ten definitions/metadata, five app_state identity fields, zero operational floors and complete table security. It never reuses an output directory.
+
+Forward scope is exactly seven REVOKE EXECUTE statements and eight explicit table-privilege REVOKEs from service_role. Legacy functions, function definitions, rows, schema, RLS and policies are unchanged. Both directions use a bounded transaction, shared business-table locks and before/after exact catalog/state checks. The inverse restores only those fifteen original grants without grant options; it is not a destructive database restore. Rollback deliberately refuses if the recorded app_state identity or empty operational floor has changed. Do not erase later data or weaken a guard to force rollback; investigate and prepare a new reviewed state-bound package instead.
+
+Generated postflight is read-only and carries package/source/preflight identities. Verify with `verifyAclPostflight` from `scripts/lifecycle-acl-convergence.mjs`, supplying root, manifestPath, evidencePath and phase `after` (forward) or `before` (rollback). Verification regenerates every SQL artifact from the clean source and compares exact bytes/hashes plus observed state. Do not treat a generated artifact, synthetic postflight or local test as live SQL proof. Do not automatically execute the inverse, which re-expands privileges; satisfy action-time authorization requirements first.
+
+Exact CLI: `node scripts/verify-operational-lifecycle-v2-staging-acl-convergence.mjs --manifest=<generated manifest.json> --evidence=<immutable postflight.json> --phase=after`. Use `--phase=before` only for evidence following the separately authorized inverse. Wrong phase, dirty source, missing evidence, altered raw preflight, SQL artifact or observed identity is a failure.
+
+Lock order is READ COMMITTED transaction -> exact environment/role precheck -> package advisory lock -> shared table locks -> full exact state guard -> fifteen explicit privilege operations -> full exact state guard -> commit. The fresh statement snapshots avoid relying on a catalog snapshot taken before locks. The advisory lock coordinates cooperating tools, not all possible pg_proc DDL. Non-cooperating function DDL is not absolutely excluded; exact before/after guards, catalog update conflicts and immediate postflight are mandatory fail-closed controls. Do not run unrelated staging DDL concurrently.
+
+One reviewed forward execution, immutable postflight and offline verification must precede the existing 49-case transactional proof and 31-case reusable Playwright gates. No repeated installation is justified merely to replace matching bodies. Any proof/runner lineage change needed to accept this package requires explicit independent review; do not fabricate an old installer manifest. Production is excluded.
+
 ```text
 node --test scripts/lifecycle-runner-guards.nodechecks.mjs
 node scripts/check-operational-v2-staging-static.mjs
