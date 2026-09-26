@@ -13,6 +13,12 @@ Use a separate clean candidate worktree for independent testing. Record passed/f
 
 ## Staging correctness
 
+### Local installer failure matrix before staging
+
+Use disposable, genuinely committed local Git fixtures to execute the real builders/verifier; no environment-variable bypass for clean-source guards. Reject wrong SHA, tracked/untracked edits, changed source after package generation, stale mode, dataset-helper overwrite, and incomplete compatibility identity. Assert strict CREATE and runtime absence checks precede DDL. Test both CRLF and true lone-CR bodies.
+
+Validate the complete seven-function contract and perturb each shared metadata attribute: owner, security-definer, volatility, config, language, strictness, parallel/leakproof, cost/rows/result/set-returning/kind/support and ACL principal/grantor/grant options. Positive fixtures include the stable dataset exception. Reject duplicates, unknown functions, forbidden table grants/policies, wrong table owner, forced RLS, unsupported/drifted database versions, and missing/nonzero floor counters. Bind generated postflight run/source identity. Assert original rollback has all-seven installed guards and exact restore verification even before postflight; never permit mutation-table deletion. These executable Node/JSON/artifact tests do not execute PostgreSQL.
+
 Port and bind the existing guarded lifecycle installer/proof/reconciliation scripts to this release before execution. Read-only production SQL definition verification is still pending. Preserve 49-case historical DB-proof assertions but rerun against exact candidate/installation where changed.
 
 Seven core live cases come from the existing continuation (2), recovery/realtime (2), hop-mutation (1), same-target race (1) and downstream parity (1) suites. Include timed/unit-sale and edited/paused sessions, tab items/variants/combos, continuation into new/existing consumers, single consumption/recovery, lost response/manual same-ID retry, real acknowledgement timeout, response/realtime ordering, offline/duplicate/unmount/reconnect, receipt/bill/payment/stock parity, refresh/mobile/logout-login. Retain checkout-versus-hop/reject coverage and actor/role/tenant checks where affected.

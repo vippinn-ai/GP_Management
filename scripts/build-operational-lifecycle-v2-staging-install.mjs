@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
+import { packageIdentity, assertPackageIdentity, expectedMetadata, installedGuard, normalizeExecutionAcl, generatedPostflight, mutationTableGuard, preflightFunctions, expectedTableAcl } from "./lifecycle-install-contract.mjs";
 
 const EXPECTED_STAGING_PROJECT_REF = "tkbdyzxwwbhkpztgjjxh";
 const EXPECTED_STAGING_SYSTEM_IDENTIFIER = "7623125441096521075";
@@ -54,6 +55,8 @@ end $acl$;`];
 }
 
 const root = process.cwd();
+const expectedCommit = argument("expected-commit");
+const codeIdentity = packageIdentity(root, expectedCommit);
 const runId = argument("run-id");
 if (!/^normops-\d{8}-\d{4}-[a-z0-9-]+$/i.test(runId)) {
   throw new Error("Run id must match normops-YYYYMMDD-HHMM-<slug>.");
@@ -61,6 +64,7 @@ if (!/^normops-\d{8}-\d{4}-[a-z0-9-]+$/i.test(runId)) {
 const preflightPath = path.resolve(root, argument("preflight"));
 const preflightText = fs.readFileSync(preflightPath, "utf8");
 const preflight = readEvidence(preflightPath);
+const tableAcl = expectedTableAcl(preflight.server_version_num);
 if (preflight.expected_project_ref !== EXPECTED_STAGING_PROJECT_REF) throw new Error("Preflight project ref is not staging.");
 if (preflight.system_identifier !== EXPECTED_STAGING_SYSTEM_IDENTIFIER) throw new Error("Preflight physical database is not staging.");
 if (preflight.environment_identity?.environment !== "staging" || preflight.environment_identity?.project_ref !== EXPECTED_STAGING_PROJECT_REF || !/^[0-9a-f-]{36}$/i.test(preflight.environment_identity?.identity_nonce || "")) {
@@ -70,16 +74,18 @@ if (preflight.organization_id !== EXPECTED_ORGANIZATION_ID || preflight.organiza
 if (preflight.open_sessions !== 0 || preflight.open_customer_tabs !== 0) throw new Error("Staging operational floor is not clean.");
 if (preflight.recoverable_hopped_sessions !== 0) throw new Error("Staging has an unconsumed recoverable hopped session.");
 if (preflight.processing_financial_mutations !== 0 || preflight.processing_operational_mutations !== 0) throw new Error("Staging has an incomplete mutation.");
-if (!preflight.app_state?.md5 || !Number.isInteger(preflight.app_state?.version)) throw new Error("Preflight app_state baseline is incomplete.");
+for (const field of ["version", "bytes"]) if (!Number.isInteger(preflight.app_state?.[field])) throw new Error(`Preflight app_state ${field} is missing.`);
+for (const field of ["md5", "updated_at", "updated_by"]) if (!preflight.app_state?.[field]) throw new Error(`Preflight app_state ${field} is missing.`);
 
-const deployedFunctions = new Map((preflight.functions ?? []).map((entry) => [entry.name, entry]));
+const deployedFunctions = preflightFunctions(preflight.functions, "initial");
 if (preflight.operational_mutations_table_exists !== false
-  || ["hop_session_v2", "reject_session_v2", "reject_customer_tab_v2"].some((name) => deployedFunctions.has(name))) {
+  || ["hop_session_v2", "reject_session_v2", "reject_customer_tab_v2", "get_operational_performance_dataset_identity"].some((name) => deployedFunctions.has(name))) {
   throw new Error("Initial install requires reviewed absent v2 functions/table; do not fall back automatically.");
 }
 for (const name of REPLACED_FUNCTIONS) {
   const entry = deployedFunctions.get(name);
   if (!entry?.definition || !entry?.definition_md5 || !entry?.owner) throw new Error(`Preflight omitted deployed ${name}.`);
+  if (entry.owner !== "postgres") throw new Error(`Predecessor owner must be postgres for ${name}.`);
   if (typeof entry.security_definer !== "boolean" || typeof entry.volatility !== "string" || !(entry.config === null || Array.isArray(entry.config))) {
     throw new Error(`Preflight omitted deployed configuration for ${name}.`);
   }
@@ -101,6 +107,7 @@ const outDir = path.join(root, "test-artifacts", "operational-lifecycle-v2", run
 const installPath = path.join(outDir, "staging-install.sql");
 const rollbackPath = path.join(outDir, "staging-rollback.sql");
 const manifestPath = path.join(outDir, "manifest.json");
+const postflightPath = path.join(outDir, "staging-postflight-readonly.sql");
 
 const lifecycle = fs.readFileSync(lifecyclePath, "utf8").trim();
 const datasetIdentity = fs.readFileSync(datasetIdentityPath, "utf8").trim();
@@ -124,11 +131,6 @@ function extractFunctionBody(source, name) {
   if (!match) throw new Error(`Unable to extract reviewed body for ${name}.`);
   return normalizeBody(match[1]);
 }
-function extractPgDefinitionBody(definition, name) {
-  const match = definition.match(/\bAS\s+(\$[A-Za-z0-9_]*\$)([\s\S]*?)\1\s*;?\s*$/i);
-  if (!match) throw new Error(`Unable to extract deployed body for ${name}.`);
-  return normalizeBody(match[2]);
-}
 const reviewedFunctions = {
   hop_session_v2: extractFunction(lifecycle, "hop_session_v2"),
   reject_session_v2: extractFunction(lifecycle, "reject_session_v2"),
@@ -141,13 +143,8 @@ const reviewedFunctions = {
 const expectedFunctionBodies = Object.fromEntries(Object.entries(reviewedFunctions).map(([name, definition]) => [name, {
   sha256: sha256(extractFunctionBody(definition, name))
 }]));
-const rollbackDefinitionGuards = REPLACED_FUNCTIONS.map((name) => {
-  const oldBodyMd5 = crypto.createHash("md5").update(extractPgDefinitionBody(deployedFunctions.get(name).definition, name)).digest("hex");
-  const installedBodyMd5 = crypto.createHash("md5").update(extractFunctionBody(reviewedFunctions[name], name)).digest("hex");
-  return `select md5(btrim(replace(replace(p.prosrc,chr(13)||chr(10),chr(10)),chr(13),chr(10)), E' \\t\\n\\r')) into actual_body_md5 from pg_proc p join pg_namespace n on n.oid=p.pronamespace
-  where n.nspname='public' and p.proname=${sqlLiteral(name)} and pg_get_function_identity_arguments(p.oid)='payload jsonb';
-  if actual_body_md5 not in (${sqlLiteral(oldBodyMd5)},${sqlLiteral(installedBodyMd5)}) then raise exception 'rollback refused unexpected definition drift for ${name}'; end if;`;
-}).join("\n  ");
+const expectedFunctionMetadata = Object.fromEntries(Object.keys(reviewedFunctions).map((name) => [name, expectedMetadata(name)]));
+const rollbackDefinitionGuards = Object.entries(reviewedFunctions).map(([name, definition]) => installedGuard(name, extractFunctionBody(definition, name))).join("\n  ");
 
 const oldDefinitionGuards = REPLACED_FUNCTIONS.map((name) => {
   const entry = deployedFunctions.get(name);
@@ -180,8 +177,10 @@ const install = [
 select version, md5(data::text) as data_md5, octet_length(data::text) as data_bytes, updated_at, updated_by
 from public.app_state where id='primary';`,
   `do $$
-declare actual_hash text; actual_owner text; actual_security_definer boolean; actual_volatility "char"; actual_config jsonb; actual_acl jsonb; incomplete_operational integer := 0;
+declare actual_hash text; actual_owner text; actual_security_definer boolean; actual_volatility "char"; actual_config jsonb; actual_acl jsonb;
 begin
+  if current_user <> 'postgres' then raise exception 'installer must run as postgres'; end if;
+  if current_setting('server_version_num')::integer <> ${preflight.server_version_num} then raise exception 'database server version drift'; end if;
   if current_database()<>'postgres' or (select system_identifier::text from pg_control_system())<>${sqlLiteral(EXPECTED_STAGING_SYSTEM_IDENTIFIER)} then raise exception 'physical database is not the approved staging cluster'; end if;
   if not exists(select 1 from public.deployment_environment_identity where environment='staging' and project_ref=${sqlLiteral(EXPECTED_STAGING_PROJECT_REF)} and identity_nonce=${sqlLiteral(preflight.environment_identity.identity_nonce)}::uuid) then raise exception 'database-derived staging identity drift'; end if;
   if not exists(select 1 from public.organizations where id=${sqlLiteral(EXPECTED_ORGANIZATION_ID)}) then raise exception 'staging organization identity failed'; end if;
@@ -194,22 +193,31 @@ begin
       and not exists(select 1 from public.customer_tabs consumer where consumer.organization_id=source.organization_id and consumer.continued_from_session_ids @> jsonb_build_array(source.id) and not (consumer.status='closed' and consumer.close_disposition='rejected' and consumer.closed_bill_id is null))
   ) then raise exception 'staging has a recoverable unconsumed hopped session'; end if;
   if (select count(*) from public.financial_mutations where status<>'committed') <> 0 then raise exception 'staging has incomplete financial mutations'; end if;
-  if to_regclass('public.operational_mutations') is not null then
-    execute 'select count(*) from public.operational_mutations where status<>''committed''' into incomplete_operational;
-    if incomplete_operational <> 0 then raise exception 'staging has incomplete operational mutations'; end if;
-  end if;
+  if to_regclass('public.operational_mutations') is not null
+    or to_regprocedure('public.hop_session_v2(jsonb)') is not null
+    or to_regprocedure('public.reject_session_v2(jsonb)') is not null
+    or to_regprocedure('public.reject_customer_tab_v2(jsonb)') is not null
+    or to_regprocedure('public.get_operational_performance_dataset_identity(jsonb)') is not null
+  then raise exception 'initial install requires absent v2 table/functions and dataset helper'; end if;
   if (select version from operational_v2_install_baseline) is distinct from ${Number(preflight.app_state.version)}
-    or (select data_md5 from operational_v2_install_baseline) is distinct from ${sqlLiteral(preflight.app_state.md5)} then raise exception 'app_state changed after approved preflight'; end if;
+    or (select data_md5 from operational_v2_install_baseline) is distinct from ${sqlLiteral(preflight.app_state.md5)}
+    or (select data_bytes from operational_v2_install_baseline) is distinct from ${Number(preflight.app_state.bytes)}
+    or (select updated_at from operational_v2_install_baseline) is distinct from ${sqlLiteral(preflight.app_state.updated_at)}::timestamptz
+    or (select updated_by from operational_v2_install_baseline)::text is distinct from ${sqlLiteral(preflight.app_state.updated_by)} then raise exception 'app_state changed after approved preflight'; end if;
   ${oldDefinitionGuards}
 end $$;`,
-  lifecycle,
-  datasetIdentity,
+  lifecycle.replace(/create table if not exists/gi, "create table").replace(/create index if not exists/gi, "create index").replace(/create or replace function/gi, "create function"),
+  datasetIdentity.replace(/create or replace function/gi, "create function"),
   reviewedFunctions.start_session,
   reviewedFunctions.open_customer_tab,
   reviewedFunctions.link_customer_tab_continuation,
+  ...Object.keys(reviewedFunctions).map(normalizeExecutionAcl),
+  "revoke all privileges on table public.operational_mutations from service_role;",
   `do $$
 declare function_name text; function_body text;
 begin
+  ${rollbackDefinitionGuards}
+  ${mutationTableGuard(preflight.server_version_num)}
   foreach function_name in array array['hop_session_v2','reject_session_v2','reject_customer_tab_v2'] loop
     select pg_get_functiondef(p.oid) into function_body from pg_proc p join pg_namespace n on n.oid=p.pronamespace
     where n.nspname='public' and p.proname=function_name and pg_get_function_identity_arguments(p.oid)='payload jsonb';
@@ -232,9 +240,12 @@ end $$;`,
 const rollback = [
   `-- Data-preserving definition rollback for ${runId}; disable VITE_BACKEND_OPERATIONAL_RPC_V2 first.`,
   "begin;",
+  `create temp table operational_v2_rollback_baseline on commit drop as
+select version,md5(data::text) data_md5,octet_length(data::text) data_bytes,updated_at,updated_by from public.app_state where id='primary';`,
   `do $$
 declare actual_body_md5 text;
 begin
+  if current_user <> 'postgres' then raise exception 'rollback must run as postgres'; end if;
   if current_database()<>'postgres' or (select system_identifier::text from pg_control_system())<>${sqlLiteral(EXPECTED_STAGING_SYSTEM_IDENTIFIER)}
     then raise exception 'physical database identity drift'; end if;
   if not exists(
@@ -245,6 +256,7 @@ begin
   ) then raise exception 'database-derived staging identity drift'; end if;
   if not exists(select 1 from public.organizations where id=${sqlLiteral(EXPECTED_ORGANIZATION_ID)})
     then raise exception 'staging organization identity failed'; end if;
+  ${mutationTableGuard(preflight.server_version_num)}
   ${rollbackDefinitionGuards}
 end $$;`,
   ...REPLACED_FUNCTIONS.flatMap((name) => {
@@ -255,23 +267,44 @@ end $$;`,
       ...restoreExecutionAcl(name, entry)
     ];
   }),
+  `do $$
+declare actual_hash text; actual_owner text; actual_security_definer boolean; actual_volatility "char"; actual_config jsonb; actual_acl jsonb;
+begin
+  ${oldDefinitionGuards}
+  ${mutationTableGuard(preflight.server_version_num)}
+  if (select count(*) from public.app_state where id='primary') <> 1 or exists(
+    select 1 from public.app_state a cross join operational_v2_rollback_baseline b
+    where a.id='primary' and (a.version,a.updated_at,a.updated_by,md5(a.data::text),octet_length(a.data::text))
+      is distinct from (b.version,b.updated_at,b.updated_by,b.data_md5,b.data_bytes)
+  ) then raise exception 'rollback changed compatibility app_state'; end if;
+end $$;`,
   "commit;",
   ""
 ].join("\n\n");
 
+assertPackageIdentity(root, expectedCommit, codeIdentity);
+const postflight = generatedPostflight(root, runId, codeIdentity);
 fs.mkdirSync(outDir, { recursive: true });
 fs.writeFileSync(installPath, install, { encoding: "utf8", flag: "wx" });
 fs.writeFileSync(rollbackPath, rollback, { encoding: "utf8", flag: "wx" });
+fs.writeFileSync(postflightPath, postflight, { encoding: "utf8", flag: "wx" });
 const manifest = {
   runId,
+  codeIdentity,
+  serverVersionNum: preflight.server_version_num,
+  expectedTableAcl: tableAcl,
   target: { projectRef: EXPECTED_STAGING_PROJECT_REF, systemIdentifier: EXPECTED_STAGING_SYSTEM_IDENTIFIER, organizationId: EXPECTED_ORGANIZATION_ID },
   preflight: { path: preflightPath, sha256: sha256(preflightText) },
   environmentIdentity: preflight.environment_identity,
-  sources: Object.fromEntries([lifecyclePath, datasetIdentityPath, startSessionPath, customerTabPath, linkContinuationPath, identityPath].map((file) => [path.relative(root, file), sha256(fs.readFileSync(file))])),
+  sources: Object.fromEntries([lifecyclePath, datasetIdentityPath, startSessionPath, customerTabPath, linkContinuationPath, identityPath,
+    path.join(root,"supabase/operational-lifecycle-v2-staging-preflight-readonly.sql"),
+    path.join(root,"supabase/operational-lifecycle-v2-staging-postflight-readonly.sql")].map((file) => [path.relative(root, file), sha256(fs.readFileSync(file))])),
   expectedFunctionBodies,
+  expectedFunctionMetadata,
   artifacts: {
     install: { path: installPath, bytes: Buffer.byteLength(install), sha256: sha256(install) },
-    rollback: { path: rollbackPath, bytes: Buffer.byteLength(rollback), sha256: sha256(rollback) }
+    rollback: { path: rollbackPath, bytes: Buffer.byteLength(rollback), sha256: sha256(rollback) },
+    postflight: { path: postflightPath, bytes: Buffer.byteLength(postflight), sha256: sha256(postflight) }
   }
 };
 fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n", { encoding: "utf8", flag: "wx" });

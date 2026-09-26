@@ -8,6 +8,10 @@
 - [x] Freeze initial runtime identity f85b11a6503f11ff9286be8e6b1a81ccc9bd8637; later tooling successor still requires exact-candidate review.
 - [x] Independent bounded re-review closed the two extraction correctness blockers; no remaining concrete blocker in those repaired paths.
 - [ ] Obtain broader exact-candidate reviewer/tester approval for staging preparation.
+- [x] Implement the five 98406b1 reviewer safeguards: clean source provenance, runtime initial-mode/full baseline checks, exact function metadata/ACL, complete postflight floor, and original rollback drift checks.
+- [x] Address bounded follow-up findings: exact preflight function sets, rollback table-security guards, forced-RLS rejection, and PostgreSQL-version-bound owner privileges.
+- [x] Complete the new executable negative matrix and full suite: 7/7 focused installer cases, 631/631 full tests, Node 8/8; see installer-safety-evidence-2026-09-26.md.
+- [ ] Freeze the clean safeguard successor and obtain exact-SHA independent decisions. Bounded source GO is not SQL execution approval.
 - [x] Independent tester verified initial runtime in a separate detached worktree: 81/81 focused tests, TypeScript and full-report hash; GO for tooling preparation only.
 - [x] Add tester-authored direct v2 routing/payload/hydration/audit matrix and all 17 legacy fallback kinds; independent focused total 88/88 passed.
 - [x] Port lifecycle-only reusable tooling; static check covers 14 specs, runner/helper/reporter syntax/lint and Playwright config typing. Offline discovery is 31 cases, zero executions.

@@ -52,6 +52,9 @@ with target_functions as (
     'security_definer', prosecdef,
     'volatility', provolatile,
     'config', proconfig,
+    'language',(select lanname from pg_language where oid=prolang),
+    'strict',proisstrict,'parallel',proparallel,'leakproof',proleakproof,'cost',procost,'rows',prorows,
+    'returns_set',proretset,'result',pg_get_function_result(oid),'kind',prokind,'support',prosupport::oid::bigint,
     'acl', proacl,
     'acl_detail', (select jsonb_agg(jsonb_build_object(
       'grantor',case when acl_items.grantor=0 then 'PUBLIC' else pg_get_userbyid(acl_items.grantor) end,
@@ -60,7 +63,7 @@ with target_functions as (
       'is_grantable',acl_items.is_grantable
     ) order by acl_items.grantee,acl_items.privilege_type)
     from aclexplode(coalesce(proacl,acldefault('f',proowner))) acl_items),
-    'public_execute', has_function_privilege('public', oid, 'execute'),
+    'public_execute', exists(select 1 from aclexplode(coalesce(proacl,acldefault('f',proowner))) a where a.grantee=0 and a.privilege_type='EXECUTE'),
     'anon_execute', has_function_privilege('anon', oid, 'execute'),
     'authenticated_execute', has_function_privilege('authenticated', oid, 'execute'),
     'service_role_execute', has_function_privilege('service_role', oid, 'execute')
@@ -80,6 +83,7 @@ select jsonb_build_object(
   'system_identifier', (select system_identifier::text from pg_control_system()),
   'environment_identity', (select jsonb_build_object('environment',environment,'project_ref',project_ref,'identity_nonce',identity_nonce) from public.deployment_environment_identity where environment='staging'),
   'database', current_database(),
+  'server_version_num', current_setting('server_version_num')::integer,
   'captured_at_utc', timezone('utc', clock_timestamp()),
   'organization_id', 'org-primary',
   'organization_exists', exists(select 1 from public.organizations where id='org-primary'),

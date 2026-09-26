@@ -11,6 +11,20 @@ Status: preparation draft; NOT approved for live execution. Runtime base f85b11a
 
 ## Evidence chain
 
+Both package builders and the postflight verifier require `--expected-commit=<reviewed full SHA>`. They refuse a dirty or mismatched checkout and bind the complete runtime/SQL/tooling source hash. Generate packages only after the corrected candidate is committed and independently approved; do not bypass this guard for live use.
+
+Initial install additionally requires absence of the mutation table, all three v2 functions and the dataset helper at preflight and inside the installation transaction. Strict CREATE statements refuse a concurrent appearance. There is no automatic reinstall fallback. Existing start/open/link predecessor definitions and ACLs remain captured for rollback. Both modes bind all five compatibility-state identity fields.
+
+Run the package-generated `staging-postflight-readonly.sql`, not the unrendered template. Its result must carry the matching package run ID, source commit and source hash. The verifier binds and hashes this artifact, checks the exact seven-function metadata/ACL contract, zero open sessions/tabs/recoverable hops/incomplete mutations, and the owner-only mutation-table ACL with RLS/no policies. Missing evidence is a failure.
+
+Installed function owner is postgres; EXECUTE ACL is exactly postgres and authenticated without grant options. PUBLIC, anon and service_role execution must be absent. Reinstall does not silently normalize an unexpected predecessor: all seven preflight functions must meet this security/metadata contract, and preserved bodies must match candidate source. Unexpected grants/configuration require review of a new explicit package, never switching install modes or editing saved evidence.
+
+The original rollback artifact already guards all seven candidate bodies and metadata before restoring predecessor definitions. It does not depend on successful postflight to become safe. Preserve the mutation table and committed rows; verify exact predecessor restoration and unchanged compatibility state. Postflight verification adds raw installed-definition hashes as an additional drift check, not as a substitute for the original guard.
+
+Preflight function sets must be unique and complete: initial mode has the three legacy lifecycle functions plus start/open/link; reinstall includes those six plus v2 trio/dataset helper. Both rollbacks guard table owner, ACL, enabled-but-not-forced RLS and empty policies before and after restoring functions, without requiring committed rows to be absent.
+
+Database version is part of package identity: exact `server_version_num` must match preflight, install/rollback and postflight. Supported contract is PostgreSQL 15/16 (seven owner table privileges) or 17 (also MAINTAIN); any other major requires explicit review. PostgreSQL documents MAINTAIN in its [version 17 default-privilege contract](https://www.postgresql.org/docs/17/sql-alterdefaultprivileges.html). Never weaken an ACL mismatch into an optional arbitrary privilege.
+
 Fresh preflight -> one atomic install/reinstall -> source-bound postflight -> one rollback-only 49-case transactional proof -> exact proof postrollback verification -> complete fixed Playwright suite -> immediate read-only posttest reconciliation and exact-ID cleanup verification.
 
 Required operation limits remain database p95 below 500 ms and maximum below 2 seconds; HTTP/UI p95 below 2 seconds and maximum below 5 seconds; outer completion below 7 seconds. Retain 20 observations per class, same-scale v1 comparison, size sensitivity, unrelated-target overlap and 50 reload/mutation pairs. No global cold-start benchmark or atomic-bootstrap requirement.

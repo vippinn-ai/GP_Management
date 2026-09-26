@@ -2,6 +2,7 @@ import fs from "node:fs";
 import crypto from "node:crypto";
 import path from "node:path";
 import { assertLifecycleSqlBinding } from "./lifecycle-runner-guards.mjs";
+import { assertPackageIdentity, assertMetadata, expectedMetadata, FUNCTION_NAMES, assertMutationTable, expectedTableAcl } from "./lifecycle-install-contract.mjs";
 
 function argument(name) {
   const marker = `--${name}=`;
@@ -33,6 +34,8 @@ const preflight = evidence(preflightPath);
 const postflight = evidence(postflightPath);
 const manifest = JSON.parse(manifestText);
 const root = process.cwd();
+const expectedCommit = process.argv.slice(2).find((entry) => entry.startsWith("--expected-commit="))?.slice("--expected-commit=".length);
+assertPackageIdentity(root, expectedCommit, manifest.codeIdentity);
 
 function normalizeBody(body) {
   return body.replaceAll("\r\n", "\n").replaceAll("\r", "\n").trim();
@@ -58,8 +61,11 @@ for (const [sourcePath, expectedSha] of Object.entries(manifest.sources ?? {})) 
   const bytes = fs.readFileSync(path.resolve(root, sourcePath));
   if (sha256(bytes) !== expectedSha) throw new Error(`Reviewed source changed after manifest creation: ${sourcePath}.`);
 }
-const installPath = verifyFile(manifest.artifacts.install, "Install artifact");
+verifyFile(manifest.artifacts.install, "Install artifact");
 const rollbackPath = verifyFile(manifest.artifacts.rollback, "Rollback artifact");
+verifyFile(manifest.artifacts.postflight, "Postflight artifact");
+if (postflight.package_run_id !== manifest.runId || postflight.source_commit !== manifest.codeIdentity.commit
+  || postflight.source_sha256 !== manifest.codeIdentity.sourceSha256) throw new Error("Postflight package/source identity mismatch.");
 if (preflight.expected_project_ref !== manifest.target.projectRef || postflight.expected_project_ref !== manifest.target.projectRef) throw new Error("Project identity changed.");
 for (const observed of [preflight.system_identifier, postflight.system_identifier]) {
   if (observed !== manifest.target.systemIdentifier) throw new Error("Physical database is not the manifest-bound staging cluster.");
@@ -68,32 +74,37 @@ for (const observed of [preflight.environment_identity, postflight.environment_i
   if (JSON.stringify(observed) !== JSON.stringify(manifest.environmentIdentity)) throw new Error("Database-derived environment identity changed.");
 }
 if (preflight.organization_id !== manifest.target.organizationId || postflight.organization_id !== manifest.target.organizationId) throw new Error("Organization identity changed.");
+if (preflight.server_version_num !== manifest.serverVersionNum || postflight.server_version_num !== manifest.serverVersionNum
+  || JSON.stringify(manifest.expectedTableAcl) !== JSON.stringify(expectedTableAcl(manifest.serverVersionNum))) {
+  throw new Error("Server version or expected table ACL changed.");
+}
 for (const field of ["version", "bytes", "md5", "updated_at", "updated_by"]) {
   if (JSON.stringify(preflight.app_state?.[field]) !== JSON.stringify(postflight.app_state?.[field])) {
     throw new Error(`Compatibility app_state ${field} changed during installation.`);
   }
 }
 if (postflight.processing_financial_mutations !== 0 || postflight.processing_operational_mutations !== 0) throw new Error("Postflight found an incomplete mutation.");
+for (const field of ["open_sessions", "open_customer_tabs", "recoverable_hopped_sessions"]) {
+  if (postflight[field] !== 0) throw new Error(`Postflight operational floor is not empty: ${field}.`);
+}
 if (postflight.operational_mutations_rls !== true) throw new Error("Operational mutation RLS is disabled.");
+assertMutationTable(postflight);
 if (!Array.isArray(postflight.operational_mutations_forbidden_privileges) || postflight.operational_mutations_forbidden_privileges.length !== 0
   || !Array.isArray(postflight.operational_mutations_policies) || postflight.operational_mutations_policies.length !== 0) {
   throw new Error("Operational mutation table has unexpected privileges or policies, or security evidence is missing.");
 }
 const installedEntries = new Map((postflight.functions ?? []).map((entry) => [entry.name, entry]));
 const installed = new Set(installedEntries.keys());
+if (postflight.functions?.length !== FUNCTION_NAMES.length || installed.size !== FUNCTION_NAMES.length
+  || Object.keys(manifest.expectedFunctionMetadata ?? {}).sort().join() !== [...FUNCTION_NAMES].sort().join()) throw new Error("Unexpected or duplicate installed function set.");
 for (const name of ["hop_session_v2", "reject_session_v2", "reject_customer_tab_v2", "start_session", "open_customer_tab", "link_customer_tab_continuation", "get_operational_performance_dataset_identity"]) {
   if (!installed.has(name)) throw new Error(`Postflight omitted ${name}.`);
   const entry = installedEntries.get(name);
   if (crypto.createHash("md5").update(entry.definition).digest("hex") !== entry.definition_md5) throw new Error(`${name} postflight definition hash is inconsistent.`);
-  if (entry.security_definer !== true || !(entry.config ?? []).includes("search_path=public")) throw new Error(`${name} lost its security-definer search path guard.`);
-  if (entry.anon_execute !== false || entry.authenticated_execute !== true) throw new Error(`${name} has incorrect execution grants.`);
-  const owner = String(entry.owner ?? "").replaceAll('"', "");
-  if (!owner || typeof entry.volatility !== "string" || !Array.isArray(entry.acl_detail)
-    || entry.acl_detail.some((grant) => grant.privilege_type !== "EXECUTE" || grant.is_grantable !== false || grant.grantor !== owner || ![owner, "authenticated", "service_role"].includes(grant.grantee))
-    || new Set(entry.acl_detail.map((grant) => grant.grantee)).size !== entry.acl_detail.length
-    || ![owner, "authenticated"].every((role) => entry.acl_detail.some((grant) => grant.grantee === role))) {
-    throw new Error(`${name} has an unexpected owner, volatility, grantor, or execution grantee.`);
-  }
+  assertMetadata(entry, name);
+  if (JSON.stringify(manifest.expectedFunctionMetadata[name]) !== JSON.stringify(expectedMetadata(name))) throw new Error(`${name} manifest metadata is not the candidate contract.`);
+  if (entry.public_execute !== false || entry.anon_execute !== false || entry.service_role_execute !== false
+    || entry.authenticated_execute !== true) throw new Error(`${name} has incorrect execution grants.`);
   if (sha256(functionBody(entry.definition, name)) !== manifest.expectedFunctionBodies?.[name]?.sha256) throw new Error(`${name} installed body differs from the reviewed source.`);
 }
 
@@ -121,11 +132,13 @@ const definitionGuards = [...installedEntries.entries()].map(([name, entry]) => 
 const rollbackText = fs.readFileSync(rollbackPath, "utf8");
 const verifiedRollback = rollbackText.replace("begin;", `begin;\n\ndo $$\ndeclare actual_hash text; actual_owner text; actual_security_definer boolean; actual_volatility "char"; actual_config jsonb; actual_acl jsonb;\nbegin\n  if current_database()<>'postgres' or (select system_identifier::text from pg_control_system())<>'${manifest.target.systemIdentifier}' then raise exception 'physical database identity drift'; end if;\n  if not exists(select 1 from public.deployment_environment_identity where environment='staging' and project_ref='${manifest.target.projectRef}' and identity_nonce='${manifest.environmentIdentity.identity_nonce}'::uuid) then raise exception 'database-derived staging identity drift'; end if;\n${definitionGuards}\nend $$;`);
 const verifiedRollbackPath = path.join(path.dirname(manifestPath), "staging-rollback-verified.sql");
+assertPackageIdentity(root, expectedCommit, manifest.codeIdentity);
 fs.writeFileSync(verifiedRollbackPath, verifiedRollback, { encoding: "utf8", flag: "wx" });
 
 const verification = {
   verifiedAt: new Date().toISOString(),
   runId: manifest.runId,
+  codeIdentity: manifest.codeIdentity,
   projectRef: manifest.target.projectRef,
   organizationId: manifest.target.organizationId,
   preflightSha256: sha256(preflightText),

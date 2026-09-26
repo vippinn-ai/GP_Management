@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { lifecycleSqlBodies, LIFECYCLE_FUNCTION_SOURCES } from "./lifecycle-runner-guards.mjs";
+import { packageIdentity, assertPackageIdentity, assertMetadata, expectedMetadata, generatedPostflight, mutationTableGuard, installedGuard, preflightFunctions, expectedTableAcl } from "./lifecycle-install-contract.mjs";
 
 const EXPECTED_STAGING_PROJECT_REF = "tkbdyzxwwbhkpztgjjxh";
 const EXPECTED_STAGING_SYSTEM_IDENTIFIER = "7623125441096521075";
@@ -83,6 +84,7 @@ function validateFunctionEvidence(entry, name) {
   if (entry.acl_detail.some((grant) => ![ownerName, "authenticated", "service_role"].includes(grant.grantee))) {
     throw new Error(`Unexpected deployed execution grantee on ${name}.`);
   }
+  assertMetadata(entry, name);
 }
 
 function metadataGuard(name, expected, hashes, message) {
@@ -149,11 +151,14 @@ end $acl$;`];
 }
 
 const root = process.cwd();
+const expectedCommit = argument("expected-commit");
+const codeIdentity = packageIdentity(root, expectedCommit);
 const runId = argument("run-id");
 if (!/^normops-\d{8}-\d{4}-[a-z0-9-]+$/i.test(runId)) throw new Error("Run id must match normops-YYYYMMDD-HHMM-<slug>.");
 const preflightPath = path.resolve(root, argument("preflight"));
 const preflightText = fs.readFileSync(preflightPath, "utf8");
 const preflight = readEvidence(preflightPath);
+const tableAcl = expectedTableAcl(preflight.server_version_num);
 
 if (preflight.expected_project_ref !== EXPECTED_STAGING_PROJECT_REF) throw new Error("Preflight project ref is not staging.");
 if (preflight.system_identifier !== EXPECTED_STAGING_SYSTEM_IDENTIFIER) throw new Error("Preflight physical database is not staging.");
@@ -167,7 +172,7 @@ if (preflight.processing_financial_mutations !== 0 || preflight.processing_opera
 for (const field of ["version", "bytes"]) if (!Number.isInteger(preflight.app_state?.[field])) throw new Error(`Preflight app_state ${field} is missing.`);
 for (const field of ["md5", "updated_at", "updated_by"]) if (!preflight.app_state?.[field]) throw new Error(`Preflight app_state ${field} is missing.`);
 
-const deployedFunctions = new Map((preflight.functions ?? []).map((entry) => [entry.name, entry]));
+const deployedFunctions = preflightFunctions(preflight.functions, "reinstall");
 for (const name of VERIFIED_FUNCTIONS) validateFunctionEvidence(deployedFunctions.get(name), name);
 
 const lifecyclePath = path.join(root, "supabase", "operational-lifecycle-v2.sql");
@@ -191,6 +196,7 @@ for (const name of VERIFIED_FUNCTIONS.filter((entry) => !PATCHED_FUNCTIONS.inclu
   }
 }
 const expectedFunctionBodies = Object.fromEntries(VERIFIED_FUNCTIONS.map((name) => [name, { sha256: sha256(candidateBodies[name]) }]));
+const expectedFunctionMetadata = Object.fromEntries(VERIFIED_FUNCTIONS.map((name) => [name, expectedMetadata(name)]));
 
 const oldGuards = VERIFIED_FUNCTIONS.map((name) => metadataGuard(
   name,
@@ -212,12 +218,14 @@ const installedGuards = VERIFIED_FUNCTIONS.map((name) => metadataGuard(
     bodyMd5: md5(PATCHED_FUNCTIONS.includes(name) ? reviewedBodies[name] : extractPgDefinitionBody(deployedFunctions.get(name).definition, name))
   },
   `installed definition, owner, configuration, or ACL mismatch for ${name}`
-)).join("\n  ");
+)).join("\n  ") + "\n" + VERIFIED_FUNCTIONS.map((name) => installedGuard(name, candidateBodies[name])).join("\n");
 
 const baselineSql = `create temp table operational_v2_reinstall_baseline on commit drop as
 select version, md5(data::text) as data_md5, octet_length(data::text) as data_bytes, updated_at, updated_by
 from public.app_state where id='primary';`;
 const environmentGuard = `if current_database()<>'postgres' or (select system_identifier::text from pg_control_system())<>${sqlLiteral(EXPECTED_STAGING_SYSTEM_IDENTIFIER)} then raise exception 'physical database is not the approved staging cluster'; end if;
+  if current_user <> 'postgres' then raise exception 'installer must run as postgres'; end if;
+  if current_setting('server_version_num')::integer <> ${preflight.server_version_num} then raise exception 'database server version drift'; end if;
   if not exists(select 1 from public.deployment_environment_identity where environment='staging' and project_ref=${sqlLiteral(EXPECTED_STAGING_PROJECT_REF)} and identity_nonce=${sqlLiteral(preflight.environment_identity.identity_nonce)}::uuid) then raise exception 'database-derived staging identity drift'; end if;
   if not exists(select 1 from public.organizations where id=${sqlLiteral(EXPECTED_ORGANIZATION_ID)}) then raise exception 'staging organization identity failed'; end if;`;
 const appStateGuard = `if (select count(*) from public.app_state where id='primary') <> 1 or exists(
@@ -244,6 +252,7 @@ begin
   ) then raise exception 'staging has a recoverable unconsumed hopped session'; end if;
   if (select count(*) from public.financial_mutations where status<>'committed') <> 0 then raise exception 'staging has incomplete financial mutations'; end if;
   if to_regclass('public.operational_mutations') is null then raise exception 'operational_mutations is missing'; end if;
+  ${mutationTableGuard(preflight.server_version_num)}
   execute 'select count(*) from public.operational_mutations where status<>''committed''' into incomplete_operational;
   if incomplete_operational <> 0 then raise exception 'staging has incomplete operational mutations'; end if;
   if (select version from operational_v2_reinstall_baseline) is distinct from ${Number(preflight.app_state.version)}
@@ -258,6 +267,7 @@ end $$;`,
 declare actual_definition_md5 text; actual_body_md5 text; actual_owner text; actual_security_definer boolean; actual_volatility "char"; actual_config jsonb; actual_strict boolean; actual_parallel "char"; actual_leakproof boolean; actual_cost real; actual_rows real; actual_returns_set boolean; actual_result text; actual_kind "char"; actual_support oid; actual_acl jsonb;
 begin
   ${installedGuards}
+  ${mutationTableGuard(preflight.server_version_num)}
   if has_function_privilege('anon','public.hop_session_v2(jsonb)','execute')
     or has_function_privilege('anon','public.reject_session_v2(jsonb)','execute')
     or has_function_privilege('anon','public.reject_customer_tab_v2(jsonb)','execute') then raise exception 'anonymous lifecycle v2 execution is forbidden'; end if;
@@ -279,6 +289,7 @@ declare actual_definition_md5 text; actual_body_md5 text; actual_owner text; act
 begin
   ${environmentGuard}
   ${installedGuards}
+  ${mutationTableGuard(preflight.server_version_num)}
 end $$;`,
   ...PATCHED_FUNCTIONS.flatMap((name) => {
     const entry = deployedFunctions.get(name);
@@ -292,6 +303,7 @@ end $$;`,
 declare actual_definition_md5 text; actual_body_md5 text; actual_owner text; actual_security_definer boolean; actual_volatility "char"; actual_config jsonb; actual_strict boolean; actual_parallel "char"; actual_leakproof boolean; actual_cost real; actual_rows real; actual_returns_set boolean; actual_result text; actual_kind "char"; actual_support oid; actual_acl jsonb;
 begin
   ${oldGuards}
+  ${mutationTableGuard(preflight.server_version_num)}
   ${appStateGuard}
 end $$;`,
   "commit;",
@@ -302,11 +314,18 @@ const outDir = path.join(root, "test-artifacts", "operational-lifecycle-v2", run
 const installPath = path.join(outDir, "staging-reinstall.sql");
 const rollbackPath = path.join(outDir, "staging-reinstall-rollback.sql");
 const manifestPath = path.join(outDir, "manifest.json");
+const postflightPath = path.join(outDir, "staging-postflight-readonly.sql");
+assertPackageIdentity(root, expectedCommit, codeIdentity);
+const postflight = generatedPostflight(root, runId, codeIdentity);
 fs.mkdirSync(outDir, { recursive: true });
 fs.writeFileSync(installPath, install, { encoding: "utf8", flag: "wx" });
 fs.writeFileSync(rollbackPath, rollback, { encoding: "utf8", flag: "wx" });
+fs.writeFileSync(postflightPath, postflight, { encoding: "utf8", flag: "wx" });
 const manifest = {
   runId,
+  codeIdentity,
+  serverVersionNum: preflight.server_version_num,
+  expectedTableAcl: tableAcl,
   operation: "staging-v2-function-reinstall",
   target: { projectRef: EXPECTED_STAGING_PROJECT_REF, systemIdentifier: EXPECTED_STAGING_SYSTEM_IDENTIFIER, organizationId: EXPECTED_ORGANIZATION_ID },
   preflight: { path: preflightPath, sha256: sha256(preflightText) },
@@ -315,9 +334,11 @@ const manifest = {
   preservedFunctions: VERIFIED_FUNCTIONS.filter((name) => !PATCHED_FUNCTIONS.includes(name)),
   sources: Object.fromEntries([...new Set([lifecyclePath, preflightSqlPath, postflightSqlPath, ...Object.values(LIFECYCLE_FUNCTION_SOURCES).map((file) => path.join(root, file))])].map((file) => [path.relative(root, file), sha256(fs.readFileSync(file))])),
   expectedFunctionBodies,
+  expectedFunctionMetadata,
   artifacts: {
     install: { path: installPath, bytes: Buffer.byteLength(install), sha256: sha256(install) },
-    rollback: { path: rollbackPath, bytes: Buffer.byteLength(rollback), sha256: sha256(rollback) }
+    rollback: { path: rollbackPath, bytes: Buffer.byteLength(rollback), sha256: sha256(rollback) },
+    postflight: { path: postflightPath, bytes: Buffer.byteLength(postflight), sha256: sha256(postflight) }
   }
 };
 fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n", { encoding: "utf8", flag: "wx" });
