@@ -63,6 +63,17 @@ describe("operational lifecycle v2 Playwright and performance contract", () => {
       "same-id-different-audit"
     ]) expect(runner).toContain(negativeCase);
     expect(runner).toContain("postflightVerification.manifestSha256 !== actualManifestSha");
+    const primaryFailure = runner.indexOf("} catch (error) { gateError = error.message; }");
+    const postRunChecks = runner.indexOf("for (const verify of [", primaryFailure);
+    const deployedArtifactCheck = runner.indexOf("postRunArtifact = await readDeployedArtifact()", postRunChecks);
+    expect(primaryFailure).toBeGreaterThan(-1);
+    expect(postRunChecks).toBeGreaterThan(primaryFailure);
+    expect(deployedArtifactCheck).toBeGreaterThan(postRunChecks);
+    const postRunBlock = runner.slice(postRunChecks, deployedArtifactCheck);
+    for (const independentCheck of ["assertCleanCandidate", "revalidateAclLineage", "revalidateProofArtifacts", "lifecycleSourceIdentity"]) {
+      expect(postRunBlock).toContain(independentCheck);
+    }
+    expect(postRunBlock).toContain("catch (error) { gateError = [gateError, error.message].filter(Boolean).join(\"; \"); }");
     expect(runner).toContain("evidence-manifest-");
     expect(runner).toContain('productionAllowed: false');
     expect(read("scripts/playwright-compact-reporter.mjs")).toContain('flag: "wx"');

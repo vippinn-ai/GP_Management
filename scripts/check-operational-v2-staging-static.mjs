@@ -40,7 +40,8 @@ const selectedTools = ["scripts/run-operational-v2-staging-e2e.mjs", "scripts/li
   "scripts/lifecycle-install-contract.mjs", "scripts/build-operational-lifecycle-v2-staging-install.mjs",
   "scripts/build-operational-lifecycle-v2-staging-reinstall.mjs", "scripts/verify-operational-lifecycle-v2-staging-postflight.mjs",
   "scripts/lifecycle-acl-convergence.mjs", "scripts/build-operational-lifecycle-v2-staging-acl-convergence.mjs",
-  "scripts/verify-operational-lifecycle-v2-staging-acl-convergence.mjs"];
+  "scripts/verify-operational-lifecycle-v2-staging-acl-convergence.mjs", "scripts/lifecycle-database-lineage.mjs", "scripts/build-lifecycle-database-lineage.mjs",
+  "scripts/build-operational-v2-transactional-proof.mjs", "scripts/build-operational-v2-proof-postrollback.mjs", "scripts/verify-operational-v2-proof-postrollback.mjs"];
 run("Lifecycle runner lint", path.join(path.dirname(require.resolve("eslint/package.json")), "bin", "eslint.js"), [
   "--config", "scripts/lifecycle-eslint.config.mjs", "--max-warnings=0", ...selectedTools
 ]);

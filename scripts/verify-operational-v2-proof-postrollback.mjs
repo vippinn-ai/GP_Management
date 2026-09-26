@@ -2,6 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
+import { loadLifecycleDatabaseLineage } from "./lifecycle-database-lineage.mjs";
+import { packageIdentity } from "./lifecycle-install-contract.mjs";
 
 const root = process.cwd();
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
@@ -25,6 +27,18 @@ const result = readBound("result", "Proof post-rollback result");
 const proofResult = readBound("proof-result", "Transactional proof result");
 const observed = unwrap(result.value);
 const proof = unwrap(proofResult.value);
+const proofManifestBytes = fs.readFileSync(path.resolve(root, manifest.value.proofManifest.path));
+if (sha256(proofManifestBytes) !== manifest.value.proofManifest.sha256) throw new Error("Transactional proof manifest lineage changed.");
+const proofManifest = JSON.parse(proofManifestBytes.toString("utf8"));
+for (const [key, expected] of Object.entries({ runId: manifest.value.proofRunId, codeIdentity: manifest.value.codeIdentity, aclLineage: manifest.value.aclLineage, installManifest: manifest.value.installManifest, postflightVerification: manifest.value.installVerification, target: manifest.value.target, rollbackOnly: true })) {
+  if (!isDeepStrictEqual(proofManifest[key], expected)) throw new Error(`Proof/postrollback manifest mismatch: ${key}.`);
+}
+if (!isDeepStrictEqual(packageIdentity(root, manifest.value.codeIdentity?.commit), manifest.value.codeIdentity)) throw new Error("Proof rollback source identity changed.");
+const aclLineage = loadLifecycleDatabaseLineage({ root,
+  descriptorPath: manifest.value.aclLineage?.path, descriptorSha256: manifest.value.aclLineage?.sha256,
+  installManifestPath: manifest.value.installManifest.path, installManifestSha256: manifest.value.installManifest.sha256,
+  verificationPath: manifest.value.installVerification.path, verificationSha256: manifest.value.installVerification.sha256 });
+if (proof.acl_lineage_sha256 !== aclLineage.sha256 || observed.acl_lineage_sha256 !== aclLineage.sha256) throw new Error("Proof result ACL lineage mismatch.");
 const identityNonce = manifest.value.target?.identityNonce;
 if (
   manifest.value.target?.projectRef !== "tkbdyzxwwbhkpztgjjxh"
@@ -35,14 +49,16 @@ if (
   || observed.proof_run_id !== manifest.value.proofRunId
   || proof.run_id !== manifest.value.proofRunId
 ) throw new Error("Proof rollback evidence identity does not match staging.");
-for (const [name, count] of Object.entries(observed.residuals ?? {})) {
-  if (Number(count) !== 0) throw new Error(`Transactional proof rollback left ${name} rows.`);
+const residualNames = ["sessions", "session_pause_logs", "customer_tabs", "operational_mutations", "audit_logs", "operational_events"].sort();
+if (!isDeepStrictEqual(Object.keys(observed.residuals ?? {}).sort(), residualNames)) throw new Error("Proof rollback residual evidence is incomplete.");
+for (const [name, count] of Object.entries(observed.residuals)) {
+  if (count !== 0) throw new Error(`Transactional proof rollback left ${name} rows.`);
 }
 const installVerificationPath = path.resolve(root, manifest.value.installVerification.path);
 const installVerificationText = fs.readFileSync(installVerificationPath, "utf8");
 if (sha256(installVerificationText) !== manifest.value.installVerification.sha256) throw new Error("Install verification lineage changed.");
 const installVerification = JSON.parse(installVerificationText);
-if (!isDeepStrictEqual(observed.app_state, installVerification.appState)) throw new Error("Transactional proof rollback did not restore app_state exactly.");
+if (!isDeepStrictEqual(observed.app_state, installVerification.appState) || !isDeepStrictEqual(observed.app_state, aclLineage.postflight.app_state)) throw new Error("Transactional proof rollback did not restore app_state exactly.");
 const verification = {
   proofRunId: manifest.value.proofRunId,
   projectRef: observed.project_ref,
@@ -52,7 +68,7 @@ const verification = {
   residuals: observed.residuals,
   appStateRestored: true,
   verifiedAt: new Date().toISOString(),
-  lineage: { manifestSha256: manifest.sha256, resultSha256: result.sha256, proofResultSha256: proofResult.sha256 }
+  lineage: { manifestSha256: manifest.sha256, resultSha256: result.sha256, proofResultSha256: proofResult.sha256, proofManifestSha256: manifest.value.proofManifest.sha256, aclLineageSha256: aclLineage.sha256 }
 };
 const outputPath = path.join(path.dirname(manifest.path), "proof-postrollback-verification.json");
 fs.writeFileSync(outputPath, JSON.stringify(verification, null, 2) + "\n", { encoding: "utf8", flag: "wx" });

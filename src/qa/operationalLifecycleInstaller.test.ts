@@ -168,6 +168,154 @@ function runNode(root: string, script: string, args: string[]) {
   return spawnSync(process.execPath, [path.join(root, script), ...args], { cwd: root, encoding: "utf8", windowsHide: true });
 }
 
+function writeBoundJson(file: string, value: unknown) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const text = `${JSON.stringify(value, null, 2)}\n`;
+  fs.writeFileSync(file, text);
+  return { path: file, sha256: sha256(text) };
+}
+
+function writeBoundText(file: string, text: string) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, text);
+  return { path: file, sha256: sha256(text), bytes: Buffer.byteLength(text) };
+}
+
+function fullFunctionDefinition(root: string, name: string) {
+  const files: Record<string, string> = {
+    hop_session_v2: "supabase/operational-lifecycle-v2.sql", reject_session_v2: "supabase/operational-lifecycle-v2.sql",
+    reject_customer_tab_v2: "supabase/operational-lifecycle-v2.sql", get_operational_performance_dataset_identity: "supabase/operational-performance-dataset-identity-staging.sql",
+    start_session: "supabase/phase4-start-session-rpc.sql", open_customer_tab: "supabase/phase4-customer-tab-rpcs.sql",
+    link_customer_tab_continuation: "supabase/phase4-link-customer-tab-continuation-rpc.sql",
+    hop_session: "supabase/phase4-hop-session-rpc.sql", reject_session: "supabase/phase4-reject-rpcs.sql", reject_customer_tab: "supabase/phase4-reject-rpcs.sql"
+  };
+  const source = fs.readFileSync(path.join(root, files[name]), "utf8");
+  const definition = source.match(new RegExp(`create or replace function public\\.${name}\\(payload jsonb\\)[\\s\\S]*?\\bas\\s+\\$\\$[\\s\\S]*?\\$\\$;`, "i"))?.[0];
+  if (!definition) throw new Error(`Unable to extract full fixture definition for ${name}.`);
+  return definition;
+}
+
+function aclFunctionEvidence(root: string, name: string, serviceRole: boolean) {
+  const definition = fullFunctionDefinition(root, name);
+  const metadata = expectedMetadata(FUNCTION_NAMES.includes(name as typeof FUNCTION_NAMES[number]) ? name : "hop_session_v2");
+  const acl = [...metadata.acl_detail, ...(serviceRole ? [{ grantor: "postgres", grantee: "service_role", privilege_type: "EXECUTE", is_grantable: false }] : [])];
+  return {
+    name, definition, definition_md5: crypto.createHash("md5").update(definition).digest("hex"), ...metadata,
+    acl_detail: acl, public_execute: false, anon_execute: false, authenticated_execute: true, service_role_execute: serviceRole
+  };
+}
+
+function gitBlob(root: string, commit: string, file: string) {
+  const result = spawnSync("git", ["-c", `safe.directory=${root.replaceAll("\\", "/")}`, "show", `${commit}:${file}`], {
+    cwd: root, windowsHide: true, env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1" }
+  });
+  if (result.status !== 0 || result.error) throw new Error(`Unable to read fixture Git blob ${file}.`);
+  return result.stdout;
+}
+
+function createProofLineageFixture() {
+  const { root, commit } = createCommittedFixture();
+  const fixtureDir = path.join(root, "test-artifacts", "proof-lineage-fixture");
+  const installDir = path.join(fixtureDir, "install");
+  const aclRunId = "normops-20260927-0200-acl-proof-fixture";
+  const aclDir = path.join(root, "test-artifacts", "operational-lifecycle-v2", aclRunId);
+  const identityNonce = "12345678-1234-4123-8123-123456789abc";
+  const appState = { version: 10, bytes: 12345, md5: "0123456789abcdef0123456789abcdef", updated_at: "2026-09-13T01:00:00.000000+00:00", updated_by: identityNonce };
+  const privileges = ["DELETE", "INSERT", "MAINTAIN", "REFERENCES", "SELECT", "TRIGGER", "TRUNCATE", "UPDATE"];
+  const before = {
+    captured_at_utc: "2026-09-27T02:00:00.000000+00:00", expected_project_ref: "tkbdyzxwwbhkpztgjjxh",
+    system_identifier: "7623125441096521075", database: "postgres", server_version_num: 170006,
+    environment_identity: { environment: "staging", project_ref: "tkbdyzxwwbhkpztgjjxh", identity_nonce: identityNonce },
+    organization_id: "org-primary", organization_exists: true, open_sessions: 0, open_customer_tabs: 0,
+    recoverable_hopped_sessions: 0, processing_financial_mutations: 0, processing_operational_mutations: 0,
+    operational_mutations_table_exists: true, operational_mutations_rls: true, operational_mutations_force_rls: false,
+    operational_mutations_owner: "postgres", operational_mutations_policies: [],
+    operational_mutations_acl: ["postgres", "service_role"].flatMap((grantee) => privileges.map((privilege_type) => ({ grantor: "postgres", grantee, privilege_type, is_grantable: false }))),
+    app_state: appState,
+    functions: [...LEGACY_NAMES.map((name) => aclFunctionEvidence(root, name, true)), ...FUNCTION_NAMES.map((name) => aclFunctionEvidence(root, name, true))]
+  };
+  const after = structuredClone(before);
+  after.operational_mutations_acl = after.operational_mutations_acl.filter((entry) => entry.grantee === "postgres");
+  after.functions = after.functions.map((entry) => FUNCTION_NAMES.includes(entry.name as typeof FUNCTION_NAMES[number])
+    ? { ...entry, acl_detail: entry.acl_detail.filter((grant) => grant.grantee !== "service_role"), service_role_execute: false }
+    : entry);
+
+  const preflight = writeBoundJson(path.join(installDir, "preflight.json"), { evidence: before });
+  const installArtifact = writeBoundText(path.join(installDir, "install.sql"), "begin;\n-- guarded fixture install\ncommit;\n");
+  const rollbackArtifact = writeBoundText(path.join(installDir, "rollback.sql"), "begin;\n-- guarded fixture rollback\ncommit;\n");
+  const installRunId = "normops-20260912-2200-install-fixture";
+  const expectedFunctionBodies = Object.fromEntries(FUNCTION_NAMES.map((name) => [name, { sha256: sha256(readFunctionSource(root, name)) }]));
+  const sourceFiles = ["supabase/operational-lifecycle-v2.sql", "supabase/operational-lifecycle-v2-staging-preflight-readonly.sql", "supabase/operational-lifecycle-v2-staging-postflight-readonly.sql"];
+  const sources = Object.fromEntries(sourceFiles.map((file) => [file, sha256(gitBlob(root, commit, file))]));
+  const installManifestValue = {
+    runId: installRunId, operation: "staging-v2-function-reinstall",
+    target: { projectRef: "tkbdyzxwwbhkpztgjjxh", systemIdentifier: "7623125441096521075", organizationId: "org-primary" },
+    environmentIdentity: before.environment_identity, preflight, sources, expectedFunctionBodies,
+    artifacts: { install: installArtifact, rollback: rollbackArtifact }
+  };
+  const installManifest = writeBoundJson(path.join(installDir, "manifest.json"), installManifestValue);
+  const oldPost = writeBoundJson(path.join(installDir, "postflight.json"), { evidence: {
+    expected_project_ref: "tkbdyzxwwbhkpztgjjxh", system_identifier: "7623125441096521075", organization_id: "org-primary",
+    environment_identity: before.environment_identity, app_state: appState,
+    functions: after.functions.filter((entry) => FUNCTION_NAMES.includes(entry.name as typeof FUNCTION_NAMES[number]))
+  } });
+  const installVerification = writeBoundJson(path.join(installDir, "postflight-verification.json"), {
+    runId: installRunId, projectRef: "tkbdyzxwwbhkpztgjjxh", organizationId: "org-primary",
+    manifestSha256: installManifest.sha256, preflightSha256: preflight.sha256, postflightSha256: oldPost.sha256,
+    appStateUnchanged: true, appState, incompleteMutations: 0,
+    installedFunctionDefinitionMd5: Object.fromEntries(after.functions.filter((entry) => FUNCTION_NAMES.includes(entry.name as typeof FUNCTION_NAMES[number])).map((entry) => [entry.name, entry.definition_md5])),
+    verifiedRollback: rollbackArtifact
+  });
+  const installResult = writeBoundJson(path.join(installDir, "install-result.json"), {
+    run_id: installRunId, environment: "staging", project_ref: "tkbdyzxwwbhkpztgjjxh", candidate_commit: commit,
+    install_sha256: installArtifact.sha256, execution_count: 1, status: "success", retry_performed: false
+  });
+  const aclPreflight = writeBoundJson(path.join(fixtureDir, "acl-preflight.json"), before);
+  const aclBuild = runNode(root, "scripts/build-operational-lifecycle-v2-staging-acl-convergence.mjs", [
+    `--run-id=${aclRunId}`, `--expected-commit=${commit}`, `--preflight=${path.relative(root, aclPreflight.path)}`
+  ]);
+  expect(aclBuild.status, aclBuild.stderr).toBe(0);
+  const aclManifest = { path: path.join(aclDir, "manifest.json"), sha256: sha256(fs.readFileSync(path.join(aclDir, "manifest.json"))) };
+  const aclManifestValue = JSON.parse(fs.readFileSync(aclManifest.path, "utf8"));
+  const aclPost = writeBoundJson(path.join(aclDir, "postflight-result.json"), { ...after, package_identity: {
+    runId: aclManifestValue.runId, ...aclManifestValue.codeIdentity, preflightSha256: aclManifestValue.preflight.sha256
+  } });
+  const aclVerify = runNode(root, "scripts/verify-operational-lifecycle-v2-staging-acl-convergence.mjs", [
+    `--manifest=${aclManifest.path}`, `--evidence=${aclPost.path}`, "--phase=after"
+  ]);
+  expect(aclVerify.status, aclVerify.stderr).toBe(0);
+  const aclVerification = writeBoundJson(path.join(aclDir, "verification-after.json"), JSON.parse(aclVerify.stdout));
+  const lineagePath = path.join(fixtureDir, "database-lineage.json");
+  const lineageBuild = runNode(root, "scripts/build-lifecycle-database-lineage.mjs", [
+    `--expected-commit=${commit}`, `--historical-source-commit=${commit}`, `--historical-root=${root}`,
+    `--install-directory=${installDir}`, `--acl-directory=${aclDir}`, `--out=${lineagePath}`,
+    `--install-manifest-sha256=${installManifest.sha256}`, `--install-verification-sha256=${installVerification.sha256}`,
+    `--install-postflight-sha256=${oldPost.sha256}`, `--install-result-sha256=${installResult.sha256}`,
+    `--acl-manifest-sha256=${aclManifest.sha256}`, `--acl-postflight-sha256=${aclPost.sha256}`,
+    `--acl-verification-sha256=${aclVerification.sha256}`
+  ]);
+  expect(lineageBuild.status, lineageBuild.stderr).toBe(0);
+  const lineage = { path: lineagePath, sha256: sha256(fs.readFileSync(lineagePath)) };
+  expect(git(root, "status", "--porcelain", "--untracked-files=all")).toBe("");
+  return { root, commit, identityNonce, preflightFunctions: before.functions.filter((entry) => LEGACY_NAMES.includes(entry.name as typeof LEGACY_NAMES[number])),
+    installManifest, installVerification, lineage };
+}
+
+function buildTransactionalProofFixture() {
+  const fixture = createProofLineageFixture();
+  const proofRunId = `normops-20260912-2201-db-proof-${crypto.randomBytes(4).toString("hex")}`;
+  const result = runNode(fixture.root, "scripts/build-operational-v2-transactional-proof.mjs", [
+    `--run-id=${proofRunId}`, `--expected-commit=${fixture.commit}`,
+    `--db-manifest=${fixture.installManifest.path}`, `--db-manifest-sha256=${fixture.installManifest.sha256}`,
+    `--postflight-verification=${fixture.installVerification.path}`, `--postflight-verification-sha256=${fixture.installVerification.sha256}`,
+    `--acl-lineage=${fixture.lineage.path}`, `--acl-lineage-sha256=${fixture.lineage.sha256}`
+  ]);
+  expect(result.status, result.stderr).toBe(0);
+  const proofPath = path.join(fixture.root, "test-artifacts", "sql", `${proofRunId}-operational-v2-transactional-proof.sql`);
+  const proofManifestPath = path.join(fixture.root, "test-artifacts", "sql", `${proofRunId}-operational-v2-transactional-proof-manifest.json`);
+  return { ...fixture, proofRunId, proofPath, proofManifestPath };
+}
+
 afterEach(() => {
   const tempRoot = path.resolve(os.tmpdir());
   const artifactRoot = path.resolve(process.cwd(), "test-artifacts");
@@ -671,119 +819,40 @@ describe("operational lifecycle staging installer", () => {
   }, 90_000);
 
   it("binds a rollback-only transactional proof to the verified installed function definitions", () => {
-    const root = process.cwd();
-    const fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), "normops-proof-"));
-    cleanupPaths.push(fixtureDir);
-    const preflightFunctions = ["hop_session", "reject_session", "reject_customer_tab"].map((name) => {
-      const definition = `CREATE OR REPLACE FUNCTION public.${name}(payload jsonb) RETURNS jsonb LANGUAGE plpgsql AS $function$ BEGIN RETURN '{}'::jsonb; END $function$`;
-      return { name, definition, definition_md5: crypto.createHash("md5").update(definition).digest("hex") };
-    });
-    const preflightPath = path.join(fixtureDir, "preflight.json");
-    const identityNonce = "12345678-1234-4123-8123-123456789abc";
-    const preflightText = JSON.stringify({
-      environment_identity: { environment: "staging", project_ref: "tkbdyzxwwbhkpztgjjxh", identity_nonce: identityNonce },
-      functions: preflightFunctions
-    });
-    fs.writeFileSync(preflightPath, preflightText);
-    const preflightSha = crypto.createHash("sha256").update(preflightText).digest("hex");
-    const dbManifestPath = path.join(fixtureDir, "manifest.json");
-    const dbManifest = {
-      runId: "normops-20260912-2200-install-fixture",
-      target: { projectRef: "tkbdyzxwwbhkpztgjjxh", systemIdentifier: "7623125441096521075", organizationId: "org-primary" },
-      environmentIdentity: { environment: "staging", project_ref: "tkbdyzxwwbhkpztgjjxh", identity_nonce: identityNonce },
-      preflight: { path: preflightPath, sha256: preflightSha }
-    };
-    const dbManifestText = JSON.stringify(dbManifest);
-    fs.writeFileSync(dbManifestPath, dbManifestText);
-    const dbManifestSha = crypto.createHash("sha256").update(dbManifestText).digest("hex");
-    const definitionHashes = Object.fromEntries(
-      ["hop_session_v2", "reject_session_v2", "reject_customer_tab_v2", "get_operational_performance_dataset_identity", "start_session", "open_customer_tab", "link_customer_tab_continuation"]
-        .map((name) => [name, crypto.createHash("md5").update(name).digest("hex")])
-    );
-    const verificationPath = path.join(fixtureDir, "verification.json");
-    const verification = {
-      runId: dbManifest.runId,
-      projectRef: "tkbdyzxwwbhkpztgjjxh",
-      manifestSha256: dbManifestSha,
-      appStateUnchanged: true,
-      incompleteMutations: 0,
-      installedFunctionDefinitionMd5: definitionHashes
-    };
-    const verificationText = JSON.stringify(verification);
-    fs.writeFileSync(verificationPath, verificationText);
-    const verificationSha = crypto.createHash("sha256").update(verificationText).digest("hex");
-    const proofRunId = `normops-20260912-2201-db-proof-${crypto.randomBytes(4).toString("hex")}`;
-    const proofPath = path.join(root, "test-artifacts", "sql", `${proofRunId}-operational-v2-transactional-proof.sql`);
-    const proofManifestPath = path.join(root, "test-artifacts", "sql", `${proofRunId}-operational-v2-transactional-proof-manifest.json`);
-    cleanupPaths.push(proofPath, proofManifestPath);
-
-    const result = spawnSync(process.execPath, [
-      path.join(root, "scripts", "build-operational-v2-transactional-proof.mjs"),
-      `--run-id=${proofRunId}`,
-      `--db-manifest=${dbManifestPath}`,
-      `--db-manifest-sha256=${dbManifestSha}`,
-      `--postflight-verification=${verificationPath}`,
-      `--postflight-verification-sha256=${verificationSha}`
-    ], { cwd: root, encoding: "utf8" });
-
-    expect(result.status, result.stderr).toBe(0);
-    const proof = fs.readFileSync(proofPath, "utf8");
+    const fixture = buildTransactionalProofFixture();
+    const proof = fs.readFileSync(fixture.proofPath, "utf8");
     expect(proof).toContain("installed function drift");
     expect(proof).toContain("do $$\ndeclare function_name");
     expect(proof).toContain("end $$;");
     expect(proof).not.toContain("do $\ndeclare function_name");
     expect(proof).not.toContain("end $;");
-    expect(proof).toContain(`identity_nonce = '${identityNonce}'::uuid`);
-    for (const entry of preflightFunctions) expect(proof).toContain(entry.definition_md5);
+    expect(proof).toContain(`identity_nonce = '${fixture.identityNonce}'::uuid`);
+    for (const entry of fixture.preflightFunctions) expect(proof).toContain(entry.definition_md5);
     expect(proof).not.toContain("__INSTALLED_FUNCTION_GUARDS__");
     expect(proof).not.toContain("__IDENTITY_NONCE__");
     expect(proof.trimEnd().endsWith("rollback;")).toBe(true);
-    expect(proof).toContain(`'audit_log_id', '${proofRunId}-audit-hop')));`);
-    const proofManifest = JSON.parse(fs.readFileSync(proofManifestPath, "utf8"));
-    expect(proofManifest.target.identityNonce).toBe(identityNonce);
-  });
+    expect(proof).toContain(`'audit_log_id', '${fixture.proofRunId}-audit-hop')));`);
+    const proofManifest = JSON.parse(fs.readFileSync(fixture.proofManifestPath, "utf8"));
+    expect(proofManifest.target.identityNonce).toBe(fixture.identityNonce);
+    expect(proofManifest.codeIdentity.commit).toBe(fixture.commit);
+    expect(proofManifest.aclLineage).toEqual(fixture.lineage);
+  }, 90_000);
 
   it("binds generated proof post-rollback SQL to the exact staging identity nonce", () => {
-    const root = process.cwd();
-    const fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), "normops-proof-postrollback-"));
-    cleanupPaths.push(fixtureDir);
-    const identityNonce = "12345678-1234-4123-8123-123456789abc";
-    const proofRunId = `normops-20260912-2202-db-proof-${crypto.randomBytes(4).toString("hex")}`;
-    const installLineagePath = path.join(fixtureDir, "install-manifest.json");
-    const verificationLineagePath = path.join(fixtureDir, "postflight-verification.json");
-    const installLineageText = JSON.stringify({ runId: "install-fixture" });
-    const verificationLineageText = JSON.stringify({ runId: "verification-fixture" });
-    fs.writeFileSync(installLineagePath, installLineageText);
-    fs.writeFileSync(verificationLineagePath, verificationLineageText);
-    const proofManifestPath = path.join(fixtureDir, "proof-manifest.json");
-    const proofManifestText = JSON.stringify({
-      runId: proofRunId,
-      target: { environment: "staging", projectRef: "tkbdyzxwwbhkpztgjjxh", organizationId: "org-primary", identityNonce },
-      rollbackOnly: true,
-      installManifest: {
-        path: installLineagePath,
-        sha256: crypto.createHash("sha256").update(installLineageText).digest("hex")
-      },
-      postflightVerification: {
-        path: verificationLineagePath,
-        sha256: crypto.createHash("sha256").update(verificationLineageText).digest("hex")
-      }
-    });
-    fs.writeFileSync(proofManifestPath, proofManifestText);
-    const proofManifestSha = crypto.createHash("sha256").update(proofManifestText).digest("hex");
-
-    const result = spawnSync(process.execPath, [
-      path.join(root, "scripts", "build-operational-v2-proof-postrollback.mjs"),
-      `--proof-manifest=${proofManifestPath}`,
-      `--proof-manifest-sha256=${proofManifestSha}`
-    ], { cwd: root, encoding: "utf8" });
+    const fixture = buildTransactionalProofFixture();
+    const proofManifestSha = sha256(fs.readFileSync(fixture.proofManifestPath));
+    const result = runNode(fixture.root, "scripts/build-operational-v2-proof-postrollback.mjs", [
+      `--proof-manifest=${fixture.proofManifestPath}`, `--proof-manifest-sha256=${proofManifestSha}`
+    ]);
 
     expect(result.status, result.stderr).toBe(0);
-    const generatedSql = fs.readFileSync(path.join(fixtureDir, "proof-postrollback-readonly.sql"), "utf8");
-    expect(generatedSql).toContain(`identity_nonce='${identityNonce}'::uuid`);
-    expect(generatedSql).toContain(`'identity_nonce','${identityNonce}'`);
+    const generatedSql = fs.readFileSync(path.join(path.dirname(fixture.proofManifestPath), "proof-postrollback-readonly.sql"), "utf8");
+    expect(generatedSql).toContain(`identity_nonce='${fixture.identityNonce}'::uuid`);
+    expect(generatedSql).toContain(`'identity_nonce','${fixture.identityNonce}'`);
     expect(generatedSql).not.toContain("__IDENTITY_NONCE__");
-    const generatedManifest = JSON.parse(fs.readFileSync(path.join(fixtureDir, "proof-postrollback-manifest.json"), "utf8"));
-    expect(generatedManifest.target.identityNonce).toBe(identityNonce);
-  });
+    const generatedManifest = JSON.parse(fs.readFileSync(path.join(path.dirname(fixture.proofManifestPath), "proof-postrollback-manifest.json"), "utf8"));
+    expect(generatedManifest.target.identityNonce).toBe(fixture.identityNonce);
+    expect(generatedManifest.codeIdentity.commit).toBe(fixture.commit);
+    expect(generatedManifest.aclLineage).toEqual(fixture.lineage);
+  }, 90_000);
 });

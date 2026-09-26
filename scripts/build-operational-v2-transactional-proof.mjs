@@ -1,6 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
+import { loadLifecycleDatabaseLineage } from "./lifecycle-database-lineage.mjs";
+import { packageIdentity, assertPackageIdentity } from "./lifecycle-install-contract.mjs";
 
 const root = process.cwd();
 function argument(name) {
@@ -64,6 +66,7 @@ function assertBalancedStatementParentheses(sql) {
   if (balance !== 0) throw new Error(`Transactional proof ended with ${balance} unclosed parentheses.`);
 }
 const runId = argument("run-id");
+const codeIdentity = packageIdentity(root, argument("expected-commit"));
 if (!runId || !/^normops-\d{8}-\d{4}-db-proof-[a-z0-9-]+$/.test(runId)) {
   throw new Error("Use --run-id=normops-YYYYMMDD-HHMM-db-proof-<unique-suffix>.");
 }
@@ -77,6 +80,10 @@ if (sha256(installManifestText) !== installManifestExpectedSha) throw new Error(
 if (sha256(verificationText) !== verificationExpectedSha) throw new Error("Database postflight verification SHA-256 does not match.");
 const installManifest = JSON.parse(installManifestText);
 const verification = JSON.parse(verificationText);
+const aclLineage = loadLifecycleDatabaseLineage({ root,
+  descriptorPath: argument("acl-lineage"), descriptorSha256: argument("acl-lineage-sha256"),
+  installManifestPath, installManifestSha256: installManifestExpectedSha,
+  verificationPath, verificationSha256: verificationExpectedSha });
 if (installManifest.target?.projectRef !== "tkbdyzxwwbhkpztgjjxh" || verification.projectRef !== "tkbdyzxwwbhkpztgjjxh") {
   throw new Error("Transactional proof inputs are not staging.");
 }
@@ -156,7 +163,9 @@ end $$;`;
 const generated = source
   .replaceAll("__RUN_ID__", runId)
   .replaceAll("__IDENTITY_NONCE__", identityNonce)
-  .replace("__INSTALLED_FUNCTION_GUARDS__", () => definitionGuards);
+  .replace("__INSTALLED_FUNCTION_GUARDS__", () => definitionGuards + "\n" + aclLineage.securityGuardSql)
+  .replace("'proof','passed'", `'acl_lineage_sha256','${aclLineage.sha256}', 'proof','passed'`);
+if (!generated.includes(`'acl_lineage_sha256','${aclLineage.sha256}'`)) throw new Error("Proof result lost ACL lineage binding.");
 if (generated.includes("__RUN_ID__") || generated.includes("__IDENTITY_NONCE__") || generated.includes("__INSTALLED_FUNCTION_GUARDS__")) {
   throw new Error("Transactional proof contains an unresolved marker.");
 }
@@ -164,6 +173,7 @@ if (!generated.includes("do $$\ndeclare function_name") || !generated.includes("
   throw new Error("Transactional proof function-definition guard lost its dollar delimiters.");
 }
 assertBalancedStatementParentheses(generated);
+assertPackageIdentity(root, codeIdentity.commit, codeIdentity);
 const outputDirectory = path.join(root, "test-artifacts", "sql");
 fs.mkdirSync(outputDirectory, { recursive: true });
 const outputPath = path.join(outputDirectory, `${runId}-operational-v2-transactional-proof.sql`);
@@ -172,6 +182,8 @@ if (fs.existsSync(outputPath) || fs.existsSync(manifestPath)) throw new Error("T
 fs.writeFileSync(outputPath, generated, { encoding: "utf8", flag: "wx" });
 const manifest = {
   runId,
+  codeIdentity,
+  aclLineage: { path: aclLineage.path, sha256: aclLineage.sha256 },
   target: { environment: "staging", projectRef: "tkbdyzxwwbhkpztgjjxh", organizationId: "org-primary", identityNonce },
   rollbackOnly: true,
   installManifest: { path: path.relative(root, installManifestPath), sha256: installManifestExpectedSha, runId: installManifest.runId },

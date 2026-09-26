@@ -3,6 +3,7 @@ import fs from "node:fs";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
+import { loadLifecycleDatabaseLineage } from "./lifecycle-database-lineage.mjs";
 const require = createRequire(import.meta.url);
 import { parseLifecycleArguments, assertStagingBundleUrl, assertLifecycleSqlBinding, lifecycleSourceIdentity,
   assertCleanCandidate, expectedLifecycleTests, assertCompleteLifecycleSummary, lifecycleRuntimeIdentity } from "./lifecycle-runner-guards.mjs";
@@ -80,6 +81,18 @@ let transactionalProofResult;
 let proofRollbackVerification;
 let sourceIdentity;
 let runtimeIdentity;
+let aclLineage;
+function revalidateAclLineage() {
+  return loadLifecycleDatabaseLineage({ root,
+    descriptorPath: env.E2E_ACL_LINEAGE_PATH, descriptorSha256: env.E2E_ACL_LINEAGE_SHA256,
+    installManifestPath: databaseManifestPath, installManifestSha256: env.E2E_DB_MANIFEST_SHA256?.toLowerCase(),
+    verificationPath: postflightVerificationPath, verificationSha256: env.E2E_DB_POSTFLIGHT_VERIFICATION_SHA256?.toLowerCase() });
+}
+function revalidateProofArtifacts() {
+  for (const entry of [transactionalProofManifest, transactionalProofResult, proofRollbackVerification]) {
+    if (createHash("sha256").update(fs.readFileSync(entry.absolutePath)).digest("hex") !== entry.sha256) throw new Error("Transactional proof evidence changed before or during testing.");
+  }
+}
 if (!discoveryOnly) {
   assertCleanCandidate(root, env.E2E_EXPECTED_COMMIT);
   sourceIdentity = lifecycleSourceIdentity(root);
@@ -107,6 +120,10 @@ if (!discoveryOnly) {
   const postflightSha = createHash("sha256").update(postflightText).digest("hex");
   if (postflightSha !== env.E2E_DB_POSTFLIGHT_VERIFICATION_SHA256.toLowerCase()) throw new Error("Database postflight verification SHA-256 does not match.");
   postflightVerification = JSON.parse(postflightText);
+  aclLineage = loadLifecycleDatabaseLineage({ root,
+    descriptorPath: env.E2E_ACL_LINEAGE_PATH, descriptorSha256: env.E2E_ACL_LINEAGE_SHA256,
+    installManifestPath: databaseManifestPath, installManifestSha256: actualManifestSha,
+    verificationPath: postflightVerificationPath, verificationSha256: postflightSha });
   if (
     postflightVerification.projectRef !== STAGING_PROJECT_REF
     || postflightVerification.runId !== databaseManifest.runId
@@ -151,6 +168,11 @@ if (!discoveryOnly) {
     transactionalProofManifest.value.target?.projectRef !== STAGING_PROJECT_REF
     || transactionalProofManifest.value.installManifest?.sha256 !== actualManifestSha
     || transactionalProofManifest.value.postflightVerification?.sha256 !== postflightSha
+    || transactionalProofManifest.value.aclLineage?.sha256 !== aclLineage.sha256
+    || transactionalProofManifest.value.codeIdentity?.commit !== env.E2E_EXPECTED_COMMIT
+    || transactionalProofManifest.value.codeIdentity?.sourceSha256 !== sourceIdentity.sha256
+    || proof?.acl_lineage_sha256 !== aclLineage.sha256
+    || proofRollbackVerification.value.lineage?.aclLineageSha256 !== aclLineage.sha256
     || proof?.proof !== "passed"
     || proof?.run_id !== transactionalProofManifest.value.runId
     || proof?.project_ref !== STAGING_PROJECT_REF
@@ -162,6 +184,7 @@ if (!discoveryOnly) {
     || proofRollbackVerification.value.rollbackProven !== true
     || proofRollbackVerification.value.proofRunId !== transactionalProofManifest.value.runId
     || proofRollbackVerification.value.lineage?.proofResultSha256 !== transactionalProofResult.sha256
+    || proofRollbackVerification.value.lineage?.proofManifestSha256 !== transactionalProofManifest.sha256
     || !performancePassed
     || !negativeMatrixPassed
   ) throw new Error("Transactional database proof is not bound to the approved staging installation.");
@@ -192,6 +215,7 @@ console.log(JSON.stringify({
   baseUrl: env.E2E_BASE_URL,
   runId: env.E2E_RUN_ID,
   discoveryOnly,
+  aclLineage: aclLineage ? { path: aclLineage.path, sha256: aclLineage.sha256 } : undefined,
   deployedArtifact,
   databaseManifest: databaseManifest ? { path: path.relative(root, databaseManifestPath), runId: databaseManifest.runId, sha256: env.E2E_DB_MANIFEST_SHA256 } : undefined,
   postflightVerification: postflightVerification ? { path: path.relative(root, postflightVerificationPath), sha256: env.E2E_DB_POSTFLIGHT_VERIFICATION_SHA256 } : undefined,
@@ -224,12 +248,15 @@ if (discoveryOnly) {
 }
 // Reserve the identity before any test mutation, including a crash before summary.
 assertCleanCandidate(root, env.E2E_EXPECTED_COMMIT);
+revalidateAclLineage();
+revalidateProofArtifacts();
 if (lifecycleSourceIdentity(root).sha256 !== sourceIdentity.sha256) throw new Error("Candidate source changed during discovery; live execution was not started.");
 fs.mkdirSync(outputDir, { recursive: true });
 fs.writeFileSync(reservationPath, JSON.stringify({
   runId: env.E2E_RUN_ID, candidateCommit: env.E2E_EXPECTED_COMMIT, sourceIdentity, expectedTests, playwrightArgs,
   runtimeIdentity, baseUrl: env.E2E_BASE_URL, projectRef: STAGING_PROJECT_REF, organizationId: "org-primary",
   databaseManifest: { path: databaseManifestPath, sha256: env.E2E_DB_MANIFEST_SHA256 },
+  aclLineage: { path: aclLineage.path, sha256: aclLineage.sha256 },
   postflight: { path: postflightVerificationPath, sha256: env.E2E_DB_POSTFLIGHT_VERIFICATION_SHA256 },
   proofManifest: { path: transactionalProofManifest.absolutePath, sha256: transactionalProofManifest.sha256 },
   proofResult: { path: transactionalProofResult.absolutePath, sha256: transactionalProofResult.sha256 },
@@ -244,9 +271,18 @@ let postRunArtifact;
 try {
   if (result.error || result.status !== 0) throw new Error("Lifecycle Playwright process failed.");
   assertCompleteLifecycleSummary(JSON.parse(fs.readFileSync(summaryPath, "utf8")), expectedTests, env.E2E_RUN_ID);
-  assertCleanCandidate(root, env.E2E_EXPECTED_COMMIT);
-  if (lifecycleSourceIdentity(root).sha256 !== sourceIdentity.sha256) throw new Error("Candidate source changed during testing.");
 } catch (error) { gateError = error.message; }
+// Seal drift evidence even when the process or summary failed. Each check runs
+// independently so a secondary failure cannot hide the primary failure.
+for (const verify of [
+  () => assertCleanCandidate(root, env.E2E_EXPECTED_COMMIT),
+  revalidateAclLineage,
+  revalidateProofArtifacts,
+  () => { if (lifecycleSourceIdentity(root).sha256 !== sourceIdentity.sha256) throw new Error("Candidate source changed during testing."); }
+]) {
+  try { verify(); }
+  catch (error) { gateError = [gateError, error.message].filter(Boolean).join("; "); }
+}
 try {
   postRunArtifact = await readDeployedArtifact();
   if (JSON.stringify(postRunArtifact) !== JSON.stringify(deployedArtifact)) throw new Error("Deployed bundle changed during lifecycle testing.");
@@ -275,6 +311,7 @@ if (!discoveryOnly) {
     candidateCommit: env.E2E_EXPECTED_COMMIT,
     sourceIdentity,
     runtimeIdentity,
+    aclLineage: { path: aclLineage.path, sha256: aclLineage.sha256 },
     expectedTests,
     deployedArtifact,
     postRunArtifact,

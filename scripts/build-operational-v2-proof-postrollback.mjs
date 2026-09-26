@@ -1,6 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
+import { loadLifecycleDatabaseLineage } from "./lifecycle-database-lineage.mjs";
+import { packageIdentity } from "./lifecycle-install-contract.mjs";
 
 const root = process.cwd();
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
@@ -15,6 +17,11 @@ const expectedProofManifestSha = argument("proof-manifest-sha256").toLowerCase()
 const proofManifestText = fs.readFileSync(proofManifestPath, "utf8");
 if (sha256(proofManifestText) !== expectedProofManifestSha) throw new Error("Proof manifest SHA-256 does not match.");
 const proofManifest = JSON.parse(proofManifestText);
+if (JSON.stringify(packageIdentity(root, proofManifest.codeIdentity?.commit)) !== JSON.stringify(proofManifest.codeIdentity)) throw new Error("Proof source identity changed.");
+const aclLineage = loadLifecycleDatabaseLineage({ root,
+  descriptorPath: proofManifest.aclLineage?.path, descriptorSha256: proofManifest.aclLineage?.sha256,
+  installManifestPath: proofManifest.installManifest.path, installManifestSha256: proofManifest.installManifest.sha256,
+  verificationPath: proofManifest.postflightVerification.path, verificationSha256: proofManifest.postflightVerification.sha256 });
 const identityNonce = proofManifest.target?.identityNonce;
 if (
   !/^normops-\d{8}-\d{4}-db-proof-[a-z0-9-]+$/.test(proofManifest.runId ?? "")
@@ -32,7 +39,9 @@ const sourcePath = path.join(root, "supabase", "operational-v2-proof-postrollbac
 const source = fs.readFileSync(sourcePath, "utf8");
 const generated = source
   .replaceAll("__PROOF_RUN_ID__", proofManifest.runId)
-  .replaceAll("__IDENTITY_NONCE__", identityNonce);
+  .replaceAll("__IDENTITY_NONCE__", identityNonce)
+  .replace("end $$;", () => "end $$;\n" + aclLineage.securityGuardSql)
+  .replace("'proof_run_id'", `'acl_lineage_sha256','${aclLineage.sha256}', 'proof_run_id'`);
 if (generated.includes("__PROOF_RUN_ID__") || generated.includes("__IDENTITY_NONCE__") || !generated.includes("repeatable read read only") || !generated.trimEnd().endsWith("rollback;")) {
   throw new Error("Proof post-rollback source lost its read-only contract.");
 }
@@ -42,6 +51,9 @@ const manifestPath = path.join(outputDirectory, "proof-postrollback-manifest.jso
 fs.writeFileSync(outputPath, generated, { encoding: "utf8", flag: "wx" });
 const manifest = {
   proofRunId: proofManifest.runId,
+  codeIdentity: proofManifest.codeIdentity,
+  aclLineage: { path: aclLineage.path, sha256: aclLineage.sha256 },
+  installManifest: proofManifest.installManifest,
   target: proofManifest.target,
   readOnly: true,
   proofManifest: { path: path.relative(root, proofManifestPath), sha256: expectedProofManifestSha },

@@ -14,8 +14,9 @@
 - [x] Freeze safeguard successor 32a6f3d727bb54e9a1573922aaf8faa9176b163e and obtain exact-SHA independent preparation-only decisions. Bounded source GO is not SQL execution approval.
 - [x] Capture complete staging table/function security read-only; all ten bodies match, seven function grants and eight table grants differ from the intended contract.
 - [x] Implement a separate fifteen-privilege convergence package, exact inverse and source-bound verifier; retain strict initial/reinstall refusal on unexpected ACLs.
-- [ ] Complete independent ACL-specific negative/CLI tests and freeze the reviewed tooling successor.
-- [ ] Execute the reviewed staging-only ACL correction once and verify immutable postflight; no matching function-body rewrite.
+- [x] Complete independent ACL-specific negative/CLI tests and freeze 9e90c7870698a7b5ab0d6d2710746013db2e5924.
+- [x] Execute the reviewed staging-only ACL correction once and verify immutable postflight on September 26; no matching function-body rewrite. Saved execution/postflight remain in the preserved lifecycle-v2-incremental worktree.
+- [ ] Freeze and independently approve supplemental lineage successor; validate the descriptor against real saved installation and ACL evidence before live proof generation.
 - [x] Independent tester verified initial runtime in a separate detached worktree: 81/81 focused tests, TypeScript and full-report hash; GO for tooling preparation only.
 - [x] Add tester-authored direct v2 routing/payload/hydration/audit matrix and all 17 legacy fallback kinds; independent focused total 88/88 passed.
 - [x] Port lifecycle-only reusable tooling; static check covers 14 specs, runner/helper/reporter syntax/lint and Playwright config typing. Offline discovery is 31 cases, zero executions.

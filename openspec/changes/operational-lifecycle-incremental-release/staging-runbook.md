@@ -57,6 +57,16 @@ node scripts/run-operational-v2-staging-e2e.mjs --list
 
 The last command additionally requires the staging-only build configuration flags. It uses a no-write JSON discovery reporter; it must not create a live compact summary. The broad startup and optional customer-profile suites remain in the historical mixed branch, not this R1 package. Export regression checks retain baseline behavior only, without deferred-chunk assumptions.
 
+## Supplemental database lineage (27 September)
+
+The September 13 installation and September 26 ACL correction are separate historical events. Preserve both original directories and the clean 9e90c78 ACL checkout. Do not fabricate a reinstall or edit either manifest to name the successor candidate.
+
+Before proof generation, freeze and independently review the successor. Run `build-lifecycle-database-lineage.mjs` with `--expected-commit`, `--historical-source-commit`, `--historical-root`, `--install-directory`, `--acl-directory`, `--out`, and all seven explicit approved hashes: `--install-manifest-sha256`, `--install-verification-sha256`, `--install-postflight-sha256`, `--install-result-sha256`, `--acl-manifest-sha256`, `--acl-postflight-sha256`, `--acl-verification-sha256`. Output is immutable; a failed output is retained, never reused.
+
+The loader checks historical Git blobs, all seven body identities, original SQL and verified rollback artifacts, exact installation receipt, all ten raw function definitions, and regenerates the ACL package from its preserved clean source. The current clean candidate identity remains distinct. Saved evidence is historical, not a fresh operational-floor check.
+
+Proof generation additionally requires `--acl-lineage` and `--acl-lineage-sha256`. The proof and postrollback SQL include exact ten-function metadata/ACL and mutation-table guards. The read-only postrollback verifier binds the exact proof manifest and rejects missing residual collections. The live runner requires `E2E_ACL_LINEAGE_PATH` and `E2E_ACL_LINEAGE_SHA256`, revalidates lineage and proof hashes before reservation and after execution, and refuses drift. Existing zero-retry, fresh floor, rollback-only proof and full-suite gates remain mandatory. Offline tests or a descriptor alone authorize no live run.
+
 ## Stop conditions
 
 Wrong environment, missing source/proof identity, open/ambiguous work, SQL/ACL drift, missing/skipped/duplicate test, retry, timeout, unexpected financial/stock effect, cleanup residue or changed source means STOP. Reconcile read-only and preserve failed evidence. No production write is implied. Final staging acceptance, rollback/backup validation and immediate owner approval remain prerequisites to production.

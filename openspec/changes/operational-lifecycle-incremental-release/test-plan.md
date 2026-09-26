@@ -33,6 +33,10 @@ Do not require the unrelated global 30-cold-load/40-percent startup benchmark or
 
 ## Final gate
 
+### Supplemental lineage contract
+
+Run `src/qa/lifecycleDatabaseLineageContract.test.ts` using disposable clean Git fixtures with distinct historical-install, ACL and current-candidate identities. Require the positive complete chain and reject missing/mismatched hashes, dirty source, unavailable historical Git objects, wrong receipts, changed raw definitions even when outer hashes are recomputed, and output reuse. Test the actual descriptor CLI with explicit approved hashes. These fixtures do not execute the 49-case database proof or 31-case staging UI suite.
+
 ### ACL-convergence tooling prerequisite
 
 Run `src/qa/lifecycleAclConvergenceContract.test.ts` against synthetic, explicit security fixtures and real clean temporary Git repositories. It must work in a fresh clone without private downloaded evidence. Exercise the actual builder and verifier CLIs, complete environment/floor/app_state/table/function validation, exact fifteen-statement forward and inverse scope, legacy preservation, environment-before-lock ordering, and rejection of package/source/raw-evidence/artifact tampering or output reuse. Keep actual captured staging evidence separate and immutable. No local fixture is a substitute for PostgreSQL execution or the existing staging functional/performance matrix.
