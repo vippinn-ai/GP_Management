@@ -4,6 +4,14 @@ Use a separate clean candidate worktree for independent testing. Record passed/f
 
 ## Local candidate gates
 
+### Four-actor harness gate (27 September correction)
+
+Before any of the31 acceptance cases execute, reserve the unique run identity and perform reusable Playwright sign-ins plus read-only authoritative profile/org-role checks for two distinct admins and separate receptionist/manager actors. Require all four active actor IDs distinct in staging org-primary. The seven role cases use dedicated role variables with no generic-A/B fallback; other cases retain their admin pair. The single invocation, exact31-title union, one worker and zero retries are unchanged. Offline discovery must not authenticate or mutate.
+
+Require the ignored role file to be active, match the run ID and deterministic generated username pattern. A separate immutable preflight receipt binds the earlier reservation hash; the final manifest binds the receipt hash. Store only selected actor IDs/roles/state, never credentials, tokens or captured request headers. Failures must seal sanitized evidence and launch zero acceptance tests. Locally test state/run/pattern/missing-field/duplicate-name/duplicate-ID/wrong-role/inactive/wrong-org/wrong-project/network failures and dedicated-runner compatibility. Provisioning must prove exact usernames absent before creation and retain secret-free lifecycle receipts; deactivation remains a verified cleanup gate.
+
+The historical9e399021 build/DB proof remains preserved in its clean worktree. Harness successor source identity is different; it needs its own reviewed source/evidence binding before live execution. Do not relabel old proof manifests as a successor run. Application and SQL runtime are unchanged by this correction.
+
 - TypeScript, lint without new warnings, complete unit regression, default-off and v2-enabled builds.
 - Only three kinds route to v2; all others and local-browser mode retain their existing behavior.
 - Canonical hydration and no stale reapplication; closed session/tab anti-resurrection.

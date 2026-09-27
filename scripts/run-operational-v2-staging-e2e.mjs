@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { loadLifecycleDatabaseLineage } from "./lifecycle-database-lineage.mjs";
+import { executeActorGatedSuite, loadLifecycleRoleEnvironment, runLifecycleActorPreflight } from './lifecycle-actor-preflight.mjs';
 const require = createRequire(import.meta.url);
 import { parseLifecycleArguments, assertStagingBundleUrl, assertLifecycleSqlBinding, lifecycleSourceIdentity,
   assertCleanCandidate, expectedLifecycleTests, assertCompleteLifecycleSummary, lifecycleRuntimeIdentity } from "./lifecycle-runner-guards.mjs";
@@ -27,7 +28,7 @@ if (args[0] === "--help") {
 }
 const localEnv = parseEnvFile(path.join(root, ".env.e2e.local"));
 const stagingEnv = parseEnvFile(path.join(root, ".env.staging"));
-const env = { ...localEnv, ...process.env };
+let env = { ...localEnv, ...process.env };
 
 assertStagingSupabaseEnvironment(stagingEnv, true);
 for (const flag of [
@@ -46,12 +47,14 @@ env.E2E_RUN_ID = assertOperationalRunId(env.E2E_RUN_ID || `normops-${generatedRu
 env.E2E_ROLE_MATRIX = "release-b-receptionist-manager";
 env.E2E_ROLE_MATRIX_PHASE = "all";
 if (!discoveryOnly) assertLiveCredentials(env);
+if (!discoveryOnly) env = loadLifecycleRoleEnvironment(env, parseEnvFile(path.join(root, '.env.e2e.roles.local')));
 
 const evidenceRoot = path.join(root, "test-artifacts", "playwright");
 const outputDir = path.join(evidenceRoot, `operational-v2-run-${env.E2E_RUN_ID}`);
 const summaryPath = path.join(evidenceRoot, `summary-${env.E2E_RUN_ID}.json`);
 const evidenceManifestPath = path.join(evidenceRoot, `evidence-manifest-${env.E2E_RUN_ID}.json`);
 const reservationPath = path.join(evidenceRoot, `run-start-${env.E2E_RUN_ID}.json`);
+const actorPreflightPath = path.join(evidenceRoot, `actor-preflight-${env.E2E_RUN_ID}.json`);
 const REQUIRED_NEGATIVE_CASES = [
   "actor-spoof", "anonymous-actor", "audit-collision", "billed-session-target", "billed-tab-target",
   "closed-tab-target", "compatibility-version-authority", "empty-hop-entity-type", "empty-hop-mutation-kind",
@@ -68,7 +71,7 @@ const REQUIRED_NEGATIVE_CASES = [
   "same-id-different-kind", "session-end-before-start", "tab-before-open", "unsupported-role",
   "wrong-entity-type", "wrong-kind", "wrong-organization"
 ].sort();
-for (const evidencePath of [outputDir, summaryPath, evidenceManifestPath, reservationPath]) {
+for (const evidencePath of [outputDir, summaryPath, evidenceManifestPath, reservationPath, actorPreflightPath]) {
   if (fs.existsSync(evidencePath)) throw new Error(`Run id ${env.E2E_RUN_ID} already has evidence; choose a fresh run id.`);
 }
 
@@ -261,14 +264,17 @@ fs.writeFileSync(reservationPath, JSON.stringify({
   proofManifest: { path: transactionalProofManifest.absolutePath, sha256: transactionalProofManifest.sha256 },
   proofResult: { path: transactionalProofResult.absolutePath, sha256: transactionalProofResult.sha256 },
   proofRollback: { path: proofRollbackVerification.absolutePath, sha256: proofRollbackVerification.sha256 },
-  deployedArtifact, createdAt: new Date().toISOString()
+  deployedArtifact, actorPreflightPath, createdAt: new Date().toISOString()
 }, null, 2) + "\n", { encoding: "utf8", flag: "wx" });
-const result = spawnSync(process.execPath, [cliPath, "test", `--config=${configPath}`], {
+const { receipt: actorPreflight, sha256: actorPreflightSha256, result } = await executeActorGatedSuite({ env,
+  reservationPath, receiptPath: actorPreflightPath, preflight: runLifecycleActorPreflight,
+  launch: () => spawnSync(process.execPath, [cliPath, "test", `--config=${configPath}`], {
   cwd: root, env, stdio: "inherit", shell: false, windowsHide: true
-});
+}) });
 let gateError;
 let postRunArtifact;
 try {
+  if (actorPreflight.status !== 'passed') throw new Error('Authoritative actor preflight failed before acceptance tests.');
   if (result.error || result.status !== 0) throw new Error("Lifecycle Playwright process failed.");
   assertCompleteLifecycleSummary(JSON.parse(fs.readFileSync(summaryPath, "utf8")), expectedTests, env.E2E_RUN_ID);
 } catch (error) { gateError = error.message; }
@@ -278,6 +284,7 @@ for (const verify of [
   () => assertCleanCandidate(root, env.E2E_EXPECTED_COMMIT),
   revalidateAclLineage,
   revalidateProofArtifacts,
+  () => { if (createHash('sha256').update(fs.readFileSync(actorPreflightPath)).digest('hex') !== actorPreflightSha256) throw new Error('Actor preflight receipt changed during testing.'); },
   () => { if (lifecycleSourceIdentity(root).sha256 !== sourceIdentity.sha256) throw new Error("Candidate source changed during testing."); }
 ]) {
   try { verify(); }
@@ -302,6 +309,7 @@ if (!discoveryOnly) {
   };
   visit(outputDir);
   visit(reservationPath);
+  visit(actorPreflightPath);
   visit(summaryPath);
   fs.writeFileSync(evidenceManifestPath, JSON.stringify({
     runId: env.E2E_RUN_ID,
@@ -315,6 +323,7 @@ if (!discoveryOnly) {
     expectedTests,
     deployedArtifact,
     postRunArtifact,
+    actorPreflight: { path: actorPreflightPath, sha256: actorPreflightSha256, status: actorPreflight.status },
     databaseManifest: { path: path.relative(root, databaseManifestPath), sha256: env.E2E_DB_MANIFEST_SHA256 },
     postflightVerification: { path: path.relative(root, postflightVerificationPath), sha256: env.E2E_DB_POSTFLIGHT_VERIFICATION_SHA256 },
     transactionalProof: {

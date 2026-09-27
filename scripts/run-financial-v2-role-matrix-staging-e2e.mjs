@@ -39,6 +39,7 @@ if (!discoveryOnly) {
     throw new Error("The role matrix requires distinct receptionist and manager accounts.");
   }
   env.E2E_USER_A = roleEnv.E2E_RECEPTIONIST_USER;
+  for (const key of ['E2E_RECEPTIONIST_USER', 'E2E_RECEPTIONIST_PASSWORD', 'E2E_MANAGER_USER', 'E2E_MANAGER_PASSWORD']) env[key] = roleEnv[key];
   env.E2E_PASSWORD_A = roleEnv.E2E_RECEPTIONIST_PASSWORD;
   env.E2E_USER_B = roleEnv.E2E_MANAGER_USER;
   env.E2E_PASSWORD_B = roleEnv.E2E_MANAGER_PASSWORD;

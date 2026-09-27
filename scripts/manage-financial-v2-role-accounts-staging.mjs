@@ -12,6 +12,15 @@ import {
   STAGING_MUTATION_CONFIRMATION,
   STAGING_PROJECT_REF
 } from "./playwright-staging-env.mjs";
+import {
+  assertExactUsernameAbsence,
+  assertOwnedDeactivationTargets,
+  assertSuccessfulCreateResponse,
+  createRoleReceiptStore,
+  ownedCleanupTargets,
+  roleOperationFailure,
+  settleCreateAction
+} from "./role-account-provisioning-safety.mjs";
 
 const root = process.cwd();
 const command = process.argv[2];
@@ -38,12 +47,58 @@ if (!env.E2E_USER_A?.trim() || !env.E2E_PASSWORD_A?.trim()) {
 }
 
 const runId = sanitizeRunId(command === "deactivate" ? roleEnv.E2E_RUN_ID : env.E2E_RUN_ID);
-const browser = await chromium.launch({
-  channel: env.E2E_BROWSER_CHANNEL || "chrome",
-  headless: env.E2E_HEADLESS !== "false"
+if (command === "create" && existsSync(rolePath)) {
+  throw new Error(".env.e2e.roles.local already exists; deactivate or reconcile it before provisioning again.");
+}
+const suffix = runId.toLowerCase().replace(/[^a-z0-9]+/g, "_");
+const accounts = command === "create" ? [
+  {
+    name: `QA Role Receptionist ${runId}`,
+    username: `qa_role_rec_${suffix}`,
+    password: `${randomBytes(18).toString("base64url")}A9!`,
+    role: "receptionist"
+  },
+  {
+    name: `QA Role Manager ${runId}`,
+    username: `qa_role_mgr_${suffix}`,
+    password: `${randomBytes(18).toString("base64url")}A9!`,
+    role: "manager"
+  },
+  {
+    name: `QA Admin Observer ${runId}`,
+    username: `qa_role_admin_${suffix}`,
+    password: `${randomBytes(18).toString("base64url")}A9!`,
+    role: "admin"
+  }
+] : exactAccountsFromRoleFile();
+const receiptStore = createRoleReceiptStore({
+  root,
+  runId,
+  command,
+  secrets: [env.E2E_PASSWORD_A, env.E2E_PASSWORD_B, ...accounts.map((account) => account.password)].filter(Boolean)
 });
-const adminContext = await browser.newContext({ baseURL, locale: "en-IN", timezoneId: "Asia/Calcutta" });
-const adminPage = await adminContext.newPage();
+receiptStore.write("reservation", {
+  createdAtUtc: new Date().toISOString(),
+  projectRef: STAGING_PROJECT_REF,
+  organizationId: "org-primary",
+  targets: accounts.map(({ username, role, profileId }) => ({ username, role, profileId: profileId ?? null })),
+  credentialFile: ".env.e2e.roles.local",
+  productionAllowed: false
+});
+
+let browser;
+let adminContext;
+let adminPage;
+let adminRequest;
+let adminIdentity;
+const attemptedUsernames = [];
+const cleanupOutcomes = [];
+const cleanupErrors = [];
+let failureStage = "browser-launch";
+let operationFailed = false;
+let terminalReceiptWritten = false;
+let terminalReceiptUnavailable = false;
+let finalError;
 
 async function signIn(page, username, password) {
   const requests = [];
@@ -127,6 +182,25 @@ async function authoritativeProfile(page, captured, account) {
   return profiles[0];
 }
 
+async function authoritativeUsernameAbsence(page, captured, usernames) {
+  const { restBase, headers } = authenticatedRest(captured);
+  const rowsByUsername = {};
+  for (const username of usernames) {
+    const response = await page.request.get(`${restBase}/profiles`, {
+      headers,
+      params: { select: "username", username: `eq.${username}` }
+    });
+    expect(response.status()).toBe(200);
+    const rows = await response.json();
+    if (!Array.isArray(rows) || rows.some((row) => row?.username !== username)) {
+      throw new Error(`Authoritative username lookup returned invalid evidence for ${username}.`);
+    }
+    rowsByUsername[username] = rows;
+  }
+  assertExactUsernameAbsence(usernames, rowsByUsername);
+  return rowsByUsername;
+}
+
 async function openUsers(page) {
   await page.getByRole("button", { name: "Users", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Create User", exact: true })).toBeVisible();
@@ -144,18 +218,34 @@ async function createUser(page, account) {
   await form.getByLabel("Username", { exact: true }).fill(account.username);
   await form.getByLabel("Password", { exact: true }).fill(account.password);
   await form.locator("select").selectOption(account.role);
-  await form.getByRole("button", { name: "Create User", exact: true }).click();
+  const createResponsePromise = page.waitForResponse((response) => {
+    const request = response.request();
+    if (request.method() !== "POST" || !new URL(response.url()).pathname.endsWith("/functions/v1/admin-create-user")) return false;
+    try {
+      return request.postDataJSON()?.username === account.username;
+    } catch {
+      return false;
+    }
+  }, { timeout: UI_TIMEOUT_MS });
+  const createResponse = await settleCreateAction(
+    createResponsePromise,
+    form.getByRole("button", { name: "Create User", exact: true }).click()
+  );
+  assertSuccessfulCreateResponse(createResponse.status(), await createResponse.json());
   const row = userRow(page, account.username);
   await expect(row).toBeVisible({ timeout: 30_000 });
   await expect(row).toContainText(account.role);
   await expect(row).toContainText("Active");
 }
 
-async function disableUser(page, captured, account, allowMissing = false) {
+async function disableUser(page, captured, account, allowMissing = false, expectedProfileId) {
   const profile = await authoritativeProfile(page, captured, account);
   if (!profile) {
     if (allowMissing) return { username: account.username, status: "absent" };
     throw new Error(`The exact staging QA user ${account.username} must exist before deactivation.`);
+  }
+  if (!expectedProfileId || profile.id !== expectedProfileId) {
+    throw new Error(`The staging QA user ${account.username} does not match the owned profile identity; cleanup was refused.`);
   }
   await page.reload({ waitUntil: "domcontentloaded" });
   await expect(page.getByRole("heading", { name: "Live Dashboard", exact: true })).toBeVisible({ timeout: UI_TIMEOUT_MS });
@@ -191,8 +281,13 @@ function writeRoleFile(accounts, state) {
     `E2E_ROLE_ACCOUNT_STATE=${state}`,
     `E2E_RECEPTIONIST_USER=${accounts[0].username}`,
     `E2E_RECEPTIONIST_PASSWORD=${accounts[0].password}`,
+    ...(accounts[0].profileId ? [`E2E_RECEPTIONIST_ACTOR_ID=${accounts[0].profileId}`] : []),
     `E2E_MANAGER_USER=${accounts[1].username}`,
     `E2E_MANAGER_PASSWORD=${accounts[1].password}`,
+    ...(accounts[1].profileId ? [`E2E_MANAGER_ACTOR_ID=${accounts[1].profileId}`] : []),
+    `E2E_OBSERVER_ADMIN_USER=${accounts[2].username}`,
+    `E2E_OBSERVER_ADMIN_PASSWORD=${accounts[2].password}`,
+    ...(accounts[2].profileId ? [`E2E_OBSERVER_ADMIN_ACTOR_ID=${accounts[2].profileId}`] : []),
     `E2E_CONFIRM_STAGING_MUTATIONS=${STAGING_MUTATION_CONFIRMATION}`,
     `E2E_RUN_ID=${runId}`,
     "E2E_HEADLESS=true",
@@ -202,120 +297,189 @@ function writeRoleFile(accounts, state) {
 }
 
 function exactAccountsFromRoleFile() {
-  const suffix = runId.toLowerCase().replace(/[^a-z0-9]+/g, "_");
   const accounts = [
     {
       name: `QA Role Receptionist ${runId}`,
       username: roleEnv.E2E_RECEPTIONIST_USER?.trim(),
       password: roleEnv.E2E_RECEPTIONIST_PASSWORD,
+      profileId: roleEnv.E2E_RECEPTIONIST_ACTOR_ID?.trim(),
       role: "receptionist"
     },
     {
       name: `QA Role Manager ${runId}`,
       username: roleEnv.E2E_MANAGER_USER?.trim(),
       password: roleEnv.E2E_MANAGER_PASSWORD,
+      profileId: roleEnv.E2E_MANAGER_ACTOR_ID?.trim(),
       role: "manager"
+    },
+    {
+      name: `QA Admin Observer ${runId}`,
+      username: roleEnv.E2E_OBSERVER_ADMIN_USER?.trim(),
+      password: roleEnv.E2E_OBSERVER_ADMIN_PASSWORD,
+      profileId: roleEnv.E2E_OBSERVER_ADMIN_ACTOR_ID?.trim(),
+      role: "admin"
     }
   ];
   if (!accounts.every((account) => account.username && account.password)) {
     throw new Error("The ignored role credential file is incomplete.");
   }
-  if (accounts[0].username === accounts[1].username) throw new Error("The QA role account targets must be distinct.");
-  if (accounts[0].username !== `qa_role_rec_${suffix}` || accounts[1].username !== `qa_role_mgr_${suffix}`) {
+  if (new Set(accounts.map((account) => account.username)).size !== accounts.length) throw new Error("The QA role account targets must be distinct.");
+  if (
+    accounts[0].username !== `qa_role_rec_${suffix}`
+    || accounts[1].username !== `qa_role_mgr_${suffix}`
+    || accounts[2].username !== `qa_role_admin_${suffix}`
+  ) {
     throw new Error("The ignored role credential file does not match the exact generated QA username/run-ID pattern.");
   }
   return accounts;
 }
 
 try {
-  const adminRequest = await signIn(adminPage, env.E2E_USER_A.trim(), env.E2E_PASSWORD_A);
-  const adminIdentity = await authoritativeRole(adminPage, adminRequest, "admin");
-  await openUsers(adminPage);
+  browser = await chromium.launch({
+    channel: env.E2E_BROWSER_CHANNEL || "chrome",
+    headless: env.E2E_HEADLESS !== "false"
+  });
+  adminContext = await browser.newContext({ baseURL, locale: "en-IN", timezoneId: "Asia/Calcutta" });
+  adminPage = await adminContext.newPage();
+  failureStage = "admin-sign-in";
+  adminRequest = await signIn(adminPage, env.E2E_USER_A.trim(), env.E2E_PASSWORD_A);
+  failureStage = "admin-role";
+  adminIdentity = await authoritativeRole(adminPage, adminRequest, "admin");
   if (command === "create") {
-    if (existsSync(rolePath)) throw new Error(".env.e2e.roles.local already exists; deactivate or reconcile it before provisioning again.");
-    const suffix = runId.toLowerCase().replace(/[^a-z0-9]+/g, "_");
-    const accounts = [
-      {
-        name: `QA Role Receptionist ${runId}`,
-        username: `qa_role_rec_${suffix}`,
-        password: `${randomBytes(18).toString("base64url")}A9!`,
-        role: "receptionist"
-      },
-      {
-        name: `QA Role Manager ${runId}`,
-        username: `qa_role_mgr_${suffix}`,
-        password: `${randomBytes(18).toString("base64url")}A9!`,
-        role: "manager"
-      }
-    ];
     writeRoleFile(accounts, "provisioning");
-    try {
-      for (const account of accounts) {
-        await createUser(adminPage, account);
+    failureStage = "precreate-absence";
+    await authoritativeUsernameAbsence(adminPage, adminRequest, accounts.map((account) => account.username));
+    await openUsers(adminPage);
+    for (let index = 0; index < accounts.length; index += 1) {
+      const account = accounts[index];
+      attemptedUsernames.push(account.username);
+      failureStage = `create-${account.role}`;
+      await createUser(adminPage, account);
+      const profile = await authoritativeProfile(adminPage, adminRequest, account);
+      if (!profile?.id || profile.active !== true) {
+        throw new Error(`The new staging QA user ${account.username} has no authoritative active profile identity.`);
       }
-      const identities = await Promise.all(accounts.map(verifyAccount));
-      expect(identities[0].actorId).not.toBe(identities[1].actorId);
-      writeRoleFile(accounts, "active");
-      process.stdout.write(`${JSON.stringify({
-        command,
-        runId,
-        adminActorId: adminIdentity.actorId,
-        accounts: accounts.map((account, index) => ({
-          username: account.username,
-          role: account.role,
-          actorId: identities[index].actorId,
-          active: true
-        })),
-        credentialFile: ".env.e2e.roles.local",
-        passwordsPrinted: false
-      }, null, 2)}\n`);
-    } catch (error) {
-      const cleanupErrors = [];
-      const cleanupResults = [];
-      for (const account of [...accounts].reverse()) {
-        try {
-          cleanupResults.push(await disableUser(adminPage, adminRequest, account, true));
-        } catch (cleanupFailure) {
-          cleanupErrors.push({
-            username: account.username,
-            error: cleanupFailure instanceof Error ? cleanupFailure.message : String(cleanupFailure)
-          });
-        }
-      }
-      if (cleanupErrors.length) {
-        writeRoleFile(accounts, "recovery_required");
-        const original = error instanceof Error ? error.message : String(error);
-        throw new Error(`${original} Provisioning cleanup is unresolved: ${JSON.stringify({ cleanupResults, cleanupErrors })}`);
-      }
-      if (existsSync(rolePath)) unlinkSync(rolePath);
-      const original = error instanceof Error ? error.message : String(error);
-      throw new Error(`${original} Both deterministic candidates were reconciled: ${JSON.stringify(cleanupResults)}.`);
+      accounts[index] = { ...account, profileId: profile.id };
+      writeRoleFile(accounts, "provisioning");
     }
+    failureStage = "verify-created-identities";
+    const identities = await Promise.all(accounts.map(verifyAccount));
+    expect(new Set(identities.map((identity) => identity.actorId)).size).toBe(accounts.length);
+    for (let index = 0; index < accounts.length; index += 1) {
+      expect(identities[index].actorId).toBe(accounts[index].profileId);
+    }
+    writeRoleFile(accounts, "active");
+    const receiptAccounts = accounts.map((account, index) => ({
+      username: account.username,
+      role: account.role,
+      profileId: identities[index].actorId,
+      active: true
+    }));
+    receiptStore.write("success", {
+      completedAtUtc: new Date().toISOString(),
+      adminActorId: adminIdentity.actorId,
+      accounts: receiptAccounts,
+      credentialFileState: "active",
+      cleanupOutcomes
+    });
+    terminalReceiptWritten = true;
+    process.stdout.write(`${JSON.stringify({
+      command,
+      runId,
+      adminActorId: adminIdentity.actorId,
+      accounts: receiptAccounts,
+      credentialFile: ".env.e2e.roles.local",
+      credentialsPrinted: false
+    }, null, 2)}\n`);
   } else {
-    const accounts = exactAccountsFromRoleFile();
     const state = roleEnv.E2E_ROLE_ACCOUNT_STATE?.trim();
-    if (!new Set(["active", "provisioning", "recovery_required", "deactivation_incomplete"]).has(state)) {
+    if (!new Set(["active", "provisioning", "provisioning_failed_reconciled", "recovery_required", "deactivation_incomplete"]).has(state)) {
       throw new Error("The ignored role credential file has an invalid lifecycle state.");
     }
-    const allowMissing = state !== "active";
+    const deactivationTargets = assertOwnedDeactivationTargets(accounts);
+    failureStage = "deactivate-owned-profiles";
+    await openUsers(adminPage);
     const results = [];
-    try {
-      for (const account of accounts) results.push(await disableUser(adminPage, adminRequest, account, allowMissing));
-    } catch (error) {
-      writeRoleFile(accounts, "deactivation_incomplete");
-      throw error;
+    for (const target of deactivationTargets) {
+      const account = accounts.find((entry) => entry.username === target.username);
+      results.push(await disableUser(adminPage, adminRequest, account, state !== "active", target.profileId));
     }
+    receiptStore.write("success", {
+      completedAtUtc: new Date().toISOString(),
+      adminActorId: adminIdentity.actorId,
+      accounts: results,
+      credentialFileState: "preserved-until-success-receipt",
+      cleanupOutcomes: results
+    });
+    terminalReceiptWritten = true;
+    failureStage = "remove-credential-file";
     unlinkSync(rolePath);
+    receiptStore.write("closeout", {
+      completedAtUtc: new Date().toISOString(),
+      accounts: results,
+      credentialFileRemoved: true
+    });
     process.stdout.write(`${JSON.stringify({
       command,
       runId,
       adminActorId: adminIdentity.actorId,
       accounts: results,
       credentialFileRemoved: true,
-      passwordsPrinted: false
+      credentialsPrinted: false
     }, null, 2)}\n`);
   }
+} catch {
+  operationFailed = true;
+  if (command === "create") {
+    if (adminPage && adminRequest) {
+      for (const target of [...ownedCleanupTargets(accounts)].reverse()) {
+        const account = accounts.find((entry) => entry.username === target.username);
+        try {
+          cleanupOutcomes.push(await disableUser(adminPage, adminRequest, account, true, target.profileId));
+        } catch {
+          cleanupErrors.push({
+            username: target.username,
+            errorCode: "owned_profile_cleanup_failed"
+          });
+        }
+      }
+    }
+    const unownedAttempt = attemptedUsernames.some((username) => !accounts.find((account) => account.username === username)?.profileId);
+    const state = cleanupErrors.length || unownedAttempt ? "recovery_required" : "provisioning_failed_reconciled";
+    writeRoleFile(accounts, state);
+  } else if (accounts.length === 3) {
+    writeRoleFile(accounts, "deactivation_incomplete");
+  }
+  const failure = {
+    completedAtUtc: new Date().toISOString(),
+    adminActorId: adminIdentity?.actorId ?? null,
+    errorCode: "role_account_operation_failed",
+    failureStage,
+    attemptedUsernames,
+    ownedProfiles: ownedCleanupTargets(accounts),
+    cleanupOutcomes,
+    cleanupErrors,
+    credentialFilePreserved: existsSync(rolePath),
+    productionAllowed: false
+  };
+  if (!terminalReceiptWritten) {
+    try {
+      receiptStore.write("failure", failure);
+      terminalReceiptWritten = true;
+    } catch {
+      terminalReceiptUnavailable = true;
+    }
+  }
 } finally {
-  await adminContext.close();
-  await browser.close();
+  const cleanup = await Promise.allSettled([
+    adminContext ? adminContext.close() : Promise.resolve(),
+    browser ? browser.close() : Promise.resolve()
+  ]);
+  finalError = roleOperationFailure({
+    operationFailed,
+    terminalReceiptUnavailable,
+    failureStage,
+    cleanupStatuses: cleanup.map((result) => result.status)
+  });
 }
+if (finalError) throw finalError;

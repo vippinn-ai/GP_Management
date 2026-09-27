@@ -10,7 +10,7 @@ export function lifecycleRuntimeIdentity(env) {
   const keys = ["E2E_BASE_URL", "E2E_RUN_ID", "E2E_HOP_STATION", "E2E_PAUSE_STATION", "E2E_OPERATIONAL_UNIT_STATION",
     "E2E_V2_HOP_RACE_STATION", "E2E_V2_REJECT_RACE_STATION", "E2E_V2_MULTIHOP_STATION", "E2E_V2_ROLE_HOP_STATION",
     "E2E_V2_ORGANIZATION_ID", "E2E_INVENTORY_CUSTOMER_NAME", "E2E_ROLE_MATRIX", "E2E_ROLE_MATRIX_PHASE",
-    "E2E_BROWSER_CHANNEL", "E2E_HEADLESS"];
+    "E2E_BROWSER_CHANNEL", "E2E_HEADLESS", "E2E_OBSERVER_ADMIN_ACTOR_ID", "E2E_RECEPTIONIST_ACTOR_ID", "E2E_MANAGER_ACTOR_ID"];
   const inputs = Object.fromEntries(keys.map((key) => [key, env[key] ?? null]));
   return { inputs, sha256: sha256(JSON.stringify(inputs)) };
 }

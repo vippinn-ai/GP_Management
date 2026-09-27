@@ -816,8 +816,9 @@ describe("staging Playwright harness contract", () => {
     expect(scenario).toContain("reconcile their mutation IDs and any hopped session before cleanup or retry");
   });
 
-  it("provisions and deactivates dedicated role accounts without exposing their passwords", () => {
+  it("provisions and deactivates dedicated role accounts with collision, ownership, and immutable receipt guards", () => {
     const manager = read("scripts/manage-financial-v2-role-accounts-staging.mjs");
+    const safety = read("scripts/role-account-provisioning-safety.mjs");
 
     expect(manager).toContain("assertStagingSupabaseEnvironment(stagingEnv, true)");
     expect(manager).toContain("assertStagingBaseUrl");
@@ -825,17 +826,21 @@ describe("staging Playwright harness contract", () => {
     expect(manager).toContain('await authoritativeRole(page, request, account.role)');
     expect(manager).toContain('url.hostname !== `${STAGING_PROJECT_REF}.supabase.co`');
     expect(manager).toContain("captured.url.includes(PRODUCTION_PROJECT_REF)");
-    expect(manager).toContain("expect(identities[0].actorId).not.toBe(identities[1].actorId)");
+    expect(manager).toContain("expect(new Set(identities.map((identity) => identity.actorId)).size).toBe(accounts.length)");
+    expect(manager).toContain("await authoritativeUsernameAbsence(adminPage, adminRequest, accounts.map((account) => account.username))");
+    expect(manager).toContain("assertExactUsernameAbsence(usernames, rowsByUsername)");
     expect(manager).toContain('writeRoleFile(accounts, "provisioning")');
     expect(manager).toContain('writeRoleFile(accounts, "active")');
-    expect(manager).toContain('writeRoleFile(accounts, "recovery_required")');
+    expect(manager).toContain('"recovery_required" : "provisioning_failed_reconciled"');
     expect(manager).toContain('writeRoleFile(accounts, "deactivation_incomplete")');
-    expect(manager).toContain('for (const account of [...accounts].reverse())');
-    expect(manager).toContain('Both deterministic candidates were reconciled:');
-    expect(manager).toContain('Provisioning cleanup is unresolved:');
-    expect(manager).toContain('passwordsPrinted: false');
+    expect(manager).toContain("for (const target of [...ownedCleanupTargets(accounts)].reverse())");
+    expect(manager).toContain("target.profileId");
+    expect(manager).toContain('receiptStore.write("reservation"');
+    expect(manager).toContain('receiptStore.write("success"');
+    expect(manager).toContain('receiptStore.write("failure"');
+    expect(manager).toContain('credentialsPrinted: false');
     expect(manager).not.toContain("console.log(account.password)");
-    expect(manager).toContain("await disableUser(adminPage, adminRequest, account, true)");
+    expect(manager).toContain("await disableUser(adminPage, adminRequest, account, true, target.profileId)");
     expect(manager).toContain('async function authoritativeProfile(page, captured, account)');
     expect(manager).toContain('await page.request.get(`${restBase}/profiles`');
     expect(manager).toContain('await expect.poll(async () => (await authoritativeProfile(page, captured, account))?.active).toBe(false)');
@@ -848,7 +853,12 @@ describe("staging Playwright harness contract", () => {
     expect(manager).toContain("await expect(row).toContainText(account.name)");
     expect(manager).toContain("await expect(row).toContainText(account.role)");
     expect(manager).toContain("unlinkSync(rolePath)");
+    expect(manager).toContain("E2E_OBSERVER_ADMIN_USER");
+    expect(manager).toContain("E2E_OBSERVER_ADMIN_ACTOR_ID");
     expect(manager).toContain('new Set(["create", "deactivate"])');
+    expect(safety).toContain('flag: "wx"');
+    expect(safety).toContain("retry: 0");
+    expect(safety).toContain("Provisioning receipt contains a credential value.");
   });
 
   it("keeps exact staging session inspection read-only, role-bound, and password-free", () => {

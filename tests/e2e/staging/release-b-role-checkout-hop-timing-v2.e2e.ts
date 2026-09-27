@@ -9,7 +9,6 @@ import {
   capturePageErrors,
   captureRpcEvidence,
   createObserver,
-  credentials,
   interceptSingleRpcCommand,
   openManagedSession,
   readApiResponseBody,
@@ -24,6 +23,7 @@ import {
   type RpcEvidence,
   waitForSynced
 } from "./support/app";
+import { roleCredentials } from './support/roleCredentials';
 
 const ROLE_MATRIX_CONFIRMATION = "release-b-receptionist-manager";
 const runId = process.env.E2E_RUN_ID ?? "missing-run-id";
@@ -116,7 +116,7 @@ test.describe.serial("Release B receptionist and manager checkout-hop timing", (
     captureAuthenticatedRestRequests(page, requestsA);
     captureAuthenticatedRestRequests(observer.page, requestsB);
     try {
-      await Promise.all([signIn(page, credentials("A")), signIn(observer.page, credentials("B"))]);
+      await Promise.all([signIn(page, roleCredentials("receptionist")), signIn(observer.page, roleCredentials("manager"))]);
       const [receptionist, manager] = await Promise.all([
         assertAuthoritativeOrganizationIdentity(page, requestsA, "receptionist"),
         assertAuthoritativeOrganizationIdentity(observer.page, requestsB, "manager")
@@ -174,7 +174,7 @@ test.describe.serial("Release B receptionist and manager checkout-hop timing", (
       let cleanupCommand: Awaited<ReturnType<typeof interceptSingleRpcCommand>> | undefined;
 
       try {
-        await Promise.all([signIn(pageA, credentials("A")), signIn(pageB, credentials("B"))]);
+        await Promise.all([signIn(pageA, roleCredentials("receptionist")), signIn(pageB, roleCredentials("manager"))]);
         const [receptionist, manager] = await Promise.all([
           assertAuthoritativeOrganizationIdentity(pageA, requestsA, "receptionist"),
           assertAuthoritativeOrganizationIdentity(pageB, requestsB, "manager")
