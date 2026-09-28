@@ -25,6 +25,24 @@ function read(relativePath: string) {
 }
 
 describe("operational lifecycle v2 Playwright and performance contract", () => {
+  it("guards priced race fixtures and uses canonical downstream columns and settled evidence", () => {
+    const race = read("tests/e2e/staging/operational-lifecycle-v2-concurrency.e2e.ts");
+    expect(race).not.toContain("pricingSnapshot: []");
+    expect(race).toContain("timedFixturePricing(");
+    expect(race.indexOf("const pricingSnapshot = timedFixturePricing")).toBeLessThan(race.indexOf('postRpc(request, identity, "start_session"'));
+    expect(race).toContain(".toBeEnabled()");
+    expect(race).toContain("closed_bill_id:canonical.bill_id");
+    const downstream = read("tests/e2e/staging/operational-lifecycle-v2-downstream-parity.e2e.ts");
+    expect(downstream).toContain('select: "id,bill_id,total"');
+    expect(downstream).toContain("Number(row.total)");
+    expect(downstream).not.toContain("line_total");
+    expect(downstream).toContain("await rpcCapture.settle()");
+    const unit = read("tests/e2e/staging/operational-lifecycle-v2-continuations.e2e.ts");
+    expect(unit).not.toContain("pricingSnapshot: []");
+    expect(unit).toContain("timedFixturePricing(pricingRows");
+    expect(unit).toContain("await committedHop.json()");
+    expect(unit).toContain("await originRpcCapture.settle()");
+  });
   it("locks the reusable runner to staging, the v2 dependency flags, and zero retries", () => {
     const runner = read("scripts/run-operational-v2-staging-e2e.mjs");
     const config = read("playwright.operational-v2.staging.config.ts");
@@ -79,6 +97,7 @@ describe("operational lifecycle v2 Playwright and performance contract", () => {
     expect(read("scripts/playwright-compact-reporter.mjs")).toContain('flag: "wx"');
     expect(config).toMatch(/retries:\s*0/);
     expect(config).toMatch(/workers:\s*1/);
+    expect(config).toMatch(/maxFailures:\s*1/);
     expect(config).toMatch(/fullyParallel:\s*false/);
     expect(config).toContain("operational-lifecycle-v2.e2e.ts");
     expect(config).toContain("operational-lifecycle-v2-concurrency.e2e.ts");

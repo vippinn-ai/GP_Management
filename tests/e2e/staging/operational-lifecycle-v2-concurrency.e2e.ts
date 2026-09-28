@@ -1,5 +1,6 @@
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
 import { createFailurePreservingCleanup } from "../../../src/qa/failurePreservingCleanup";
+import { timedFixturePricing, type FixturePricingRow } from "../../../src/qa/timedSessionFixture";
 import {
   attachFailureScreenshot,
   attachJson,
@@ -122,6 +123,11 @@ async function createSession(
   const id = `${runId}-${suffix}`;
   const displayName = `QA ${suffix}`;
   const startedAt = new Date(Date.now() - ageMinutes * 60_000).toISOString();
+  expect(station.mode).toBe("timed");
+  const pricingQuery = new URLSearchParams({ organization_id: `eq.${organizationId}`, station_id: `eq.${station.id}`, select: "id,station_id,label,start_minute,end_minute,hourly_rate", order: "id.asc" });
+  const pricingResponse = await request.get(`${identity.restBase}/pricing_rules?${pricingQuery}`, { headers: identity.headers });
+  expect(pricingResponse.status(), "Fixture pricing must be read before session creation").toBe(200);
+  const pricingSnapshot = timedFixturePricing(await pricingResponse.json() as FixturePricingRow[], station.id, startedAt, new Date().toISOString());
   const command = {
     organization_id: organizationId,
     mutation_id: `${id}-start`,
@@ -139,7 +145,7 @@ async function createSession(
         customerPhone: "",
         playMode: "group",
         ltpEligible: false,
-        pricingSnapshot: [],
+        pricingSnapshot,
         pauseLogIds: [],
         continuedFromSessionIds: [],
         items: [],
@@ -270,7 +276,12 @@ async function reconcileClosed(page: Page, identity: RestIdentity, target: Targe
   return rows[0];
 }
 
-async function billRecoverableHop(page: Page, targetId: string) {
+async function billRecoverableHop(page: Page, targetId: string, identity: RestIdentity) {
+  const targets = await readRestRows<{id:string;customer_name:string;closed_bill_id:string|null;close_disposition:string}>(page, identity.restBase, identity.headers, "sessions", {
+    organization_id: `eq.${organizationId}`, id: `eq.${targetId}`, select: "id,customer_name,closed_bill_id,close_disposition"
+  });
+  expect(targets).toHaveLength(1);
+  expect(targets[0]).toMatchObject({id:targetId,closed_bill_id:null,close_disposition:"hopped"});
   await page.reload({ waitUntil: "domcontentloaded" });
   await waitForSynced(page);
   const alert = page.getByRole("alert").filter({ hasText: "Game hop needs continuation" });
@@ -278,12 +289,24 @@ async function billRecoverableHop(page: Page, targetId: string) {
   await alert.getByRole("button", { name: "Continue", exact: true }).click();
   const continuation = page.getByRole("dialog", { name: "Continue Customer", exact: true });
   await expect(continuation).toBeVisible();
+  await expect(continuation).toContainText(`Continuing from: ${targets[0].customer_name} -`);
   await continuation.getByRole("button", { name: "Bill & Done", exact: true }).click();
   const bill = page.getByRole("dialog", { name: "Bill Hopped Session", exact: true });
-  await bill.getByRole("button", { name: "Issue Bill", exact: true }).click();
+  const issue = bill.getByRole("button", { name: "Issue Bill", exact: true });
+  await expect(issue, "QA fixture must have a positive bill; never bypass zero-price protection").toBeEnabled();
+  const issued = page.waitForResponse(response => response.url().includes("/rpc/commit_checkout_bill_v2") && response.request().method() === "POST");
+  await issue.click();
+  const response = await issued;
+  expect(response.status()).toBe(200);
+  const canonical = await response.json();
+  expect(canonical.bill_id).toBeTruthy();
   await expect(bill).toBeHidden();
   await waitForSynced(page);
-  return targetId;
+  const rows = await readRestRows<{id:string;closed_bill_id:string}>(page, identity.restBase, identity.headers, "sessions", {
+    organization_id: `eq.${organizationId}`, id: `eq.${targetId}`, select: "id,closed_bill_id"
+  });
+  expect(rows).toEqual([{id:targetId,closed_bill_id:canonical.bill_id}]);
+  return canonical.bill_id as string;
 }
 
 test.describe.serial("Operational lifecycle v2 real two-client concurrency", () => {
@@ -360,7 +383,7 @@ test.describe.serial("Operational lifecycle v2 real two-client concurrency", () 
         let terminal = await reconcileClosed(page, origin, target);
         expect(terminal.close_disposition).toBe(winnerOperation === "hop" ? "hopped" : "rejected");
         if (winnerOperation === "hop") {
-          await billRecoverableHop(page, target.id);
+          await billRecoverableHop(page, target.id, origin);
           terminal = await reconcileClosed(page, origin, target);
           expect(terminal.closed_bill_id).toBeTruthy();
         }
@@ -373,7 +396,8 @@ test.describe.serial("Operational lifecycle v2 real two-client concurrency", () 
           loserMutationId: loserCommand.payload.mutation_id,
           winnerActorId,
           event: events[0],
-          audit: audits[0]
+          audit: audits[0],
+          cleanupBillId: terminal.closed_bill_id
         });
       }
 
@@ -410,6 +434,7 @@ test.describe.serial("Operational lifecycle v2 real two-client concurrency", () 
       serverDurationMs: number;
       httpAcknowledgementMs: number;
       browserCompletionMs: number;
+      cleanupBillId?: string;
     }> = [];
 
     try {
@@ -465,7 +490,7 @@ test.describe.serial("Operational lifecycle v2 real two-client concurrency", () 
           });
 
           if (targetClass === "hop_session_v2") {
-            await billRecoverableHop(page, target.id);
+            samples[samples.length - 1].cleanupBillId = await billRecoverableHop(page, target.id, origin);
           }
         }
       }

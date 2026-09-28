@@ -1,5 +1,6 @@
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
 import { createFailurePreservingCleanup } from "../../../src/qa/failurePreservingCleanup";
+import { timedFixturePricing, type FixturePricingRow } from "../../../src/qa/timedSessionFixture";
 import {
   attachFailureScreenshot,
   attachJson,
@@ -135,9 +136,11 @@ function mutationAuditIds(payload: Record<string, unknown>) {
   return ids;
 }
 
-function sessionCommand(identity: Identity, station: StationRow, suffix: string, customerName: string, sources: string[] = []) {
+function sessionCommand(identity: Identity, station: StationRow, suffix: string, customerName: string, pricingRows: FixturePricingRow[], sources: string[] = []) {
   const id = `${runId}-${suffix}`;
   const createdAt = new Date().toISOString();
+  const startedAt = new Date(Date.now() - 60_000).toISOString();
+  const pricingSnapshot = timedFixturePricing(pricingRows, station.id, startedAt, createdAt);
   return {
     organization_id: organizationId,
     mutation_id: `${id}-start`,
@@ -149,13 +152,13 @@ function sessionCommand(identity: Identity, station: StationRow, suffix: string,
         stationId: station.id,
         stationNameSnapshot: station.name,
         mode: station.mode,
-        startedAt: new Date(Date.now() - 60_000).toISOString(),
+        startedAt,
         status: "active",
         customerName,
         customerPhone: "",
         playMode: "group",
         ltpEligible: false,
-        pricingSnapshot: [],
+        pricingSnapshot,
         pauseLogIds: [],
         continuedFromSessionIds: sources,
         items: [],
@@ -309,8 +312,8 @@ test.describe.serial("Operational v2 continuation and unit-sale matrix", () => {
     const rpcEvidence: RpcEvidence[] = [];
     const originRequests: CapturedRpcRequest[] = [];
     captureAuthenticatedRestRequests(page, originRequests);
-    captureRpcEvidence(page, "origin", rpcEvidence);
-    captureRpcEvidence(observer.page, "observer", rpcEvidence);
+    const originRpcCapture = captureRpcEvidence(page, "origin", rpcEvidence);
+    const observerRpcCapture = captureRpcEvidence(observer.page, "observer", rpcEvidence);
     const originErrors = capturePageErrors(page);
     const observerErrors = capturePageErrors(observer.page);
     const customerName = `QA Unit Hop ${runId}`;
@@ -353,7 +356,10 @@ test.describe.serial("Operational v2 continuation and unit-sale matrix", () => {
       await close.getByLabel(/Game hop - close station without billing/).check();
       const hopResponse = page.waitForResponse((response) => response.url().includes("/rpc/hop_session_v2"));
       await close.getByRole("button", { name: "Confirm Game Hop", exact: true }).click();
-      expect((await hopResponse).status()).toBe(200);
+      const committedHop = await hopResponse;
+      expect(committedHop.status()).toBe(200);
+      expect(await committedHop.json()).toMatchObject({ entity_id: sourceId });
+      await originRpcCapture.settle();
       expect(rpcEvidence.findLast((entry) => entry.rpc === "hop_session_v2" && entry.status < 300)?.entityId).toBe(sourceId);
       const [sessionAfterHop, itemsAfterHop, inventoryAfterHop] = await Promise.all([
         readRestRows<{ id: string; mode: string; status: string; close_disposition: string | null; closed_bill_id: string | null }>(
@@ -378,6 +384,7 @@ test.describe.serial("Operational v2 continuation and unit-sale matrix", () => {
       await bill.getByRole("button", { name: "Issue Bill", exact: true }).click();
       await expect(bill).toBeHidden();
       await waitForSynced(page);
+      await originRpcCapture.settle();
       billId = rpcEvidence.findLast((entry) => entry.rpc === "commit_checkout_bill_v2" && entry.status < 300)?.billId;
       expect(billId).toBeTruthy();
       const [sessionAfterBill, billLines, inventoryAfterBill, billStockMovements] = await Promise.all([
@@ -417,6 +424,7 @@ test.describe.serial("Operational v2 continuation and unit-sale matrix", () => {
       };
       expect(originErrors).toEqual({ consoleErrors: [], pageErrors: [] });
       expect(observerErrors).toEqual({ consoleErrors: [], pageErrors: [] });
+      await Promise.all([originRpcCapture.settle(), observerRpcCapture.settle()]);
       await attachJson(testInfo, "operational-v2-unit-sale-hop", { runId, customerName, sourceId, billId, unitEvidence, rpcEvidence });
     } catch (error) {
       primaryError = error;
@@ -462,9 +470,14 @@ test.describe.serial("Operational v2 continuation and unit-sale matrix", () => {
       });
       const station = stations.find((entry) => entry.name === timedStationName) ?? stations[0];
       expect(station).toBeTruthy();
+      const pricingRows = await readRestRows<FixturePricingRow>(page, origin.restBase, origin.headers, "pricing_rules", {
+        organization_id: `eq.${organizationId}`, station_id: `eq.${station.id}`,
+        select: "id,station_id,label,start_minute,end_minute,hourly_rate", order: "id.asc"
+      });
+      timedFixturePricing(pricingRows, station.id, new Date(Date.now() - 60_000).toISOString(), new Date().toISOString());
 
       const prepareSource = async (suffix: string, customerName: string) => {
-        const start = sessionCommand(origin, station, `${suffix}-source`, customerName);
+        const start = sessionCommand(origin, station, `${suffix}-source`, customerName, pricingRows);
         const started = await originRpc("start_session", start);
         expect(started.status).toBe(200);
         const target: Target = { type: "session", id: String((start.payload.session as { id: string }).id), customerName };
@@ -519,7 +532,7 @@ test.describe.serial("Operational v2 continuation and unit-sale matrix", () => {
         const existing: Target = { type: "customer_tab", id: String((existingCommand.payload.tab as { id: string }).id), customerName };
         unresolvedConsumers.set(existing.id, existing);
         const source = await prepareSource(suffix, customerName);
-        const session = sessionCommand(origin, station, `${suffix}-session`, customerName, [source.id]);
+        const session = sessionCommand(origin, station, `${suffix}-session`, customerName, pricingRows, [source.id]);
         const newTab = tabCommand(second, `${suffix}-new-tab`, customerName, [source.id]);
         const linked = linkCommand(origin, existing, source.id, suffix);
         const results = await Promise.all([

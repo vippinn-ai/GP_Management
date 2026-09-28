@@ -77,11 +77,23 @@ describe("staging Playwright harness contract", () => {
 
   it("uses two browser contexts, compact RPC evidence, and cleanup branches", () => {
     const support = read("tests/e2e/staging/support/app.ts");
+    const rpcCollector = read("src/qa/rpcEvidenceCollector.ts");
     const scenario = read("tests/e2e/staging/release-a-hop-pause.e2e.ts");
     const reporter = read("scripts/playwright-compact-reporter.mjs");
 
     expect(support).toContain("browser.newContext");
-    expect(support).toContain('const marker = "/rest/v1/rpc/"');
+    expect(support).toContain("createRpcEvidenceCollector");
+    expect(support).toContain('page.on("response", listener)');
+    expect(support).toContain('page.off("response", listener)');
+    expect(support).toContain("detach.settle");
+    expect(support).toContain("detach.dispose");
+    expect(rpcCollector).toContain('const marker = "/rest/v1/rpc/"');
+    expect(rpcCollector).toContain("pending.add(task)");
+    expect(rpcCollector).toContain("await response.json()");
+    expect(rpcCollector).toContain("RPC evidence collection did not settle within the configured timeout.");
+    expect(rpcCollector).toContain("RPC evidence collection failed.");
+    expect(rpcCollector).toContain("entityId: typeof body.entity_id");
+    expect(rpcCollector).toContain("changedRows: body.changed_rows");
     expect(support).toContain('getByText(/^Synced(?:\\s|$)/)');
     expect(support).toContain("await expect(dashboard.or(rejected)).toBeVisible()");
     expect(support).toContain('await password.fill("")');

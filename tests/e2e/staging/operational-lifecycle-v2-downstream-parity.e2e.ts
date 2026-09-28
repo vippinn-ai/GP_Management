@@ -58,7 +58,7 @@ test("bill, receipt, mobile, hard-refresh, and logout-login consumers retain exa
   const rpcEvidence: RpcEvidence[] = [];
   const errors = capturePageErrors(page);
   captureAuthenticatedRestRequests(page, requests);
-  captureRpcEvidence(page, "origin", rpcEvidence);
+  const rpcCapture = captureRpcEvidence(page, "origin", rpcEvidence);
   const customerName = `QA Downstream ${runId}`;
   let billId: string | undefined;
   let billNumber: string | undefined;
@@ -88,6 +88,7 @@ test("bill, receipt, mobile, hard-refresh, and logout-login consumers retain exa
     expect((await issued).status()).toBe(200);
     await expect(checkout).toBeHidden();
     await waitForSynced(page);
+    await rpcCapture.settle();
     const commit = rpcEvidence.findLast((entry) => entry.rpc === "commit_checkout_bill_v2" && entry.status < 300);
     billId = commit?.billId;
     billNumber = commit?.billNumber;
@@ -101,8 +102,8 @@ test("bill, receipt, mobile, hard-refresh, and logout-login consumers retain exa
           organization_id: `eq.${organizationId}`, id: `eq.${billId}`, select: "id,bill_number,customer_name,total,amount_paid,amount_due"
         }
       ),
-      readRestRows<{ id: string; bill_id: string; line_total: number }>(page, identity.restBase, identity.headers, "bill_lines", {
-        organization_id: `eq.${organizationId}`, bill_id: `eq.${billId}`, select: "id,bill_id,line_total"
+      readRestRows<{ id: string; bill_id: string; total: number }>(page, identity.restBase, identity.headers, "bill_lines", {
+        organization_id: `eq.${organizationId}`, bill_id: `eq.${billId}`, select: "id,bill_id,total"
       }),
       readRestRows<{ id: string; bill_id: string; amount: number; mode: string }>(page, identity.restBase, identity.headers, "payments", {
         organization_id: `eq.${organizationId}`, bill_id: `eq.${billId}`, select: "id,bill_id,amount,mode"
@@ -111,7 +112,7 @@ test("bill, receipt, mobile, hard-refresh, and logout-login consumers retain exa
     expect(billRows).toHaveLength(1);
     expect(lineRows.length).toBeGreaterThan(0);
     expect(paymentRows).toHaveLength(1);
-    expect(Number(billRows[0].total)).toBeCloseTo(lineRows.reduce((total, row) => total + Number(row.line_total), 0), 2);
+    expect(Number(billRows[0].total)).toBeCloseTo(lineRows.reduce((total, row) => total + Number(row.total), 0), 2);
     expect(Number(billRows[0].amount_paid)).toBe(Number(paymentRows[0].amount));
     const desktop = await receiptSnapshot(page, billNumber!);
 
@@ -133,6 +134,7 @@ test("bill, receipt, mobile, hard-refresh, and logout-login consumers retain exa
     expect(afterLogin.receiptText).toBe(desktop.receiptText);
     expect(errors).toEqual({ consoleErrors: [], pageErrors: [] });
 
+    await rpcCapture.settle();
     await attachJson(testInfo, "operational-v2-downstream-parity", {
       runId,
       customerName,

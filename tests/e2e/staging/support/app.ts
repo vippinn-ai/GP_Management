@@ -1,23 +1,25 @@
-import { expect, type APIResponse, type Browser, type BrowserContext, type Page, type Route, type TestInfo } from "@playwright/test";
+import {
+  expect,
+  type APIResponse,
+  type Browser,
+  type BrowserContext,
+  type Page,
+  type Response as PlaywrightResponse,
+  type Route,
+  type TestInfo
+} from "@playwright/test";
 import { writeFile } from "node:fs/promises";
+import {
+  createRpcEvidenceCollector,
+  type RpcEvidence,
+  type RpcEvidenceResponseLike
+} from "../../../../src/qa/rpcEvidenceCollector";
+
+export type { RpcEvidence } from "../../../../src/qa/rpcEvidenceCollector";
 
 export interface StagingCredentials {
   username: string;
   password: string;
-}
-
-export interface RpcEvidence {
-  page: "origin" | "observer";
-  rpc: string;
-  status: number;
-  entityId?: string;
-  billId?: string;
-  billNumber?: string;
-  eventId?: string;
-  mutationId?: string;
-  serverTime?: string;
-  serverDurationMs?: number;
-  changedRows?: Record<string, unknown>;
 }
 
 export interface PageErrorCapture {
@@ -149,33 +151,30 @@ export function capturePageErrors(page: Page): PageErrorCapture {
   return capture;
 }
 
-export function captureRpcEvidence(page: Page, pageName: RpcEvidence["page"], target: RpcEvidence[]) {
-  page.on("response", async (response) => {
-    const url = new URL(response.url());
-    const marker = "/rest/v1/rpc/";
-    if (!url.pathname.includes(marker) || response.request().method() !== "POST") return;
-    const rpc = url.pathname.slice(url.pathname.indexOf(marker) + marker.length);
-    let body: Record<string, unknown> = {};
-    try {
-      const value = await response.json();
-      if (value && typeof value === "object" && !Array.isArray(value)) body = value as Record<string, unknown>;
-    } catch {
-      // A non-JSON failure is still retained through status and the test error.
-    }
-    target.push({
-      page: pageName,
-      rpc,
-      status: response.status(),
-      entityId: typeof body.entity_id === "string" ? body.entity_id : undefined,
-      billId: typeof body.bill_id === "string" ? body.bill_id : undefined,
-      billNumber: typeof body.bill_number === "string" ? body.bill_number : undefined,
-      eventId: typeof body.event_id === "string" ? body.event_id : undefined,
-      mutationId: typeof body.mutation_id === "string" ? body.mutation_id : undefined,
-      serverTime: typeof body.server_time === "string" ? body.server_time : undefined,
-      serverDurationMs: typeof body.server_duration_ms === "number" ? body.server_duration_ms : undefined,
-      changedRows: body.changed_rows && typeof body.changed_rows === "object" ? body.changed_rows as Record<string, unknown> : undefined
-    });
-  });
+export interface RpcEvidenceCaptureControl {
+  (): void;
+  settle(timeoutMs?: number): Promise<void>;
+  dispose(timeoutMs?: number): Promise<void>;
+}
+
+export function captureRpcEvidence(page: Page, pageName: RpcEvidence["page"], target: RpcEvidence[]): RpcEvidenceCaptureControl {
+  const collector = createRpcEvidenceCollector(pageName, target);
+  const listener = (response: PlaywrightResponse) => {
+    collector.onResponse(response as RpcEvidenceResponseLike);
+  };
+  page.on("response", listener);
+  let detached = false;
+  const detach = (() => {
+    if (detached) return;
+    detached = true;
+    page.off("response", listener);
+  }) as RpcEvidenceCaptureControl;
+  detach.settle = (timeoutMs?: number) => collector.settle(timeoutMs);
+  detach.dispose = async (timeoutMs?: number) => {
+    detach();
+    await collector.settle(timeoutMs);
+  };
+  return detach;
 }
 
 export function captureAuthenticatedRestRequests(page: Page, target: CapturedRpcRequest[]) {
