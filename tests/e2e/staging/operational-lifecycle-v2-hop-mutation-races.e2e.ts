@@ -41,6 +41,8 @@ interface SessionItemRow {
   name: string;
   quantity: number | string;
   unit_price: number | string;
+  sale_variant_id: string | null;
+  sold_as_pack_of: number | string | null;
 }
 
 function identityFrom(requests: CapturedRpcRequest[]): Identity {
@@ -247,7 +249,7 @@ test("hop serializes safely against timing, pause, resume, add-item, and remove-
           organization_id: `eq.${organizationId}`, session_id: `eq.${sourceId}`, select: "id,paused_at,resumed_at", order: "id.asc"
         }),
         readRestRows<SessionItemRow>(page, origin.restBase, origin.headers, "session_items", {
-          organization_id: `eq.${organizationId}`, session_id: `eq.${sourceId}`, select: "id,inventory_item_id,name,quantity,unit_price", order: "id.asc"
+          organization_id: `eq.${organizationId}`, session_id: `eq.${sourceId}`, select: "id,inventory_item_id,name,quantity,unit_price,sale_variant_id,sold_as_pack_of", order: "id.asc"
         })
       ]);
       expect(sessionBeforeRace).toHaveLength(1);
@@ -294,11 +296,11 @@ test("hop serializes safely against timing, pause, resume, add-item, and remove-
           organization_id: `eq.${organizationId}`, session_id: `eq.${sourceId}`, select: "id,paused_at,resumed_at", order: "id.asc"
         }),
         readRestRows<SessionItemRow>(page, origin.restBase, origin.headers, "session_items", {
-          organization_id: `eq.${organizationId}`, session_id: `eq.${sourceId}`, select: "id,inventory_item_id,name,quantity,unit_price", order: "id.asc"
+          organization_id: `eq.${organizationId}`, session_id: `eq.${sourceId}`, select: "id,inventory_item_id,name,quantity,unit_price,sale_variant_id,sold_as_pack_of", order: "id.asc"
         }),
-        readRestRows<{ id: string; description: string; linked_session_id: string | null; inventory_item_id: string | null }>(
+        readRestRows<{ id: string; description: string; quantity: number | string; unit_price: number | string; linked_session_id: string | null; inventory_item_id: string | null; sale_variant_id: string | null; sold_as_pack_of: number | string | null }>(
           page, origin.restBase, origin.headers, "bill_lines",
-          { organization_id: `eq.${organizationId}`, bill_id: `eq.${billId}`, linked_session_id: `eq.${sourceId}`, select: "id,description,linked_session_id,inventory_item_id", order: "id.asc" }
+          { organization_id: `eq.${organizationId}`, bill_id: `eq.${billId}`, select: "id,description,quantity,unit_price,linked_session_id,inventory_item_id,sale_variant_id,sold_as_pack_of", order: "id.asc" }
         ),
         readRestRows<{ id: string; created_by: string; metadata: { mutation_id?: string } }>(page, origin.restBase, origin.headers, "operational_events", {
           organization_id: `eq.${organizationId}`, "metadata->>mutation_id": `in.(${hopMutationId},${mutationId})`, select: "id,created_by,metadata"
@@ -310,6 +312,23 @@ test("hop serializes safely against timing, pause, resume, add-item, and remove-
           organization_id: `eq.${organizationId}`, id: `eq.${mutationAuditId}`, select: "id,user_id"
         })
       ]);
+      await attachJson(testInfo, `operational-v2-hop-mutation-${kind}-before-assertions`, {
+        runId, sourceId, billId, kind, mutationStatus: mutationResponse.status(),
+        sessions, pauseLogs, itemsAfterBill, billLines, events, hopAudits, mutationAudits
+      });
+      const billedInventory = billLines.filter((line) => line.inventory_item_id);
+      expect(billedInventory.every((line) => line.linked_session_id === null)).toBe(true);
+      expect(billedInventory.map((line) => ({
+        inventoryItemId: line.inventory_item_id, name: line.description,
+        saleVariantId: line.sale_variant_id, soldAsPackOf: line.sold_as_pack_of === null ? null : Number(line.sold_as_pack_of),
+        quantity: Number(line.quantity), unitPrice: Number(line.unit_price)
+      })).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)))).toEqual(
+        itemsAfterBill.map((item) => ({
+          inventoryItemId: item.inventory_item_id, name: Number(item.sold_as_pack_of) ? `${item.name} (Pack of ${Number(item.sold_as_pack_of)})` : item.name,
+          saleVariantId: item.sale_variant_id, soldAsPackOf: item.sold_as_pack_of === null ? null : Number(item.sold_as_pack_of),
+          quantity: Number(item.quantity), unitPrice: Number(item.unit_price)
+        })).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)))
+      );
       expect(sessions).toHaveLength(1);
       expect(sessions[0]).toMatchObject({ id: sourceId, status: "closed", close_disposition: "billed", closed_bill_id: billId });
       expect(pauseLogs.filter((row) => row.resumed_at === null), `${kind} must not leave an open pause`).toEqual([]);

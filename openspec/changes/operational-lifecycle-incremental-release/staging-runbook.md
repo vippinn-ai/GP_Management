@@ -33,6 +33,8 @@ The live runner requires E2E_RUN_ID, E2E_EXPECTED_COMMIT, E2E_EXPECTED_SOURCE_SH
 
 ## Local commands (no staging execution)
 
+The separately reviewed [fixed inventory-contract supplement](inventory-contract-supplement.md) adds `--inventory-contract [--list]` for exactly two inventory regression cases. It retains every source/runtime/environment/proof/actor guard and requires its separate focused posttest verifier; it never replaces or certifies this full 31-case release gate.
+
 ### Explicit staging ACL convergence (26 September predecessor)
 
 The complete 15:12 UTC read-only capture found matching bodies for all ten functions, but additional direct non-grantable service_role EXECUTE on the seven candidate functions and eight service_role privileges on operational_mutations. Owner, RLS, forced-RLS and policies match. Do not bypass the existing install/reinstall contracts or replace matching business functions.

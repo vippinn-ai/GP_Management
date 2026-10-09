@@ -10,15 +10,42 @@ export function lifecycleRuntimeIdentity(env) {
   const keys = ["E2E_BASE_URL", "E2E_RUN_ID", "E2E_HOP_STATION", "E2E_PAUSE_STATION", "E2E_OPERATIONAL_UNIT_STATION",
     "E2E_V2_HOP_RACE_STATION", "E2E_V2_REJECT_RACE_STATION", "E2E_V2_MULTIHOP_STATION", "E2E_V2_ROLE_HOP_STATION",
     "E2E_V2_ORGANIZATION_ID", "E2E_INVENTORY_CUSTOMER_NAME", "E2E_ROLE_MATRIX", "E2E_ROLE_MATRIX_PHASE",
-    "E2E_BROWSER_CHANNEL", "E2E_HEADLESS", "E2E_OBSERVER_ADMIN_ACTOR_ID", "E2E_RECEPTIONIST_ACTOR_ID", "E2E_MANAGER_ACTOR_ID"];
+    "E2E_BROWSER_CHANNEL", "E2E_HEADLESS", "E2E_OBSERVER_ADMIN_ACTOR_ID", "E2E_RECEPTIONIST_ACTOR_ID", "E2E_MANAGER_ACTOR_ID", "E2E_LIFECYCLE_MODE"];
   const inputs = Object.fromEntries(keys.map((key) => [key, env[key] ?? null]));
   return { inputs, sha256: sha256(JSON.stringify(inputs)) };
 }
 
 export function parseLifecycleArguments(args) {
-  if (args.length === 0) return { discoveryOnly: false, args: [] };
-  if (args.length === 1 && ["--list", "--help"].includes(args[0])) return { discoveryOnly: true, args };
-  throw new Error("Lifecycle runner accepts only no arguments (complete live suite), --list, or --help; overrides and selectors are forbidden.");
+  if (args.length === 0) return { discoveryOnly: false, args: [], mode: "full" };
+  if (args.length === 1 && ["--list", "--help"].includes(args[0])) return { discoveryOnly: true, args, mode: "full" };
+  if (JSON.stringify(args) === JSON.stringify(["--inventory-contract"]) || JSON.stringify(args) === JSON.stringify(["--inventory-contract", "--list"])) return { discoveryOnly: args.length === 2, args: args.slice(1), mode: "inventory-contract" };
+  throw new Error("Lifecycle runner accepts only the complete suite, --list, --help, or --inventory-contract [--list]; arbitrary overrides and selectors are forbidden.");
+}
+
+export const INVENTORY_CONTRACT_TESTS = Object.freeze([
+  Object.freeze({ file: "operational-lifecycle-v2-continuations.e2e.ts", project: "", title: "operational-lifecycle-v2-continuations.e2e.ts > Operational v2 continuation and unit-sale matrix > unit-sale session can hop and bill without losing its server-owned items" }),
+  Object.freeze({ file: "operational-lifecycle-v2-hop-mutation-races.e2e.ts", project: "", title: "operational-lifecycle-v2-hop-mutation-races.e2e.ts > hop serializes safely against timing, pause, resume, add-item, and remove-item mutations" })
+]);
+
+export function lifecycleSuiteContract(mode) {
+  if (!["full", "inventory-contract"].includes(mode)) throw new Error("Unknown lifecycle suite mode.");
+  return { suite: mode === "full" ? "operational-lifecycle" : "operational-lifecycle-inventory-contract", mode,
+    expectedTestCount: mode === "full" ? 31 : 2, fullReleaseGate: mode === "full" };
+}
+
+export function lifecycleSelectionArguments(mode) {
+  lifecycleSuiteContract(mode);
+  if (mode === "full") return [];
+  const escape = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return ["--grep", `^\\s*(?:${INVENTORY_CONTRACT_TESTS.map(entry => escape(entry.title.replaceAll(" > ", " "))).join("|")})$`];
+}
+
+export function assertLifecycleSuiteDiscovery(expected, mode) {
+  const contract = lifecycleSuiteContract(mode);
+  const key = ({file,project,title}) => JSON.stringify([file,project,title]);
+  if (expected.length !== contract.expectedTestCount || new Set(expected.map(key)).size !== expected.length) throw new Error("Lifecycle discovery does not match the fixed suite size.");
+  if (mode === "inventory-contract" && JSON.stringify(expected.map(key).sort()) !== JSON.stringify(INVENTORY_CONTRACT_TESTS.map(key).sort())) throw new Error("Inventory contract requires exactly the two approved full test identities.");
+  return contract;
 }
 
 export function assertStagingBundleUrl(scriptPath, baseUrl) {

@@ -7,7 +7,8 @@ import { loadLifecycleDatabaseLineage } from "./lifecycle-database-lineage.mjs";
 import { executeActorGatedSuite, loadLifecycleRoleEnvironment, runLifecycleActorPreflight } from './lifecycle-actor-preflight.mjs';
 const require = createRequire(import.meta.url);
 import { parseLifecycleArguments, assertStagingBundleUrl, assertLifecycleSqlBinding, lifecycleSourceIdentity,
-  assertCleanCandidate, expectedLifecycleTests, assertCompleteLifecycleSummary, lifecycleRuntimeIdentity } from "./lifecycle-runner-guards.mjs";
+  assertCleanCandidate, expectedLifecycleTests, assertCompleteLifecycleSummary, lifecycleRuntimeIdentity,
+  lifecycleSuiteContract, lifecycleSelectionArguments, assertLifecycleSuiteDiscovery } from "./lifecycle-runner-guards.mjs";
 import {
   assertLiveCredentials,
   assertOperationalRunId,
@@ -21,14 +22,17 @@ import {
 
 const root = process.cwd();
 const args = process.argv.slice(2);
-const { discoveryOnly, args: playwrightArgs } = parseLifecycleArguments(args);
+const { discoveryOnly, args: playwrightArgs, mode } = parseLifecycleArguments(args);
+const suiteContract = lifecycleSuiteContract(mode);
+const selectionArgs = lifecycleSelectionArguments(mode);
 if (args[0] === "--help") {
-  console.log("Usage: node scripts/run-operational-v2-staging-e2e.mjs [--list | --help]\nNo arguments runs the complete gated staging suite. Live selectors/overrides are forbidden; see the R1 staging runbook for required immutable inputs.");
+  console.log("Usage: node scripts/run-operational-v2-staging-e2e.mjs [--list | --help | --inventory-contract [--list]]\nNo arguments runs the complete 31-case gate. Inventory contract is a fixed two-case supplemental run, never release acceptance. Arbitrary selectors/overrides remain forbidden.");
   process.exit(0);
 }
 const localEnv = parseEnvFile(path.join(root, ".env.e2e.local"));
 const stagingEnv = parseEnvFile(path.join(root, ".env.staging"));
 let env = { ...localEnv, ...process.env };
+env.E2E_LIFECYCLE_MODE = mode;
 
 assertStagingSupabaseEnvironment(stagingEnv, true);
 for (const flag of [
@@ -214,7 +218,7 @@ if (!discoveryOnly) {
 
 console.log(JSON.stringify({
   runner: "operational-v2-staging-playwright",
-  suite: "operational-lifecycle",
+  ...suiteContract,
   baseUrl: env.E2E_BASE_URL,
   runId: env.E2E_RUN_ID,
   discoveryOnly,
@@ -240,13 +244,14 @@ const configPath = "playwright.operational-v2.staging.config.ts";
 // JSON discovery neither executes fixtures nor writes the compact live summary.
 const discoveryEnv = { ...env };
 for (const key of ["PLAYWRIGHT_JSON_OUTPUT_NAME", "PLAYWRIGHT_JSON_OUTPUT_DIR", "PLAYWRIGHT_JSON_OUTPUT_FILE"]) delete discoveryEnv[key];
-const discovery = spawnSync(process.execPath, [cliPath, "test", `--config=${configPath}`, "--list", "--reporter=json"], {
+const discovery = spawnSync(process.execPath, [cliPath, "test", `--config=${configPath}`, ...selectionArgs, "--list", "--reporter=json"], {
   cwd: root, env: discoveryEnv, encoding: "utf8", maxBuffer: 8 * 1024 * 1024, shell: false, windowsHide: true
 });
 if (discovery.error || discovery.status !== 0) throw new Error("Offline test discovery failed; live execution was not started.");
 const expectedTests = expectedLifecycleTests(JSON.parse(discovery.stdout));
+assertLifecycleSuiteDiscovery(expectedTests, mode);
 if (discoveryOnly) {
-  console.log(JSON.stringify({ discoveryOnly: true, executedTests: 0, expectedTests }, null, 2));
+  console.log(JSON.stringify({ ...suiteContract, discoveryOnly: true, executedTests: 0, expectedTests }, null, 2));
   process.exit(0);
 }
 // Reserve the identity before any test mutation, including a crash before summary.
@@ -256,6 +261,7 @@ revalidateProofArtifacts();
 if (lifecycleSourceIdentity(root).sha256 !== sourceIdentity.sha256) throw new Error("Candidate source changed during discovery; live execution was not started.");
 fs.mkdirSync(outputDir, { recursive: true });
 fs.writeFileSync(reservationPath, JSON.stringify({
+  ...suiteContract,
   runId: env.E2E_RUN_ID, candidateCommit: env.E2E_EXPECTED_COMMIT, sourceIdentity, expectedTests, playwrightArgs,
   runtimeIdentity, baseUrl: env.E2E_BASE_URL, projectRef: STAGING_PROJECT_REF, organizationId: "org-primary",
   databaseManifest: { path: databaseManifestPath, sha256: env.E2E_DB_MANIFEST_SHA256 },
@@ -268,7 +274,7 @@ fs.writeFileSync(reservationPath, JSON.stringify({
 }, null, 2) + "\n", { encoding: "utf8", flag: "wx" });
 const { receipt: actorPreflight, sha256: actorPreflightSha256, result } = await executeActorGatedSuite({ env,
   reservationPath, receiptPath: actorPreflightPath, preflight: runLifecycleActorPreflight,
-  launch: () => spawnSync(process.execPath, [cliPath, "test", `--config=${configPath}`], {
+  launch: () => spawnSync(process.execPath, [cliPath, "test", `--config=${configPath}`, ...selectionArgs], {
   cwd: root, env, stdio: "inherit", shell: false, windowsHide: true
 }) });
 let gateError;
@@ -312,6 +318,7 @@ if (!discoveryOnly) {
   visit(actorPreflightPath);
   visit(summaryPath);
   fs.writeFileSync(evidenceManifestPath, JSON.stringify({
+    ...suiteContract,
     runId: env.E2E_RUN_ID,
     createdAt: new Date().toISOString(),
     exitCode: gateError ? 1 : 0,

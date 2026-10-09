@@ -396,7 +396,7 @@ test.describe.serial("Operational v2 continuation and unit-sale matrix", () => {
         ),
         readRestRows<{ description: string; quantity: number | string; unit_price: number | string; inventory_item_id: string | null; linked_session_id: string | null }>(
           page, identity.restBase, identity.headers, "bill_lines",
-          { organization_id: `eq.${organizationId}`, bill_id: `eq.${billId}`, linked_session_id: `eq.${sourceId}`, select: "description,quantity,unit_price,inventory_item_id,linked_session_id", order: "id.asc" }
+          { organization_id: `eq.${organizationId}`, bill_id: `eq.${billId}`, select: "description,quantity,unit_price,inventory_item_id,linked_session_id", order: "id.asc" }
         ),
         readRestRows<{ id: string; stock_qty: number | string; is_reusable: boolean }>(page, identity.restBase, identity.headers, "inventory_items", {
           organization_id: `eq.${organizationId}`, id: `in.(${inventoryIds.join(",")})`, select: "id,stock_qty,is_reusable", order: "id.asc"
@@ -405,7 +405,14 @@ test.describe.serial("Operational v2 continuation and unit-sale matrix", () => {
           organization_id: `eq.${organizationId}`, related_bill_id: `eq.${billId}`, item_id: `in.(${inventoryIds.join(",")})`, select: "id,item_id,quantity,related_bill_id", order: "id.asc"
         })
       ]);
+      // Standalone inventory lines belong to the bill; linked_session_id is NULL by contract.
+      const unitEvidence = {
+        startEnvelope, sessionAfterStart, itemsAfterStart, inventoryAfterStart, sessionAfterHop, itemsAfterHop,
+        inventoryAfterHop, sessionAfterBill, billLines, inventoryAfterBill, billStockMovements
+      };
+      await attachJson(testInfo, "operational-v2-unit-sale-before-assertions", { runId, customerName, sourceId, billId, unitEvidence });
       expect(sessionAfterBill).toEqual([{ id: sourceId, mode: "unit_sale", status: "closed", close_disposition: "billed", closed_bill_id: billId }]);
+      expect(billLines.filter((line) => line.inventory_item_id).every((line) => line.linked_session_id === null)).toBe(true);
       const billedItems = billLines
         .filter((line) => line.inventory_item_id)
         .map((line) => ({ inventoryItemId: line.inventory_item_id, name: line.description, quantity: Number(line.quantity), unitPrice: Number(line.unit_price) }));
@@ -420,10 +427,6 @@ test.describe.serial("Operational v2 continuation and unit-sale matrix", () => {
         const movementTotal = billStockMovements.filter((row) => row.item_id === before.id).reduce((sum, row) => sum + Number(row.quantity), 0);
         expect(movementTotal, `Bill stock movement for ${before.id} must match the one-time decrement.`).toBe(-expectedDelta);
       }
-      const unitEvidence = {
-        startEnvelope, sessionAfterStart, itemsAfterStart, inventoryAfterStart, sessionAfterHop, itemsAfterHop,
-        inventoryAfterHop, sessionAfterBill, billLines, inventoryAfterBill, billStockMovements
-      };
       expect(originErrors).toEqual({ consoleErrors: [], pageErrors: [] });
       expect(observerErrors).toEqual({ consoleErrors: [], pageErrors: [] });
       await Promise.all([originRpcCapture.settle(), observerRpcCapture.settle()]);
