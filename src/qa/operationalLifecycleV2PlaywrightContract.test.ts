@@ -313,7 +313,7 @@ describe("operational lifecycle v2 Playwright and performance contract", () => {
       "Bill Hopped Session",
       "Hop mutation races require distinct authenticated actors",
       "session_not_open",
-      "close_disposition: \"hopped\"",
+      "close_disposition: \"billed\", closed_bill_id: billId",
       "must not leave an open pause",
       "Rejected timing mutation must leave canonical start unchanged",
       "Rejected pause mutation must not create a pause row",

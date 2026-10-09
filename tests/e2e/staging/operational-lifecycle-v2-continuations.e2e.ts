@@ -286,7 +286,7 @@ async function billRecoverableSource(page: Page, identity: Identity, sourceId: s
     page, identity.restBase, identity.headers, "sessions",
     { organization_id: `eq.${organizationId}`, id: `eq.${sourceId}`, select: "id,status,close_disposition,closed_bill_id" }
   );
-  expect(sessions).toEqual([{ id: sourceId, status: "closed", close_disposition: "hopped", closed_bill_id: body.bill_id }]);
+  expect(sessions).toEqual([{ id: sourceId, status: "closed", close_disposition: "billed", closed_bill_id: body.bill_id }]);
   return body.bill_id!;
 }
 
@@ -405,7 +405,7 @@ test.describe.serial("Operational v2 continuation and unit-sale matrix", () => {
           organization_id: `eq.${organizationId}`, related_bill_id: `eq.${billId}`, item_id: `in.(${inventoryIds.join(",")})`, select: "id,item_id,quantity,related_bill_id", order: "id.asc"
         })
       ]);
-      expect(sessionAfterBill).toEqual([{ id: sourceId, mode: "unit_sale", status: "closed", close_disposition: "hopped", closed_bill_id: billId }]);
+      expect(sessionAfterBill).toEqual([{ id: sourceId, mode: "unit_sale", status: "closed", close_disposition: "billed", closed_bill_id: billId }]);
       const billedItems = billLines
         .filter((line) => line.inventory_item_id)
         .map((line) => ({ inventoryItemId: line.inventory_item_id, name: line.description, quantity: Number(line.quantity), unitPrice: Number(line.unit_price) }));

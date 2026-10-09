@@ -311,7 +311,7 @@ test("hop serializes safely against timing, pause, resume, add-item, and remove-
         })
       ]);
       expect(sessions).toHaveLength(1);
-      expect(sessions[0]).toMatchObject({ id: sourceId, status: "closed", close_disposition: "hopped", closed_bill_id: billId });
+      expect(sessions[0]).toMatchObject({ id: sourceId, status: "closed", close_disposition: "billed", closed_bill_id: billId });
       expect(pauseLogs.filter((row) => row.resumed_at === null), `${kind} must not leave an open pause`).toEqual([]);
       const hopEvents = events.filter((event) => event.metadata.mutation_id === hopMutationId);
       const mutationEvents = events.filter((event) => event.metadata.mutation_id === mutationId);
