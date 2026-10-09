@@ -1,6 +1,7 @@
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
 import { createFailurePreservingCleanup } from "../../../src/qa/failurePreservingCleanup";
 import { timedFixturePricing, type FixturePricingRow } from "../../../src/qa/timedSessionFixture";
+import { namedCustomerFixture, verifyNamedCustomerFixture } from "../../../src/qa/namedCustomerFixture";
 import {
   attachFailureScreenshot,
   attachJson,
@@ -100,7 +101,8 @@ async function rpc(
     request: { payload },
     response: body
   });
-  return { status: response.status(), body, payload };
+  const customerId = response.status() === 200 ? await verifyNamedCustomerFixture(request, identity, organizationId, name, payload) : undefined;
+  return { status: response.status(), body, payload, customerId };
 }
 
 function canonicalItem(row: SessionItemRow) {
@@ -136,7 +138,7 @@ function mutationAuditIds(payload: Record<string, unknown>) {
   return ids;
 }
 
-function sessionCommand(identity: Identity, station: StationRow, suffix: string, customerName: string, pricingRows: FixturePricingRow[], sources: string[] = []) {
+function sessionCommand(identity: Identity, station: StationRow, suffix: string, customerName: string, pricingRows: FixturePricingRow[], sources: string[] = [], sourceCustomerId?: string) {
   const id = `${runId}-${suffix}`;
   const createdAt = new Date().toISOString();
   const startedAt = new Date(Date.now() - 60_000).toISOString();
@@ -164,14 +166,14 @@ function sessionCommand(identity: Identity, station: StationRow, suffix: string,
         items: [],
         comboApplications: []
       },
-      customer: { id: `${id}-customer`, name: customerName, phone: "", visitAt: createdAt },
+      customer: namedCustomerFixture(id, customerName, startedAt, sources.length ? { sourceIds: sources, customerId: sourceCustomerId } : undefined),
       stockMovements: [],
       auditLogs: []
     }
   };
 }
 
-function tabCommand(identity: Identity, suffix: string, customerName: string, sources: string[] = []) {
+function tabCommand(identity: Identity, suffix: string, customerName: string, sources: string[] = [], sourceCustomerId?: string) {
   const id = `${runId}-${suffix}`;
   const createdAt = new Date().toISOString();
   return {
@@ -190,7 +192,7 @@ function tabCommand(identity: Identity, suffix: string, customerName: string, so
         comboApplications: [],
         continuedFromSessionIds: sources
       },
-      customer: { id: `${id}-customer`, name: customerName, phone: "", visitAt: createdAt },
+      customer: namedCustomerFixture(id, customerName, createdAt, sources.length ? { sourceIds: sources, customerId: sourceCustomerId } : undefined),
       auditLog: {
         id: `${id}-open-audit`,
         action: "customer_tab_opened",
@@ -430,6 +432,9 @@ test.describe.serial("Operational v2 continuation and unit-sale matrix", () => {
       primaryError = error;
     } finally {
       await finalization.run("origin failure screenshot", () => attachFailureScreenshot(testInfo, page, "unit-sale-hop-origin-failure"));
+      await finalization.run("origin RPC evidence settlement", () => originRpcCapture.dispose());
+      await finalization.run("observer RPC evidence settlement", () => observerRpcCapture.dispose());
+      await finalization.run("final unit-sale evidence", () => attachJson(testInfo, "operational-v2-unit-sale-final", { runId, sourceId, billId, rpcEvidence }));
       await finalization.run("observer failure screenshot", () => attachFailureScreenshot(testInfo, observer.page, "unit-sale-hop-observer-failure"));
       await finalization.run("observer context close", () => observer.context.close());
     }
@@ -449,8 +454,8 @@ test.describe.serial("Operational v2 continuation and unit-sale matrix", () => {
     const evidence: Array<Record<string, unknown>> = [];
     const directRpcEvidence: DirectRpcEvidence[] = [];
     const rpcEvidence: RpcEvidence[] = [];
-    captureRpcEvidence(page, "origin", rpcEvidence);
-    captureRpcEvidence(observer.page, "observer", rpcEvidence);
+    const originRpcCapture = captureRpcEvidence(page, "origin", rpcEvidence);
+    const observerRpcCapture = captureRpcEvidence(observer.page, "observer", rpcEvidence);
     const originErrors = capturePageErrors(page);
     const observerErrors = capturePageErrors(observer.page);
     const unresolvedSourceIds = new Set<string>();
@@ -484,7 +489,8 @@ test.describe.serial("Operational v2 continuation and unit-sale matrix", () => {
         const hopped = await originRpc("hop_session_v2", hopCommand(target, suffix));
         expect(hopped.status).toBe(200);
         unresolvedSourceIds.add(target.id);
-        return target;
+        expect(started.customerId).toBeTruthy();
+        return { ...target, customerId: started.customerId };
       };
 
       const rejectConsumer = async (target: Target, suffix: string) => {
@@ -512,7 +518,7 @@ test.describe.serial("Operational v2 continuation and unit-sale matrix", () => {
         }
         const source = await prepareSource(mode, customerName);
         const consumed = mode === "new-tab"
-          ? await originRpc("open_customer_tab", tabCommand(origin, `${mode}-consumer`, customerName, [source.id]))
+          ? await originRpc("open_customer_tab", tabCommand(origin, `${mode}-consumer`, customerName, [source.id], source.customerId))
           : await originRpc("link_customer_tab_continuation", linkCommand(origin, existing!, source.id, mode));
         expect(consumed.status).toBe(200);
         const consumer: Target = existing ?? { type: "customer_tab", id: String((consumed.body as { entity_id: string }).entity_id), customerName };
@@ -532,8 +538,8 @@ test.describe.serial("Operational v2 continuation and unit-sale matrix", () => {
         const existing: Target = { type: "customer_tab", id: String((existingCommand.payload.tab as { id: string }).id), customerName };
         unresolvedConsumers.set(existing.id, existing);
         const source = await prepareSource(suffix, customerName);
-        const session = sessionCommand(origin, station, `${suffix}-session`, customerName, pricingRows, [source.id]);
-        const newTab = tabCommand(second, `${suffix}-new-tab`, customerName, [source.id]);
+        const session = sessionCommand(origin, station, `${suffix}-session`, customerName, pricingRows, [source.id], source.customerId);
+        const newTab = tabCommand(second, `${suffix}-new-tab`, customerName, [source.id], source.customerId);
         const linked = linkCommand(origin, existing, source.id, suffix);
         const results = await Promise.all([
           originRpc("start_session", session),
@@ -564,12 +570,12 @@ test.describe.serial("Operational v2 continuation and unit-sale matrix", () => {
         const suffix = "reject-vs-consumer";
         const customerName = `QA Reject Consumer ${runId}`;
         const source = await prepareSource(suffix, customerName);
-        const oldTabCommand = tabCommand(origin, `${suffix}-old`, customerName, [source.id]);
+        const oldTabCommand = tabCommand(origin, `${suffix}-old`, customerName, [source.id], source.customerId);
         expect((await originRpc("open_customer_tab", oldTabCommand)).status).toBe(200);
         const oldTab: Target = { type: "customer_tab", id: String((oldTabCommand.payload.tab as { id: string }).id), customerName };
         unresolvedConsumers.set(oldTab.id, oldTab);
         const rejection = rejectCommand(oldTab, suffix);
-        const nextTabCommand = tabCommand(second, `${suffix}-next`, customerName, [source.id]);
+        const nextTabCommand = tabCommand(second, `${suffix}-next`, customerName, [source.id], source.customerId);
         const [rejected, next] = await Promise.all([
           originRpc(rejection.rpc, rejection.payload),
           observerRpc("open_customer_tab", nextTabCommand)
@@ -627,6 +633,9 @@ test.describe.serial("Operational v2 continuation and unit-sale matrix", () => {
     } catch (error) {
       primaryError = error;
     } finally {
+      await finalization.run("origin RPC evidence settlement", () => originRpcCapture.dispose());
+      await finalization.run("observer RPC evidence settlement", () => observerRpcCapture.dispose());
+      await finalization.run("final continuation evidence", () => attachJson(testInfo, "operational-v2-continuation-final", { runId, evidence, rpcEvidence, directRpcEvidence }));
       await finalization.run("cleanup ledger evidence", () => attachJson(testInfo, "operational-v2-continuation-cleanup-ledger", {
         runId,
         unresolvedSourceIds: [...unresolvedSourceIds],

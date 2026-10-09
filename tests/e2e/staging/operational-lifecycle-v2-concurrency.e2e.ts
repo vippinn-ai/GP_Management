@@ -1,6 +1,8 @@
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
 import { createFailurePreservingCleanup } from "../../../src/qa/failurePreservingCleanup";
 import { timedFixturePricing, type FixturePricingRow } from "../../../src/qa/timedSessionFixture";
+import { namedCustomerFixture, verifyNamedCustomerFixture } from "../../../src/qa/namedCustomerFixture";
+import { captureRpcResponse } from "../../../src/qa/rpcEvidenceCollector";
 import {
   attachFailureScreenshot,
   attachJson,
@@ -121,7 +123,7 @@ async function createSession(
   client: "origin" | "observer" = "origin"
 ): Promise<Target> {
   const id = `${runId}-${suffix}`;
-  const displayName = `QA ${suffix}`;
+  const displayName = `QA ${id}`;
   const startedAt = new Date(Date.now() - ageMinutes * 60_000).toISOString();
   expect(station.mode).toBe("timed");
   const pricingQuery = new URLSearchParams({ organization_id: `eq.${organizationId}`, station_id: `eq.${station.id}`, select: "id,station_id,label,start_minute,end_minute,hourly_rate", order: "id.asc" });
@@ -151,6 +153,7 @@ async function createSession(
         items: [],
         comboApplications: []
       },
+      customer: namedCustomerFixture(id, displayName, startedAt),
       stockMovements: [],
       auditLogs: []
     }
@@ -158,6 +161,7 @@ async function createSession(
   const created = await postRpc(request, identity, "start_session", command, evidence, client);
   expect(created.response.status(), `start_session ${suffix}`).toBe(200);
   expect(created.body).toMatchObject({ entity_id: id });
+  await verifyNamedCustomerFixture(request, identity, organizationId, "start_session", command);
   return { type: "session", id, displayName };
 }
 
@@ -169,7 +173,7 @@ async function createCustomerTab(
   client: "origin" | "observer" = "origin"
 ): Promise<Target> {
   const id = `${runId}-${suffix}`;
-  const displayName = `QA ${suffix}`;
+  const displayName = `QA ${id}`;
   const createdAt = new Date().toISOString();
   const command = {
     organization_id: organizationId,
@@ -187,6 +191,7 @@ async function createCustomerTab(
         comboApplications: [],
         continuedFromSessionIds: []
       },
+      customer: namedCustomerFixture(id, displayName, createdAt),
       auditLog: {
         id: `${id}-open-audit`,
         action: "customer_tab_opened",
@@ -201,6 +206,7 @@ async function createCustomerTab(
   const created = await postRpc(request, identity, "open_customer_tab", command, evidence, client);
   expect(created.response.status(), `open_customer_tab ${suffix}`).toBe(200);
   expect(created.body).toMatchObject({ entity_id: id });
+  await verifyNamedCustomerFixture(request, identity, organizationId, "open_customer_tab", command);
   return { type: "customer_tab", id, displayName };
 }
 
@@ -276,7 +282,7 @@ async function reconcileClosed(page: Page, identity: RestIdentity, target: Targe
   return rows[0];
 }
 
-async function billRecoverableHop(page: Page, targetId: string, identity: RestIdentity) {
+async function billRecoverableHop(page: Page, targetId: string, identity: RestIdentity, checkoutEvidence: RpcEvidence[]) {
   const targets = await readRestRows<{id:string;customer_name:string;closed_bill_id:string|null;close_disposition:string}>(page, identity.restBase, identity.headers, "sessions", {
     organization_id: `eq.${organizationId}`, id: `eq.${targetId}`, select: "id,customer_name,closed_bill_id,close_disposition"
   });
@@ -297,8 +303,8 @@ async function billRecoverableHop(page: Page, targetId: string, identity: RestId
   const issued = page.waitForResponse(response => response.url().includes("/rpc/commit_checkout_bill_v2") && response.request().method() === "POST");
   await issue.click();
   const response = await issued;
-  expect(response.status()).toBe(200);
-  const canonical = await response.json();
+  const canonical = await captureRpcResponse(response, "origin", checkoutEvidence);
+  expect(response.status(), `Checkout rejection: ${checkoutEvidence.at(-1)?.errorCode ?? "unavailable"}`).toBe(200);
   expect(canonical.bill_id).toBeTruthy();
   await expect(bill).toBeHidden();
   await waitForSynced(page);
@@ -317,11 +323,12 @@ test.describe.serial("Operational lifecycle v2 real two-client concurrency", () 
     const originRequests: CapturedRpcRequest[] = [];
     const observerRequests: CapturedRpcRequest[] = [];
     const rpcEvidence: RpcEvidence[] = [];
+    const checkoutEvidence: RpcEvidence[] = [];
     const directRpcEvidence: DirectRpcEvidence[] = [];
     captureAuthenticatedRestRequests(page, originRequests);
     captureAuthenticatedRestRequests(observer.page, observerRequests);
-    captureRpcEvidence(page, "origin", rpcEvidence);
-    captureRpcEvidence(observer.page, "observer", rpcEvidence);
+    const originCapture = captureRpcEvidence(page, "origin", rpcEvidence);
+    const observerCapture = captureRpcEvidence(observer.page, "observer", rpcEvidence);
     const pageErrors = capturePageErrors(page);
     const observerErrors = capturePageErrors(observer.page);
     const results: Array<Record<string, unknown>> = [];
@@ -383,7 +390,7 @@ test.describe.serial("Operational lifecycle v2 real two-client concurrency", () 
         let terminal = await reconcileClosed(page, origin, target);
         expect(terminal.close_disposition).toBe(winnerOperation === "hop" ? "hopped" : "rejected");
         if (winnerOperation === "hop") {
-          await billRecoverableHop(page, target.id, origin);
+          await billRecoverableHop(page, target.id, origin, checkoutEvidence);
           terminal = await reconcileClosed(page, origin, target);
           expect(terminal.closed_bill_id).toBeTruthy();
         }
@@ -407,7 +414,9 @@ test.describe.serial("Operational lifecycle v2 real two-client concurrency", () 
       expect(pageErrors).toEqual({ consoleErrors: [], pageErrors: [] });
       expect(observerErrors).toEqual({ consoleErrors: [], pageErrors: [] });
     } finally {
-      await finalization.run("final evidence", () => attachJson(testInfo, "operational-v2-same-target-races", { runId, cases: results, rpcEvidence, directRpcEvidence }));
+      await finalization.run("origin RPC evidence settlement", () => originCapture.dispose());
+      await finalization.run("observer RPC evidence settlement", () => observerCapture.dispose());
+      await finalization.run("final evidence", () => attachJson(testInfo, "operational-v2-same-target-races", { runId, cases: results, rpcEvidence, directRpcEvidence, checkoutEvidence }));
       await finalization.run("origin failure screenshot", () => attachFailureScreenshot(testInfo, page, "operational-v2-same-target-origin-failure"));
       await finalization.run("observer failure screenshot", () => attachFailureScreenshot(testInfo, observer.page, "operational-v2-same-target-observer-failure"));
       await finalization.run("observer context close", () => observer.context.close());
@@ -422,6 +431,7 @@ test.describe.serial("Operational lifecycle v2 real two-client concurrency", () 
     const originRequests: CapturedRpcRequest[] = [];
     const observerRequests: CapturedRpcRequest[] = [];
     const directRpcEvidence: DirectRpcEvidence[] = [];
+    const checkoutEvidence: RpcEvidence[] = [];
     captureAuthenticatedRestRequests(page, originRequests);
     captureAuthenticatedRestRequests(observer.page, observerRequests);
     const pageErrors = capturePageErrors(page);
@@ -490,7 +500,7 @@ test.describe.serial("Operational lifecycle v2 real two-client concurrency", () 
           });
 
           if (targetClass === "hop_session_v2") {
-            samples[samples.length - 1].cleanupBillId = await billRecoverableHop(page, target.id, origin);
+            samples[samples.length - 1].cleanupBillId = await billRecoverableHop(page, target.id, origin, checkoutEvidence);
           }
         }
       }
@@ -526,6 +536,7 @@ test.describe.serial("Operational lifecycle v2 real two-client concurrency", () 
       await attachJson(testInfo, "operational-v2-20x3-lifecycle-latency", { runId, summary, samples, directRpcEvidence });
     } finally {
       await finalization.run("origin failure screenshot", () => attachFailureScreenshot(testInfo, page, "operational-v2-latency-origin-failure"));
+      await finalization.run("final latency evidence", () => attachJson(testInfo, "operational-v2-latency-final", { runId, samples, directRpcEvidence, checkoutEvidence }));
       await finalization.run("observer failure screenshot", () => attachFailureScreenshot(testInfo, observer.page, "operational-v2-latency-observer-failure"));
       await finalization.run("observer context close", () => observer.context.close());
     }

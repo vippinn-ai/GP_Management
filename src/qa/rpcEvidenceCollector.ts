@@ -10,6 +10,9 @@ export interface RpcEvidence {
   serverTime?: string;
   serverDurationMs?: number;
   changedRows?: Record<string, unknown>;
+  errorCode?: string;
+  sqlState?: string;
+  bodyReadFailed?: boolean;
 }
 
 export interface RpcEvidenceResponseLike {
@@ -44,21 +47,67 @@ function recordFromBody(
   status: number,
   body: Record<string, unknown>
 ): RpcEvidence {
+  // Retain structured codes only, not arbitrary error text, hints or payloads.
+  let details: Record<string, unknown> = {};
+  try {
+    const parsed = typeof body.details === "string" ? JSON.parse(body.details) : body.details;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) details = parsed;
+  } catch { /* Non-JSON details are intentionally excluded. */ }
+  const safeCode = (value: unknown) => typeof value === "string" && /^[a-z][a-z0-9_]{0,79}$/.test(value) ? value : undefined;
+  const errorIdentity = details.details && typeof details.details === "object" && !Array.isArray(details.details)
+    ? details.details as Record<string, unknown> : {};
+  const safeId = (value: unknown) => typeof value === "string" && /^[A-Za-z0-9_-]{1,200}$/.test(value) ? value : undefined;
+  if (status >= 400) {
+    // Error envelopes are untrusted. Do not carry success-only fields or arbitrary objects.
+    const errorId = (value: unknown, prefix: RegExp) => {
+      const id = safeId(value);
+      return id && prefix.test(id) ? id : undefined;
+    };
+    return {
+      page, rpc, status,
+      errorCode: safeCode(details.code) ?? safeCode(body.code),
+      sqlState: typeof body.code === "string" && /^[0-9A-Z]{5}$/.test(body.code) ? body.code : undefined,
+      billId: errorId(errorIdentity.bill_id ?? body.bill_id, /^bill-/),
+      entityId: errorId(errorIdentity.entity_id ?? errorIdentity.session_id ?? errorIdentity.customer_tab_id ?? body.entity_id, /^(?:session|tab|customer-tab|normops)-/),
+      mutationId: errorId(errorIdentity.mutation_id ?? body.mutation_id, /^(?:financial|mutation|op|normops)-/)
+    };
+  }
   return {
     page,
     rpc,
     status,
-    entityId: typeof body.entity_id === "string" ? body.entity_id : undefined,
-    billId: typeof body.bill_id === "string" ? body.bill_id : undefined,
+    errorCode: safeCode(details.code) ?? safeCode(body.code),
+    sqlState: typeof body.code === "string" && /^[0-9A-Z]{5}$/.test(body.code) ? body.code : undefined,
+    entityId: typeof body.entity_id === "string" ? body.entity_id : safeId(errorIdentity.entity_id ?? errorIdentity.session_id ?? errorIdentity.customer_tab_id),
+    billId: typeof body.bill_id === "string" ? body.bill_id : safeId(errorIdentity.bill_id),
     billNumber: typeof body.bill_number === "string" ? body.bill_number : undefined,
     eventId: typeof body.event_id === "string" ? body.event_id : undefined,
-    mutationId: typeof body.mutation_id === "string" ? body.mutation_id : undefined,
+    mutationId: typeof body.mutation_id === "string" ? body.mutation_id : safeId(errorIdentity.mutation_id),
     serverTime: typeof body.server_time === "string" ? body.server_time : undefined,
     serverDurationMs: typeof body.server_duration_ms === "number" ? body.server_duration_ms : undefined,
     changedRows: body.changed_rows && typeof body.changed_rows === "object"
       ? body.changed_rows as Record<string, unknown>
       : undefined
   };
+}
+
+/** Retain diagnostic status/codes before a caller asserts success, even for an unreadable body. */
+export async function captureRpcResponse(response: RpcEvidenceResponseLike, page: RpcEvidence["page"], target: RpcEvidence[], timeoutMs = DEFAULT_SETTLEMENT_TIMEOUT_MS): Promise<Record<string, unknown>> {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new Error("Invalid RPC body timeout.");
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let body: Record<string, unknown> = {};
+  let bodyReadFailed = false;
+  try {
+    const value = await Promise.race([
+      response.json(),
+      new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("RPC body timeout.")), timeoutMs); })
+    ]);
+    if (value && typeof value === "object" && !Array.isArray(value)) body = value as Record<string, unknown>;
+    else bodyReadFailed = true;
+  } catch { bodyReadFailed = true; }
+  finally { if (timer) clearTimeout(timer); }
+  target.push({ ...recordFromBody(page, rpcName(response) ?? "unknown", response.status(), body), ...(bodyReadFailed ? { bodyReadFailed: true } : {}) });
+  return body;
 }
 
 export function createRpcEvidenceCollector(
