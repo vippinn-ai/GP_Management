@@ -1,4 +1,5 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
+import { expectTargetsAbsent } from "./support/liveTargets";
 import { createFailurePreservingCleanup } from "../../../src/qa/failurePreservingCleanup";
 import {
   attachFailureScreenshot,
@@ -293,7 +294,7 @@ test.describe.serial("Operational v2 lost-response and realtime convergence", ()
       )).toBe(1);
       await observer.page.getByRole("button", { name: "Live Dashboard", exact: true }).click();
       await expect(stationCard(observer.page, station)).toContainText("Available");
-      await expect(observer.page.getByText(duplicateCustomerName, { exact: true })).toHaveCount(0);
+      await expectTargetsAbsent(observer.page, [{ type: "session", id: duplicateSessionId!, displayName: duplicateCustomerName }]);
       await observer.page.reload({ waitUntil: "domcontentloaded" });
       await waitForSynced(observer.page);
       await expect(stationCard(observer.page, station)).toContainText("Available");

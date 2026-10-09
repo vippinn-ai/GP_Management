@@ -3,6 +3,7 @@ import { createFailurePreservingCleanup } from "../../../src/qa/failurePreservin
 import { timedFixturePricing, type FixturePricingRow } from "../../../src/qa/timedSessionFixture";
 import { namedCustomerFixture, verifyNamedCustomerFixture } from "../../../src/qa/namedCustomerFixture";
 import { captureRpcResponse } from "../../../src/qa/rpcEvidenceCollector";
+import { expectTargetsVisible, expectTargetsAbsent } from "./support/liveTargets";
 import {
   attachFailureScreenshot,
   attachJson,
@@ -213,18 +214,6 @@ async function createCustomerTab(
 function percentile(values: number[], percentileValue: number) {
   const ordered = [...values].sort((left, right) => left - right);
   return ordered[Math.max(0, Math.ceil(ordered.length * percentileValue) - 1)];
-}
-
-async function expectTargetsVisible(page: Page, targets: Target[]) {
-  for (const target of targets) {
-    await expect(page.getByText(target.displayName, { exact: true }).first()).toBeVisible();
-  }
-}
-
-async function expectTargetsAbsent(page: Page, targets: Target[]) {
-  for (const target of targets) {
-    await expect(page.getByText(target.displayName, { exact: true })).toHaveCount(0);
-  }
 }
 
 function closeCommand(target: Target, suffix: string, operation: "hop" | "reject") {
