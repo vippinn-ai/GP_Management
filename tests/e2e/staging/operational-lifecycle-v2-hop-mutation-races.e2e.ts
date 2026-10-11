@@ -1,5 +1,6 @@
 import { expect, test, type Locator } from "@playwright/test";
 import { createFailurePreservingCleanup } from "../../../src/qa/failurePreservingCleanup";
+import { capturedCompetingInstant, capturedItemId, exactItemDelta, validateCapturedHopEnd } from "../../../src/qa/hopMutationRace";
 import {
   attachFailureScreenshot,
   attachJson,
@@ -89,6 +90,16 @@ function safeCommandEvidence(command: CapturedRpcRequest) {
   return { urlPath: url.pathname, body: command.body };
 }
 
+function safeResponseEvidence(status: number, body: unknown) {
+  const record = body && typeof body === "object" && !Array.isArray(body) ? body as Record<string, unknown> : {};
+  return {
+    status,
+    eventId: typeof record.event_id === "string" ? record.event_id : null,
+    mutationId: typeof record.mutation_id === "string" ? record.mutation_id : null,
+    rejectionCode: rpcRejectionCode(record)
+  };
+}
+
 async function timedSubmit(command: Awaited<ReturnType<typeof interceptSingleRpcCommand>>, body: unknown) {
   const startedAt = new Date().toISOString();
   const started = performance.now();
@@ -99,6 +110,14 @@ async function timedSubmit(command: Awaited<ReturnType<typeof interceptSingleRpc
     completedAt: new Date().toISOString(),
     elapsedMs: Math.round((performance.now() - started) * 100) / 100
   };
+}
+
+async function timedSubmitOutcome(command: Awaited<ReturnType<typeof interceptSingleRpcCommand>>, body: unknown) {
+  try {
+    return { ok: true as const, submission: await timedSubmit(command, body) };
+  } catch (error) {
+    return { ok: false as const, errorType: error instanceof Error ? error.name : "UnknownError" };
+  }
 }
 
 async function chooseFirstAvailableItem(modal: Locator) {
@@ -158,8 +177,6 @@ test("hop serializes safely against timing, pause, resume, add-item, and remove-
     expect(second.actorId, "Hop mutation races require distinct authenticated actors.").not.toBe(origin.actorId);
     for (const kind of ["timing", "pause", "resume", "add-item", "remove-item"] as RaceKind[]) {
       const customerName = `QA Hop Race ${runId} ${kind}`;
-      let fixtureItemName: string | undefined;
-      let attemptedItemName: string | undefined;
       await page.getByRole("button", { name: "Live Dashboard", exact: true }).click().catch(() => undefined);
       await startSession(page, station, customerName);
       const startedSourceId = rpcEvidence.findLast((entry) => entry.rpc === "start_session" && entry.status < 300)?.entityId;
@@ -168,6 +185,17 @@ test("hop serializes safely against timing, pause, resume, add-item, and remove-
       await observer.page.reload({ waitUntil: "domcontentloaded" });
       await waitForSynced(observer.page);
       await expect(stationCard(observer.page, station)).toContainText(customerName);
+
+      const fixtureTiming = await openManagedSession(observer.page, station);
+      await fixtureTiming.getByRole("button", { name: "Edit Customer Details", exact: true }).click();
+      await fixtureTiming.getByLabel("Session Start Time", { exact: true }).fill(await browserDateTimeLocal(observer.page, -15));
+      const fixtureTimingResponse = observer.page.waitForResponse((candidate) =>
+        candidate.url().includes("/rest/v1/rpc/save_live_session_details") && candidate.request().method() === "POST"
+      );
+      await fixtureTiming.getByRole("button", { name: "Save Session Details", exact: true }).click();
+      expect((await fixtureTimingResponse).status(), "The -15 minute fixture start edit must be acknowledged before the race.").toBe(200);
+      await waitForSynced(observer.page);
+      await fixtureTiming.getByRole("button", { name: "Close", exact: true }).click();
 
       if (kind === "resume") {
         const setup = await openManagedSession(observer.page, station);
@@ -179,23 +207,13 @@ test("hop serializes safely against timing, pause, resume, add-item, and remove-
       }
       if (kind === "remove-item") {
         const setup = await openManagedSession(observer.page, station);
-        fixtureItemName = await addFixtureItem(setup);
+        await addFixtureItem(setup);
         await setup.getByRole("button", { name: "Close", exact: true }).click();
       }
 
       await page.reload({ waitUntil: "domcontentloaded" });
       await observer.page.reload({ waitUntil: "domcontentloaded" });
       await Promise.all([waitForSynced(page), waitForSynced(observer.page)]);
-
-      const originManaged = await openManagedSession(page, station);
-      await originManaged.getByRole("button", { name: "Proceed to Checkout", exact: true }).click();
-      const close = page.getByRole("dialog", { name: "Close Session Bill", exact: true });
-      await close.getByLabel("Session End Time", { exact: true }).fill(await browserDateTimeLocal(page, -1));
-      await close.getByLabel(/Game hop - close station without billing/).check();
-      const hopCommand = await interceptSingleRpcCommand(page, "**/rest/v1/rpc/hop_session_v2");
-      activeHopCommand = hopCommand;
-      await close.getByRole("button", { name: "Confirm Game Hop", exact: true }).click();
-      const capturedHop = await hopCommand.captured;
 
       const observerManaged = await openManagedSession(observer.page, station);
       let mutationPattern: string;
@@ -212,35 +230,17 @@ test("hop serializes safely against timing, pause, resume, add-item, and remove-
         mutationPattern = "**/rest/v1/rpc/resume_session";
         triggerMutation = () => observerManaged.getByRole("button", { name: /Resume Session/ }).click();
       } else if (kind === "add-item") {
-        const { adder, itemName } = await chooseFirstAvailableItem(observerManaged);
-        attemptedItemName = itemName;
+        const { adder } = await chooseFirstAvailableItem(observerManaged);
         mutationPattern = "**/rest/v1/rpc/add_session_item";
         triggerMutation = () => adder.getByRole("button", { name: "Add Item", exact: true }).click();
       } else {
         const itemRow = observerManaged.locator(".session-item-row").filter({ has: observerManaged.getByRole("button", { name: "Remove", exact: true }) }).first();
         await expect(itemRow).toBeVisible();
-        attemptedItemName = fixtureItemName;
         mutationPattern = "**/rest/v1/rpc/remove_session_item";
         triggerMutation = () => itemRow.getByRole("button", { name: "Remove", exact: true }).click();
       }
 
-      const mutationCommand = await interceptSingleRpcCommand(observer.page, mutationPattern);
-      activeMutationCommand = mutationCommand;
-      await triggerMutation();
-      const capturedMutation = await mutationCommand.captured;
-      const hopParts = nestedPayload(capturedHop);
-      const mutationParts = nestedPayload(capturedMutation);
-      const sourceId = String(hopParts.envelope.entity_id ?? "");
-      const hopMutationId = String(hopParts.envelope.mutation_id ?? "");
-      const mutationId = String(mutationParts.envelope.mutation_id ?? "");
-      const hopAuditId = auditIdFrom(capturedHop);
-      const mutationAuditId = auditIdFrom(capturedMutation);
-      expect(sourceId).toBeTruthy();
-      expect(sourceId).toBe(startedSourceId);
-      expect(hopMutationId).toBeTruthy();
-      expect(mutationId).toBeTruthy();
-      expect(hopAuditId).toBeTruthy();
-      expect(mutationAuditId).toBeTruthy();
+      const sourceId = startedSourceId!;
       const [sessionBeforeRace, pauseLogsBeforeRace, itemsBeforeRace] = await Promise.all([
         readRestRows<{ id: string; status: string; started_at: string }>(page, origin.restBase, origin.headers, "sessions", {
           organization_id: `eq.${organizationId}`, id: `eq.${sourceId}`, select: "id,status,started_at"
@@ -253,18 +253,83 @@ test("hop serializes safely against timing, pause, resume, add-item, and remove-
         })
       ]);
       expect(sessionBeforeRace).toHaveLength(1);
-      expect(hopCommand.captureCount()).toBe(1);
+      const mutationCommand = await interceptSingleRpcCommand(observer.page, mutationPattern);
+      activeMutationCommand = mutationCommand;
+      const mutationTriggeredAtMs = Date.now();
+      await triggerMutation();
+      const capturedMutation = await mutationCommand.captured;
+      const mutationParts = nestedPayload(capturedMutation);
+      const mutationId = String(mutationParts.envelope.mutation_id ?? "");
+      const mutationAuditId = auditIdFrom(capturedMutation);
+      expect(mutationId).toBeTruthy();
+      expect(mutationAuditId).toBeTruthy();
+      expect(String(mutationParts.envelope.entity_id ?? "")).toBe(sourceId);
       expect(mutationCommand.captureCount()).toBe(1);
-      const [hopSubmission, mutationSubmission] = await Promise.all([
-        timedSubmit(hopCommand, capturedHop.body),
-        timedSubmit(mutationCommand, capturedMutation.body)
+      const originManaged = await openManagedSession(page, station);
+      await originManaged.getByRole("button", { name: "Proceed to Checkout", exact: true }).click();
+      const close = page.getByRole("dialog", { name: "Close Session Bill", exact: true });
+      await close.getByLabel(/Game hop - close station without billing/).check();
+      const hopCommand = await interceptSingleRpcCommand(page, "**/rest/v1/rpc/hop_session_v2");
+      activeHopCommand = hopCommand;
+      await close.getByRole("button", { name: "Confirm Game Hop", exact: true }).click();
+      const capturedHop = await hopCommand.captured;
+      const hopParts = nestedPayload(capturedHop);
+      const hopMutationId = String(hopParts.envelope.mutation_id ?? "");
+      const hopAuditId = auditIdFrom(capturedHop);
+      expect(String(hopParts.envelope.entity_id ?? "")).toBe(sourceId);
+      expect(hopMutationId).toBeTruthy();
+      expect(hopAuditId).toBeTruthy();
+      expect(hopCommand.captureCount()).toBe(1);
+      const endValidation = validateCapturedHopEnd({
+        capturedEnd: hopParts.payload.effective_ended_at,
+        capturedAtMs: Date.now(),
+        canonicalStartedAt: sessionBeforeRace[0].started_at,
+        pauseLogs: pauseLogsBeforeRace,
+        competingInstantMs: capturedCompetingInstant(kind, mutationParts.payload)
+      });
+      const mutationHeldMs = Date.now() - mutationTriggeredAtMs;
+      expect(mutationHeldMs, "Captured competing command must be submitted inside the operational RPC timeout budget.").toBeLessThanOrEqual(12_000);
+      const submissions = await Promise.all([
+        timedSubmitOutcome(hopCommand, capturedHop.body),
+        timedSubmitOutcome(mutationCommand, capturedMutation.body)
       ]);
+      if (!submissions[0].ok || !submissions[1].ok) {
+        await attachJson(testInfo, `operational-v2-hop-mutation-${kind}-transport-failure`, {
+          runId, kind, sourceId,
+          hopCommand: safeCommandEvidence(capturedHop), mutationCommand: safeCommandEvidence(capturedMutation),
+          submissions: submissions.map((entry) => entry.ok
+            ? { state: "fulfilled", status: entry.submission.response.status(), startedAt: entry.submission.startedAt, completedAt: entry.submission.completedAt, elapsedMs: entry.submission.elapsedMs }
+            : { state: "rejected", errorType: entry.errorType })
+        });
+        throw new Error("Hop race transport failed; see sanitized attachment.");
+      }
+      const hopSubmission = submissions[0].submission;
+      const mutationSubmission = submissions[1].submission;
+      const bodies = await Promise.allSettled([
+        readApiResponseBody(hopSubmission.response),
+        readApiResponseBody(mutationSubmission.response)
+      ]);
+      if (bodies[0].status !== "fulfilled" || bodies[1].status !== "fulfilled") {
+        await attachJson(testInfo, `operational-v2-hop-mutation-${kind}-body-failure`, {
+          runId, kind, sourceId,
+          hopCommand: safeCommandEvidence(capturedHop), mutationCommand: safeCommandEvidence(capturedMutation),
+          responses: [hopSubmission.response.status(), mutationSubmission.response.status()],
+          bodies: bodies.map((entry) => entry.status === "fulfilled" ? { state: "fulfilled" } : { state: "rejected", errorType: entry.reason instanceof Error ? entry.reason.name : "UnknownError" })
+        });
+        throw new Error("Hop race response parsing failed; see sanitized attachment.");
+      }
+      const hopBody = bodies[0].value;
+      const mutationBody = bodies[1].value;
       const hopResponse = hopSubmission.response;
       const mutationResponse = mutationSubmission.response;
-      const [hopBody, mutationBody] = await Promise.all([
-        readApiResponseBody(hopResponse),
-        readApiResponseBody(mutationResponse)
-      ]);
+      await attachJson(testInfo, `operational-v2-hop-mutation-${kind}-responses`, {
+        runId, kind, sourceId, endValidation, mutationHeldMs,
+        hopCommand: safeCommandEvidence(capturedHop), mutationCommand: safeCommandEvidence(capturedMutation),
+        hopResponse: safeResponseEvidence(hopResponse.status(), hopBody),
+        mutationResponse: safeResponseEvidence(mutationResponse.status(), mutationBody),
+        hopSubmission: { startedAt: hopSubmission.startedAt, completedAt: hopSubmission.completedAt, elapsedMs: hopSubmission.elapsedMs },
+        mutationSubmission: { startedAt: mutationSubmission.startedAt, completedAt: mutationSubmission.completedAt, elapsedMs: mutationSubmission.elapsedMs }
+      });
       expect(hopResponse.status(), `${kind} hop must commit exactly once`).toBe(200);
       expect([200, 400], `${kind} competing mutation has a legal serialized outcome`).toContain(mutationResponse.status());
       if (mutationResponse.status() === 400) {
@@ -364,18 +429,16 @@ test("hop serializes safely against timing, pause, resume, add-item, and remove-
         }
       }
       if (kind === "add-item") {
-        expect(attemptedItemName).toBeTruthy();
-        const persisted = itemsAfterBill.some((row) => row.name === attemptedItemName);
-        const billed = billLines.some((row) => row.inventory_item_id && row.description === attemptedItemName);
-        expect(persisted).toBe(mutationResponse.status() === 200);
-        expect(billed).toBe(mutationResponse.status() === 200);
+        const itemId = capturedItemId(kind, mutationParts.payload);
+        const delta = exactItemDelta(itemsBeforeRace.map((row) => row.id), itemsAfterBill.map((row) => row.id));
+        expect(delta).toEqual(mutationResponse.status() === 200 ? { added: [itemId], removed: [] } : { added: [], removed: [] });
+        expect(billLines.some((row) => row.id === `line-item-${itemId}`)).toBe(mutationResponse.status() === 200);
       }
       if (kind === "remove-item") {
-        expect(attemptedItemName).toBeTruthy();
-        const persisted = itemsAfterBill.some((row) => row.name === attemptedItemName);
-        const billed = billLines.some((row) => row.inventory_item_id && row.description === attemptedItemName);
-        expect(persisted).toBe(mutationResponse.status() !== 200);
-        expect(billed).toBe(mutationResponse.status() !== 200);
+        const itemId = capturedItemId(kind, mutationParts.payload);
+        const delta = exactItemDelta(itemsBeforeRace.map((row) => row.id), itemsAfterBill.map((row) => row.id));
+        expect(delta).toEqual(mutationResponse.status() === 200 ? { added: [], removed: [itemId] } : { added: [], removed: [] });
+        expect(billLines.some((row) => row.id === `line-item-${itemId}`)).toBe(mutationResponse.status() !== 200);
       }
       evidence.push({
         kind,

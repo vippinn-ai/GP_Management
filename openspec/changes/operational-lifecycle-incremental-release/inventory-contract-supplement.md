@@ -18,4 +18,10 @@ node scripts/verify-inventory-contract-posttest.mjs --manifest=<posttest-manifes
 
 It creates `inventory-contract-posttest-verification.json` beside the posttest manifest exclusively, refusing overwrite. Exact-ID cleanup if necessary, immutable evidence and zero-retry stop conditions remain mandatory. A failed, ambiguous or incomplete run cannot be promoted to acceptance by a clean floor alone.
 
+## Hop-mutation timing and item-identity repair
+
+The stopped `normops-20261010-0215-inventory-be2388f` run is historical failure evidence, not acceptance. Its unit-sale case passed; the hop-mutation case submitted its hop and received HTTP 400 after the test's edited minute-rounded end preceded the newly started session, but the old assertion order did not preserve that response body. The successor harness remains test-only: it first acknowledges a `-15` minute source start, captures the competing command before preparing the hop, then preserves the checkout state's unedited full-precision end rather than truncating it through the minute-only input. Before either held request is submitted, that captured end must be at or after canonical start, existing pause/resume and captured competing instants and no later than the capture check. The two held requests still submit once through the same `Promise.all`; no RPC is held across a clock-boundary wait.
+
+Before outcome assertions, the harness persists sanitized command, status, allowlisted rejection-code and timing evidence for both responses (or sanitized transport-failure evidence). Add/remove outcomes are keyed by the captured session-item ID and exact before/after ID-set delta; display names are not identity. Existing full bill-line inventory/variant/pack/quantity/price parity remains mandatory. These local changes do not claim a new staging pass or modify application/SQL runtime behavior; a fresh clean source identity, review and separately guarded live execution remain required.
+
 No runtime/SQL behavior changes are part of this runner supplement. Passing two cases is targeted regression evidence only; full release acceptance still requires the unchanged 31-case workflow.
