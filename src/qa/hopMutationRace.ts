@@ -1,5 +1,26 @@
 export interface PauseInstant { paused_at: string; resumed_at: string | null }
 
+export function validateRaceQueues(args: {
+  origin: unknown; observer: unknown; status: number; rejectionCode: string | null;
+  mutationId: string; mutationKind: string; sessionId: string;
+}) {
+  if (!Array.isArray(args.origin) || args.origin.length !== 0) throw new Error("Hop winner queue is not empty.");
+  if (!Array.isArray(args.observer)) throw new Error("Observer queue is malformed.");
+  if (args.status === 200) {
+    if (args.observer.length !== 0) throw new Error("Successful competitor queue is not empty.");
+    return [];
+  }
+  if (args.status !== 400 || args.rejectionCode !== "session_not_open") throw new Error("Unexpected competing outcome.");
+  if (!args.mutationId || !args.mutationKind || !args.sessionId || args.observer.length !== 1) throw new Error("Expected exactly one identified losing-command conflict.");
+  const entry = args.observer[0];
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)) throw new Error("Malformed losing-command conflict.");
+  const expected = { id: args.mutationId, kind: args.mutationKind, status: "conflict", entityType: "session", entityId: args.sessionId };
+  for (const [key, value] of Object.entries(expected)) {
+    if (entry[key] !== value) throw new Error(`Unexpected losing-command conflict ${key}.`);
+  }
+  return [expected];
+}
+
 function instant(value: unknown, label: string) {
   if (typeof value !== "string" || !Number.isFinite(Date.parse(value))) throw new Error(`Invalid ${label} instant.`);
   return Date.parse(value);

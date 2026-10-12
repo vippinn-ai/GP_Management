@@ -50,4 +50,23 @@ describe("hop mutation race live harness binding", () => {
     expect(spec).not.toContain("attemptedItemName");
     expect(spec).not.toContain("row.description === attemptedItemName");
   });
+
+  it("uses a fresh observer context for every race and disposes it only after queue and error assertions", () => {
+    const loop = spec.indexOf('for (const kind of ["timing", "pause", "resume", "add-item", "remove-item"]');
+    const create = spec.indexOf("const observer = await createObserver(browser)", loop);
+    const signInObserver = spec.indexOf('await signIn(observer.page, credentials("B"))', create);
+    const queue = spec.indexOf("validateRaceQueues({", signInObserver);
+    const errors = spec.indexOf("fresh observer must have no unexpected page errors", queue);
+    const close = spec.indexOf("await observer.context.close()", errors);
+    expect(loop).toBeGreaterThan(-1);
+    expect(create).toBeGreaterThan(loop);
+    expect(signInObserver).toBeGreaterThan(create);
+    expect(queue).toBeGreaterThan(signInObserver);
+    expect(errors).toBeGreaterThan(queue);
+    expect(close).toBeGreaterThan(errors);
+    expect(spec.slice(0, loop)).not.toContain("await createObserver(browser)");
+    expect(spec.indexOf("queue-before-disposal")).toBeLessThan(queue);
+    expect(spec).toContain("await originContext.context.close()");
+    expect(spec).not.toMatch(/getByRole\("button", \{ name: (?:"Clear"|"Retry")/);
+  });
 });

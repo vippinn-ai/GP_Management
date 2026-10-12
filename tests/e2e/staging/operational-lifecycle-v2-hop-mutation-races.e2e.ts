@@ -1,6 +1,6 @@
 import { expect, test, type Locator } from "@playwright/test";
 import { createFailurePreservingCleanup } from "../../../src/qa/failurePreservingCleanup";
-import { capturedCompetingInstant, capturedItemId, exactItemDelta, validateCapturedHopEnd } from "../../../src/qa/hopMutationRace";
+import { capturedCompetingInstant, capturedItemId, exactItemDelta, validateCapturedHopEnd, validateRaceQueues } from "../../../src/qa/hopMutationRace";
 import {
   attachFailureScreenshot,
   attachJson,
@@ -142,40 +142,48 @@ async function addFixtureItem(modal: Locator) {
   return itemName;
 }
 
-test("hop serializes safely against timing, pause, resume, add-item, and remove-item mutations", async ({ browser, page }, testInfo) => {
+test("hop serializes safely against timing, pause, resume, add-item, and remove-item mutations", async ({ browser }, testInfo) => {
   const finalization = createFailurePreservingCleanup();
   test.setTimeout(15 * 60_000);
-  const observer = await createObserver(browser);
-  const originRequests: CapturedRpcRequest[] = [];
-  const observerRequests: CapturedRpcRequest[] = [];
-  captureAuthenticatedRestRequests(page, originRequests);
-  captureAuthenticatedRestRequests(observer.page, observerRequests);
   const rpcEvidence: RpcEvidence[] = [];
-  captureRpcEvidence(page, "origin", rpcEvidence);
-  captureRpcEvidence(observer.page, "observer", rpcEvidence);
-  const originErrors = capturePageErrors(page);
-  const observerErrors = capturePageErrors(observer.page);
+  const scenarioDiagnostics: Array<Record<string, unknown>> = [];
   const evidence: Array<Record<string, unknown>> = [];
   const unresolvedSourceIds = new Set<string>();
   const dialogs: string[] = [];
   let primaryError: unknown;
+  let activeOrigin: Awaited<ReturnType<typeof createObserver>> | undefined;
+  let activeObserver: Awaited<ReturnType<typeof createObserver>> | undefined;
   let activeHopCommand: Awaited<ReturnType<typeof interceptSingleRpcCommand>> | undefined;
   let activeMutationCommand: Awaited<ReturnType<typeof interceptSingleRpcCommand>> | undefined;
-  page.on("dialog", (dialog) => {
-    dialogs.push(dialog.message());
-    void dialog.dismiss();
-  });
-  observer.page.on("dialog", (dialog) => {
-    dialogs.push(dialog.message());
-    void dialog.dismiss();
-  });
 
   try {
-    await Promise.all([signIn(page, credentials("A")), signIn(observer.page, credentials("B"))]);
-    const origin = identityFrom(originRequests);
-    const second = identityFrom(observerRequests);
-    expect(second.actorId, "Hop mutation races require distinct authenticated actors.").not.toBe(origin.actorId);
     for (const kind of ["timing", "pause", "resume", "add-item", "remove-item"] as RaceKind[]) {
+      const originContext = await createObserver(browser);
+      activeOrigin = originContext;
+      const observer = await createObserver(browser);
+      activeObserver = observer;
+      const page = originContext.page;
+      const originRequests: CapturedRpcRequest[] = [];
+      const observerRequests: CapturedRpcRequest[] = [];
+      captureAuthenticatedRestRequests(page, originRequests);
+      captureAuthenticatedRestRequests(observer.page, observerRequests);
+      captureRpcEvidence(page, "origin", rpcEvidence);
+      captureRpcEvidence(observer.page, "observer", rpcEvidence);
+      const originErrors = capturePageErrors(page);
+      const observerErrors = capturePageErrors(observer.page);
+      page.on("dialog", (dialog) => {
+        dialogs.push(dialog.message());
+        void dialog.dismiss();
+      });
+      observer.page.on("dialog", (dialog) => {
+        dialogs.push(dialog.message());
+        void dialog.dismiss();
+      });
+      await signIn(page, credentials("A"));
+      await signIn(observer.page, credentials("B"));
+      const origin = identityFrom(originRequests);
+      const second = identityFrom(observerRequests);
+      expect(second.actorId, "Hop mutation races require distinct authenticated actors.").not.toBe(origin.actorId);
       const customerName = `QA Hop Race ${runId} ${kind}`;
       await page.getByRole("button", { name: "Live Dashboard", exact: true }).click().catch(() => undefined);
       await startSession(page, station, customerName);
@@ -464,15 +472,46 @@ test("hop serializes safely against timing, pause, resume, add-item, and remove-
         hopAudits,
         mutationAudits
       });
+      const originQueue = await readPendingOperationalMutations(page);
+      const observerQueue = await readPendingOperationalMutations(observer.page);
+      const expectedKind = {
+        timing: "saveLiveSessionDetails", pause: "pauseSession", resume: "resumeSession",
+        "add-item": "addSessionItem", "remove-item": "removeSessionItem"
+      }[kind];
+      const safeQueue = (queue: unknown) => Array.isArray(queue) ? queue.map((entry) => ({
+        id: entry?.id, kind: entry?.kind, status: entry?.status, entityType: entry?.entityType, entityId: entry?.entityId
+      })) : { malformed: true };
+      await attachJson(testInfo, `operational-v2-hop-mutation-${kind}-queue-before-disposal`, {
+        kind, mutationId, sourceId, mutationStatus: mutationResponse.status(),
+        origin: safeQueue(originQueue), observer: safeQueue(observerQueue)
+      });
+      const sanitizedObserverQueue = validateRaceQueues({
+        origin: originQueue, observer: observerQueue, status: mutationResponse.status(),
+        rejectionCode: rpcRejectionCode(mutationBody), mutationId, mutationKind: expectedKind, sessionId: sourceId
+      });
+      if (mutationResponse.status() === 400) {
+        await expect(observer.page.getByText("1 conflict", { exact: true })).toBeVisible();
+        await expect(observer.page.getByText("Pending sync.", { exact: false })).toHaveCount(0);
+      } else {
+        await expect(observer.page.getByText("1 conflict", { exact: true })).toHaveCount(0);
+      }
+      expect(originErrors, `${kind} fresh origin must have no unexpected page errors.`).toEqual({ consoleErrors: [], pageErrors: [] });
+      expect(observerErrors, `${kind} fresh observer must have no unexpected page errors.`).toEqual({ consoleErrors: [], pageErrors: [] });
+      scenarioDiagnostics.push({
+        kind, originActorId: origin.actorId, observerActorId: second.actorId,
+        mutationStatus: mutationResponse.status(), originErrors, observerErrors,
+        originPendingOperationalMutations: [], observerPendingOperationalMutations: sanitizedObserverQueue
+      });
+      await originContext.context.close();
+      activeOrigin = undefined;
+      await observer.context.close();
+      activeObserver = undefined;
     }
 
     expect(evidence.map((entry) => entry.kind)).toEqual(["timing", "pause", "resume", "add-item", "remove-item"]);
-    expect(await readPendingOperationalMutations(page)).toEqual([]);
-    expect(await readPendingOperationalMutations(observer.page)).toEqual([]);
     expect([...unresolvedSourceIds]).toEqual([]);
-    expect(originErrors).toEqual({ consoleErrors: [], pageErrors: [] });
-    expect(observerErrors).toEqual({ consoleErrors: [], pageErrors: [] });
-    await attachJson(testInfo, "operational-v2-hop-mutation-races", { runId, evidence, dialogs, rpcEvidence, originErrors, observerErrors });
+    expect(scenarioDiagnostics.map((entry) => entry.kind)).toEqual(["timing", "pause", "resume", "add-item", "remove-item"]);
+    await attachJson(testInfo, "operational-v2-hop-mutation-races", { runId, evidence, dialogs, rpcEvidence, scenarioDiagnostics });
   } catch (error) {
     primaryError = error;
   } finally {
@@ -485,9 +524,10 @@ test("hop serializes safely against timing, pause, resume, add-item, and remove-
       unresolvedSourceIds: [...unresolvedSourceIds],
       failed: Boolean(primaryError)
     }));
-    await finalization.run("origin failure screenshot", () => attachFailureScreenshot(testInfo, page, "hop-mutation-races-origin-failure"));
-    await finalization.run("observer failure screenshot", () => attachFailureScreenshot(testInfo, observer.page, "hop-mutation-races-observer-failure"));
-    await finalization.run("observer context close", () => observer.context.close());
+    await finalization.run("origin failure screenshot", () => activeOrigin ? attachFailureScreenshot(testInfo, activeOrigin.page, "hop-mutation-races-origin-failure") : undefined);
+    await finalization.run("observer failure screenshot", () => activeObserver ? attachFailureScreenshot(testInfo, activeObserver.page, "hop-mutation-races-observer-failure") : undefined);
+    await finalization.run("origin context close", () => activeOrigin?.context.close());
+    await finalization.run("observer context close", () => activeObserver?.context.close());
   }
   if (primaryError) throw primaryError;
   finalization.throwIfFailed();
