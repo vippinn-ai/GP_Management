@@ -2,7 +2,7 @@ import { defineConfig, devices } from "@playwright/test";
 
 export default defineConfig({
   testDir: "./tests/e2e/local",
-  testMatch: "live-target-selectors.e2e.ts",
+  testMatch: ["live-target-selectors.e2e.ts", "session-item-selectors.e2e.ts"],
   outputDir: "test-artifacts/local-temp/live-target-selectors",
   fullyParallel: false,
   workers: 1,

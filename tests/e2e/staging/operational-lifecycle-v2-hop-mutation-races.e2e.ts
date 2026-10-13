@@ -1,6 +1,7 @@
 import { expect, test, type Locator } from "@playwright/test";
 import { createFailurePreservingCleanup } from "../../../src/qa/failurePreservingCleanup";
 import { capturedCompetingInstant, capturedItemId, exactItemDelta, validateCapturedHopEnd, validateRaceQueues } from "../../../src/qa/hopMutationRace";
+import { singleSessionItemRemoveButton } from "./support/sessionItemSelectors";
 import {
   attachFailureScreenshot,
   attachJson,
@@ -242,10 +243,9 @@ test("hop serializes safely against timing, pause, resume, add-item, and remove-
         mutationPattern = "**/rest/v1/rpc/add_session_item";
         triggerMutation = () => adder.getByRole("button", { name: "Add Item", exact: true }).click();
       } else {
-        const itemRow = observerManaged.locator(".session-item-row").filter({ has: observerManaged.getByRole("button", { name: "Remove", exact: true }) }).first();
-        await expect(itemRow).toBeVisible();
+        const removeButton = await singleSessionItemRemoveButton(observerManaged);
         mutationPattern = "**/rest/v1/rpc/remove_session_item";
-        triggerMutation = () => itemRow.getByRole("button", { name: "Remove", exact: true }).click();
+        triggerMutation = () => removeButton.click();
       }
 
       const sourceId = startedSourceId!;
