@@ -89,6 +89,7 @@ export function roleOperationFailure({ operationFailed, terminalReceiptUnavailab
       cleanupFailed ? "Browser cleanup also failed closed." : ""
     ].filter(Boolean).join(" "));
   }
+  if (terminalReceiptUnavailable) return new Error("Staging role-account cleanup receipt is unavailable; operation is not accepted.");
   if (cleanupFailed) return new Error("Staging role-account browser cleanup failed closed after the operation completed.");
   return null;
 }
@@ -104,7 +105,7 @@ export function createRoleReceiptStore({ root, runId, command, secrets = [], io 
   io.mkdirSync(directory, { recursive: true });
 
   const write = (phase, payload) => {
-    if (!new Set(["reservation", "success", "failure", "closeout"]).has(phase)) {
+    if (!new Set(["reservation", "success", "failure", "closeout", "browser-cleanup"]).has(phase)) {
       throw new Error("Role-account receipt phase is invalid.");
     }
     const receipt = {
@@ -126,6 +127,7 @@ export function createRoleReceiptStore({ root, runId, command, secrets = [], io 
     const receiptPath = path.join(directory,
       phase === "reservation" ? `${command}-reservation.json`
         : phase === "closeout" ? `${command}-closeout.json`
+          : phase === "browser-cleanup" ? `${command}-browser-cleanup.json`
           : `${command}-terminal.json`);
     io.writeFileSync(receiptPath, serialized, { encoding: "utf8", flag: "wx" });
     return { path: receiptPath, receipt };

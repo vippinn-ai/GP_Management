@@ -860,7 +860,13 @@ describe("staging Playwright harness contract", () => {
     expect(manager).toContain("The ignored role credential file does not match the exact generated QA username/run-ID pattern.");
     expect(manager).toContain("const UI_TIMEOUT_MS = 20_000");
     expect(manager).toContain('page.locator(".login-form-panel .error-text")');
-    expect(manager).toContain("Staging account sign-in failed:");
+    expect(manager).toContain("Staging account sign-in rejected.");
+    expect(manager).not.toContain("loginError.textContent()");
+    expect(manager).toContain("await runSignInStages(");
+    expect(manager).toContain("Promise.allSettled(accounts.map(verifyAccount))");
+    expect(manager).toContain("withBoundedContext(context,");
+    expect(manager).toContain("await closeBrowserResources(adminContext, browser)");
+    expect(manager).toContain('receiptStore.write("browser-cleanup"');
     expect(manager).toContain('form.locator("select").selectOption(account.role)');
     expect(manager).toContain("await expect(row).toContainText(account.name)");
     expect(manager).toContain("await expect(row).toContainText(account.role)");

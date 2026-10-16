@@ -2,6 +2,7 @@ import path from "node:path";
 import { randomBytes } from "node:crypto";
 import { existsSync, unlinkSync, writeFileSync } from "node:fs";
 import { chromium, expect } from "@playwright/test";
+import { authStatusFromResponse, runSignInStages, closeBrowserResources, withBoundedContext, SYNCED_LABEL } from "./role-account-browser-safety.mjs";
 import {
   assertStagingBaseUrl,
   assertStagingSupabaseEnvironment,
@@ -94,36 +95,53 @@ let adminIdentity;
 const attemptedUsernames = [];
 const cleanupOutcomes = [];
 const cleanupErrors = [];
+const signInDiagnostics = [];
+const verificationCleanup = [];
 let failureStage = "browser-launch";
 let operationFailed = false;
 let terminalReceiptWritten = false;
 let terminalReceiptUnavailable = false;
 let finalError;
 
-async function signIn(page, username, password) {
+async function signIn(page, username, password, actorSlot = "admin") {
   const requests = [];
-  page.on("request", (request) => {
-    if (!request.url().includes("/rest/v1/")) return;
+  const diagnostic = { actorSlot, substage: "navigation", outcome: "running", authStatus: null, errorCode: null };
+  signInDiagnostics.push(diagnostic);
+  const onRequest = (request) => {
+    const url = new URL(request.url());
+    if (url.origin !== `https://${STAGING_PROJECT_REF}.supabase.co` || !url.pathname.startsWith("/rest/v1/")) return;
     const headers = request.headers();
     if (headers.apikey && headers.authorization) requests.push({ url: request.url(), headers });
-  });
-  await page.goto("/", { waitUntil: "domcontentloaded" });
-  await page.getByLabel("Username", { exact: true }).fill(username);
-  await page.getByLabel("Password", { exact: true }).fill(password);
-  await page.getByRole("button", { name: "Sign In", exact: true }).click();
-  const dashboard = page.getByRole("heading", { name: "Live Dashboard", exact: true });
-  const loginError = page.locator(".login-form-panel .error-text");
-  const outcome = await Promise.race([
-    dashboard.waitFor({ state: "visible", timeout: UI_TIMEOUT_MS }).then(() => ({ kind: "dashboard" })),
-    loginError.waitFor({ state: "visible", timeout: UI_TIMEOUT_MS }).then(async () => ({
-      kind: "error",
-      message: (await loginError.textContent())?.trim() || "Unknown login error"
-    }))
-  ]);
-  if (outcome.kind === "error") throw new Error(`Staging account sign-in failed: ${outcome.message}`);
-  await expect(page.getByText(/^Synced(?:\s|$)/).first()).toBeVisible({ timeout: UI_TIMEOUT_MS });
-  await expect.poll(() => requests.length, { timeout: UI_TIMEOUT_MS }).toBeGreaterThan(0);
-  return requests.at(-1);
+  };
+  const onResponse = (response) => {
+    const status = authStatusFromResponse(response, STAGING_PROJECT_REF);
+    if (status !== null) diagnostic.authStatus = status;
+  };
+  page.on("request", onRequest);
+  page.on("response", onResponse);
+  try {
+    await runSignInStages({
+      navigation: () => page.goto("/", { waitUntil: "domcontentloaded", timeout: 30_000 }),
+      "username-fill": () => page.getByLabel("Username", { exact: true }).fill(username, { timeout: UI_TIMEOUT_MS }),
+      "password-fill": () => page.getByLabel("Password", { exact: true }).fill(password, { timeout: UI_TIMEOUT_MS }),
+      submit: () => page.getByRole("button", { name: "Sign In", exact: true }).click({ timeout: UI_TIMEOUT_MS }),
+      dashboard: async () => {
+        const dashboard = page.getByRole("heading", { name: "Live Dashboard", exact: true });
+        const loginError = page.locator(".login-form-panel .error-text");
+        const outcome = await Promise.race([
+          dashboard.waitFor({ state: "visible", timeout: UI_TIMEOUT_MS }).then(() => "dashboard"),
+          loginError.waitFor({ state: "visible", timeout: UI_TIMEOUT_MS }).then(() => "error")
+        ]);
+        if (outcome === "error") throw new Error("Staging account sign-in rejected.");
+      },
+      sync: () => expect(page.getByText(SYNCED_LABEL).first()).toBeVisible({ timeout: UI_TIMEOUT_MS }),
+      "authenticated-request-capture": () => expect.poll(() => requests.length, { timeout: UI_TIMEOUT_MS }).toBeGreaterThan(0)
+    }, diagnostic);
+    return requests.at(-1);
+  } finally {
+    page.off("request", onRequest);
+    page.off("response", onResponse);
+  }
 }
 
 function jwtSubject(authorization) {
@@ -266,13 +284,11 @@ async function disableUser(page, captured, account, allowMissing = false, expect
 
 async function verifyAccount(account) {
   const context = await browser.newContext({ baseURL, locale: "en-IN", timezoneId: "Asia/Calcutta" });
-  const page = await context.newPage();
-  try {
-    const request = await signIn(page, account.username, account.password);
+  return withBoundedContext(context, async () => {
+    const page = await context.newPage();
+    const request = await signIn(page, account.username, account.password, account.role);
     return await authoritativeRole(page, request, account.role);
-  } finally {
-    await context.close();
-  }
+  }, (cleanup) => verificationCleanup.push({actorSlot: account.role, ...cleanup}));
 }
 
 function writeRoleFile(accounts, state) {
@@ -363,7 +379,10 @@ try {
       writeRoleFile(accounts, "provisioning");
     }
     failureStage = "verify-created-identities";
-    const identities = await Promise.all(accounts.map(verifyAccount));
+    const verified = await Promise.allSettled(accounts.map(verifyAccount));
+    const failedVerification = verified.find((entry) => entry.status === "rejected");
+    if (failedVerification) throw failedVerification.reason;
+    const identities = verified.map((entry) => entry.value);
     expect(new Set(identities.map((identity) => identity.actorId)).size).toBe(accounts.length);
     for (let index = 0; index < accounts.length; index += 1) {
       expect(identities[index].actorId).toBe(accounts[index].profileId);
@@ -380,6 +399,8 @@ try {
       adminActorId: adminIdentity.actorId,
       accounts: receiptAccounts,
       credentialFileState: "active",
+      signInDiagnostics,
+      verificationCleanup,
       cleanupOutcomes
     });
     terminalReceiptWritten = true;
@@ -409,6 +430,8 @@ try {
       adminActorId: adminIdentity.actorId,
       accounts: results,
       credentialFileState: "preserved-until-success-receipt",
+      signInDiagnostics,
+      verificationCleanup,
       cleanupOutcomes: results
     });
     terminalReceiptWritten = true;
@@ -455,6 +478,8 @@ try {
     adminActorId: adminIdentity?.actorId ?? null,
     errorCode: "role_account_operation_failed",
     failureStage,
+    signInDiagnostics,
+    verificationCleanup,
     attemptedUsernames,
     ownedProfiles: ownedCleanupTargets(accounts),
     cleanupOutcomes,
@@ -471,10 +496,14 @@ try {
     }
   }
 } finally {
-  const cleanup = await Promise.allSettled([
-    adminContext ? adminContext.close() : Promise.resolve(),
-    browser ? browser.close() : Promise.resolve()
-  ]);
+  const cleanup = await closeBrowserResources(adminContext, browser);
+  try {
+    receiptStore.write("browser-cleanup", {
+      completedAtUtc: new Date().toISOString(), operationFailed, failureStage,
+      signInDiagnostics, verificationCleanup,
+      resources: [{resource: "admin-context", ...cleanup[0]}, {resource: "browser", ...cleanup[1]}]
+    });
+  } catch { terminalReceiptUnavailable = true; }
   finalError = roleOperationFailure({
     operationFailed,
     terminalReceiptUnavailable,
