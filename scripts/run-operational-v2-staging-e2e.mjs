@@ -26,7 +26,7 @@ const { discoveryOnly, args: playwrightArgs, mode } = parseLifecycleArguments(ar
 const suiteContract = lifecycleSuiteContract(mode);
 const selectionArgs = lifecycleSelectionArguments(mode);
 if (args[0] === "--help") {
-  console.log("Usage: node scripts/run-operational-v2-staging-e2e.mjs [--list | --help | --inventory-contract [--list]]\nNo arguments runs the complete 31-case gate. Inventory contract is a fixed two-case supplemental run, never release acceptance. Arbitrary selectors/overrides remain forbidden.");
+  console.log("Usage: node scripts/run-operational-v2-staging-e2e.mjs [--list | --help | --inventory-contract [--list] | --convergence-diagnostics [--list]]\nNo arguments runs the complete 31-case gate. Inventory contract is a fixed two-case supplemental run; convergence diagnostics is a fixed one-case supplemental run. Neither grants release acceptance. Arbitrary selectors/overrides remain forbidden.");
   process.exit(0);
 }
 const localEnv = parseEnvFile(path.join(root, ".env.e2e.local"));

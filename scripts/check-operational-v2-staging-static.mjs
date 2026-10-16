@@ -36,6 +36,7 @@ function run(label, executable, args) {
 
 run("Selected operational Playwright lint", path.join(path.dirname(require.resolve("eslint/package.json")), "bin", "eslint.js"), selectedSpecs);
 const selectedTools = ["scripts/run-operational-v2-staging-e2e.mjs", "scripts/lifecycle-runner-guards.mjs",
+  "scripts/verify-convergence-diagnostics-posttest.mjs", "scripts/convergence-diagnostics-contract.nodechecks.mjs",
   "scripts/lifecycle-actor-preflight.mjs", "scripts/lifecycle-actor-preflight.nodechecks.mjs",
   "scripts/role-account-provisioning-safety.mjs", "scripts/manage-financial-v2-role-accounts-staging.mjs",
   "scripts/role-account-browser-safety.mjs", "scripts/role-account-browser-safety.nodechecks.mjs",

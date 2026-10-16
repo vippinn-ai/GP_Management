@@ -1,0 +1,11 @@
+# October 16: partial 50-pair timing diagnostics
+
+Test-only instrumentation follows the failed full31 pair31 convergence observation. It does not establish the cause of the delay or revise that failed verdict. Product/runtime/SQL, existing concurrency and operation ordering, 50 pairs, zero retries and the strict 7,000 ms browser budget are unchanged.
+
+Each pair retains a separate partial diagnostic before the measured overlap. Monotonic performance-clock spans identify preparation reload and Synced per browser, overlap reload, each RPC, observer Synced, per-browser reconciliation and absence checks. No new network calls, waits, retry, raw errors, response bodies or credentials are added. Pending spans are not claimed complete; rejected spans preserve the original error and record only failed outcome. Existing completed cases remain the basis of aggregate acceptance. Final failure-preserving attachment includes partial diagnostics, including an over-budget pair before its assertion throws.
+
+Offline tests use an injected monotonic clock and fake callbacks to check immediate execution/overlap, unchanged return/error identity, synchronous/asynchronous failure, pending work and secret-free evidence. Source assertions pin partial-record ordering, phase coverage and unchanged count/budget. Independent exact-source reviewer and tester acceptance is required.
+
+## Focused rerun admission remains separate
+
+The fixed focused50 mode is being prepared locally in a separate runner change; it is not live-approved by these diagnostics. No arbitrary grep or selector is authorized. A focused50 rerun needs independent review of that exact-title mode and mode-bound reservation/manifest, candidate-bound proof/lineage and clean staging security/floor/runtime/actor/bundle gates. Its postflight must account for only this test's generated identities, all existing zero residual/floor requirements and unchanged app_state/functions, and verify all 50 completed diagnostic records with passed budget and phase outcomes. A fresh unique identity, one attempt/zero retries, immutable partial/final evidence, mandatory reconciliation, role deactivation and baseline restoration remain required. Focused diagnostics can never substitute for full31 release acceptance. Production is excluded.

@@ -3,6 +3,7 @@ import { createFailurePreservingCleanup } from "../../../src/qa/failurePreservin
 import { timedFixturePricing, type FixturePricingRow } from "../../../src/qa/timedSessionFixture";
 import { namedCustomerFixture, verifyNamedCustomerFixture } from "../../../src/qa/namedCustomerFixture";
 import { captureRpcResponse } from "../../../src/qa/rpcEvidenceCollector";
+import { createPairTimingEvidence } from "../../../src/qa/pairTimingEvidence";
 import { expectTargetsVisible, expectTargetsAbsent } from "./support/liveTargets";
 import {
   attachFailureScreenshot,
@@ -623,6 +624,7 @@ test.describe.serial("Operational lifecycle v2 real two-client concurrency", () 
     const pageErrors = capturePageErrors(page);
     const observerErrors = capturePageErrors(observer.page);
     const cases: Array<Record<string, unknown>> = [];
+    const pairDiagnostics: Array<Record<string, unknown>> = [];
 
     try {
       await Promise.all([signIn(page, credentials("A")), signIn(observer.page, credentials("B"))]);
@@ -650,34 +652,55 @@ test.describe.serial("Operational lifecycle v2 real two-client concurrency", () 
           : await createCustomerTab(observer.page.request, second, `${label}-b-tab`, directRpcEvidence, "observer");
         const first = closeCommand(firstTarget, `${label}-a`, "reject");
         const secondCommand = closeCommand(secondTarget, `${label}-b`, "reject");
+        const timing = createPairTimingEvidence();
+        const diagnostic: Record<string, unknown> = {
+          iteration, matrixType, targetIds: [firstTarget.id, secondTarget.id],
+          mutationIds: [String(first.payload.mutation_id), String(secondCommand.payload.mutation_id)],
+          phases: timing.phases, completed: false, budgetOutcome: "pending"
+        };
+        pairDiagnostics.push(diagnostic);
 
-        await Promise.all([page.reload({ waitUntil: "domcontentloaded" }), observer.page.reload({ waitUntil: "domcontentloaded" })]);
-        await Promise.all([waitForSynced(page), waitForSynced(observer.page)]);
+        await Promise.all([
+          timing.measure("prepare.reload.origin", () => page.reload({ waitUntil: "domcontentloaded" })),
+          timing.measure("prepare.reload.observer", () => observer.page.reload({ waitUntil: "domcontentloaded" }))
+        ]);
+        await Promise.all([
+          timing.measure("prepare.synced.origin", () => waitForSynced(page)),
+          timing.measure("prepare.synced.observer", () => waitForSynced(observer.page))
+        ]);
         await Promise.all([
           expectTargetsVisible(page, [firstTarget, secondTarget]),
           expectTargetsVisible(observer.page, [firstTarget, secondTarget])
         ]);
 
         const pairStarted = performance.now();
-        const reloadPromise = observer.page.reload({ waitUntil: "domcontentloaded" });
+        diagnostic.pairStartedOffsetMs = timing.offsetAt(pairStarted);
+        const reloadPromise = timing.measure("overlap.reload.observer", () => observer.page.reload({ waitUntil: "domcontentloaded" }));
         const [firstResult, secondResult] = await Promise.all([
-          postRpc(page.request, origin, first.rpc, first.payload, directRpcEvidence, "origin"),
-          postRpc(observer.page.request, second, secondCommand.rpc, secondCommand.payload, directRpcEvidence, "observer")
+          timing.measure("overlap.rpc.origin", () => postRpc(page.request, origin, first.rpc, first.payload, directRpcEvidence, "origin")),
+          timing.measure("overlap.rpc.observer", () => postRpc(observer.page.request, second, secondCommand.rpc, secondCommand.payload, directRpcEvidence, "observer"))
         ]);
         const rpcPairMs = Math.round((performance.now() - pairStarted) * 100) / 100;
+        diagnostic.rpcPairMs = rpcPairMs;
         await reloadPromise;
         const rpcAndReloadMs = Math.round((performance.now() - pairStarted) * 100) / 100;
+        diagnostic.rpcAndReloadMs = rpcAndReloadMs;
         expect(firstResult.response.status(), `${label} first mutation`).toBe(200);
         expect(secondResult.response.status(), `${label} second mutation`).toBe(200);
         expect(Number((firstResult.body as { server_duration_ms?: unknown }).server_duration_ms), `${label} first server duration`).toBeLessThan(2_000);
         expect(Number((secondResult.body as { server_duration_ms?: unknown }).server_duration_ms), `${label} second server duration`).toBeLessThan(2_000);
-        await waitForSynced(observer.page);
-        await Promise.all([reconcileClosed(page, origin, firstTarget), reconcileClosed(observer.page, second, secondTarget)]);
+        await timing.measure("converge.synced.observer", () => waitForSynced(observer.page));
         await Promise.all([
-          expectTargetsAbsent(page, [firstTarget, secondTarget]),
-          expectTargetsAbsent(observer.page, [firstTarget, secondTarget])
+          timing.measure("converge.reconcile.origin", () => reconcileClosed(page, origin, firstTarget)),
+          timing.measure("converge.reconcile.observer", () => reconcileClosed(observer.page, second, secondTarget))
+        ]);
+        await Promise.all([
+          timing.measure("converge.absent.origin", () => expectTargetsAbsent(page, [firstTarget, secondTarget])),
+          timing.measure("converge.absent.observer", () => expectTargetsAbsent(observer.page, [firstTarget, secondTarget]))
         ]);
         const browserCompletionMs = Math.round((performance.now() - pairStarted) * 100) / 100;
+        diagnostic.browserCompletionMs = browserCompletionMs;
+        diagnostic.budgetOutcome = browserCompletionMs < 7_000 ? "passed" : "failed";
         expect(browserCompletionMs, `${label} full two-browser convergence`).toBeLessThan(7_000);
 
         const mutationIds = [String(first.payload.mutation_id), String(secondCommand.payload.mutation_id)];
@@ -704,6 +727,7 @@ test.describe.serial("Operational lifecycle v2 real two-client concurrency", () 
           ],
           eventIds: events.map((entry) => entry.id)
         });
+        diagnostic.completed = true;
       }
 
       const clientDurations = cases.flatMap((entry) => entry.clientDurationsMs as number[]);
@@ -755,6 +779,7 @@ test.describe.serial("Operational lifecycle v2 real two-client concurrency", () 
           browserCompletionMaxMs: Math.max(...cases.map((entry) => Number(entry.browserCompletionMs)))
         } : null,
         cases,
+        pairDiagnostics,
         directRpcEvidence
       }));
       await finalization.run("origin failure screenshot", () => attachFailureScreenshot(testInfo, page, "operational-v2-50-pairs-origin-failure"));
