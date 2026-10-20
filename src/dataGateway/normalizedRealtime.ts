@@ -205,54 +205,71 @@ export async function loadNormalizedRealtimeOverlay(
     };
   }
 
-  if (plan.normalizedConfigReads || plan.normalizedCatalogReads || plan.normalizedComboReads || plan.normalizedLiveReads) {
-    const overlay = await loadNormalizedAppDataOverlay({
-      normalizedConfigReads: plan.normalizedConfigReads,
-      normalizedCatalogReads: plan.normalizedCatalogReads,
-      normalizedComboReads: plan.normalizedComboReads,
-      normalizedLiveReads: plan.normalizedLiveReads,
-      client
-    });
+  // Observe every independent group immediately. Drain logical reader promises,
+  // not underlying transports, before publishing or propagating an error.
+  const results = await Promise.allSettled([
+    plan.normalizedConfigReads || plan.normalizedCatalogReads || plan.normalizedComboReads || plan.normalizedLiveReads
+      ? loadNormalizedAppDataOverlay({
+          normalizedConfigReads: plan.normalizedConfigReads,
+          normalizedCatalogReads: plan.normalizedCatalogReads,
+          normalizedComboReads: plan.normalizedComboReads,
+          normalizedLiveReads: plan.normalizedLiveReads,
+          client
+        })
+      : Promise.resolve(undefined),
+    plan.changedSessionIds.length > 0 || plan.changedCustomerTabIds.length > 0
+      ? loadNormalizedLiveDataByIds(
+          event.organization_id,
+          { sessionIds: plan.changedSessionIds, customerTabIds: plan.changedCustomerTabIds },
+          client
+        )
+      : Promise.resolve(undefined),
+    plan.billIds.length > 0 || plan.paymentIds.length > 0
+      ? loadNormalizedBillsByIds(
+          { organizationId: event.organization_id, billIds: plan.billIds, paymentIds: plan.paymentIds },
+          client
+        )
+      : Promise.resolve(undefined),
+    loadNormalizedCustomersByIds(event.organization_id, plan.customerIds, client),
+    loadNormalizedStockMovementsByIds(event.organization_id, plan.stockMovementIds, client),
+    loadNormalizedAuditLogsByIds(event.organization_id, plan.auditLogIds, client)
+  ] as const);
+
+  // Preserve logical group priority regardless of rejection/completion order.
+  for (const result of results) {
+    if (result.status === "rejected") throw result.reason;
+  }
+  const fulfilled = <T>(result: PromiseSettledResult<T>): T => {
+    if (result.status === "rejected") throw result.reason;
+    return result.value;
+  };
+  const overlay = fulfilled(results[0]);
+  const livePatch = fulfilled(results[1]);
+  const billPatch = fulfilled(results[2]);
+  const customers = fulfilled(results[3]);
+  const stockMovements = fulfilled(results[4]);
+  const auditLogs = fulfilled(results[5]);
+
+  if (overlay) {
     Object.assign(appData, overlay.appData);
     if (plan.normalizedCatalogReads) refreshedSlices.push("catalog");
     if (plan.normalizedComboReads) refreshedSlices.push("combos");
     if (plan.normalizedLiveReads) refreshedSlices.push("live");
   }
 
-  if (plan.changedSessionIds.length > 0 || plan.changedCustomerTabIds.length > 0) {
-    const livePatch = await loadNormalizedLiveDataByIds(
-      event.organization_id,
-      {
-        sessionIds: plan.changedSessionIds,
-        customerTabIds: plan.changedCustomerTabIds
-      },
-      client
-    );
+  if (livePatch) {
     appData.sessions = mergeById(appData.sessions, livePatch.sessions);
     appData.sessionPauseLogs = mergeById(appData.sessionPauseLogs, livePatch.sessionPauseLogs);
     appData.customerTabs = mergeById(appData.customerTabs, livePatch.customerTabs);
     refreshedSlices.push("changed_live_rows");
   }
 
-  if (plan.billIds.length > 0 || plan.paymentIds.length > 0) {
-    const billPatch = await loadNormalizedBillsByIds(
-      {
-        organizationId: event.organization_id,
-        billIds: plan.billIds,
-        paymentIds: plan.paymentIds
-      },
-      client
-    );
+  if (billPatch) {
     appData.bills = billPatch.bills;
     appData.payments = billPatch.payments;
     refreshedSlices.push("bills");
   }
 
-  const [customers, stockMovements, auditLogs] = await Promise.all([
-    loadNormalizedCustomersByIds(event.organization_id, plan.customerIds, client),
-    loadNormalizedStockMovementsByIds(event.organization_id, plan.stockMovementIds, client),
-    loadNormalizedAuditLogsByIds(event.organization_id, plan.auditLogIds, client)
-  ]);
   if (plan.customerIds.length > 0) {
     appData.customers = customers;
     refreshedSlices.push("customers");

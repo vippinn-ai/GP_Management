@@ -194,6 +194,18 @@ describe("isolated lifecycle realtime safety without atomic bootstrap", () => {
     dispose();
   });
 
+  it("does not publish a failed event overlay and reports a read-only error", async () => {
+    const g = gateway(); await g.loadAppDataSnapshot();
+    const listener = vi.fn(); const error = vi.fn();
+    const dispose = g.subscribeToAppData(listener, error);
+    const failure = new Error("audit read failed");
+    mocks.overlay.mockRejectedValueOnce(failure);
+    await onEvent(event("failed-overlay"));
+    expect(listener).not.toHaveBeenCalled();
+    expect(error).toHaveBeenCalledWith(failure);
+    dispose();
+  });
+
   it("does not publish old hydration into a remounted listener", async () => {
     const g = gateway(); await g.loadAppDataSnapshot();
     const oldListener = vi.fn(); const dispose = g.subscribeToAppData(oldListener);
