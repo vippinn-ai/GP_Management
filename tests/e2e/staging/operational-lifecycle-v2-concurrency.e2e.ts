@@ -5,6 +5,7 @@ import { namedCustomerFixture, verifyNamedCustomerFixture } from "../../../src/q
 import { captureRpcResponse } from "../../../src/qa/rpcEvidenceCollector";
 import { createPairTimingEvidence } from "../../../src/qa/pairTimingEvidence";
 import { createCalibrationEvidence } from "../../../src/qa/calibratedTimingEvidence";
+import { createRpcPhaseTiming, type RpcPhaseSnapshot } from "../../../src/qa/rpcPhaseTiming";
 import { expectTargetsVisible, expectTargetsAbsent } from "./support/liveTargets";
 import {
   attachFailureScreenshot,
@@ -46,16 +47,16 @@ interface Target {
   displayName: string;
 }
 
-interface DirectRpcEvidence {
+interface DirectRpcEvidence extends RpcPhaseSnapshot {
   client: "origin" | "observer";
   rpc: string;
   mutationId: string | null;
   startedAt: string;
   completedAt: string;
   elapsedMs: number;
-  status: number;
-  request: { payload: unknown };
-  response: unknown;
+  status: number | null;
+  request?: { payload: unknown };
+  response?: unknown;
 }
 
 function identityFrom(requests: CapturedRpcRequest[]): RestIdentity {
@@ -86,11 +87,29 @@ async function postRpc(
 ) {
   const startedAt = new Date().toISOString();
   const started = performance.now();
-  const response = await request.post(`${identity.restBase}/rpc/${rpc}`, {
-    headers: identity.headers,
-    data: { payload }
-  });
-  const body = await readApiResponseBody(response);
+  const phases = createRpcPhaseTiming();
+  let response: Awaited<ReturnType<APIRequestContext["post"]>>;
+  let body: Awaited<ReturnType<typeof readApiResponseBody>>;
+  try {
+    response = await request.post(`${identity.restBase}/rpc/${rpc}`, {
+      headers: identity.headers,
+      data: { payload }
+    });
+    phases.buffered();
+    body = await readApiResponseBody(response);
+    phases.complete();
+  } catch (error) {
+    phases.fail();
+    evidence?.push({
+      client, rpc,
+      mutationId: typeof payload === "object" && payload !== null && "mutation_id" in payload
+        ? String((payload as { mutation_id?: unknown }).mutation_id ?? "") || null : null,
+      startedAt, completedAt: new Date().toISOString(),
+      elapsedMs: Math.round((performance.now() - started) * 100) / 100,
+      status: null, ...phases.snapshot()
+    });
+    throw error;
+  }
   evidence?.push({
     client,
     rpc,
@@ -102,7 +121,8 @@ async function postRpc(
     elapsedMs: Math.round((performance.now() - started) * 100) / 100,
     status: response.status(),
     request: { payload },
-    response: body
+    response: body,
+    ...phases.snapshot()
   });
   return { response, body };
 }

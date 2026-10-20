@@ -1,3 +1,4 @@
+import type { RpcPhaseSnapshot } from "./rpcPhaseTiming";
 /** Test-only projection. Never persist RPC payloads, response bodies or error text. */
 export interface CalibrationSample {
   iteration: number;
@@ -9,14 +10,14 @@ export interface CalibrationSample {
   sequentialMutationIds: string[];
 }
 
-export interface CalibrationRpc {
+export interface CalibrationRpc extends Partial<RpcPhaseSnapshot> {
   client: "origin" | "observer";
   rpc: string;
   mutationId: string | null;
   startedAt: string;
   completedAt: string;
   elapsedMs: number;
-  status: number;
+  status: number | null;
   response?: unknown;
 }
 
@@ -48,7 +49,10 @@ export function createCalibrationEvidence(runId: string) {
           return {
             client: r.client, rpc: r.rpc, mutationId: r.mutationId,
             startedAt: r.startedAt, completedAt: r.completedAt, elapsedMs: r.elapsedMs, status: r.status,
-            serverDurationMs: typeof duration === "number" && Number.isFinite(duration) && duration >= 0 ? duration : null
+            serverDurationMs: typeof duration === "number" && Number.isFinite(duration) && duration >= 0 ? duration : null,
+            requestPostAwaitMs: typeof r.requestPostAwaitMs === "number" && Number.isFinite(r.requestPostAwaitMs) && r.requestPostAwaitMs >= 0 ? r.requestPostAwaitMs : null,
+            bodyReadAndParseMs: typeof r.bodyReadAndParseMs === "number" && Number.isFinite(r.bodyReadAndParseMs) && r.bodyReadAndParseMs >= 0 ? r.bodyReadAndParseMs : null,
+            phaseOutcome: ["complete", "request-failed", "body-failed"].includes(r.phaseOutcome ?? "") ? r.phaseOutcome : "incomplete"
           };
         })
       };

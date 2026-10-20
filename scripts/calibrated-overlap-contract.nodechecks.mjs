@@ -36,8 +36,25 @@ function timingFixture(runId='normops-20261020-1900-calibrated-overlap') {
     }
     samples.push({iteration,concurrentWallMs:80,sequentialWallMs:100,wallRatio:.8,submissionStartSkewMs:20,concurrentMutationIds,sequentialMutationIds});
   }
+  for (const r of directRpcEvidence) Object.assign(r,{requestPostAwaitMs:90,bodyReadAndParseMs:10,phaseOutcome:'complete'});
   return {runId,iteration:10,stage:'complete',completed:true,budgetOutcome:'passed',wallRatioP95:.8,samples,directRpcEvidence};
 }
+
+test('phase diagnostics cannot change the original gate and incomplete phases fail closed',()=>{
+  const a=timingFixture(),b=clone(a);
+  for(const r of b.directRpcEvidence)Object.assign(r,{requestPostAwaitMs:0,bodyReadAndParseMs:100});
+  assert.equal(verifyCalibrationTiming(a,a.runId),true);
+  assert.equal(verifyCalibrationTiming(b,b.runId),true);
+  assert.deepEqual(a.samples,b.samples);
+  for(const patch of [{requestPostAwaitMs:null},{bodyReadAndParseMs:null},{phaseOutcome:'body-failed'},{phaseOutcome:'request-failed'},{requestPostAwaitMs:-1},{bodyReadAndParseMs:Infinity},{requestPostAwaitMs:101},{phaseOutcome:'incomplete'}]){
+    const bad=clone(a);Object.assign(bad.directRpcEvidence[0],patch);
+    assert.throws(()=>verifyCalibrationTiming(bad,bad.runId));
+  }
+  for(const v of [a,b]){
+    v.samples[0].concurrentWallMs=100;v.samples[0].wallRatio=1;v.wallRatioP95=1;
+    assert.throws(()=>verifyCalibrationTiming(v,v.runId));
+  }
+});
 
 function fixture(runId='normops-20261020-1900-calibrated-overlap') {
   const app={md5:'a',bytes:1000,version:735,updated_at:'time',updated_by:'actor'};

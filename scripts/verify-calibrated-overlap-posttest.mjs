@@ -16,10 +16,12 @@ export function verifyCalibrationTiming(v,runId){
     ||v.samples?.length!==10||v.directRpcEvidence?.length!==80)throw Error('Incomplete calibration evidence');
   const rpcById=new Map();
   for(const r of v.directRpcEvidence){
-    if(!keys(r,['client','rpc','mutationId','startedAt','completedAt','elapsedMs','status','serverDurationMs'])
+    if(!keys(r,['client','rpc','mutationId','startedAt','completedAt','elapsedMs','status','serverDurationMs','requestPostAwaitMs','bodyReadAndParseMs','phaseOutcome'])
       ||!['origin','observer'].includes(r.client)||!['start_session','reject_session_v2'].includes(r.rpc)
       ||typeof r.mutationId!=='string'||!r.mutationId.startsWith(`${runId}-cal-`)||rpcById.has(r.mutationId)
       ||r.status!==200||!finite(r.elapsedMs)||!(r.serverDurationMs===null||finite(r.serverDurationMs))
+      ||r.phaseOutcome!=='complete'||!finite(r.requestPostAwaitMs)||!finite(r.bodyReadAndParseMs)
+      ||r.requestPostAwaitMs+r.bodyReadAndParseMs>r.elapsedMs+0.011
       ||typeof r.startedAt!=='string'||typeof r.completedAt!=='string'
       ||!Number.isFinite(Date.parse(r.startedAt))||!Number.isFinite(Date.parse(r.completedAt))
       ||Date.parse(r.completedAt)<Date.parse(r.startedAt))throw Error('Invalid RPC projection');

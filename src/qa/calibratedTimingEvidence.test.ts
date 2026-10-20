@@ -52,7 +52,7 @@ describe("failure-safe calibrated timing capture", () => {
     const saved = evidence.snapshot([rpc]);
     expect(JSON.stringify(saved)).not.toContain(secret);
     expect(Object.keys(saved.directRpcEvidence[0]).sort()).toEqual(
-      ["client", "rpc", "mutationId", "startedAt", "completedAt", "elapsedMs", "status", "serverDurationMs"].sort());
+      ["client", "rpc", "mutationId", "startedAt", "completedAt", "elapsedMs", "status", "serverDurationMs", "requestPostAwaitMs", "bodyReadAndParseMs", "phaseOutcome"].sort());
     expect(saved.directRpcEvidence[0].serverDurationMs).toBe(3);
     for (const invalid of ["3", -1, Infinity, NaN, { token: secret }]) {
       expect(evidence.snapshot([{ ...rpc, response: { server_duration_ms: invalid } }]).directRpcEvidence[0].serverDurationMs).toBeNull();
@@ -70,6 +70,21 @@ describe("failure-safe calibrated timing capture", () => {
     expect(saved.samples[0].concurrentMutationIds).toEqual(["a", "b"]);
     expect(saved).toMatchObject({ completed: true, budgetOutcome: "passed", iteration: 10, wallRatioP95: 0.8 });
   });
+  it("retains sanitized partial phases without inventing success or changing gate samples", () => {
+    const evidence = createCalibrationEvidence("run");
+    const base = { client: "origin" as const, rpc: "reject_session_v2", mutationId: "id",
+      startedAt: "2026-10-20T00:00:00Z", completedAt: "2026-10-20T00:00:01Z", elapsedMs: 1000, status: null };
+    const saved = evidence.snapshot([{ ...base, requestPostAwaitMs: 0, bodyReadAndParseMs: null,
+      phaseOutcome: "body-failed" as const, response: { error: "SECRET" } }]);
+    expect(saved.directRpcEvidence[0]).toMatchObject({ requestPostAwaitMs: 0, bodyReadAndParseMs: null,
+      phaseOutcome: "body-failed", status: null });
+    expect(saved.budgetOutcome).toBe("incomplete");
+    expect(saved.samples).toEqual([]);
+    expect(JSON.stringify(saved)).not.toContain("SECRET");
+    expect(evidence.snapshot([base]).directRpcEvidence[0]).toMatchObject({
+      requestPostAwaitMs: null, bodyReadAndParseMs: null, phaseOutcome: "incomplete"
+    });
+  });
   it("wires finally capture into the real case without changing operations, limits or ordering", () => {
     const source = readFileSync("tests/e2e/staging/operational-lifecycle-v2-concurrency.e2e.ts", "utf8");
     const body = source.split('test("ten calibrated unrelated pairs overlap instead of using one global queue"')[1].split('test("50 reload-versus')[0];
@@ -78,6 +93,11 @@ describe("failure-safe calibrated timing capture", () => {
     expect(body).toContain(".toBeLessThan(0.85)");
     expect(body).toContain(".toBeLessThan(100)");
     expect(body).toContain("const concurrentResults = await Promise.all([");
+    expect(body).toContain("const concurrentWallMs = performance.now() - concurrentStarted;");
+    expect(body).toContain("const sequentialWallMs = performance.now() - sequentialStarted;");
+    expect(body).toContain("wallRatio: concurrentWallMs / sequentialWallMs");
+    expect(body).not.toContain("requestPostAwaitMs");
+    expect(body).not.toContain("bodyReadAndParseMs");
     expect(body.indexOf("const sequentialFirst = await postRpc")).toBeLessThan(body.indexOf("const sequentialSecond = await postRpc"));
     expect(body.indexOf("} finally {")).toBeLessThan(body.indexOf('finalization.run("calibration timing evidence"'));
     expect(body).toContain('calibration.snapshot(directRpcEvidence)');
