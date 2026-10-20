@@ -4,6 +4,7 @@ import { timedFixturePricing, type FixturePricingRow } from "../../../src/qa/tim
 import { namedCustomerFixture, verifyNamedCustomerFixture } from "../../../src/qa/namedCustomerFixture";
 import { captureRpcResponse } from "../../../src/qa/rpcEvidenceCollector";
 import { createPairTimingEvidence } from "../../../src/qa/pairTimingEvidence";
+import { createCalibrationEvidence } from "../../../src/qa/calibratedTimingEvidence";
 import { expectTargetsVisible, expectTargetsAbsent } from "./support/liveTargets";
 import {
   attachFailureScreenshot,
@@ -542,7 +543,8 @@ test.describe.serial("Operational lifecycle v2 real two-client concurrency", () 
     const directRpcEvidence: DirectRpcEvidence[] = [];
     captureAuthenticatedRestRequests(page, originRequests);
     captureAuthenticatedRestRequests(observer.page, observerRequests);
-    const samples: Array<Record<string, unknown>> = [];
+    const calibration = createCalibrationEvidence(runId);
+    const samples = calibration.samples;
     try {
       await Promise.all([signIn(page, credentials("A")), signIn(observer.page, credentials("B"))]);
       const origin = identityFrom(originRequests);
@@ -555,11 +557,13 @@ test.describe.serial("Operational lifecycle v2 real two-client concurrency", () 
       const appStateBefore = await appStateSnapshot(page, origin);
 
       for (let iteration = 1; iteration <= 10; iteration += 1) {
+        calibration.stage("concurrent-create", iteration);
         const concurrentTargets = await Promise.all([
           createSession(page.request, origin, stations[0], `cal-${iteration}-con-a`, 1, directRpcEvidence, "origin"),
           createSession(observer.page.request, second, stations[1], `cal-${iteration}-con-b`, 1, directRpcEvidence, "observer")
         ]);
         const concurrentCommands = concurrentTargets.map((target, index) => closeCommand(target, `cal-${iteration}-con-${index}`, "reject"));
+        calibration.stage("concurrent-close");
         const concurrentStarted = performance.now();
         const concurrentResults = await Promise.all([
           postRpc(page.request, origin, concurrentCommands[0].rpc, concurrentCommands[0].payload, directRpcEvidence, "origin"),
@@ -573,11 +577,13 @@ test.describe.serial("Operational lifecycle v2 real two-client concurrency", () 
         const submissionStartSkewMs = Math.abs(Date.parse(concurrentEvidence[0].startedAt) - Date.parse(concurrentEvidence[1].startedAt));
         expect(submissionStartSkewMs, "Concurrent calibration submissions must begin together.").toBeLessThan(100);
 
+        calibration.stage("sequential-create");
         const sequentialTargets = await Promise.all([
           createSession(page.request, origin, stations[0], `cal-${iteration}-seq-a`, 1, directRpcEvidence, "origin"),
           createSession(observer.page.request, second, stations[1], `cal-${iteration}-seq-b`, 1, directRpcEvidence, "observer")
         ]);
         const sequentialCommands = sequentialTargets.map((target, index) => closeCommand(target, `cal-${iteration}-seq-${index}`, "reject"));
+        calibration.stage("sequential-close");
         const sequentialStarted = performance.now();
         const sequentialFirst = await postRpc(page.request, origin, sequentialCommands[0].rpc, sequentialCommands[0].payload, directRpcEvidence, "origin");
         const sequentialSecond = await postRpc(observer.page.request, second, sequentialCommands[1].rpc, sequentialCommands[1].payload, directRpcEvidence, "observer");
@@ -596,15 +602,15 @@ test.describe.serial("Operational lifecycle v2 real two-client concurrency", () 
       }
 
       const wallRatios = samples.map((entry) => Number(entry.wallRatio));
+      calibration.stage("budget");
+      calibration.budget(percentile(wallRatios, 0.95));
       expect(percentile(wallRatios, 0.95), "Concurrent wall time must beat isolated sequential calibration.").toBeLessThan(0.85);
+      calibration.stage("state");
       expect(await appStateSnapshot(page, origin)).toEqual(appStateBefore);
-      await attachJson(testInfo, "operational-v2-calibrated-overlap", {
-        runId,
-        samples,
-        wallRatioP95: percentile(wallRatios, 0.95),
-        directRpcEvidence
-      });
+      calibration.stage("complete");
     } finally {
+      await finalization.run("calibration timing evidence", () =>
+        attachJson(testInfo, "operational-v2-calibrated-overlap", calibration.snapshot(directRpcEvidence)));
       await finalization.run("origin failure screenshot", () => attachFailureScreenshot(testInfo, page, "calibrated-overlap-origin-failure"));
       await finalization.run("observer failure screenshot", () => attachFailureScreenshot(testInfo, observer.page, "calibrated-overlap-observer-failure"));
       await finalization.run("observer context close", () => observer.context.close());

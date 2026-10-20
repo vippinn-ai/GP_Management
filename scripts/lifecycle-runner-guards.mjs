@@ -16,11 +16,12 @@ export function lifecycleRuntimeIdentity(env) {
 }
 
 export function parseLifecycleArguments(args) {
+  if (JSON.stringify(args) === JSON.stringify(["--calibrated-overlap-diagnostics"]) || JSON.stringify(args) === JSON.stringify(["--calibrated-overlap-diagnostics", "--list"])) return { discoveryOnly: args.length === 2, args: args.slice(1), mode: "calibrated-overlap-diagnostics" };
   if (args.length === 0) return { discoveryOnly: false, args: [], mode: "full" };
   if (args.length === 1 && ["--list", "--help"].includes(args[0])) return { discoveryOnly: true, args, mode: "full" };
   if (JSON.stringify(args) === JSON.stringify(["--inventory-contract"]) || JSON.stringify(args) === JSON.stringify(["--inventory-contract", "--list"])) return { discoveryOnly: args.length === 2, args: args.slice(1), mode: "inventory-contract" };
   if (JSON.stringify(args) === JSON.stringify(["--convergence-diagnostics"]) || JSON.stringify(args) === JSON.stringify(["--convergence-diagnostics", "--list"])) return { discoveryOnly: args.length === 2, args: args.slice(1), mode: "convergence-diagnostics" };
-  throw new Error("Lifecycle runner accepts only the complete suite, --list, --help, --inventory-contract [--list], or --convergence-diagnostics [--list]; arbitrary overrides and selectors are forbidden.");
+  throw new Error("Lifecycle runner accepts only the complete suite, --list, --help, --inventory-contract [--list], --convergence-diagnostics [--list], or --calibrated-overlap-diagnostics [--list]; arbitrary overrides and selectors are forbidden.");
 }
 
 export const INVENTORY_CONTRACT_TESTS = Object.freeze([
@@ -29,6 +30,7 @@ export const INVENTORY_CONTRACT_TESTS = Object.freeze([
 ]);
 
 export function lifecycleSuiteContract(mode) {
+  if (mode === "calibrated-overlap-diagnostics") return { suite: "operational-lifecycle-calibrated-overlap-diagnostics", mode, expectedTestCount: 1, fullReleaseGate: false };
   if (mode === "convergence-diagnostics") return { suite: "operational-lifecycle-convergence-diagnostics", mode, expectedTestCount: 1, fullReleaseGate: false };
   if (!["full", "inventory-contract"].includes(mode)) throw new Error("Unknown lifecycle suite mode.");
   return { suite: mode === "full" ? "operational-lifecycle" : "operational-lifecycle-inventory-contract", mode,
@@ -39,7 +41,7 @@ export function lifecycleSelectionArguments(mode) {
   lifecycleSuiteContract(mode);
   if (mode === "full") return [];
   const escape = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const tests = mode === "convergence-diagnostics" ? CONVERGENCE_DIAGNOSTIC_TESTS : INVENTORY_CONTRACT_TESTS;
+  const tests = mode === "calibrated-overlap-diagnostics" ? CALIBRATED_OVERLAP_TESTS : mode === "convergence-diagnostics" ? CONVERGENCE_DIAGNOSTIC_TESTS : INVENTORY_CONTRACT_TESTS;
   return ["--grep", `^\\s*(?:${tests.map(entry => escape(entry.title.replaceAll(" > ", " "))).join("|")})$`];
 }
 
@@ -49,11 +51,16 @@ export function assertLifecycleSuiteDiscovery(expected, mode) {
   if (expected.length !== contract.expectedTestCount || new Set(expected.map(key)).size !== expected.length) throw new Error("Lifecycle discovery does not match the fixed suite size.");
   if (mode === "inventory-contract" && JSON.stringify(expected.map(key).sort()) !== JSON.stringify(INVENTORY_CONTRACT_TESTS.map(key).sort())) throw new Error("Inventory contract requires exactly the two approved full test identities.");
   if (mode === "convergence-diagnostics" && JSON.stringify(expected.map(key)) !== JSON.stringify(CONVERGENCE_DIAGNOSTIC_TESTS.map(key))) throw new Error("Convergence diagnostics requires the exact approved test identity.");
+  if (mode === "calibrated-overlap-diagnostics" && JSON.stringify(expected.map(key)) !== JSON.stringify(CALIBRATED_OVERLAP_TESTS.map(key))) throw new Error("Calibrated overlap diagnostics requires the exact approved test identity.");
   return contract;
 }
 
 export const CONVERGENCE_DIAGNOSTIC_TESTS = Object.freeze([
   Object.freeze({ file: "operational-lifecycle-v2-concurrency.e2e.ts", project: "", title: "operational-lifecycle-v2-concurrency.e2e.ts > Operational lifecycle v2 real two-client concurrency > 50 reload-versus-unrelated-mutation pairs preserve parity and write availability" })
+]);
+
+export const CALIBRATED_OVERLAP_TESTS = Object.freeze([
+  Object.freeze({ file: "operational-lifecycle-v2-concurrency.e2e.ts", project: "", title: "operational-lifecycle-v2-concurrency.e2e.ts > Operational lifecycle v2 real two-client concurrency > ten calibrated unrelated pairs overlap instead of using one global queue" })
 ]);
 
 export function assertStagingBundleUrl(scriptPath, baseUrl) {
