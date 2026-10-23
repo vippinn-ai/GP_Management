@@ -1057,6 +1057,110 @@ describe("app_state data gateway", () => {
     );
   });
 
+  it("does not publish partial realtime data when an independent reader fails", async () => {
+    let handler: ((payload: { new: unknown }) => void) | undefined;
+    const channel = {
+      on: vi.fn((_kind, _config, callback) => { handler = callback; return channel; }),
+      subscribe: vi.fn().mockReturnThis()
+    };
+    backendMocks.getSupabaseClient.mockReturnValue({ channel: vi.fn(() => channel), removeChannel: vi.fn() });
+    backendMocks.loadRemoteAppDataSnapshot.mockResolvedValue(createSnapshot(20));
+    normalizedReadMocks.loadNormalizedAppDataOverlay.mockResolvedValue({ appData: {}, organizationId: "org-primary" });
+    normalizedReadMocks.loadNormalizedLiveDataByIds.mockResolvedValue({ sessions: [], sessionPauseLogs: [], customerTabs: [] });
+    const failure = new Error("audit read failed");
+    normalizedReadMocks.loadNormalizedAuditLogsByIds.mockRejectedValueOnce(failure);
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const gateway = createRemoteDataGateway({ ...DEFAULT_BACKEND_FEATURE_FLAGS, normalizedRealtime: true });
+    const onChange = vi.fn();
+    await gateway.loadAppDataSnapshot();
+    const dispose = gateway.subscribeToAppData(onChange);
+    try {
+      handler?.({ new: {
+        organization_id: "org-primary", id: "failed-event", event_type: "reject_session",
+        entity_type: "session", entity_id: "session-1", created_at: "2026-10-23T00:00:00Z",
+        metadata: { changed_rows: { sessions: ["session-1"], audit_logs: ["audit-1"] } }
+      } });
+      await vi.waitFor(() => expect(warning).toHaveBeenCalledWith("Unable to apply compact realtime event.", failure));
+      expect(onChange).not.toHaveBeenCalled();
+      expect(backendMocks.loadRemoteAppDataSnapshot).toHaveBeenCalledTimes(1);
+    } finally {
+      dispose();
+      warning.mockRestore();
+    }
+  });
+
+  it("publishes same-entity events in arrival order even when newer data is ready first", async () => {
+    let handler: ((payload: { new: unknown }) => void) | undefined;
+    const channel = {
+      on: vi.fn((_kind, _config, callback) => { handler = callback; return channel; }),
+      subscribe: vi.fn().mockReturnThis()
+    };
+    backendMocks.getSupabaseClient.mockReturnValue({ channel: vi.fn(() => channel), removeChannel: vi.fn() });
+    const baseSnapshot = createSnapshot(20);
+    baseSnapshot.appData.sessions = [{
+      id: "session-shared", stationId: "station-1", status: "active"
+    } as never];
+    backendMocks.loadRemoteAppDataSnapshot.mockResolvedValue(baseSnapshot);
+    normalizedReadMocks.loadNormalizedAppDataOverlay.mockResolvedValue({ appData: {}, organizationId: "org-primary" });
+
+    let resolveOlder!: (value: { sessions: unknown[]; sessionPauseLogs: unknown[]; customerTabs: unknown[] }) => void;
+    let resolveNewer!: (value: { sessions: unknown[]; sessionPauseLogs: unknown[]; customerTabs: unknown[] }) => void;
+    const older = new Promise<{ sessions: unknown[]; sessionPauseLogs: unknown[]; customerTabs: unknown[] }>((resolve) => {
+      resolveOlder = resolve;
+    });
+    const newer = new Promise<{ sessions: unknown[]; sessionPauseLogs: unknown[]; customerTabs: unknown[] }>((resolve) => {
+      resolveNewer = resolve;
+    });
+    normalizedReadMocks.loadNormalizedLiveDataByIds
+      .mockReturnValueOnce(older)
+      .mockReturnValueOnce(newer);
+
+    const gateway = createRemoteDataGateway({ ...DEFAULT_BACKEND_FEATURE_FLAGS, normalizedRealtime: true });
+    const onChange = vi.fn();
+    await gateway.loadAppDataSnapshot();
+    const dispose = gateway.subscribeToAppData(onChange);
+    try {
+      handler?.({ new: {
+        organization_id: "org-primary", id: "event-older", event_type: "pause_session",
+        entity_type: "session", entity_id: "session-shared", created_at: "2026-10-23T00:00:01Z",
+        metadata: { app_state_version: 21, changed_rows: { sessions: ["session-shared"] } }
+      } });
+      handler?.({ new: {
+        organization_id: "org-primary", id: "event-newer", event_type: "resume_session",
+        entity_type: "session", entity_id: "session-shared", created_at: "2026-10-23T00:00:02Z",
+        metadata: { app_state_version: 22, changed_rows: { sessions: ["session-shared"] } }
+      } });
+      await vi.waitFor(() => expect(normalizedReadMocks.loadNormalizedLiveDataByIds).toHaveBeenCalledTimes(1));
+
+      resolveNewer({
+        sessions: [{ id: "session-shared", stationId: "station-1", status: "active" }],
+        sessionPauseLogs: [], customerTabs: []
+      });
+      await Promise.resolve();
+      expect(onChange).not.toHaveBeenCalled();
+      expect(normalizedReadMocks.loadNormalizedLiveDataByIds).toHaveBeenCalledTimes(1);
+
+      resolveOlder({
+        sessions: [{ id: "session-shared", stationId: "station-1", status: "paused" }],
+        sessionPauseLogs: [], customerTabs: []
+      });
+      await vi.waitFor(() => expect(onChange).toHaveBeenCalledTimes(2));
+
+      expect(onChange.mock.calls[0][0]).toMatchObject({
+        version: 21,
+        sourceEventId: "event-older",
+        appData: { sessions: [expect.objectContaining({ id: "session-shared", status: "paused" })] }
+      });
+      expect(onChange.mock.calls[1][0]).toMatchObject({
+        version: 22,
+        sourceEventId: "event-newer",
+        appData: { sessions: [expect.objectContaining({ id: "session-shared", status: "active" })] }
+      });
+    } finally {
+      dispose();
+    }
+  });
+
   it("carries the event identity through a realtime full refresh", async () => {
     const baseSnapshot = createSnapshot(20);
     const refreshedSnapshot = createSnapshot(20);

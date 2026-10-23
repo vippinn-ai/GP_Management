@@ -395,23 +395,26 @@ async function loadNormalizedBootstrapSnapshot(): Promise<RemoteAppDataSnapshot>
 
 export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): RemoteDataGateway {
   let lastSnapshot: RemoteAppDataSnapshot | null = null;
+  // Read without publishing: an unsubscribed event must not update shared state.
+  async function readAppDataSnapshot(): Promise<RemoteAppDataSnapshot> {
+    if (_flags.normalizedBootstrap) {
+      return loadNormalizedBootstrapSnapshot();
+    }
+    const snapshot = await appStateRemoteDataGateway.loadAppDataSnapshot();
+    const overlay = await loadNormalizedAppDataOverlay({
+      normalizedConfigReads: _flags.normalizedConfigReads,
+      normalizedCatalogReads: _flags.normalizedCatalogReads,
+      normalizedComboReads: _flags.normalizedComboReads,
+      normalizedLiveReads: _flags.normalizedLiveReads
+    });
+    return {
+      ...snapshot,
+      appData: mergeNormalizedAppDataOverlay(snapshot.appData, overlay.appData)
+    };
+  }
   const gateway: RemoteDataGateway = {
     async loadAppDataSnapshot() {
-      if (_flags.normalizedBootstrap) {
-        lastSnapshot = await loadNormalizedBootstrapSnapshot();
-        return lastSnapshot;
-      }
-      const snapshot = await appStateRemoteDataGateway.loadAppDataSnapshot();
-      const overlay = await loadNormalizedAppDataOverlay({
-        normalizedConfigReads: _flags.normalizedConfigReads,
-        normalizedCatalogReads: _flags.normalizedCatalogReads,
-        normalizedComboReads: _flags.normalizedComboReads,
-        normalizedLiveReads: _flags.normalizedLiveReads
-      });
-      lastSnapshot = {
-        ...snapshot,
-        appData: mergeNormalizedAppDataOverlay(snapshot.appData, overlay.appData)
-      };
+      lastSnapshot = await readAppDataSnapshot();
       return lastSnapshot;
     },
     async saveAppData(appData, activeUserId, expectedVersion, telemetryOptions) {
@@ -438,54 +441,74 @@ export function createNormalizedRemoteDataGateway(_flags: BackendFeatureFlags): 
     subscribeToAppData(onChange) {
       if (_flags.normalizedRealtime) {
         const client = getSupabaseClient();
-        return subscribeToOperationalEvents(client, async (event) => {
+        let active = true;
+        let eventQueue: Promise<void> = Promise.resolve();
+        const unsubscribe = subscribeToOperationalEvents(client, (event) => {
+          // Include queue wait in existing telemetry; do not change any deadline.
           const startedAt = Date.now();
-          try {
-            if (!lastSnapshot) {
-              lastSnapshot = await gateway.loadAppDataSnapshot();
+          const applyEvent = async () => {
+            if (!active) return;
+            try {
+              const baseSnapshot = lastSnapshot ?? (await readAppDataSnapshot());
+              if (!active) return;
+              const overlay = await loadNormalizedRealtimeOverlay(event, _flags, client);
+              if (!active) return;
+              let nextSnapshot: RemoteAppDataSnapshot;
+              if (overlay.requiresFullRefresh) {
+                nextSnapshot = {
+                  ...(await readAppDataSnapshot()),
+                  refreshedSlices: overlay.refreshedSlices
+                };
+              } else {
+                // A separate explicit refresh may have completed during the read.
+                // Preserve the baseline merge against the latest shared snapshot.
+                const currentSnapshot = lastSnapshot ?? baseSnapshot;
+                nextSnapshot = {
+                  ...currentSnapshot,
+                  appData: mergeNormalizedAppDataOverlay(currentSnapshot.appData, overlay.appData),
+                  version: overlay.appStateVersion ?? currentSnapshot.version,
+                  sourceMutationId: overlay.sourceMutationId,
+                  refreshedSlices: overlay.refreshedSlices
+                };
+              }
+              if (!active) return;
+              lastSnapshot = { ...nextSnapshot, sourceEventId: event.id };
+              recordCompactRealtimeTelemetry({
+                eventPayload: event,
+                eventType: event.event_type,
+                entityType: event.entity_type,
+                entityId: event.entity_id,
+                refreshedSlices: overlay.refreshedSlices,
+                startedAt,
+                status: "success",
+                skippedFullSnapshot: !overlay.requiresFullRefresh
+              });
+              onChange(lastSnapshot);
+            } catch (error) {
+              if (!active) return;
+              recordCompactRealtimeTelemetry({
+                eventPayload: event,
+                eventType: event.event_type,
+                entityType: event.entity_type,
+                entityId: event.entity_id,
+                refreshedSlices: [],
+                startedAt,
+                status: "error",
+                errorMessage: error instanceof Error ? error.message : "Unable to refresh compact realtime event.",
+                skippedFullSnapshot: true
+              });
+              console.warn("Unable to apply compact realtime event.", error);
             }
-            const overlay = await loadNormalizedRealtimeOverlay(event, _flags, client);
-            if (overlay.requiresFullRefresh) {
-              lastSnapshot = {
-                ...(await gateway.loadAppDataSnapshot()),
-                refreshedSlices: overlay.refreshedSlices
-              };
-            } else {
-              lastSnapshot = {
-                ...lastSnapshot,
-                appData: mergeNormalizedAppDataOverlay(lastSnapshot.appData, overlay.appData),
-                version: overlay.appStateVersion ?? lastSnapshot.version,
-                sourceMutationId: overlay.sourceMutationId,
-                refreshedSlices: overlay.refreshedSlices
-              };
-            }
-            lastSnapshot = { ...lastSnapshot, sourceEventId: event.id };
-            recordCompactRealtimeTelemetry({
-              eventPayload: event,
-              eventType: event.event_type,
-              entityType: event.entity_type,
-              entityId: event.entity_id,
-              refreshedSlices: overlay.refreshedSlices,
-              startedAt,
-              status: "success",
-              skippedFullSnapshot: !overlay.requiresFullRefresh
-            });
-            onChange(lastSnapshot);
-          } catch (error) {
-            recordCompactRealtimeTelemetry({
-              eventPayload: event,
-              eventType: event.event_type,
-              entityType: event.entity_type,
-              entityId: event.entity_id,
-              refreshedSlices: [],
-              startedAt,
-              status: "error",
-              errorMessage: error instanceof Error ? error.message : "Unable to refresh compact realtime event.",
-              skippedFullSnapshot: true
-            });
-            console.warn("Unable to apply compact realtime event.", error);
-          }
+          };
+          // Every event reads after its predecessor settles. A failure must not
+          // poison subsequent work or escape the fire-and-forget subscription.
+          eventQueue = eventQueue.then(applyEvent).catch(() => undefined);
+          return eventQueue;
         });
+        return () => {
+          active = false;
+          unsubscribe();
+        };
       }
       return appStateRemoteDataGateway.subscribeToAppData(onChange);
     }
