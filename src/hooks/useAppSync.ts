@@ -1,4 +1,4 @@
-import { useEffect, type MutableRefObject } from "react";
+import { useEffect, useLayoutEffect, useRef, type MutableRefObject } from "react";
 import {
   resolveRemoteSessionProfile,
   type RemoteAppDataSnapshot,
@@ -98,6 +98,11 @@ export function useAppSync(params: {
     applyRemoteSnapshot,
     dataGateway = defaultRemoteDataGateway
   } = params;
+
+  const remoteRestoreStateRef = useRef(remoteRestoreState);
+  useLayoutEffect(() => {
+    remoteRestoreStateRef.current = remoteRestoreState;
+  }, [remoteRestoreState]);
 
   useEffect(() => {
     if (!backendConfigured) {
@@ -222,12 +227,15 @@ export function useAppSync(params: {
         setAppData(normalizeAppDataCustomers(snapshot.appData));
         setRemoteVersion(snapshot.version);
       }
-      if (remoteRestoreState !== "ready") {
+      if (remoteRestoreStateRef.current !== "ready") {
         setRemoteError("");
       }
+      // The next queued event can run before React commits this state update.
+      remoteRestoreStateRef.current = "ready";
       setRemoteRestoreState("ready");
     });
-  }, [activeUserId, backendConfigured, dataGateway, remoteRestoreState]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Recovery changes must not dispose the subscription's queued realtime events.
+  }, [activeUserId, backendConfigured, dataGateway]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!backendConfigured) {
