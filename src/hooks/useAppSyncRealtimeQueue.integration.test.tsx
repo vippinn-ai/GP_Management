@@ -220,8 +220,8 @@ describe("useAppSync and normalized realtime queue lifetime", () => {
 
     await waitFor(() => expect(screen.getByTestId("restore-state")).toHaveTextContent("stale-cache"));
     await waitFor(() => expect(handlers).toHaveLength(1));
-    handlers[0](event("event-first", 4));
-    handlers[0](event("event-second", 5));
+    const firstRun = handlers[0](event("event-first", 4));
+    const secondRun = handlers[0](event("event-second", 5));
     await waitFor(() => expect(realtimeMocks.loadNormalizedRealtimeOverlay).toHaveBeenCalledTimes(1));
 
     firstOverlay.resolve(overlay("First recovery", 4));
@@ -233,6 +233,7 @@ describe("useAppSync and normalized realtime queue lifetime", () => {
     fireEvent.click(screen.getByText("set operation error"));
     await waitFor(() => expect(realtimeMocks.loadNormalizedRealtimeOverlay).toHaveBeenCalledTimes(2));
     secondOverlay.resolve(overlay("Second recovery", 5));
+    await act(async () => { await Promise.all([firstRun, secondRun]); });
     await waitFor(() => expect(screen.getByTestId("business-name")).toHaveTextContent("Second recovery"));
     expect(screen.getByTestId("remote-error")).toHaveTextContent("Financial command failed.");
     expect(realtimeMocks.subscribeToOperationalEvents).toHaveBeenCalledTimes(1);
@@ -258,10 +259,9 @@ describe("useAppSync and normalized realtime queue lifetime", () => {
     await waitFor(() => expect(screen.getByTestId("restore-state")).toHaveTextContent("stale-cache"));
     await waitFor(() => expect(handlers).toHaveLength(1));
 
-    act(() => {
-      handlers[0](event("event-first-batch", 4));
-      handlers[0](event("event-second-batch", 5));
-    });
+    const firstRun = handlers[0](event("event-first-batch", 4));
+    const secondRun = handlers[0](event("event-second-batch", 5));
+    await act(async () => { await Promise.all([firstRun, secondRun]); });
 
     await waitFor(() => expect(screen.getByTestId("business-name")).toHaveTextContent("Second same-batch conflict"));
     expect(screen.getByTestId("restore-state")).toHaveTextContent("ready");
@@ -281,10 +281,8 @@ describe("useAppSync and normalized realtime queue lifetime", () => {
     render(<Harness gateway={gateway} />);
     await waitFor(() => expect(screen.getByTestId("restore-state")).toHaveTextContent("ready"));
     await waitFor(() => expect(handlers).toHaveLength(1));
-    act(() => {
-      handlers[0](event("old-user-first", 2));
-      handlers[0](event("old-user-second", 3));
-    });
+    const firstRun = handlers[0](event("old-user-first", 2));
+    const secondRun = handlers[0](event("old-user-second", 3));
     await waitFor(() => expect(realtimeMocks.loadNormalizedRealtimeOverlay).toHaveBeenCalledTimes(1));
 
     fireEvent.click(screen.getByText("change user"));
@@ -293,7 +291,7 @@ describe("useAppSync and normalized realtime queue lifetime", () => {
     expect(screen.getByTestId("active-user")).toHaveTextContent("user-changed");
 
     delayed.resolve(overlay("Old user result", 2));
-    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    await act(async () => { await Promise.all([firstRun, secondRun]); });
     expect(screen.getByTestId("business-name")).toHaveTextContent("Ready");
     expect(realtimeMocks.loadNormalizedRealtimeOverlay).toHaveBeenCalledTimes(1);
   });
@@ -307,17 +305,15 @@ describe("useAppSync and normalized realtime queue lifetime", () => {
     const { gateway, handlers, disposers } = setupGateway();
     render(<Harness gateway={gateway} />);
     await waitFor(() => expect(handlers).toHaveLength(1));
-    act(() => {
-      handlers[0](event("logout-first", 2));
-      handlers[0](event("logout-second", 3));
-    });
+    const firstRun = handlers[0](event("logout-first", 2));
+    const secondRun = handlers[0](event("logout-second", 3));
     await waitFor(() => expect(realtimeMocks.loadNormalizedRealtimeOverlay).toHaveBeenCalledTimes(1));
 
     fireEvent.click(screen.getByText("log out"));
     await waitFor(() => expect(disposers[0]).toHaveBeenCalledTimes(1));
     expect(screen.getByTestId("active-user")).toHaveTextContent("none");
     delayed.resolve(overlay("Logged-out result", 2));
-    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    await act(async () => { await Promise.all([firstRun, secondRun]); });
     expect(screen.getByTestId("business-name")).toHaveTextContent("Ready");
     expect(realtimeMocks.loadNormalizedRealtimeOverlay).toHaveBeenCalledTimes(1);
   });
@@ -331,16 +327,14 @@ describe("useAppSync and normalized realtime queue lifetime", () => {
     const { gateway, handlers, disposers } = setupGateway();
     const rendered = render(<Harness gateway={gateway} />);
     await waitFor(() => expect(handlers).toHaveLength(1));
-    act(() => {
-      handlers[0](event("unmount-first", 2));
-      handlers[0](event("unmount-second", 3));
-    });
+    const firstRun = handlers[0](event("unmount-first", 2));
+    const secondRun = handlers[0](event("unmount-second", 3));
     await waitFor(() => expect(realtimeMocks.loadNormalizedRealtimeOverlay).toHaveBeenCalledTimes(1));
 
     rendered.unmount();
     expect(disposers[0]).toHaveBeenCalledTimes(1);
     delayed.resolve(overlay("Unmounted result", 2));
-    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    await act(async () => { await Promise.all([firstRun, secondRun]); });
     expect(realtimeMocks.loadNormalizedRealtimeOverlay).toHaveBeenCalledTimes(1);
   });
 
