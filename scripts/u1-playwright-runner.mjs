@@ -48,27 +48,40 @@ export async function runBaselinePairs(adapter, { manifest, manifestHash, discov
     check(typeof adapter[name] === 'function', `Missing adapter method ${name}`);
   }
   const samples = []; const seen = new Set(); const failures = [];
+  const supervised = adapter.evidenceMode === 'u1-supervised-numbered-v1';
+  check(adapter.evidenceMode === undefined || supervised, 'Unknown adapter evidence mode');
+  let verifiedPhases = 0, compatibilityCommits = 0;
   const ledger = []; let initial; let current;
+  let activePair = null;
+  if (supervised) {
+    check(typeof adapter.setSupervisedCoordinatorState === 'function' && typeof adapter.assertSupervisedWorking === 'function', 'Missing supervised resource guard');
+    adapter.setSupervisedCoordinatorState(() => ({ approved, initial, current, samples, activePair }));
+  }
+  const guard = (...values) => { if (supervised) adapter.assertSupervisedWorking(...values); };
   const verifyReceipts = (receipts, operations) => {
+    guard(receipts);
     check(Array.isArray(receipts) && receipts.length === operations.length, 'Missing phase receipts');
     receipts.forEach((receipt, index) => {
       check(receipt.plan?.operation === operations[index] && receipt.plan.outcome === 'committed', 'Wrong phase operation');
       check(canonicalHash(receipt.plan.before) === canonicalHash(current), 'Unexplained phase gap');
       reconcilePhase(receipt.plan, receipt.after);
       reconcileProtectedRows(receipt.expectedProtectedRows, receipt.actualProtectedRows);
-      ledger.push({ plan: receipt.plan, after: structuredClone(receipt.after) });
-      current = structuredClone(receipt.after);
+      if (!supervised) ledger.push({ plan: receipt.plan, after: structuredClone(receipt.after) });
+      verifiedPhases++; compatibilityCommits += Number(receipt.plan.compatibilityCommit);
+      current = structuredClone(supervised ? receipt.plan.expected : receipt.after);
+      guard(receipts);
     });
   };
   let approvedPairs;
-  let activePair = null;
   try {
     const preflight = await adapter.preflight();
     approvedPairs = approved.pairs;
     verifyPairIdentities(preflight.pairs, approvedPairs);
     check(canonicalHash(preflight.appState) === approved.initialAppStateHash, 'Preflight state does not match admitted baseline');
     initial = structuredClone(preflight.appState); current = structuredClone(initial);
+    guard(preflight);
     for (let index = 0; index < U1_LIMITS.pairs; index += 1) {
+      guard();
       activePair = await adapter.setup(index);
       verifyReceipts(activePair.receipts, ['start_session', 'start_session']);
       check(activePair?.aId === approvedPairs[index].aId && activePair?.bId === approvedPairs[index].bId,
@@ -89,6 +102,7 @@ export async function runBaselinePairs(adapter, { manifest, manifestHash, discov
       const start = clock();
       const sample = { index, aId: activePair.aId, bId: activePair.bId, elapsedMs: null, outcome: 'incomplete' };
       samples.push(sample);
+      guard();
       try {
       // allSettled drains BOTH branches on failure before any cleanup decision.
       const results = await Promise.allSettled([
@@ -126,6 +140,7 @@ export async function runBaselinePairs(adapter, { manifest, manifestHash, discov
       const cleanup = await adapter.cleanupReconciledPair(activePair);
       verifyReceipts(cleanup.receipts, ['reject_session', 'reject_session']);
       activePair = null;
+      guard();
     }
     verifySamples(samples);
     verifyPairIdentities(samples, approvedPairs);
@@ -137,7 +152,11 @@ export async function runBaselinePairs(adapter, { manifest, manifestHash, discov
     try {
       const postflight = await adapter.postflight({ samples, activePair, failed: failures.length > 0 });
       if (!failures.length) {
-        reconcileRun(initial, ledger, postflight.appState);
+        if (supervised) {
+          check(verifiedPhases === 250 && compatibilityCommits === 100, 'Incomplete supervised phase/commit fold');
+          reconcileProtectedRows(current, postflight.appState);
+          check(postflight.appState.version === initial.version + compatibilityCommits, 'Incorrect compatibility commit count');
+        } else reconcileRun(initial, ledger, postflight.appState);
         reconcileProtectedRows(postflight.expectedProtectedRows, postflight.actualProtectedRows);
       } else {
         check(postflight?.status === 'safety-unverified' || postflight?.status === 'reconciled-failure', 'Missing failure-safety status');
@@ -150,7 +169,10 @@ export async function runBaselinePairs(adapter, { manifest, manifestHash, discov
         if (postflight.status === 'reconciled-failure') {
           check(canonicalHash(postflight.appState) === postflight.appStateHash &&
             canonicalHash(postflight.protectedRows) === postflight.protectedRowsHash, 'Failure-safety hash mismatch');
-          reconcileRun(initial, ledger, postflight.appState);
+          if (supervised) {
+            reconcileProtectedRows(current, postflight.appState);
+            check(postflight.appState.version === initial.version + compatibilityCommits, 'Incorrect failure-prefix commit count');
+          } else reconcileRun(initial, ledger, postflight.appState);
           reconcileProtectedRows(postflight.expectedProtectedRows, postflight.protectedRows);
         }
         await adapter.record({ phase: 'failure-safety', status: postflight.status,

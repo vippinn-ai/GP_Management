@@ -1,0 +1,45 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import {createHash} from 'node:crypto';
+import {buildCommandPlan} from './u1-command-plan.mjs';
+import {prepareDraft,draftIdentityPlan,APPLICATION_COMMIT,HARNESS_BASE_COMMIT} from './u1-package-builder.mjs';
+import {PROTECTED_TABLES} from './u1-protected-reader.mjs';
+import {canonicalHash,patchArrayById} from './u1-data-reconciler.mjs';
+import {loadBrowserPackage} from './u1-browser-database-adapter.mjs';
+const sha=b=>createHash('sha256').update(b).digest('hex');
+function fixture(fn,large=false){
+ const dir=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'u1-command-')));
+ try{
+ const save=(name,obj)=>{const file=path.join(dir,name),bytes=JSON.stringify(obj);fs.writeFileSync(file,bytes);return {file,sha256:sha(bytes)};};
+ const runId='u1-command-offline',actors={A:{id:'00000000-0000-4000-8000-000000000001',role:'admin',active:true,organization:'org-primary'},B:{id:'00000000-0000-4000-8000-000000000002',role:'manager',active:true,organization:'org-primary'}};
+ const e={schema:'u1-package-preflight-v1',runId,applicationCommit:APPLICATION_COMMIT,harnessCommit:HARNESS_BASE_COMMIT,project:'tkbdyzxwwbhkpztgjjxh',organization:'org-primary',systemIdentifier:'7623125441096521075',identityNonce:'f9bc0aed-b6c4-410f-ba2a-572522d03869',readOnly:true,capturedAt:'2026-11-04T12:00:00Z',scope:draftIdentityPlan(runId).scope,actors,stations:['station-a','station-b'].map(id=>({id,organization_id:'org-primary',active:true,mode:'timed'})),floor:{openSessions:0,openTabs:0,unbilledHops:0,incompleteOperationalMutations:0,incompleteFinancialMutations:0,customerNameCollisions:0},collisions:{sessionIds:0,customerIds:0,customerNames:0,mutationIds:0,auditIds:0},appState:{id:'primary',version:735,updated_by:null,updated_at:'2026-11-04T11:00:00Z',data:{sessions:[{id:'unrelated',nested:{preserve:true}}],auditLogs:[{id:'old-audit'}],unrelated:{blob:large?'x'.repeat(1024*1024):'retained'}}},protectedRows:{...Object.fromEntries(PROTECTED_TABLES.map(t=>[t,[]])),_unowned:Object.fromEntries(PROTECTED_TABLES.map(t=>[t,{count:0,md5:'d41d8cd98f00b204e9800998ecf8427e'}]))}};
+ const pre=save('pre.json',e),draft=prepareDraft({runId,applicationCommit:APPLICATION_COMMIT,harnessCommit:HARNESS_BASE_COMMIT,baseURL:'https://gp-management-staging-pages.breakperfectgaminglounge.workers.dev',preflightFile:pre.file,preflightSha256:pre.sha256,now:Date.parse('2026-11-04T12:00:01Z'),actors,stationIds:['station-a','station-b']}),d=save('draft.json',draft);
+ const authority={schema:'u1-approved-station-pricing-v1',runId,applicationCommit:APPLICATION_COMMIT,harnessCommit:HARNESS_BASE_COMMIT,preflightSha256:pre.sha256,stations:e.stations.map(s=>({...s,name:`Name ${s.id}`,ltpEnabled:false,pricingSnapshot:[{id:`price-${s.id}`,stationId:s.id,label:'Standard',startMinute:0,endMinute:1440,hourlyRate:120}]}))},a=save('authority.json',authority);
+ const input={schema:'u1-command-inputs-v1',runId,applicationCommit:APPLICATION_COMMIT,harnessCommit:HARNESS_BASE_COMMIT,preflightSha256:pre.sha256,draftSha256:d.sha256,initialAppState:e.appState,initialProtectedRows:e.protectedRows,stationAuthority:{path:a.file,sha256:a.sha256},clock:{earliest:'2026-11-04T12:00:00Z',latest:'2026-11-04T12:15:00Z'},timings:Array.from({length:50},(_,index)=>({index,startA:'2026-11-04T12:00:00.000001Z',startB:'2026-11-04T12:00:00.000002Z',saveB:'2026-11-04T12:00:00.000003Z',endA:'2026-11-04T12:00:00.000004Z',endB:'2026-11-04T12:00:00.000005Z'})),closeReason:'U1 approved test'};
+ const build=()=>{const x=save('inputs.json',input);return buildCommandPlan({draftFile:d.file,draftSha256:d.sha256,inputsFile:x.file,inputsSha256:x.sha256});};
+ fn({build,input,draft,authority,save,d,a});
+ }finally{assert.ok(dir.startsWith(fs.realpathSync(os.tmpdir())+path.sep));fs.rmSync(dir,{recursive:true,force:true});}
+}
+test('50/250 deterministic source envelopes, exact customers and immutable draft',()=>fixture(({build,input,save})=>{
+ const original=structuredClone(input),p=build();assert.deepEqual(build(),p);assert.deepEqual(input,original);assert.equal(p.phases.length,250);assert.equal(p.pairs.length,50);assert.equal(p.finalAdmission,false);assert.equal(p.fullProtectedFold,null);assert.equal(Object.isFrozen(p.phases[0].command.payload),true);
+ assert.equal(new Set(p.phases.map(x=>x.command.mutation_id)).size,250);
+ const artifact=save('command-plan.json',p);assert.throws(()=>loadBrowserPackage(artifact.file,artifact.sha256),/Wrong package schema/);
+ for(let i=0;i<50;i++){const [a,b,s,ra,rb]=p.phases.slice(i*5,i*5+5);assert.deepEqual([a,b,s,ra,rb].map(x=>x.role),['start-a','start-b','save-b','reject-a','reject-b']);assert.deepEqual(Object.keys(a.command).sort(),['organization_id','mutation_id','mutation_kind','label','entity_type','entity_id','user_id','client_created_at','base_app_state_version','payload'].sort());assert.equal(s.command.payload.customer.id,b.command.payload.customer.id);assert.equal(rb.command.payload.session.customerName,p.pairs[i].customerBAfter);assert.equal(ra.command.base_app_state_version,735+i*2);assert.equal(rb.command.base_app_state_version,736+i*2);assert.equal(ra.command.payload.auditLog.createdAt,input.timings[i].endA);assert.equal(ra.normalizedGeneratedSlots.auditTime.$generated,'serverTime');assert.equal(a.installedIntent.before,null);}
+}));
+test('compact patches replay exact template; prepend B/A and preserve unrelated data',()=>fixture(({build,input})=>{
+ const p=build();let state=structuredClone(input.initialAppState);
+ for(const phase of p.phases){const c=phase.compatibility;assert.equal(c.beforeTemplateHash,canonicalHash(state));if(phase.operation==='reject_session')state={...state,version:c.expectedVersion,updated_by:phase.actorId,updated_at:c.updatedAt,data:{...state.data,sessions:patchArrayById(state.data.sessions,c.patches.sessions),auditLogs:patchArrayById(state.data.auditLogs,c.patches.auditLogs)}};assert.equal(c.afterTemplateHash,canonicalHash(state));}
+ assert.deepEqual(state,p.finalExpectedCompatibility);assert.equal(state.version,835);assert.deepEqual(state.data.unrelated,input.initialAppState.data.unrelated);assert.deepEqual(state.data.sessions.slice(-1),input.initialAppState.data.sessions);assert.deepEqual(state.data.sessions.slice(0,2).map(x=>x.id),[p.pairs[49].bId,p.pairs[49].aId]);
+}));
+test('large unrelated input is retained once not amplified per phase',()=>fixture(({build})=>{const p=build();assert.ok(JSON.stringify(p).length<3*1024*1024);assert.ok(p.phases.every(x=>!('state' in x.compatibility)));},true));
+test('timing, pricing and state tampering fail closed',()=>fixture(({build,input,authority,save})=>{
+ for(const mutate of [x=>x.timings.pop(),x=>x.timings[0].endA='2026-02-30T12:00:00Z',x=>x.timings[0].endA='2026-11-04T11:59:00Z',x=>{x.clock={earliest:'2026-11-04T11:59:00Z',latest:'2026-11-04T12:01:00Z'};for(const k of ['startA','startB','saveB','endA','endB'])x.timings[0][k]='2026-11-04T11:59:30Z';},x=>x.timings[0].index=1,x=>x.initialAppState.version++,x=>x.runId='other-run',x=>x.closeReason='',x=>x.extra='secret']){const old=structuredClone(input);mutate(input);assert.throws(build);for(const k of Object.keys(input))delete input[k];Object.assign(input,old);}
+ input.closeReason='x'.repeat(257);assert.throws(build);input.closeReason='U1 approved test';
+ for(const mutate of [a=>a.stations[0].pricingSnapshot[0].hourlyRate='120',a=>a.stations[0].pricingSnapshot.push({...a.stations[0].pricingSnapshot[0]}),a=>a.stations[0].name='',a=>a.stations[0].pricingSnapshot[0].stationId='other',a=>a.stations[0].ltpEnabled=true,a=>delete a.stations[0].ltpEnabled,a=>a.stations[1].name=a.stations[0].name,a=>a.stations[1].pricingSnapshot[0].id=a.stations[0].pricingSnapshot[0].id,a=>a.stations[0].name='x'.repeat(129),a=>a.stations[0].pricingSnapshot=Array.from({length:33},(_,i)=>({...a.stations[0].pricingSnapshot[0],id:`price-${i}`})),a=>{const row=a.stations[0].pricingSnapshot[0];a.stations[0].pricingSnapshot=[{...row,id:'later',startMinute:60},{...row,id:'earlier',startMinute:0}];}]){const a=structuredClone(authority);mutate(a);const f=save('authority.json',a);input.stationAuthority.sha256=f.sha256;assert.throws(build);}
+}));
+test('rehashing changed environment, limits, actor and pair manifest does not admit it',()=>fixture(({build,input,draft,d,save})=>{
+ for(const mutate of [m=>m.project='production',m=>m.limits={},m=>m.actors.A.id='-'.repeat(36),m=>m.pairs[0].customerIdA='other',m=>m.pairs[0].stationIdA='other',m=>m.pairs.push({...m.pairs[0]}),m=>m.pairs[0].stationIdB=m.pairs[0].stationIdA,m=>{[m.pairs[1].stationIdA,m.pairs[1].stationIdB]=[m.pairs[1].stationIdB,m.pairs[1].stationIdA];},m=>m.pairs[1].extra='secret',m=>m.initialAppStateHash='a'.repeat(64)]){const changed=structuredClone(draft);mutate(changed.inputManifest);changed.inputManifestHash=canonicalHash(changed.inputManifest);const f=save('draft.json',changed);d.sha256=f.sha256;input.draftSha256=f.sha256;assert.throws(build);}
+}));

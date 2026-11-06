@@ -8,6 +8,7 @@ import { createProtectedReader } from '../../../scripts/u1-protected-reader.mjs'
 test('50 baseline reload-versus-unrelated-mutation pairs preserve parity and write availability', async ({ browser, page }) => {
   // --list is offline. Actual execution refuses missing admission before navigation.
   const pkg = loadBrowserPackage(process.env.U1_PACKAGE_FILE, process.env.U1_APPROVED_PACKAGE_SHA256);
+  if (pkg.evidenceMode !== 'u1-supervised-numbered-v1') throw new Error('Supervised U1 evidence mode required before staging access');
   const protectedReader = createProtectedReader({ executable: pkg.readTool.path, executableSha256: pkg.readTool.sha256,
     password: process.env.U1_STAGING_DB_PASSWORD, user: process.env.U1_STAGING_DB_USER,
     sslRootCert: process.env.U1_STAGING_SSL_ROOT_CERT,

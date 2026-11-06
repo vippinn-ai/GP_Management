@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
-import { loadBrowserPackage } from './u1-browser-database-adapter.mjs';
+import { loadBrowserPackage, packagePhaseExpectation, packageFinalExpectation } from './u1-browser-database-adapter.mjs';
 import { bindGeneratedPhase, compareGeneratedProtected } from './u1-generated-fields.mjs';
 import { prepareInstalledPhase, compareInstalledPhase } from './u1-phase-expectations.mjs';
 import { canonicalHash, planPhase, sealPhaseIntent, finalizePhaseIntent, reconcilePhase, reconcileProtectedRows, reconcileRun, verifyPairIdentities, verifySamples } from './u1-data-reconciler.mjs';
@@ -128,6 +128,15 @@ export function main(args) {
   if (new Set([expectedPath, observedPath, reportPath].map(value => path.resolve(value))).size !== 3)
     throw new Error('Expectation, observation and report must be separate files');
   if (fs.existsSync(reportPath)) throw new Error('Report already exists; evidence is immutable');
+  const report = verifyEvidenceFiles(expectedPath, expectedHash, observedPath, {historical});
+  fs.writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`, { flag: 'wx' });
+  return report.status === 'passed' ? 0 : 1;
+}
+
+// Same evidence verification as the CLI, without creating or changing files.
+export function verifyEvidenceFiles(expectedPath, expectedHash, observedPath, {historical = false} = {}) {
+  if (typeof historical !== 'boolean' || !/^[0-9a-f]{64}$/.test(expectedHash) || path.resolve(expectedPath) === path.resolve(observedPath))
+    throw new Error('Invalid read-only reconciliation inputs');
   const bytes = fs.readFileSync(expectedPath);
   const hash = data => createHash('sha256').update(data).digest('hex');
   if (hash(bytes) !== expectedHash) throw new Error('Approved expectation hash mismatch');
@@ -149,7 +158,7 @@ export function main(args) {
       if (pkg.generatedFieldPolicy !== 'u1-correlated-v1' || pkg.manifest.runId !== expected.runId ||
         canonicalHash(pkg.manifest) !== authority.manifestHash || canonicalHash(pkg.proofs) !== canonicalHash(authority.proofs) ||
         canonicalHash(expected.initial) !== pkg.manifest.initialAppStateHash ||
-        canonicalHash(expected.finalProtectedRows) !== canonicalHash(pkg.finalProtectedRows)) throw new Error('Package authority mismatch');
+        canonicalHash(expected.finalProtectedRows) !== canonicalHash(packageFinalExpectation(pkg))) throw new Error('Package authority mismatch');
       if (canonicalHash(expected.pairs) !== canonicalHash(pkg.manifest.pairs.map((pair, index) =>
         ({ ...pair, intentHash: canonicalHash(pkg.manifest.intents[index]) })))) throw new Error('Pair authority mismatch');
       for (const [name, digest] of Object.entries(pkg.proofs)) {
@@ -186,7 +195,7 @@ export function main(args) {
       if (all.some(item => item.record.phase === 'submission-failure')) throw new Error('Failed submission ledger');
       preparedRecords = expected.phases.map((phase, index) => {
         const prepared = read(phase.preparedArtifact), observed = read(actual.phases[index].observedArtifact);
-        const approved = pkg.phases[index];
+        const approved = packagePhaseExpectation(pkg,index);
         if (!approved || canonicalHash(prepared.record.command) !== canonicalHash(approved.command) ||
           ['id', 'pairIndex', 'role', 'entityId', 'actorId', 'mutationId', 'auditId'].some(key => phase[key] !== approved[key]) ||
           canonicalHash(phase.protectedRows) !== canonicalHash(approved.protectedRows) ||
@@ -222,8 +231,8 @@ export function main(args) {
     scope: 'Offline evidence rejected; preserve input files for independent diagnosis' }; }
   report.expectedSha256 = expectedHash; report.observedSha256 = hash(observedBytes);
   if (historical) report.scope = 'Historical synthetic offline comparison only; not live-run admission';
-  fs.writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`, { flag: 'wx' });
-  return report.status === 'passed' ? 0 : 1;
+  const freeze = value => { if (value && typeof value === 'object') { Object.values(value).forEach(freeze); Object.freeze(value); } return value; };
+  return freeze(report);
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   try { process.exitCode = main(process.argv.slice(2)); }

@@ -2,17 +2,24 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { expect } from '@playwright/test';
-import { canonicalHash, planPhase, sealPhaseIntent, finalizePhaseIntent } from './u1-data-reconciler.mjs';
+import { canonicalHash, planPhase, sealPhaseIntent, finalizePhaseIntent, reconcilePhase } from './u1-data-reconciler.mjs';
+import { prepareRuntimeExpectations, bindRuntimePackage, runtimePhase, runtimeFinalTemplate, runtimePairs } from './u1-runtime-expectations.mjs';
 import { bindGeneratedPhase, compareGeneratedProtected, canonicalProtectedRows } from './u1-generated-fields.mjs';
 import { verifyTarget } from './u1-playwright-runner.mjs';
 import { PROTECTED_TABLES } from './u1-protected-reader.mjs';
 import { expectedStartEventMetadata } from './u1-installed-contract.mjs';
 import { prepareInstalledPhase, compareInstalledPhase } from './u1-phase-expectations.mjs';
+import {SUPERVISED_LIMITS,verifySupervisedSourceHashes} from './u1-supervised-evidence.mjs';
 
 const DB = 'https://tkbdyzxwwbhkpztgjjxh.supabase.co';
 const ORG = 'org-primary';
 const check = (ok, message) => { if (!ok) throw new Error(message); };
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
+const loadedPackages = new WeakSet();
+const packageProviders = new WeakMap();
+export function packagePhaseExpectation(pkg,index) { check(loadedPackages.has(pkg), 'Loader-owned package required'); return packageProviders.has(pkg) ? runtimePhase(packageProviders.get(pkg),index) : pkg.phases[index]; }
+export function packageFinalExpectation(pkg) { check(loadedPackages.has(pkg), 'Loader-owned package required'); return packageProviders.has(pkg) ? runtimeFinalTemplate(packageProviders.get(pkg)) : pkg.finalProtectedRows; }
+export function packagePairExpectations(pkg) { check(loadedPackages.has(pkg), 'Loader-owned package required'); return packageProviders.has(pkg) ? runtimePairs(packageProviders.get(pkg)) : pkg.pairs; }
 export const REQUIRED_PROOF_CHECKS = Object.freeze({
   catalog: ['installed-functions-grants', 'tables-rls-publication', 'staging-identity'],
   rollback: ['baseline-restored-assets', 'baseline-readback', 'protected-data-parity'],
@@ -31,15 +38,23 @@ export function loadBrowserPackage(file, approvedHash) {
   const bytes = fs.readFileSync(file); check(sha(bytes) === approvedHash, 'Package bytes changed');
   const pkg = JSON.parse(bytes);
   check(pkg.schema === 'u1-browser-package-v1' && pkg.generatedFieldPolicy === 'u1-correlated-v1', 'Wrong package schema');
+  check(pkg.evidenceMode === undefined || pkg.evidenceMode === 'u1-supervised-numbered-v1', 'Unknown evidence mode');
   check(pkg.manifest?.applicationCommit === '70ee5ab00bd758c3de2b86e4f68ae76e69c82f1e', 'Unexpected application candidate');
   check(/^[A-Za-z0-9_-]{6,80}$/.test(pkg.manifest?.runId ?? ''), 'Invalid run identity');
   verifyTarget(pkg.manifest.baseURL);
   check(pkg.manifest.project === 'tkbdyzxwwbhkpztgjjxh' && pkg.manifest.organization === ORG, 'Wrong environment');
   check(pkg.phases?.length === 250 && pkg.pairs?.length === 50, 'Incomplete package');
+  check(pkg.expectationPolicy == null || pkg.expectationPolicy === 'u1-runtime-expectations-v1', 'Unknown expectation policy');
+  if (pkg.evidenceMode) { check(pkg.expectationPolicy === 'u1-runtime-expectations-v1', 'Supervised mode requires runtime authority'); verifySupervisedSourceHashes(pkg); }
+  else check(!Object.hasOwn(pkg, 'supervisedSourceHashes') && !Object.hasOwn(pkg, 'supervisedLimits'), 'Unmarked supervised policy');
+  check(pkg.expectationPolicy || pkg.phases.every(phase => phase.protectedRows), 'Compact package requires expectation provider policy');
+  if (pkg.expectationPolicy) check(!Object.hasOwn(pkg, 'finalProtectedRows') && pkg.phases.every(phase =>
+    !Object.hasOwn(phase, 'protectedRows') && !Object.hasOwn(phase, 'uiParity')), 'Conflicting legacy expectations in compact package');
   check(canonicalHash(pkg.pairs) === canonicalHash(pkg.manifest.pairs) && pkg.manifest.intents?.length === 50,
     'Manifest pair authority mismatch');
   pkg.manifest.intents.forEach((intent, index) => {
     const phase = pkg.phases[index * 5 + 2];
+    if (pkg.expectationPolicy) check(intent.rpc === 'save_live_session_details', 'Compact measured RPC identity mismatch');
     check(canonicalHash(intent.payload) === canonicalHash(phase.command) &&
       ['entityId', 'actorId', 'mutationId', 'auditId'].every(key => intent[key] === phase[key]), 'Manifest intent authority mismatch');
   });
@@ -110,15 +125,30 @@ export function loadBrowserPackage(file, approvedHash) {
   }
   check(pkg.assets && Object.keys(pkg.assets).length > 0 && Object.entries(pkg.assets).every(([key, hash]) =>
     /^\/assets\/[A-Za-z0-9_.-]+\.(?:js|css)$/.test(key) && /^[a-f0-9]{64}$/.test(hash)), 'Missing pinned build assets');
-  return { ...pkg, authority: { packageFile: path.resolve(file), packageSha256: approvedHash,
+  const loaded = { ...pkg, authority: { packageFile: path.resolve(file), packageSha256: approvedHash,
     manifestHash: canonicalHash(pkg.manifest), proofs: pkg.proofs } };
+  if (pkg.expectationPolicy) {
+    const provider = prepareRuntimeExpectations(pkg.expectationInputs);
+    bindRuntimePackage(provider,loaded); packageProviders.set(loaded,provider);
+  }
+  const freeze = value => { if (value && typeof value === 'object') { Object.values(value).forEach(freeze); Object.freeze(value); } return value; };
+  loadedPackages.add(loaded); return freeze(loaded);
 }
 
 // All secrets remain in memory. record() writes only requested protected evidence,
 // never response headers, login payloads, or bearer tokens.
 export class U1BrowserDatabaseAdapter {
-  constructor({ origin, observer, package: pkg, evidenceDirectory, credentials, protectedReader }) {
+  constructor({ origin, observer, package: pkg, evidenceDirectory, credentials, protectedReader, expectationProvider }) {
     const freeze = value => { if (value && typeof value === 'object') { Object.values(value).forEach(freeze); Object.freeze(value); } return value; };
+    check(expectationProvider == null, 'External expectation provider injection forbidden');
+    check(pkg.evidenceMode === undefined || (pkg.evidenceMode === 'u1-supervised-numbered-v1' && loadedPackages.has(pkg)), 'Supervised mode requires loader-owned package');
+    Object.defineProperty(this, 'evidenceMode', { value: pkg.evidenceMode, writable: false });
+    if (pkg.evidenceMode) verifySupervisedSourceHashes(pkg);
+    if (pkg.expectationPolicy) {
+      check(loadedPackages.has(pkg), 'Provider requires exact loader-admitted package object');
+      check(packageProviders.has(pkg), 'Missing registered expectation provider');
+    }
+    Object.defineProperty(this, 'expectationProvider', { value: packageProviders.get(pkg) ?? null, writable: false });
     this.pages = { A: origin, B: observer }; this.pkg = freeze(structuredClone(pkg)); this.credentials = credentials;
     check(typeof protectedReader === 'function', 'Missing independently guarded protected reader'); this.protectedReader = protectedReader;
     this.directory = path.resolve(evidenceDirectory);
@@ -131,24 +161,78 @@ export class U1BrowserDatabaseAdapter {
     this.headers = {}; this.errors = []; this.bindings = Object.create(null); this.generatedIds = new Set();
     this.sequence = 0; this.phaseIndex = 0; this.observations = []; this.ownedIds = []; this.expectedProtected = null;
     this.preparedPhases = []; this.previousRecordHash = null;
+    this.recordIndex = []; this.numberedBytes = 0; this.verifiedPhases = 0; this.compatibilityCommits = 0;
+  }
+  setSupervisedCoordinatorState(readState) {
+    check(this.evidenceMode && typeof readState === 'function' && !this.coordinatorState, 'Invalid coordinator resource binding');
+    this.coordinatorState = readState;
+    this.assertSupervisedWorking();
+  }
+  assertSupervisedWorking(...temporary) {
+    if (!this.evidenceMode) return;
+    try {
+      const retained = [this.pkg, this.initialState, this.current, this.expectedProtected, this.latestRows,
+        this.bindings, [...this.generatedIds], this.recordIndex, this.pending, this.finalSnapshot,
+        this.coordinatorState?.(), ...temporary];
+      let bytes = 0;
+      for (const value of retained) if (value !== undefined) {
+        bytes += Buffer.byteLength(JSON.stringify(value));
+        check(bytes <= SUPERVISED_LIMITS.workingBytes, 'Supervised logical working-state bound');
+      }
+    } catch {
+      this.errors.push('supervised-working-bound');
+      throw new Error('Supervised working state rejected; no further submission permitted');
+    }
   }
   async record(value) {
+    try {
+    this.assertSupervisedWorking(value);
     const file = path.join(this.directory, `${String(this.sequence++).padStart(5, '0')}-${value.phase ?? 'evidence'}.json`);
     const bytes = `${JSON.stringify({ previousRecordHash: this.previousRecordHash, ...value })}\n`;
+    if (this.evidenceMode) check(this.sequence <= SUPERVISED_LIMITS.maxRecords && Buffer.byteLength(bytes) <= SUPERVISED_LIMITS.recordBytes &&
+      this.numberedBytes + Buffer.byteLength(bytes) <= SUPERVISED_LIMITS.totalRecordBytes, 'Supervised numbered evidence bound');
+    if (this.evidenceMode) {
+      const candidate = { file: path.basename(file), sha256: sha(bytes), ordinal: this.sequence - 1, phase: value.phase, bytes: Buffer.byteLength(bytes) };
+      // All growing index metadata, including samples, is bounded on each append.
+      const metadata = { records: [...this.recordIndex, candidate], authority: this.pkg.authority,
+        sourceHashes: this.pkg.supervisedSourceHashes, samples: this.coordinatorState?.()?.samples ?? [],
+        limits: SUPERVISED_LIMITS, runId: this.pkg.manifest.runId };
+      check(Buffer.byteLength(JSON.stringify(metadata)) <= SUPERVISED_LIMITS.indexBytes - 4096, 'Supervised index growth bound');
+    }
     const fd = fs.openSync(file, 'wx', 0o600);
     try { fs.writeFileSync(fd, bytes); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
     this.previousRecordHash = sha(bytes);
     const reference = { file: path.basename(file), sha256: this.previousRecordHash };
+    if (this.evidenceMode) { this.numberedBytes += Buffer.byteLength(bytes); this.recordIndex.push({ ...reference, ordinal: this.sequence - 1, phase: value.phase, bytes: Buffer.byteLength(bytes) }); }
+    this.assertSupervisedWorking(value);
     if (value.phase === 'terminal') this.writeTerminalArtifacts(value, reference);
     return reference;
+    } catch (error) {
+      if (this.evidenceMode) { this.errors.push('supervised-evidence-failed'); throw new Error('Supervised evidence failed; no further submission permitted'); }
+      throw error;
+    }
   }
   writeTerminalArtifacts(terminal, reference) {
+    if (this.evidenceMode) {
+      verifySupervisedSourceHashes(this.pkg);
+      const summary = { schema: 'u1-supervised-index-v1', evidenceMode: this.evidenceMode,
+        authority: this.pkg.authority, sourceHashes: this.pkg.supervisedSourceHashes, limits: SUPERVISED_LIMITS, runId: this.pkg.manifest.runId, project: 'tkbdyzxwwbhkpztgjjxh', organization: ORG,
+        attempt: 1, retry: 0, status: terminal.status, samples: terminal.samples,
+        records: this.recordIndex, terminalRecord: reference, verifiedPhases: this.verifiedPhases,
+        compatibilityCommits: this.compatibilityCommits, initialAppStateHash: this.initialState ? canonicalHash(this.initialState) : null,
+        initialProtectedHash: this.pkg.initialProtectedHash,
+        finalAppStateHash: this.finalSnapshot ? canonicalHash(this.finalSnapshot.appState) : null,
+        finalProtectedHash: this.finalSnapshot ? canonicalHash(this.finalSnapshot.protectedRows) : null };
+      const fd = fs.openSync(path.join(this.directory, 'supervised-index.json'), 'wx', 0o600);
+      try { const text = `${JSON.stringify(summary)}\n`; check(Buffer.byteLength(text) <= SUPERVISED_LIMITS.indexBytes, 'Supervised index byte bound'); fs.writeFileSync(fd, text); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+      return;
+    }
     const expected = { schema: 'u1-expectations-v1', generatedFieldPolicy: 'u1-correlated-v1',
       authority: this.pkg.authority,
       runId: this.pkg.manifest.runId, project: 'tkbdyzxwwbhkpztgjjxh', organization: ORG,
       initial: this.initialState, phases: this.preparedPhases,
       pairs: this.pkg.manifest.pairs.map((pair, index) => ({ ...pair, intentHash: canonicalHash(this.pkg.manifest.intents[index]) })),
-      finalProtectedRows: this.pkg.finalProtectedRows };
+      finalProtectedRows: this.expectationProvider ? runtimeFinalTemplate(this.expectationProvider) : this.pkg.finalProtectedRows };
     const observed = { schema: 'u1-observations-v1', runId: expected.runId, project: expected.project,
       authority: this.pkg.authority,
       organization: ORG, attempt: 1, retry: 0, status: terminal.status, samples: terminal.samples,
@@ -181,6 +265,7 @@ export class U1BrowserDatabaseAdapter {
   async snapshot() {
     const state = await this.protectedReader(); check(state.appState?.id === 'primary', 'Missing app_state');
     if (this.nonOwned) check(canonicalHash(state.protectedRows._unowned) === this.nonOwned, 'Non-owned data changed');
+    this.assertSupervisedWorking(state);
     this.latestRows = state.protectedRows; return state;
   }
   async login(slot) {
@@ -257,9 +342,11 @@ export class U1BrowserDatabaseAdapter {
     return { pairs: this.pkg.manifest.pairs, appState: state.appState };
   }
   async executePhase(index, defer = false) {
+    this.assertSupervisedWorking();
     check(this.errors.length === 0, 'Browser errors prohibit further mutations');
     check(index === this.phaseIndex, 'Out-of-order or repeated phase');
-    const phase = this.pkg.phases[index];
+    const phase = this.expectationProvider ? runtimePhase(this.expectationProvider, index) : this.pkg.phases[index];
+    this.assertSupervisedWorking(phase);
     check(['start_session', 'save_live_session_details', 'reject_session'].includes(phase.operation), 'Unclassified writer');
     const actorSlot = phase.actorSlot; check(['A', 'B'].includes(actorSlot), 'Missing bound actor slot');
     check(['admin', 'manager', 'receptionist'].includes(this.pkg.actors[actorSlot]?.role), 'Unauthorized fixture role');
@@ -283,14 +370,21 @@ export class U1BrowserDatabaseAdapter {
     const expectedPhase = { id: phase.id, pairIndex: phase.pairIndex, role: phase.role, entityId: phase.entityId,
       actorId: phase.actorId, mutationId: phase.mutationId, auditId: phase.auditId, generated,
       plan: expectedPlan, protectedRows: phase.protectedRows, ...(phase.uiParity ? { uiParity: phase.uiParity } : {}) };
-    const prepared = await this.record({ phase: 'prepared-command', expectedPhase, command: phase.command,
-      beforeHash: canonicalHash(this.current), installedIntent });
-    this.preparedPhases.push({ ...expectedPhase, preparedArtifact: prepared });
+    let prepared;
+    try {
+      prepared = await this.record({ phase: 'prepared-command', expectedPhase, command: phase.command,
+        beforeHash: canonicalHash(this.current), installedIntent });
+    } catch {
+      this.errors.push('phase-preparation-failed');
+      throw new Error('Prepared evidence failed; no submission permitted');
+    }
+    if (!this.evidenceMode) this.preparedPhases.push({ ...expectedPhase, preparedArtifact: prepared });
     if (phase.operation === 'start_session' && !this.ownedIds.includes(phase.entityId)) this.ownedIds.push(phase.entityId);
     this.phaseIndex++; // A lost response can never authorize the same submission again.
     let body, responseStatus = null, responseHash = null, responseLength = null;
-    await this.record({ phase: 'submission-attempt', mutationId: phase.mutationId, preparedArtifact: prepared });
     try {
+    await this.record({ phase: 'submission-attempt', mutationId: phase.mutationId, preparedArtifact: prepared });
+    this.assertSupervisedWorking(phase, generated, planInput, intent, installedIntent, expectedPhase);
     const response = await this.pages[actorSlot].request.post(`${DB}/rest/v1/rpc/${phase.operation}`, {
       headers: this.headers[actorSlot], data: { payload: phase.command }, timeout: 15000, maxRedirects: 0, maxRetries: 0,
     });
@@ -302,16 +396,20 @@ export class U1BrowserDatabaseAdapter {
     await this.record({ phase: 'submission-response', mutationId: phase.mutationId, preparedArtifact: prepared,
       responseStatus, responseHash, responseLength, response: body });
     } catch {
-      await this.record({ phase: 'submission-failure', mutationId: phase.mutationId, preparedArtifact: prepared,
-        status: 'ambiguous-read-only-reconciliation-required', responseStatus, responseHash, responseLength });
+      this.errors.push('phase-submission-failed');
+      try { await this.record({ phase: 'submission-failure', mutationId: phase.mutationId, preparedArtifact: prepared,
+        status: 'ambiguous-read-only-reconciliation-required', responseStatus, responseHash, responseLength }); } catch { /* Poison remains even when evidence I/O is unavailable. */ }
       throw new Error('Mutation failed or ambiguous; no resend permitted');
     }
     const pending = { phase, generated, planInput, intent, installedIntent, body, prepared };
+    this.assertSupervisedWorking(pending);
     if (defer) { this.pending = pending; return pending; }
     return this.finalizePhase(pending);
   }
   async finalizePhase({ phase, generated, planInput, intent, installedIntent, body, prepared, uiParity, pendingQueues }) {
+    try {
     const after = await this.snapshot();
+    this.assertSupervisedWorking(phase, generated, planInput, intent, installedIntent, body, after);
     const bound = bindGeneratedPhase(generated, body, after.protectedRows, phase.command);
     for (const key of ['eventId', 'auditActivityId', 'operationalActivityId']) {
       check(!this.generatedIds.has(bound[key]), 'Reused generated ID'); this.generatedIds.add(bound[key]);
@@ -321,20 +419,37 @@ export class U1BrowserDatabaseAdapter {
     const expectedProtectedRows = canonicalProtectedRows(expectedRaw);
     const plan = intent ? finalizePhaseIntent(intent, { responseTime: body.server_time, databaseTime: after.appState.updated_at }) :
       planPhase({ ...phase.plan, before: this.current, serverTime: body.server_time });
+    reconcilePhase(plan, after.appState);
     const receipt = { plan, after: after.appState, expectedProtectedRows, actualProtectedRows: canonicalProtectedRows(after.protectedRows) };
-    this.current = after.appState; this.expectedProtected = expectedRaw;
+    this.assertSupervisedWorking(phase, after, expectedRaw, receipt);
+    this.current = structuredClone(plan.expected); this.expectedProtected = expectedRaw;
+    this.assertSupervisedWorking(phase, after, receipt);
     const observation = { id: phase.id, pairIndex: phase.pairIndex, role: phase.role, entityId: phase.entityId,
       actorId: phase.actorId, mutationId: phase.mutationId, auditId: phase.auditId, preparedArtifact: prepared,
       response: body, responseTime: body.server_time, databaseTime: after.appState.updated_at, ...after,
       ...(uiParity ? { uiParity, pendingQueues } : {}) };
     const observedArtifact = await this.record({ phase: 'observed-command', ...observation });
-    this.observations.push({ ...observation, observedArtifact });
+    if (!this.evidenceMode) this.observations.push({ ...observation, observedArtifact });
+    else {
+      await this.record({ phase: 'phase-validation', schema: 'u1-phase-validation-v1', index: this.verifiedPhases,
+        id: phase.id, operation: phase.operation, actorId: phase.actorId, entityId: phase.entityId,
+        mutationId: phase.mutationId, auditId: phase.auditId, preparedArtifact: prepared, observedArtifact,
+        beforeHash: plan.beforeHash, expectedAppStateHash: plan.expectedHash, actualAppStateHash: canonicalHash(after.appState),
+        expectedProtectedHash: canonicalHash(expectedProtectedRows), actualProtectedHash: canonicalHash(canonicalProtectedRows(after.protectedRows)),
+        generatedBindingHash: canonicalHash(bound), compatibilityCommit: plan.compatibilityCommit });
+      this.verifiedPhases++; this.compatibilityCommits += Number(plan.compatibilityCommit);
+    }
     return receipt;
+    } catch (error) {
+      this.errors.push('phase-finalization-failed');
+      throw error;
+    }
   }
   async setup(index) {
-    const pair = this.pkg.pairs[index];
+    const pair = this.expectationProvider ? runtimePairs(this.expectationProvider)[index] : this.pkg.pairs[index];
     const first = await this.executePhase(index * 5);
     const second = await this.executePhase(index * 5 + 1);
+    this.assertSupervisedWorking(first, second);
     await this.assertPair(pair, false);
     return { ...pair, index, receipts: [first, second] };
   }
@@ -383,7 +498,7 @@ export class U1BrowserDatabaseAdapter {
     check(rows.length === 2, 'Missing authoritative pair');
     this.latestRows = { ...this.latestRows, sessions: rows };
     const parity = await this.assertPair(pair, true); const pendingQueues = await this.queues(); check(this.errors.length === 0, 'Browser error or unexpected app write');
-    check(canonicalHash(parity) === canonicalHash(this.pkg.phases[pair.index * 5 + 2].uiParity), 'UI parity differs from prepared expectation');
+    check(canonicalHash(parity) === canonicalHash((this.expectationProvider ? runtimePhase(this.expectationProvider, pair.index * 5 + 2) : this.pkg.phases[pair.index * 5 + 2]).uiParity), 'UI parity differs from prepared expectation');
     check(results[1] === this.pending, 'Wrong measured response');
     this.pending.uiParity = parity; this.pending.pendingQueues = pendingQueues;
     return { deferredDatabaseEvidence: true, pendingQueuesEmpty: true, acknowledged: true, errorPriorityViolation: false,
@@ -402,7 +517,7 @@ export class U1BrowserDatabaseAdapter {
       residueIds: state.protectedRows.sessions.filter(row => this.ownedIds.includes(row.id) && row.status !== 'closed').map(row => row.id),
       appStateHash: canonicalHash(state.appState), protectedRowsHash: canonicalHash(state.protectedRows) };
     check(this.phaseIndex === 250 && this.errors.length === 0, 'Incomplete execution');
-    const expectedProtectedRows = compareGeneratedProtected(this.pkg.finalProtectedRows, state.protectedRows, this.bindings);
+    const expectedProtectedRows = compareGeneratedProtected(this.expectationProvider ? runtimeFinalTemplate(this.expectationProvider) : this.pkg.finalProtectedRows, state.protectedRows, this.bindings);
     return { appState: state.appState, expectedProtectedRows, actualProtectedRows: canonicalProtectedRows(state.protectedRows) };
   }
 }
