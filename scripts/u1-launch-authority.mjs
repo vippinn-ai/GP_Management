@@ -6,6 +6,7 @@ import {createHash} from 'node:crypto';
 import {U1_IDENTITY,U1_LIMITS,verifyLimits,verifyDiscovery} from './u1-playwright-runner.mjs';
 import {LAUNCH_LIMITS} from './u1-guarded-launcher.mjs';
 import {canonicalHash} from './u1-data-reconciler.mjs';
+import {isComparisonApplicationCommit} from './u1-package-builder.mjs';
 const check=(v,m)=>{if(!v)throw new Error(m);};
 const exact=(v,ks)=>check(v&&typeof v==='object'&&!Array.isArray(v)&&Object.keys(v).sort().join(',')===[...ks].sort().join(','),'Unexpected contract fields');
 const sha=b=>createHash('sha256').update(b).digest('hex');
@@ -50,7 +51,7 @@ export function validateLaunchAuthority(options){
  const profile=launchPlatformProfile(core);
  exact(core,['schema','runId','target','project','organization','worker','applicationCommit','harnessCommit','createdAt','limits','processLimits','discovery','sources','tools','package','preflight','baseline','config','spec',...(profile.platform==='darwin'?['platform','termination']:[])]);
  check(/^[A-Za-z0-9_-]{6,80}$/.test(core.runId),'Wrong launch core');target(core);
- check(core.applicationCommit==='70ee5ab00bd758c3de2b86e4f68ae76e69c82f1e'&&commit(core.harnessCommit),'Source commit mismatch');
+ check(isComparisonApplicationCommit(core.applicationCommit)&&commit(core.harnessCommit),'Source commit mismatch');
  const created=timestamp(core.createdAt);check(options.now>=created&&options.now-created<=900000,'Launch core stale or future');
  verifyLimits(core.limits);check(canonicalHash(core.processLimits)===canonicalHash(LAUNCH_LIMITS),'Process limits changed');verifyDiscovery([core.discovery]);
  exact(core.sources,AUTHORITY_SOURCES);for(const ref of Object.values(core.sources))r.read(ref);

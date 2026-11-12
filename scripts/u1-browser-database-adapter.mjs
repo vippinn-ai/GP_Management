@@ -10,6 +10,7 @@ import { PROTECTED_TABLES } from './u1-protected-reader.mjs';
 import { expectedStartEventMetadata } from './u1-installed-contract.mjs';
 import { prepareInstalledPhase, compareInstalledPhase } from './u1-phase-expectations.mjs';
 import {SUPERVISED_LIMITS,verifySupervisedSourceHashes} from './u1-supervised-evidence.mjs';
+import {isComparisonApplicationCommit} from './u1-package-builder.mjs';
 
 const DB = 'https://tkbdyzxwwbhkpztgjjxh.supabase.co';
 const ORG = 'org-primary';
@@ -39,7 +40,7 @@ export function loadBrowserPackage(file, approvedHash) {
   const pkg = JSON.parse(bytes);
   check(pkg.schema === 'u1-browser-package-v1' && pkg.generatedFieldPolicy === 'u1-correlated-v1', 'Wrong package schema');
   check(pkg.evidenceMode === undefined || pkg.evidenceMode === 'u1-supervised-numbered-v1', 'Unknown evidence mode');
-  check(pkg.manifest?.applicationCommit === '70ee5ab00bd758c3de2b86e4f68ae76e69c82f1e', 'Unexpected application candidate');
+  check(isComparisonApplicationCommit(pkg.manifest?.applicationCommit), 'Unexpected application comparison source');
   check(/^[A-Za-z0-9_-]{6,80}$/.test(pkg.manifest?.runId ?? ''), 'Invalid run identity');
   verifyTarget(pkg.manifest.baseURL);
   check(pkg.manifest.project === 'tkbdyzxwwbhkpztgjjxh' && pkg.manifest.organization === ORG, 'Wrong environment');

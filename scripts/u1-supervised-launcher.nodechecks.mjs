@@ -155,6 +155,10 @@ test('actual exported entry binds fixed subprocesses; Chrome drift, nonzero and 
   mockChildren.set(child.pid,child);
   queueMicrotask(()=>{if(args.includes('--list')){assert.equal(opts.env.U1_PASSWORD_A,undefined);assert.ok(fs.existsSync(path.join(runDir,'reservation.json')));child.stdout.emit('data',Buffer.from(JSON.stringify({suites:[{specs:[{file:U1_IDENTITY.file,title:U1_IDENTITY.title,tests:[{projectName:U1_IDENTITY.project}]}]}],errors:[]})));child.exitCode=0;child.emit('close',0);}else{assert.ok(fs.existsSync(path.join(runDir,'attempt.json')));assert.equal(opts.env.U1_PASSWORD_A,'fake-secret-a');child.exitCode=runCode;child.emit('close',runCode);}});return child;
  };syncBuiltinESMExports();
+ const approvedApplication=setup.core.applicationCommit;
+ setup.core.applicationCommit='c0e0d2133f39372aac43e669c05e8c27ad5a255c';
+ await assert.rejects(runSupervisedOnce(setup.options()),/Core\/package application source mismatch/);assert.equal(calls.length,0);
+ setup.core.applicationCommit=approvedApplication;
  if(process.platform==='darwin'){
   const oldCore={schema:setup.core.schema,platform:setup.core.platform,termination:setup.core.termination};
   setup.core.schema='u1-launch-core-v1';delete setup.core.platform;delete setup.core.termination;

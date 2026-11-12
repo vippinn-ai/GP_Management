@@ -2,14 +2,14 @@
 import {createHash} from 'node:crypto';
 import fs from 'node:fs';
 import {buildProtectedRead} from './u1-protected-reader.mjs';
-import {draftIdentityPlan,prepareDraft,APPLICATION_COMMIT,HARNESS_BASE_COMMIT} from './u1-package-builder.mjs';
+import {draftIdentityPlan,prepareDraft,isComparisonApplicationCommit,HARNESS_BASE_COMMIT} from './u1-package-builder.mjs';
 const check=(ok,message)=>{if(!ok)throw new Error(message);};
 export const PREFLIGHT_CAPTURE_LIMITS=Object.freeze({statementMs:5000,lockMs:1000,processMs:15000,maxBytes:32*1024*1024});
 const q=value=>`'${String(value).replaceAll("'","''")}'`;
-const sourcePins=Object.freeze({'u1-protected-reader.mjs':'919eaa66460af82e82bee82187ec6abae8d72cd2562f1ad058e7504b2ed56249','u1-package-builder.mjs':'27aafc3d94b32b1b1def2ddb6b9060778c31e8dda372570f0f74dc6e89aaf42f'});
+const sourcePins=Object.freeze({'u1-protected-reader.mjs':'919eaa66460af82e82bee82187ec6abae8d72cd2562f1ad058e7504b2ed56249','u1-package-builder.mjs':'0191e0780dcb616bd6f90632e41b2d5a664c1d5031ffa8a69a80385502686cd4'});
 export function buildCombinedPreflight({runId,applicationCommit,harnessCommit,actorIds,stationIds}){
  for(const [file,hash] of Object.entries(sourcePins))check(createHash('sha256').update(fs.readFileSync(new URL(file,import.meta.url))).digest('hex')===hash,'Frozen collector input drift');
- check(applicationCommit===APPLICATION_COMMIT&&harnessCommit===HARNESS_BASE_COMMIT,'Wrong source baseline');
+ check(isComparisonApplicationCommit(applicationCommit)&&harnessCommit===HARNESS_BASE_COMMIT,'Wrong source baseline');
  check(actorIds&&Object.keys(actorIds).sort().join(',')==='A,B'&&Object.values(actorIds).every(id=>/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(id))&&actorIds.A!==actorIds.B,'Exact distinct UUID actors required');
  check(Array.isArray(stationIds)&&stationIds.length===2&&new Set(stationIds).size===2&&stationIds.every(id=>/^[A-Za-z0-9_-]{1,120}$/.test(id)),'Exact two station IDs required');
  const {scope}=draftIdentityPlan(runId);

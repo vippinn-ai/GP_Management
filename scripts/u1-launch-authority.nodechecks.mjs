@@ -32,6 +32,11 @@ function fixture(fn){
 test('exact offline snapshots validate without manufacturing live authority',()=>fixture(({materialize})=>{
  const result=validateLaunchAuthority(materialize());assert.equal(result.status,'offline-contract-validated');for(const flag of ['liveAdmission','signerAuthenticityVerified','liveSourceAndToolsVerified','completeAssetDiscoveryVerified','preflightSemanticsVerified','packageSemanticsVerified'])assert.equal(result[flag],false,flag);assert.deepEqual(result.limits,U1_LIMITS);assert.equal(Object.isFrozen(result),true);
 }));
+test('baseline comparison core admits only the second exact source with all existing evidence gates',()=>fixture(({coreValue,materialize})=>{
+ const baseline={...coreValue,applicationCommit:'c0e0d2133f39372aac43e669c05e8c27ad5a255c'};
+ assert.equal(validateLaunchAuthority(materialize(baseline)).status,'offline-contract-validated');
+ assert.throws(()=>validateLaunchAuthority(materialize({...baseline,applicationCommit:'c0e0d2133f39372aac43e669c05e8c27ad5a255d'})),/Source commit mismatch/);
+}));
 test('Darwin core v2 binds platform and owned-group termination without taskkill',()=>fixture(({coreValue,materialize})=>{
  const darwin={...structuredClone(coreValue),schema:'u1-launch-core-v2',platform:'darwin',termination:'owned-process-group-sigkill-v1'};
  delete darwin.tools.taskkill;

@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
-import {draftIdentityPlan,prepareDraft,writeDraft,APPLICATION_COMMIT,HARNESS_BASE_COMMIT} from './u1-package-builder.mjs';
+import {draftIdentityPlan,prepareDraft,writeDraft,APPLICATION_COMMIT,BASELINE_APPLICATION_COMMIT,isComparisonApplicationCommit,HARNESS_BASE_COMMIT} from './u1-package-builder.mjs';
 import {PROTECTED_TABLES} from './u1-protected-reader.mjs';
 import {loadBrowserPackage} from './u1-browser-database-adapter.mjs';
 const hash=b=>createHash('sha256').update(b).digest('hex');
@@ -18,6 +18,17 @@ test('deterministic 50 pair and 250 ordered identity plan before preflight',()=>
  for(let i=0;i<50;i++){const phases=p.phases.slice(i*5,i*5+5);assert.deepEqual(phases.map(p=>p.role),['start-a','start-b','save-b','reject-a','reject-b']);assert.equal(phases[1].customerId,phases[2].customerId);assert.equal(phases[2].entityId,p.pairs[i].bId);}
  assert.throws(()=>draftIdentityPlan('bad space'));assert.throws(()=>draftIdentityPlan('x'.repeat(61)));
 });
+test('exact baseline and candidate remain source-bound with disjoint run identities',()=>withFixture(({opts,e,save})=>{
+ for(const applicationCommit of [BASELINE_APPLICATION_COMMIT,APPLICATION_COMMIT]){
+  assert.equal(isComparisonApplicationCommit(applicationCommit),true);
+  e.applicationCommit=applicationCommit;const input={...opts,applicationCommit,preflightSha256:save(e)};
+  assert.equal(prepareDraft(input).inputManifest.applicationCommit,applicationCommit);
+  assert.throws(()=>prepareDraft({...input,applicationCommit:applicationCommit===APPLICATION_COMMIT?BASELINE_APPLICATION_COMMIT:APPLICATION_COMMIT}),/Preflight source mismatch/);
+ }
+ for(const bad of [null,{},'', '0'.repeat(40),APPLICATION_COMMIT+'x'])assert.equal(isComparisonApplicationCommit(bad),false);
+ const baseline=draftIdentityPlan('u1-comparison-baseline'),candidate=draftIdentityPlan('u1-comparison-candidate');
+ for(const key of Object.keys(baseline.scope))assert.equal(baseline.scope[key].some(id=>candidate.scope[key].includes(id)),false);
+}));
 test('draft deterministic immutable and explicitly not browser-admissible',()=>withFixture(({opts,file,dir})=>{
  const before=fs.readFileSync(file);const input=structuredClone(opts);const a=prepareDraft(opts),b=prepareDraft(opts);assert.deepEqual(a,b);assert.deepEqual(opts,input);assert.deepEqual(fs.readFileSync(file),before);
  assert.notEqual(a.schema,'u1-browser-package-v1');assert.equal(a.status,'draft-not-admitted');assert.equal(a.proofs,null);assert.equal(a.finalExpectedProtectedHash,null);assert.ok(a.phaseIdentities.every(p=>p.command===null&&p.expectedProtectedRows===null));

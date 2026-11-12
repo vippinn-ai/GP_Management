@@ -51,6 +51,7 @@ async function admission(options,at){
  check(/^u1-[A-Za-z0-9_-]+\.json$/.test(core.package.file),'Fixed U1 package filename required');
  capture(root,core.package);const packageFile=path.join(root,core.package.file),pkg=loadBrowserPackage(packageFile,core.package.sha256);
  check(pkg.evidenceMode==='u1-supervised-numbered-v1'&&pkg.manifest.runId===core.runId,'Supervised package required');
+ check(pkg.manifest.applicationCommit===core.applicationCommit,'Core/package application source mismatch');
  const commandSources=profile.platform==='darwin'?DARWIN_COMMAND_SOURCES:COMMAND_SOURCES;
  exact(pkg.supervisedCommandSourceHashes,commandSources);
  for(const name of commandSources)check(await digest(path.join(ROOT,name))===pkg.supervisedCommandSourceHashes[name],'Fixed command source drift');

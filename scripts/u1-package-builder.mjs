@@ -8,6 +8,9 @@ import {U1_LIMITS,verifyTarget} from './u1-playwright-runner.mjs';
 const check=(ok,message)=>{if(!ok)throw new Error(message);};
 const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
 export const APPLICATION_COMMIT='70ee5ab00bd758c3de2b86e4f68ae76e69c82f1e';
+export const BASELINE_APPLICATION_COMMIT='c0e0d2133f39372aac43e669c05e8c27ad5a255c';
+// Exactly the reviewed frontend comparison; never a caller-defined commit set.
+export function isComparisonApplicationCommit(value){return value===APPLICATION_COMMIT||value===BASELINE_APPLICATION_COMMIT;}
 export const HARNESS_BASE_COMMIT='5d8fac7bc2a4cce8b65158941869ea80180687b1';
 export function draftIdentityPlan(runId){
  check(/^[A-Za-z0-9_-]{6,60}$/.test(runId??''),'Invalid fresh run ID');
@@ -29,7 +32,7 @@ export function draftIdentityPlan(runId){
 // Input schema intentionally requires a reviewed combined preflight, not a
 // catalogue alone. No existing capture is silently promoted to this schema.
 export function prepareDraft({runId,applicationCommit,harnessCommit,baseURL,preflightFile,preflightSha256,now,maxAgeMs=900000,actors,stationIds}){
- check(applicationCommit===APPLICATION_COMMIT&&harnessCommit===HARNESS_BASE_COMMIT,'Exact application/harness baseline required');
+ check(isComparisonApplicationCommit(applicationCommit)&&harnessCommit===HARNESS_BASE_COMMIT,'Exact application/harness baseline required');
  verifyTarget(baseURL);
  check(Number.isSafeInteger(now)&&Number.isSafeInteger(maxAgeMs)&&maxAgeMs>0&&maxAgeMs<=900000,'Bounded explicit clock required');
  check(typeof preflightFile==='string'&&path.isAbsolute(preflightFile)&&fs.realpathSync(preflightFile)===path.resolve(preflightFile),'Canonical preflight path required');

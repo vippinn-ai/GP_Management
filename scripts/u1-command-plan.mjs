@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
 import {canonicalHash,patchArrayById} from './u1-data-reconciler.mjs';
-import {draftIdentityPlan,prepareDraft,APPLICATION_COMMIT,HARNESS_BASE_COMMIT} from './u1-package-builder.mjs';
+import {draftIdentityPlan,prepareDraft,isComparisonApplicationCommit,HARNESS_BASE_COMMIT} from './u1-package-builder.mjs';
 import {expectedStartEventMetadata,postgresJsonbText} from './u1-installed-contract.mjs';
 import {prepareInstalledPhase} from './u1-phase-expectations.mjs';
 import {timestampMicros} from './u1-generated-fields.mjs';
@@ -11,7 +11,7 @@ import {U1_LIMITS} from './u1-playwright-runner.mjs';
 const SOURCE_PINS={
  '../src/dataGateway/rpcClient.ts':'9d9023404d4055c40d8981d20515b945b8401c7874cd0354e2c032746a21f8b5',
  'u1-data-reconciler.mjs':'597613bc1e3ff1095006b2658e7e7419c19eb95d71f618244c78f3418a931db5',
- 'u1-package-builder.mjs':'27aafc3d94b32b1b1def2ddb6b9060778c31e8dda372570f0f74dc6e89aaf42f',
+ 'u1-package-builder.mjs':'0191e0780dcb616bd6f90632e41b2d5a664c1d5031ffa8a69a80385502686cd4',
  'u1-installed-contract.mjs':'a91b00c96177f31911a35af21d6e42538b68a53b570efa48c129c764bc07f5e1',
  'u1-phase-expectations.mjs':'ce63629edd8e198d2e5fe084ec622e38cacdf15fb7819a39efb2f96aa632e0d5',
  'u1-generated-fields.mjs':'1252df55d32ceda81fed1b1b3c980bc2fd531ece60b2cad40a85beee1a33e800',
@@ -25,7 +25,7 @@ export function buildCommandPlan({draftFile,draftSha256,inputsFile,inputsSha256}
  for(const [name,sha] of Object.entries(SOURCE_PINS))check(createHash('sha256').update(fs.readFileSync(new URL(name,import.meta.url))).digest('hex')===sha,'Helper source drift');
  const draft=read(draftFile,draftSha256),input=read(inputsFile,inputsSha256);
  keys(input,['schema','runId','applicationCommit','harnessCommit','preflightSha256','draftSha256','initialAppState','initialProtectedRows','stationAuthority','clock','timings','closeReason']);
- check(input.schema==='u1-command-inputs-v1'&&input.applicationCommit===APPLICATION_COMMIT&&input.harnessCommit===HARNESS_BASE_COMMIT&&input.draftSha256===draftSha256,'Input source mismatch');
+ check(input.schema==='u1-command-inputs-v1'&&isComparisonApplicationCommit(input.applicationCommit)&&input.harnessCommit===HARNESS_BASE_COMMIT&&input.draftSha256===draftSha256,'Input source mismatch');
  check(draft.schema==='u1-package-preparation-draft-v1'&&draft.admitted===false&&draft.status==='draft-not-admitted'&&draft.proofs===null,'Draft authority required');
  const manifest=draft.inputManifest;
  check(manifest.project==='tkbdyzxwwbhkpztgjjxh'&&manifest.organization==='org-primary'&&manifest.baseURL==='https://gp-management-staging-pages.breakperfectgaminglounge.workers.dev'&&canonicalHash(manifest.limits)===canonicalHash(U1_LIMITS),'Staging/limits drift');

@@ -5,9 +5,12 @@ import os from 'node:os';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
 import {buildCombinedPreflight,decodePreflightCapture,PREFLIGHT_CAPTURE_LIMITS} from './u1-preflight-collector.mjs';
-import {APPLICATION_COMMIT,HARNESS_BASE_COMMIT} from './u1-package-builder.mjs';
+import {APPLICATION_COMMIT,BASELINE_APPLICATION_COMMIT,HARNESS_BASE_COMMIT} from './u1-package-builder.mjs';
 import {PROTECTED_TABLES} from './u1-protected-reader.mjs';
 const options={runId:'u1-offline-collector-check',applicationCommit:APPLICATION_COMMIT,harnessCommit:HARNESS_BASE_COMMIT,actorIds:{A:'00000000-0000-4000-8000-000000000001',B:'00000000-0000-4000-8000-000000000002'},stationIds:['station-a','station-b']};
+test('comparison preflight embeds the actual exact application source',()=>{
+ for(const applicationCommit of [BASELINE_APPLICATION_COMMIT,APPLICATION_COMMIT]){const g=buildCombinedPreflight({...options,applicationCommit});assert.equal(g.applicationCommit,applicationCommit);assert.ok(g.sql.includes(applicationCommit));}
+});
 test('one guarded snapshot embeds full protected query and sanitized authority',()=>{
  const g=buildCombinedPreflight(options);assert.deepEqual(g,buildCombinedPreflight(options));
  assert.equal((g.sql.match(/BEGIN ISOLATION/g)||[]).length,1);assert.equal((g.sql.match(/ROLLBACK;/g)||[]).length,1);

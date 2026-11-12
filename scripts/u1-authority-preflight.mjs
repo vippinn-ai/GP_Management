@@ -8,7 +8,7 @@ const check=(v,m)=>{if(!v)throw new Error(m);};
 const sha=b=>createHash('sha256').update(b).digest('hex');
 const keys=(v,k)=>check(v&&Object.keys(v).sort().join(',')===[...k].sort().join(','),'Unexpected authority fields');
 const freeze=v=>{if(v&&typeof v==='object'){Object.values(v).forEach(freeze);Object.freeze(v);}return v;};
-const pins={'u1-preflight-collector.mjs':'b702ae10c07298c60a18cafd41e108c441e11bfcb307101341f0b4cd942981df','u1-command-plan.mjs':'67b3229f7af6a9e3606ba8e79efc8bc48dfd87377c8bcc27d9a11cbf27b48f5e'};
+const pins={'u1-preflight-collector.mjs':'cd33064fb2739348adf628df585bf1442984c27dc6df2387a167871923df4014','u1-command-plan.mjs':'2fedad2c2b3278f1eba085205b7f783989687b5d8b30da73ddad84260ec4bd86'};
 const q=s=>`'${s}'`; // Only identifiers already admitted by the frozen collector.
 const validated=new WeakMap();
 // Exact scalar fallback semantics of the pinned application mapper. Only a
