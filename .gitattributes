@@ -1,0 +1,3 @@
+# Preserve the reviewed U1 oracle's byte-level RPC contract across platforms.
+src/dataGateway/rpcClient.ts text eol=crlf
+src/dataGateway/normalizedReads.ts text eol=crlf

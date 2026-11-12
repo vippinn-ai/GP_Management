@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {spawn,execFile} from 'node:child_process';
 import {createHash} from 'node:crypto';
-import {validateLaunchAuthority,AUTHORITY_SOURCES} from './u1-launch-authority.mjs';
+import {validateLaunchAuthority,AUTHORITY_SOURCES,launchPlatformProfile} from './u1-launch-authority.mjs';
 import {loadBrowserPackage} from './u1-browser-database-adapter.mjs';
 import {prepareDraft} from './u1-package-builder.mjs';
 import {canonicalHash} from './u1-data-reconciler.mjs';
@@ -11,10 +11,12 @@ import {createProcessSupervisor} from './u1-process-supervisor.mjs';
 import {LAUNCH_LIMITS,validateDiscoveryReport} from './u1-guarded-launcher.mjs';
 import {verifySupervisedEvidence} from './u1-supervised-evidence.mjs';
 const ROOT=path.resolve(import.meta.dirname,'..');
-const CHROME_RESOLVER=path.resolve(ROOT,'../../../node_modules/playwright-core/lib/server/registry/index.js');
+const MODULES=process.platform==='darwin'?'node_modules':'../../../node_modules';
+const CHROME_RESOLVER=path.resolve(ROOT,MODULES,'playwright-core/lib/server/registry/index.js');
 const CHROME_RESOLVER_SHA='d4fdd6202217b64831787326948c06f541496d0add5c5fa5f75b5a72c3553067';
-const FIXED=Object.freeze({node:process.execPath,git:'C:\\Program Files\\Git\\cmd\\git.exe',playwright:path.resolve(ROOT,'../../../node_modules/@playwright/test/cli.js'),taskkill:'C:\\Windows\\System32\\taskkill.exe'});
+const FIXED=Object.freeze({node:process.execPath,git:process.platform==='darwin'?'/usr/bin/git':'C:\\Program Files\\Git\\cmd\\git.exe',playwright:path.resolve(ROOT,MODULES,'@playwright/test/cli.js'),...(process.platform==='darwin'?{}:{taskkill:'C:\\Windows\\System32\\taskkill.exe'})});
 export const COMMAND_SOURCES=Object.freeze(['scripts/u1-supervised-launcher.mjs','scripts/u1-supervised-launcher.nodechecks.mjs']);
+export const DARWIN_COMMAND_SOURCES=Object.freeze([...COMMAND_SOURCES,'scripts/u1-darwin-process.mjs','scripts/u1-darwin-process.nodechecks.mjs','scripts/u1-darwin-browser-process.mjs','scripts/u1-darwin-browser-process.nodechecks.mjs','scripts/u1-darwin-browser-process.fixture.mjs']);
 export const COMMAND_ARGS=Object.freeze(['test','--config=playwright.u1.config.ts','--project=u1-baseline','--workers=1','--retries=0','--repeat-each=1','--max-failures=1']);
 const check=(v,m)=>{if(!v)throw new Error(m);};
 const exact=(v,ks)=>check(v&&Object.keys(v).sort().join(',')===[...ks].sort().join(','),'Unexpected supervised command fields');
@@ -22,10 +24,10 @@ const sha=b=>createHash('sha256').update(b).digest('hex');
 async function digest(file){const h=createHash('sha256');for await(const b of fs.createReadStream(file))h.update(b);return h.digest('hex');}
 function canonical(file,directory=false){check(typeof file==='string'&&path.isAbsolute(file)&&!file.startsWith('\\\\')&&fs.realpathSync(file)===path.resolve(file),'Canonical local path required');const s=fs.lstatSync(file);check(!s.isSymbolicLink()&&(directory?s.isDirectory():s.isFile()),'Regular local path required');return path.resolve(file);}
 function capture(root,ref){exact(ref,['file','sha256']);check(/^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$/.test(ref.file)&&!/(credential|password|secret|backup|\.env)/i.test(ref.file)&&/^[a-f0-9]{64}$/.test(ref.sha256),'Unsafe authority reference');const file=canonical(path.join(root,ref.file));check(fs.statSync(file).size<=32*1024*1024,'Authority capture bound');const b=fs.readFileSync(file);check(sha(b)===ref.sha256,'Authority capture drift');return JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(b));}
-function environment(){const env={SystemRoot:'C:\\Windows',WINDIR:'C:\\Windows',CI:'1',PATH:'C:\\Windows\\System32',PROGRAMFILES:'C:\\Program Files','PROGRAMFILES(X86)':'C:\\Program Files (x86)',HOMEDRIVE:'C:'};for(const k of ['USERPROFILE','LOCALAPPDATA','APPDATA','TEMP','TMP'])if(process.env[k])env[k]=process.env[k];return env;}
+function environment(){if(process.platform==='darwin'){const env={CI:'1',PATH:'/usr/bin:/bin'};for(const k of ['HOME','TMPDIR'])if(process.env[k])env[k]=process.env[k];return env;}const env={SystemRoot:'C:\\Windows',WINDIR:'C:\\Windows',CI:'1',PATH:'C:\\Windows\\System32',PROGRAMFILES:'C:\\Program Files','PROGRAMFILES(X86)':'C:\\Program Files (x86)',HOMEDRIVE:'C:'};for(const k of ['USERPROFILE','LOCALAPPDATA','APPDATA','TEMP','TMP'])if(process.env[k])env[k]=process.env[k];return env;}
 // Exact Windows chrome-channel search order in the pinned Playwright registry.
 // Resolve against the SAME allowlisted environment passed to the fixed child.
-function chromeChannelPath(){const e=environment();for(const prefix of [e.LOCALAPPDATA,e.PROGRAMFILES,e['PROGRAMFILES(X86)'],e.HOMEDRIVE+'\\Program Files',e.HOMEDRIVE+'\\Program Files (x86)'].filter(Boolean)){const p=path.join(prefix,'\\Google\\Chrome\\Application\\chrome.exe');try{fs.accessSync(p);return canonical(p);}catch{}}throw new Error('Fixed Chrome channel unavailable');}
+function chromeChannelPath(){if(process.platform==='darwin')return canonical('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome');const e=environment();for(const prefix of [e.LOCALAPPDATA,e.PROGRAMFILES,e['PROGRAMFILES(X86)'],e.HOMEDRIVE+'\\Program Files',e.HOMEDRIVE+'\\Program Files (x86)'].filter(Boolean)){const p=path.join(prefix,'\\Google\\Chrome\\Application\\chrome.exe');try{fs.accessSync(p);return canonical(p);}catch{}}throw new Error('Fixed Chrome channel unavailable');}
 function git(tool,args){return new Promise((resolve,reject)=>execFile(tool,['-c',`safe.directory=${ROOT}`,...args],{cwd:ROOT,env:environment(),windowsHide:true,shell:false,timeout:10000,maxBuffer:1024*1024,encoding:'utf8'},(error,stdout)=>error?reject(new Error('Fixed source check failed')):resolve(stdout.trim())));}
 function write(dir,name,obj){const text=JSON.stringify(obj)+'\n';check(Buffer.byteLength(text)<=1024*1024,'Compact command result bound');const fd=fs.openSync(path.join(dir,name),'wx',0o600);try{fs.writeFileSync(fd,text);fs.fsyncSync(fd);}finally{fs.closeSync(fd);}return{file:name,sha256:sha(text)};}
 
@@ -33,12 +35,13 @@ async function admission(options,at){
  const root=canonical(options.artifactRoot,true);
  const authority=validateLaunchAuthority({artifactRoot:root,core:options.core,approvals:options.approvals,now:at});
  const core=capture(root,options.core),tools={};
- for(const role of ['node','git','playwright','psql','taskkill','tls']){
+ const profile=launchPlatformProfile(core);check(profile.platform===process.platform,'Launch platform differs from approved core');
+ for(const role of profile.roles){
   const d=capture(root,core.tools[role]);exact(d,['schema','role','path','sha256','version','capturedAt']);
   check(d.schema==='u1-tool-descriptor-v1'&&d.role===role&&typeof d.version==='string'&&d.version.length>0&&d.version.length<=120&&/^[a-f0-9]{64}$/.test(d.sha256),'Invalid pinned tool descriptor');
   check(Number.isFinite(Date.parse(d.capturedAt))&&Date.parse(d.capturedAt)<=at,'Future or missing tool capture');
   const file=canonical(d.path);if(FIXED[role])check(file===canonical(FIXED[role]),'Wrong fixed executable');
-  if(role==='psql')check(path.basename(file).toLowerCase()==='psql.exe','Wrong PostgreSQL executable');
+  if(role==='psql')check(path.basename(file).toLowerCase()===(profile.platform==='darwin'?'psql':'psql.exe'),'Wrong PostgreSQL executable');
   if(role==='tls')check(/\.(?:pem|crt|cer)$/i.test(file),'Wrong certificate type');
   check(await digest(file)===d.sha256,'Tool bytes changed');tools[role]=d;
  }
@@ -48,8 +51,9 @@ async function admission(options,at){
  check(/^u1-[A-Za-z0-9_-]+\.json$/.test(core.package.file),'Fixed U1 package filename required');
  capture(root,core.package);const packageFile=path.join(root,core.package.file),pkg=loadBrowserPackage(packageFile,core.package.sha256);
  check(pkg.evidenceMode==='u1-supervised-numbered-v1'&&pkg.manifest.runId===core.runId,'Supervised package required');
- exact(pkg.supervisedCommandSourceHashes,COMMAND_SOURCES);
- for(const name of COMMAND_SOURCES)check(await digest(path.join(ROOT,name))===pkg.supervisedCommandSourceHashes[name],'Fixed command source drift');
+ const commandSources=profile.platform==='darwin'?DARWIN_COMMAND_SOURCES:COMMAND_SOURCES;
+ exact(pkg.supervisedCommandSourceHashes,commandSources);
+ for(const name of commandSources)check(await digest(path.join(ROOT,name))===pkg.supervisedCommandSourceHashes[name],'Fixed command source drift');
  check(pkg.readTool?.path===tools.psql.path&&pkg.readTool.sha256===tools.psql.sha256,'Package read tool mismatch');
  const chrome=pkg.supervisedChrome;exact(chrome,['schema','channel','path','sha256','version','resolverSha256']);
  check(chrome.schema==='u1-supervised-chrome-v1'&&chrome.channel==='chrome'&&/^\d+\.\d+\.\d+\.\d+$/.test(chrome.version)&&/^[a-f0-9]{64}$/.test(chrome.sha256),'Invalid Chrome descriptor');
@@ -63,6 +67,15 @@ async function admission(options,at){
 
 // Fixed OS adapter. All command choices originate in this module, not options.
 async function processOnce(a,args,env,mode,captureJson){
+ if(process.platform==='darwin'){
+  if(mode==='run'){
+   const {runDarwinBrowserProcess}=await import('./u1-darwin-browser-process.mjs');
+   return runDarwinBrowserProcess({node:a.tools.node.path,playwright:a.tools.playwright.path,chrome:a.tools.chrome.path,root:ROOT,args,env});
+  }
+  const {runDarwinOwnedProcess}=await import('./u1-darwin-process.mjs');
+  const r=await runDarwinOwnedProcess({file:a.tools.node.path,args:[a.tools.playwright.path,...args],cwd:ROOT,env,mode,captureJson});
+  return{result:r.status==='process-completed'?r.result:{...r.result,status:'inconclusive',failure:r.failure??'darwin-containment-unconfirmed'},childPid:r.childPid,killInvoked:r.killInvoked,killToolExitObserved:null,rootCleanupConfirmed:r.rootCloseObserved,groupCleanupConfirmed:r.groupGone,cleanupFallbackUsed:false,manualCleanupRequired:r.manualCleanupRequired,json:r.json,parseFailed:r.parseFailed};
+ }
  let child,closed=false,killInvoked=false,killToolClosed=false,termination=null;const chunks=[];let captured=0;
  const terminate=owned=>{
   if(owned!==child||killInvoked||closed||!Number.isSafeInteger(child.pid)||child.pid<=0||child.pid===process.pid||child.exitCode!==null||child.signalCode!==null)return false;
@@ -88,7 +101,7 @@ async function processOnce(a,args,env,mode,captureJson){
 }
 
 export async function runSupervisedOnce(options){
- exact(options,['artifactRoot','core','approvals','confirmation','credentials']);check(process.platform==='win32','Windows supervised command only');
+ exact(options,['artifactRoot','core','approvals','confirmation','credentials']);check(['win32','darwin'].includes(process.platform),'Unsupported supervised command platform');
  exact(options.credentials,['U1_USER_A','U1_PASSWORD_A','U1_USER_B','U1_PASSWORD_B','U1_STAGING_DB_USER','U1_STAGING_DB_PASSWORD']);check(Object.values(options.credentials).every(v=>typeof v==='string'&&v.length>0),'Explicit credentials required');
  const admittedAt=Date.now(),a=await admission(options,admittedAt);
  check(options.confirmation===`RUN U1 SUPERVISED ONCE ${a.core.runId}`,'Exact supervised confirmation required');

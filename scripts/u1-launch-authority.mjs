@@ -37,16 +37,24 @@ function reader(root){
 }
 const target=v=>{for(const [k,value]of Object.entries(AUTHORITY_TARGET))check(v[k]===value,'Only staging authority permitted');};
 const timestamp=s=>{check(typeof s==='string'&&/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(s)&&new Date(s).toISOString()===s,'Canonical timestamp required');return Date.parse(s);};
+// Version 1 remains the original Windows contract. Darwin must be explicit;
+// its pinned Node executable supplies process-group termination, not taskkill.
+export function launchPlatformProfile(core){
+ if(core?.schema==='u1-launch-core-v1')return Object.freeze({platform:'win32',roles:Object.freeze(['node','git','playwright','psql','taskkill','tls'])});
+ check(core?.schema==='u1-launch-core-v2'&&core.platform==='darwin'&&core.termination==='owned-process-group-sigkill-v1','Unsupported launch platform contract');
+ return Object.freeze({platform:'darwin',roles:Object.freeze(['node','git','playwright','psql','tls'])});
+}
 export function validateLaunchAuthority(options){
  exact(options,['artifactRoot','core','approvals','now']);check(Number.isSafeInteger(options.now),'Explicit validation time required');
  const r=reader(options.artifactRoot),core=r.json(options.core);
- exact(core,['schema','runId','target','project','organization','worker','applicationCommit','harnessCommit','createdAt','limits','processLimits','discovery','sources','tools','package','preflight','baseline','config','spec']);
- check(core.schema==='u1-launch-core-v1'&&/^[A-Za-z0-9_-]{6,80}$/.test(core.runId),'Wrong launch core');target(core);
+ const profile=launchPlatformProfile(core);
+ exact(core,['schema','runId','target','project','organization','worker','applicationCommit','harnessCommit','createdAt','limits','processLimits','discovery','sources','tools','package','preflight','baseline','config','spec',...(profile.platform==='darwin'?['platform','termination']:[])]);
+ check(/^[A-Za-z0-9_-]{6,80}$/.test(core.runId),'Wrong launch core');target(core);
  check(core.applicationCommit==='70ee5ab00bd758c3de2b86e4f68ae76e69c82f1e'&&commit(core.harnessCommit),'Source commit mismatch');
  const created=timestamp(core.createdAt);check(options.now>=created&&options.now-created<=900000,'Launch core stale or future');
  verifyLimits(core.limits);check(canonicalHash(core.processLimits)===canonicalHash(LAUNCH_LIMITS),'Process limits changed');verifyDiscovery([core.discovery]);
  exact(core.sources,AUTHORITY_SOURCES);for(const ref of Object.values(core.sources))r.read(ref);
- exact(core.tools,['node','git','playwright','psql','taskkill','tls']);for(const ref of Object.values(core.tools))r.read(ref);
+ exact(core.tools,profile.roles);for(const ref of Object.values(core.tools))r.read(ref);
  const roleFiles=[...Object.values(core.sources),...Object.values(core.tools),core.package,core.preflight,core.baseline,core.config,core.spec].map(ref=>ref?.file);
  check(new Set(roleFiles).size===roleFiles.length,'Source/tool/core evidence roles must not alias');
  // These are hash-bound snapshots/captures, not a clean-worktree/binary attestation.

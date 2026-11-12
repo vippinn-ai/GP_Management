@@ -24,7 +24,7 @@ async function fixture(fn,large=false,setup={}){
  await fn({dir,build,input,draft,authority,save,d,a});
  }finally{assert.ok(dir.startsWith(fs.realpathSync(os.tmpdir())+path.sep));fs.rmSync(dir,{recursive:true,force:true});}
 }
-import {fileURLToPath} from 'node:url';
+import {fileURLToPath,pathToFileURL} from 'node:url';
 import {buildResultExpectations,protectedTemplateAt,materializeResultAt,postgresUtcTimestamp} from './u1-result-expectations.mjs';
 import {compareInstalledPhase,prepareInstalledPhase} from './u1-phase-expectations.mjs';
 import {bindGeneratedPhase} from './u1-generated-fields.mjs';
@@ -62,12 +62,12 @@ import cp from 'node:child_process';
 // Controlled builtin mocks below never execute the pinned binaries or staging.
 import {syncBuiltinESMExports} from 'node:module';
 import {EventEmitter} from 'node:events';
-import {runSupervisedOnce,COMMAND_SOURCES,COMMAND_ARGS} from './u1-supervised-launcher.mjs';
+import {runSupervisedOnce,COMMAND_SOURCES,DARWIN_COMMAND_SOURCES,COMMAND_ARGS} from './u1-supervised-launcher.mjs';
 const ROOT=path.resolve(import.meta.dirname,'..');
 const HASH_FILE=file=>sha(fs.readFileSync(file));
 const NOW=Date.parse('2026-11-04T12:01:00Z');
 
-test('actual entry preserves inconclusive taskkill failures and performs bounded exact-root fallback',async()=>oracleFixture(async f=>{
+test('actual entry preserves inconclusive taskkill failures and performs bounded exact-root fallback',{skip:process.platform!=='win32'},async()=>oracleFixture(async f=>{
  const setup=launchAuthority(f),runRoot=path.join(ROOT,'test-artifacts/u1-supervised-run'),runDir=path.join(runRoot,f.input.runId);
  const original={spawn:cp.spawn,execFile:cp.execFile,now:Date.now,setTimeout:globalThis.setTimeout,clearTimeout:globalThis.clearTimeout};
  assert.equal(fs.existsSync(runDir),false);fs.mkdirSync(runRoot,{recursive:true});
@@ -96,17 +96,18 @@ test('actual entry preserves inconclusive taskkill failures and performs bounded
 }));
 
 function launchAuthority(f){
- const node=fs.realpathSync(process.execPath),git='C:\\Program Files\\Git\\cmd\\git.exe',taskkill='C:\\Windows\\System32\\taskkill.exe',playwright=fs.realpathSync(path.resolve(ROOT,'../../../node_modules/@playwright/test/cli.js'));
- fs.writeFileSync(path.join(f.dir,'psql.exe'),'SYNTHETIC NEVER EXECUTE');
+ const darwin=process.platform==='darwin',modules=darwin?'node_modules':'../../../node_modules';
+ const node=fs.realpathSync(process.execPath),git=darwin?'/usr/bin/git':'C:\\Program Files\\Git\\cmd\\git.exe',taskkill='C:\\Windows\\System32\\taskkill.exe',playwright=fs.realpathSync(path.resolve(ROOT,modules,'@playwright/test/cli.js'));
+ const psql=darwin?'psql':'psql.exe';fs.writeFileSync(path.join(f.dir,psql),'SYNTHETIC NEVER EXECUTE');
  fs.writeFileSync(path.join(f.dir,'root.pem'),'SYNTHETIC CERTIFICATE');
- const paths={node,git,taskkill,playwright,psql:path.join(f.dir,'psql.exe'),tls:path.join(f.dir,'root.pem')};
+ const paths={node,git,...(darwin?{}:{taskkill}),playwright,psql:path.join(f.dir,psql),tls:path.join(f.dir,'root.pem')};
  const prepared=admitted(f,p=>{
   p.evidenceMode='u1-supervised-numbered-v1';p.supervisedLimits=SUPERVISED_LIMITS;
   p.supervisedSourceHashes=Object.fromEntries(SUPERVISED_SOURCES.map(n=>[n,HASH_FILE(path.join(ROOT,n))]));
-  p.supervisedCommandSourceHashes=Object.fromEntries(COMMAND_SOURCES.map(n=>[n,HASH_FILE(path.join(ROOT,n))]));
+  p.supervisedCommandSourceHashes=Object.fromEntries((darwin?DARWIN_COMMAND_SOURCES:COMMAND_SOURCES).map(n=>[n,HASH_FILE(path.join(ROOT,n))]));
   p.readTool={path:paths.psql,sha256:HASH_FILE(paths.psql)};
-  const chrome=fs.realpathSync('C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe');
-  p.supervisedChrome={schema:'u1-supervised-chrome-v1',channel:'chrome',path:chrome,sha256:HASH_FILE(chrome),version:'1.2.3.4',resolverSha256:HASH_FILE(path.resolve(ROOT,'../../../node_modules/playwright-core/lib/server/registry/index.js'))};
+  const chrome=fs.realpathSync(darwin?'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome':'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe');
+  p.supervisedChrome={schema:'u1-supervised-chrome-v1',channel:'chrome',path:chrome,sha256:HASH_FILE(chrome),version:'1.2.3.4',resolverSha256:HASH_FILE(path.resolve(ROOT,modules,'playwright-core/lib/server/registry/index.js'))};
  });
  const save=(name,value)=>{const p=f.save(name,value);return{file:path.basename(p.file),sha256:p.sha256};};
  const saveBytes=(name,bytes)=>{fs.writeFileSync(path.join(f.dir,name),bytes);return{file:name,sha256:sha(bytes)};};
@@ -121,6 +122,7 @@ function launchAuthority(f){
  provider:save('baseline-provider.json',{schema:'u1-baseline-provider-v1',...identity,deploymentId,versionId,trafficPercent:100,sourceCommit,indexSha256:index.sha256,configSha256:bc.sha256,flagsSha256:flags.sha256}),
  config:save('baseline-config-capture.json',{synthetic:true}),assets:save('baseline-assets.json',{schema:'u1-baseline-assets-v1',runId,versionId,indexSha256:index.sha256,assets:[{path:'/assets/offline.js',sha256:asset.sha256}]}),protectedParity:save('baseline-protected.json',{synthetic:true}),restoreProof:save('baseline-restore.json',{synthetic:true})}});
  const core={schema:'u1-launch-core-v1',...identity,applicationCommit:APPLICATION_COMMIT,harnessCommit:'a'.repeat(40),createdAt:'2026-11-04T12:00:00.000Z',limits:U1_LIMITS,processLimits:LAUNCH_LIMITS,discovery:U1_IDENTITY,sources,tools,package:packageRef,preflight:pre,baseline,config,spec};
+ if(darwin)Object.assign(core,{schema:'u1-launch-core-v2',platform:'darwin',termination:'owned-process-group-sigkill-v1'});
  const options=()=>({artifactRoot:f.dir,core:save('launch-core.json',core),approvals:Object.fromEntries(['reviewer','tester'].map(role=>[role,save('launch-'+role+'.json',{schema:'u1-launch-approval-v1',role,reviewedBy:role+'-offline',scope:'u1-launch-core',decision:'approved',runId,coreHash:canonicalHash(core),approvedAt:'2026-11-04T12:00:00.000Z'})])),confirmation:'RUN U1 SUPERVISED ONCE '+runId,credentials:{U1_USER_A:'fake-a',U1_PASSWORD_A:'fake-secret-a',U1_USER_B:'fake-b',U1_PASSWORD_B:'fake-secret-b',U1_STAGING_DB_USER:'fake-db-user',U1_STAGING_DB_PASSWORD:'fake-db-secret'}});
  return{options,core,paths};
 }
@@ -129,21 +131,44 @@ test('fixed entry rejects arbitrary API fields before any process',async()=>{
  assert.deepEqual(COMMAND_ARGS,['test','--config=playwright.u1.config.ts','--project=u1-baseline','--workers=1','--retries=0','--repeat-each=1','--max-failures=1']);
 });
 test('actual exported entry binds fixed subprocesses; Chrome drift, nonzero and code0 without evidence cannot pass',async()=>oracleFixture(async f=>{
- const setup=launchAuthority(f),calls=[],original={spawn:cp.spawn,execFile:cp.execFile,now:Date.now};
+ const darwin=process.platform==='darwin';
+ const chromium=darwin?(await import(pathToFileURL(path.join(ROOT,'node_modules/playwright/index.mjs')).href)).chromium:null;
+ const setup=launchAuthority(f),calls=[],mockChildren=new Map(),original={spawn:cp.spawn,execFile:cp.execFile,now:Date.now,kill:process.kill,launchServer:chromium?.launchServer};
  const runRoot=path.join(ROOT,'test-artifacts/u1-supervised-run'),runDir=path.join(runRoot,f.input.runId);
  assert.equal(fs.existsSync(runDir),false,'prior test evidence must not be overwritten');
  fs.mkdirSync(runRoot,{recursive:true});
  let runCode=1;
  try{
  Date.now=()=>NOW;
+ if(darwin){
+  process.kill=(pid,signal)=>{const child=mockChildren.get(-pid);assert.ok(child,'Only owned synthetic group');if(child.exitCode===null){if(signal==='SIGKILL'){child.exitCode=1;child.emit('close',1);}else assert.equal(signal,0);return true;}const error=new Error('synthetic group absent');error.code='ESRCH';throw error;};
+  chromium.launchServer=async()=>{const child=cp.spawn(fs.realpathSync('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'),[],{detached:true,shell:false,stdio:['ignore','pipe','pipe']});return{process:()=>child,wsEndpoint:()=> 'ws://127.0.0.1:12345/offline',close:async()=>{if(child.exitCode===null){child.exitCode=0;child.emit('close',0);}}};};
+ }
  cp.execFile=(file,args,opts,callback)=>{assert.equal(file,setup.paths.git);assert.equal(opts.timeout,10000);assert.equal(opts.shell,false);queueMicrotask(()=>callback(null,args.includes('rev-parse')?'a'.repeat(40):''));};
  cp.spawn=(file,args,opts)=>{
+  if(darwin&&file===fs.realpathSync('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome')){
+   const browser=new EventEmitter();browser.pid=44000;browser.exitCode=null;browser.stdout=new EventEmitter();browser.stderr=new EventEmitter();mockChildren.set(browser.pid,browser);return browser;
+  }
   assert.equal(file,setup.paths.node,'Only mocked fixedNode may start');assert.equal(args[0],setup.paths.playwright);
-  assert.equal(opts.shell,false);assert.equal(opts.windowsHide,true);assert.equal(opts.env.NODE_OPTIONS,undefined);assert.equal(opts.env.PGOPTIONS,undefined);
+  assert.equal(opts.shell,false);if(process.platform==='darwin')assert.equal(opts.detached,true);else assert.equal(opts.windowsHide,true);assert.equal(opts.env.NODE_OPTIONS,undefined);assert.equal(opts.env.PGOPTIONS,undefined);
   calls.push({args,env:opts.env});const child=new EventEmitter();child.pid=41000+calls.length;child.exitCode=null;child.signalCode=null;child.unref=()=>{};child.stdout=new EventEmitter();child.stderr=new EventEmitter();child.stdout.destroy=()=>{};child.stderr.destroy=()=>{};
+  mockChildren.set(child.pid,child);
   queueMicrotask(()=>{if(args.includes('--list')){assert.equal(opts.env.U1_PASSWORD_A,undefined);assert.ok(fs.existsSync(path.join(runDir,'reservation.json')));child.stdout.emit('data',Buffer.from(JSON.stringify({suites:[{specs:[{file:U1_IDENTITY.file,title:U1_IDENTITY.title,tests:[{projectName:U1_IDENTITY.project}]}]}],errors:[]})));child.exitCode=0;child.emit('close',0);}else{assert.ok(fs.existsSync(path.join(runDir,'attempt.json')));assert.equal(opts.env.U1_PASSWORD_A,'fake-secret-a');child.exitCode=runCode;child.emit('close',runCode);}});return child;
  };syncBuiltinESMExports();
+ if(process.platform==='darwin'){
+  const oldCore={schema:setup.core.schema,platform:setup.core.platform,termination:setup.core.termination};
+  setup.core.schema='u1-launch-core-v1';delete setup.core.platform;delete setup.core.termination;
+  const taskkill=f.save('wrong-platform-tool.json',{synthetic:true});setup.core.tools.taskkill={file:path.basename(taskkill.file),sha256:taskkill.sha256};
+  await assert.rejects(runSupervisedOnce(setup.options()),/Launch platform differs/);assert.equal(calls.length,0);
+  delete setup.core.tools.taskkill;Object.assign(setup.core,oldCore);
+ }
  const packagePath=path.join(f.dir,setup.core.package.file),originalPackage=fs.readFileSync(packagePath),originalSha=setup.core.package.sha256;
+ if(process.platform==='darwin'){
+  const commandDrift=JSON.parse(originalPackage);commandDrift.supervisedCommandSourceHashes['scripts/u1-darwin-process.mjs']='0'.repeat(64);
+  fs.writeFileSync(packagePath,JSON.stringify(commandDrift));setup.core.package.sha256=HASH_FILE(packagePath);
+  await assert.rejects(runSupervisedOnce(setup.options()),/Fixed command source drift/);assert.equal(calls.length,0);
+  fs.writeFileSync(packagePath,originalPackage);setup.core.package.sha256=originalSha;
+ }
  const drift=JSON.parse(originalPackage);drift.supervisedChrome.sha256='0'.repeat(64);fs.writeFileSync(packagePath,JSON.stringify(drift));setup.core.package.sha256=HASH_FILE(packagePath);
  await assert.rejects(runSupervisedOnce(setup.options()),/Chrome channel executable drift/);assert.equal(calls.length,0);assert.equal(fs.existsSync(runDir),false);
  fs.writeFileSync(packagePath,originalPackage);setup.core.package.sha256=originalSha;
@@ -156,6 +181,6 @@ test('actual exported entry binds fixed subprocesses; Chrome drift, nonzero and 
  // Separate synthetic scenario, not a retry of a real run. No child is executed.
  assert.ok(runDir.startsWith(runRoot+path.sep));fs.rmSync(runDir,{recursive:true});runCode=0;
  const missing=await runSupervisedOnce(opts);assert.equal(missing.status,'failed-closeout-required');assert.equal(missing.reconciliation,null);assert.equal(missing.child.result.status,'process-completed');assert.equal(calls.length,4);
- }finally{cp.spawn=original.spawn;cp.execFile=original.execFile;Date.now=original.now;syncBuiltinESMExports();assert.ok(runDir.startsWith(runRoot+path.sep));if(fs.existsSync(runDir))fs.rmSync(runDir,{recursive:true,force:true});}
+ }finally{cp.spawn=original.spawn;cp.execFile=original.execFile;Date.now=original.now;process.kill=original.kill;if(chromium)chromium.launchServer=original.launchServer;syncBuiltinESMExports();assert.ok(runDir.startsWith(runRoot+path.sep));if(fs.existsSync(runDir))fs.rmSync(runDir,{recursive:true,force:true});}
 }));
 

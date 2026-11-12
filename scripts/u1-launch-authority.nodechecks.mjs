@@ -32,6 +32,16 @@ function fixture(fn){
 test('exact offline snapshots validate without manufacturing live authority',()=>fixture(({materialize})=>{
  const result=validateLaunchAuthority(materialize());assert.equal(result.status,'offline-contract-validated');for(const flag of ['liveAdmission','signerAuthenticityVerified','liveSourceAndToolsVerified','completeAssetDiscoveryVerified','preflightSemanticsVerified','packageSemanticsVerified'])assert.equal(result[flag],false,flag);assert.deepEqual(result.limits,U1_LIMITS);assert.equal(Object.isFrozen(result),true);
 }));
+test('Darwin core v2 binds platform and owned-group termination without taskkill',()=>fixture(({coreValue,materialize})=>{
+ const darwin={...structuredClone(coreValue),schema:'u1-launch-core-v2',platform:'darwin',termination:'owned-process-group-sigkill-v1'};
+ delete darwin.tools.taskkill;
+ assert.equal(validateLaunchAuthority(materialize(darwin)).status,'offline-contract-validated');
+ for(const mutate of [c=>c.platform='win32',c=>c.termination='taskkill',c=>delete c.platform,c=>delete c.termination,c=>c.tools.taskkill=coreValue.tools.taskkill,c=>delete c.tools.node,c=>c.schema='u1-launch-core-v1']){
+  const altered=structuredClone(darwin);mutate(altered);assert.throws(()=>validateLaunchAuthority(materialize(altered)));
+ }
+ const old={...structuredClone(coreValue),platform:'darwin'};
+ assert.throws(()=>validateLaunchAuthority(materialize(old)),/Unexpected contract fields/);
+}));
 
 test('approval, core, target, limits and freshness tampering fail even when rehashed',()=>fixture(({coreValue,materialize})=>{
  for(const mutate of [
