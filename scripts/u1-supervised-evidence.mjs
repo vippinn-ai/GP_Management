@@ -7,7 +7,7 @@ import {canonicalHash,planPhase,sealPhaseIntent,finalizePhaseIntent,reconcilePha
 import {bindGeneratedPhase,compareGeneratedProtected,canonicalProtectedRows} from './u1-generated-fields.mjs';
 import {prepareInstalledPhase,compareInstalledPhase} from './u1-phase-expectations.mjs';
 import {AUTHORITY_SOURCES} from './u1-launch-authority.mjs';
-export const SUPERVISED_LIMITS=Object.freeze({recordBytes:32*1024*1024,indexBytes:1024*1024,workingBytes:128*1024*1024,totalRecordBytes:1024*1024*1024,maxRecords:1354,successRecords:1353,deadlineMs:1200000});
+export const SUPERVISED_LIMITS=Object.freeze({recordBytes:32*1024*1024,indexBytes:1024*1024,workingBytes:128*1024*1024,totalRecordBytes:2*1024*1024*1024,maxRecords:1354,successRecords:1353,deadlineMs:1200000});
 export const SUPERVISED_SOURCES=Object.freeze([...AUTHORITY_SOURCES,'scripts/u1-supervised-evidence.mjs','scripts/u1-supervised-evidence.nodechecks.mjs'].sort());
 const check=(v,m)=>{if(!v)throw new Error(m);};
 const sha=b=>createHash('sha256').update(b).digest('hex');

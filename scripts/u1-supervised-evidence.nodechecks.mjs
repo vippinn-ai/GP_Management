@@ -11,10 +11,33 @@ const sourceRoot=path.resolve(import.meta.dirname,'..');
 const sourceHashes=()=>Object.fromEntries(SUPERVISED_SOURCES.map(name=>[name,sha(fs.readFileSync(path.join(sourceRoot,name)))]));
 
 test('fixed supervised caps and exact current source inventory are package bound',()=>{
- assert.deepEqual(SUPERVISED_LIMITS,{recordBytes:32*1024*1024,indexBytes:1024*1024,workingBytes:128*1024*1024,totalRecordBytes:1024*1024*1024,maxRecords:1354,successRecords:1353,deadlineMs:1200000});
+ assert.deepEqual(SUPERVISED_LIMITS,{recordBytes:32*1024*1024,indexBytes:1024*1024,workingBytes:128*1024*1024,totalRecordBytes:2*1024*1024*1024,maxRecords:1354,successRecords:1353,deadlineMs:1200000});
  assert.equal(new Set(SUPERVISED_SOURCES).size,SUPERVISED_SOURCES.length);assert.ok(SUPERVISED_SOURCES.includes('scripts/u1-supervised-evidence.nodechecks.mjs'));
  const pkg={supervisedLimits:structuredClone(SUPERVISED_LIMITS),supervisedSourceHashes:sourceHashes()};assert.doesNotThrow(()=>verifySupervisedSourceHashes(pkg));
- for(const mutate of [p=>p.supervisedLimits.maxRecords=1355,p=>p.supervisedLimits.deadlineMs++,p=>p.supervisedSourceHashes[SUPERVISED_SOURCES[0]]='0'.repeat(64),p=>delete p.supervisedSourceHashes[SUPERVISED_SOURCES[0]],p=>p.supervisedSourceHashes.extra='0'.repeat(64)]){const changed=structuredClone(pkg);mutate(changed);assert.throws(()=>verifySupervisedSourceHashes(changed));}
+ for(const mutate of [p=>p.supervisedLimits.totalRecordBytes=1024*1024*1024,p=>p.supervisedLimits.totalRecordBytes++,p=>p.supervisedLimits.maxRecords=1355,p=>p.supervisedLimits.deadlineMs++,p=>p.supervisedSourceHashes[SUPERVISED_SOURCES[0]]='0'.repeat(64),p=>delete p.supervisedSourceHashes[SUPERVISED_SOURCES[0]],p=>p.supervisedSourceHashes.extra='0'.repeat(64)]){const changed=structuredClone(pkg);mutate(changed);assert.throws(()=>verifySupervisedSourceHashes(changed));}
+});
+
+test('writer admits cumulative bytes through exact 2GiB, then poisons without another write',async()=>{
+ const directory=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'u1-supervised-2gib-writer-')));
+ const adapter=Object.create(U1BrowserDatabaseAdapter.prototype);
+ Object.assign(adapter,{evidenceMode:'u1-supervised-numbered-v1',errors:[],pkg:{authority:{},supervisedSourceHashes:{},manifest:{runId:'offline'}},initialState:null,current:null,expectedProtected:null,latestRows:null,bindings:{},generatedIds:new Set(),recordIndex:[],pending:null,finalSnapshot:null,coordinatorState:null,sequence:0,previousRecordHash:null,numberedBytes:1024*1024*1024,directory});
+ try{
+  await adapter.record({phase:'above-old-cap'});assert.ok(adapter.numberedBytes>1024*1024*1024);
+  const value={phase:'exact-boundary'},length=Buffer.byteLength(JSON.stringify({previousRecordHash:adapter.previousRecordHash,...value})+'\n');adapter.numberedBytes=SUPERVISED_LIMITS.totalRecordBytes-length;
+  await adapter.record(value);assert.equal(adapter.numberedBytes,2*1024*1024*1024);
+  const names=fs.readdirSync(directory);await assert.rejects(()=>adapter.record({phase:'one-more'}),/Supervised evidence failed/);assert.deepEqual(fs.readdirSync(directory),names);assert.ok(adapter.errors.includes('supervised-evidence-failed'));
+  await assert.rejects(()=>adapter.executePhase(0),/Browser errors prohibit further mutations/);
+ }finally{fs.rmSync(directory,{recursive:true,force:true});}
+});
+
+test('verifier cumulative references accept exact 2GiB boundary but reject one byte over before reading bodies',()=>{
+ for(const total of [1024*1024*1024+1,2*1024*1024*1024,2*1024*1024*1024+1])withIndex(({dir,write})=>{
+  const value=baseIndex(1353),each=Math.floor(total/value.records.length),remainder=total-each*value.records.length;
+  value.records.forEach((r,i)=>{r.bytes=each+(i===0?remainder:0);fs.writeFileSync(path.join(dir,r.file),'x',{flag:'wx'});});
+  const saved=write(value);
+  // In-cap indices proceed to the intentionally absent authority; these are not valid ledgers.
+  assert.throws(()=>verifySupervisedEvidence(saved.file,saved.sha256),total>SUPERVISED_LIMITS.totalRecordBytes?/Numbered evidence total bound/:/Unexpected evidence fields/);
+ });
 });
 
 function withIndex(fn){const dir=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'u1-supervised-index-')));try{const write=value=>{const file=path.join(dir,'supervised-index.json'),bytes=Buffer.from(JSON.stringify(value));fs.writeFileSync(file,bytes,{flag:'wx'});return{file,sha256:sha(bytes)}};fn({dir,write});}finally{fs.rmSync(dir,{recursive:true,force:true});}}
