@@ -9,7 +9,8 @@ import path from 'node:path';
 import {createHash} from 'node:crypto';
 import {buildCombinedPreflight} from './u1-preflight-collector.mjs';
 import {APPLICATION_COMMIT,HARNESS_BASE_COMMIT} from './u1-package-builder.mjs';
-import {PROTECTED_TABLES} from './u1-protected-reader.mjs';
+import {PROTECTED_TABLES,PROTECTED_GROUPS} from './u1-protected-reader.mjs';
+function wire(e){const {protectedRows,...first}=e;return Buffer.from([first,...PROTECTED_GROUPS.map(g=>({protectedRows:{...Object.fromEntries(g.map(t=>[t,protectedRows[t]])),_unowned:Object.fromEntries(g.map(t=>[t,protectedRows._unowned[t]]))}}))].map((payload,part)=>JSON.stringify({schema:'u1-protected-fragment-v1',kind:'preflight',part,snapshot:'10:11:',backend:123,transactionAt:e.capturedAt,payload})).join('\n')+'\n');}
 function fake(){
  let time=0,id=0,kills=0;const timers=new Map();const child=new EventEmitter();child.pid=123;child.stdout=new EventEmitter();child.stderr=new EventEmitter();child.stdin=new EventEmitter();child.stdin.end=s=>{child.sql=s;};
  const deps={now:()=>time,setTimer:(fn,ms)=>{timers.set(++id,{at:time+ms,fn});return id;},clearTimer:id=>timers.delete(id),terminate:c=>{assert.equal(c,child);kills++;}};
@@ -45,7 +46,7 @@ test('output counts bytes, overflow terminates once, stderr discarded',async()=>
 test('production API has fixed spawn, clean env, fatal UTF8 and exclusive attempt before spawn',()=>{
  const s=fs.readFileSync(new URL('./u1-preflight-executor.mjs',import.meta.url),'utf8');
  assert.ok(!s.includes('taskkill'));assert.ok(!s.includes('...process.env'));assert.ok(!s.includes('PGOPTIONS:'));
- assert.ok(s.includes("PGHOST:'db.tkbdyzxwwbhkpztgjjxh.supabase.co'"));assert.ok(s.includes("PGSSLMODE:'verify-full'"));assert.ok(s.includes("new TextDecoder('utf-8',{fatal:true})"));
+ assert.ok(s.includes("PGHOST:'db.tkbdyzxwwbhkpztgjjxh.supabase.co'"));assert.ok(s.includes("PGSSLMODE:'verify-full'"));assert.ok(s.includes("reassembleProtectedRead(observed.stdout"));assert.ok(fs.readFileSync(new URL('./u1-protected-reader.mjs',import.meta.url),'utf8').includes("new TextDecoder('utf-8',{fatal:true})"));
  assert.ok(s.indexOf("write('attempt.json'")<s.indexOf('const child=spawn('));assert.ok(s.includes("flag:'wx'"));
  assert.ok(!s.slice(s.indexOf('export async function executePreflight')).includes('observeFakeChildForTests'));
  assert.throws(()=>new TextDecoder('utf-8',{fatal:true}).decode(Buffer.from([0xc3,0x28])));
@@ -69,7 +70,7 @@ test('public executor handoff mocked at builtin boundary: fixed env, reservation
     assert.deepEqual(Object.keys(opts.env).sort(),['SystemRoot','PGHOST','PGPORT','PGDATABASE','PGUSER','PGPASSWORD','PGSSLMODE','PGSSLROOTCERT','PGCONNECT_TIMEOUT'].sort());
     assert.equal(opts.env.PGHOST,'db.tkbdyzxwwbhkpztgjjxh.supabase.co');
     if(mode==='spawn-error')throw new Error('SYNTHETIC SECRET');
-    const f=fake();queueMicrotask(()=>{if(mode==='tool-drift')fs.appendFileSync(exe,'changed');if(mode==='cert-drift')fs.appendFileSync(cert,'changed');f.child.stdout.emit('data',mode==='invalid-utf8'?Buffer.from([0xc3,0x28]):Buffer.from(mode==='valid'?JSON.stringify(evidence):'{}'));f.child.emit('close',mode==='nonzero'?1:0);});return f.child;
+    const f=fake();queueMicrotask(()=>{if(mode==='tool-drift')fs.appendFileSync(exe,'changed');if(mode==='cert-drift')fs.appendFileSync(cert,'changed');f.child.stdout.emit('data',mode==='invalid-utf8'?Buffer.from([0xc3,0x28]):mode==='valid'?wire(evidence):mode==='semantic-failure'?wire({...evidence,floor:{...evidence.floor,openSessions:1}}):Buffer.from('{}'));f.child.emit('close',mode==='nonzero'?1:0);});return f.child;
    };syncBuiltinESMExports();
    const options={request,expectedSqlSha256:generated.sha256,executable:exe,executableSha256:hash(exe),sslRootCert:cert,sslRootCertSha256:hash(cert),user:'synthetic',password:'SYNTHETIC SECRET',evidenceDirectory:out,preparation:{runId:request.runId,applicationCommit:APPLICATION_COMMIT,harnessCommit:HARNESS_BASE_COMMIT,stationIds:request.stationIds,actors,baseURL:'https://gp-management-staging-pages.breakperfectgaminglounge.workers.dev'}};
    for(const patch of [{evidenceDirectory:dir},{executableSha256:'0'.repeat(64)},{sslRootCertSha256:'0'.repeat(64)},{preparation:{...options.preparation,baseURL:'https://wrong.invalid'}},{preparation:{...options.preparation,secret:'no'}},{preparation:{...options.preparation,actors:{...actors,A:{...actors.A,role:'bad'}}}}]){const before=calls;await assert.rejects(executePreflight({...options,...patch}));assert.equal(calls,before);assert.equal(fs.existsSync(path.join(out,'attempt.json')),false);}

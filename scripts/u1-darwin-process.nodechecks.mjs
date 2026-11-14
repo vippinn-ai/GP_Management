@@ -16,7 +16,7 @@ const descendant=marker=>`const c=require('node:child_process').spawn(process.ex
 test('Darwin success is explicit root close and empty owned group',{skip:!enabled},async()=>{
  const r=await run('process.exit(0)');
  assert.equal(r.status,'process-completed');assert.equal(r.cleanupConfirmed,true);assert.equal(r.groupGone,true);assert.equal(r.killInvoked,false);
- assert.deepEqual(LAUNCH_LIMITS,{discoveryMs:60000,processMs:1200000,killMs:5000,exitMs:3000,outputBytes:33554432});
+ assert.deepEqual(LAUNCH_LIMITS,{discoveryMs:60000,processMs:4500000,killMs:5000,exitMs:3000,outputBytes:33554432});
 });
 test('Darwin root exit with living descendant cannot pass; sibling survives',{skip:!enabled},async()=>{
  const dir=temp(),marker=path.join(dir,'child.pid');

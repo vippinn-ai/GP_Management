@@ -14,7 +14,7 @@ test('comparison preflight embeds the actual exact application source',()=>{
 test('one guarded snapshot embeds full protected query and sanitized authority',()=>{
  const g=buildCombinedPreflight(options);assert.deepEqual(g,buildCombinedPreflight(options));
  assert.equal((g.sql.match(/BEGIN ISOLATION/g)||[]).length,1);assert.equal((g.sql.match(/ROLLBACK;/g)||[]).length,1);
- for(const s of ['REPEATABLE READ READ ONLY',"statement_timeout='5s'","lock_timeout='1s'",'row_security=off','7623125441096521075','f9bc0aed-b6c4-410f-ba2a-572522d03869','p.active and m.active and p.role=m.role','public.financial_mutations','public.operational_mutations',"metadata->>'mutation_id'",'AS evidence;'])assert.ok(g.sql.includes(s));
+ for(const s of ['REPEATABLE READ READ ONLY',"statement_timeout='5s'","lock_timeout='1s'",'row_security=off','7623125441096521075','f9bc0aed-b6c4-410f-ba2a-572522d03869','p.active and m.active and p.role=m.role','public.financial_mutations','public.operational_mutations',"metadata->>'mutation_id'",'u1-protected-fragment-v1'])assert.ok(g.sql.includes(s));
  assert.ok(!/\b(COMMIT|INSERT|UPDATE|DELETE|CALL|CREATE|ALTER|GRANT|REVOKE)\b/i.test(g.sql));assert.ok(!/auth_email|username|p\.name/.test(g.sql));
  assert.equal(g.executorImplemented,false);assert.equal(PREFLIGHT_CAPTURE_LIMITS.processMs,15000);
 });

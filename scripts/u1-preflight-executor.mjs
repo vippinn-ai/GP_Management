@@ -3,9 +3,10 @@ import path from 'node:path';
 import {spawn} from 'node:child_process';
 import {createHash} from 'node:crypto';
 import {buildCombinedPreflight,decodePreflightCapture} from './u1-preflight-collector.mjs';
+import {reassembleProtectedRead} from './u1-protected-reader.mjs';
 const check=(ok,message)=>{if(!ok)throw new Error(message);};
 const sha=b=>createHash('sha256').update(b).digest('hex');
-const PINS={'u1-preflight-collector.mjs':'cd33064fb2739348adf628df585bf1442984c27dc6df2387a167871923df4014','u1-package-builder.mjs':'0191e0780dcb616bd6f90632e41b2d5a664c1d5031ffa8a69a80385502686cd4'};
+const PINS={'u1-preflight-collector.mjs':'d2885223be91b4c4ab3f5a74cf6d93e654f64f734781670e099d326b6dc6286c','u1-package-builder.mjs':'0191e0780dcb616bd6f90632e41b2d5a664c1d5031ffa8a69a80385502686cd4'};
 const DEADLINE=15000,MAX_BYTES=32*1024*1024,TEARDOWN=2000;
 function checkedFile(file,hash){
  check(typeof file==='string'&&path.isAbsolute(file)&&fs.realpathSync(file)===path.resolve(file),'Canonical file required');
@@ -79,11 +80,12 @@ export async function executePreflight(options){
  try{checkedFile(executable,options.executableSha256);checkedFile(certificate,options.sslRootCertSha256);}catch{result.status='failed';result.failure='dependency-drift';}
  if(result.status==='passed'){
   try{
-   const text=new TextDecoder('utf-8',{fatal:true}).decode(observed.stdout);const candidate=JSON.parse(text);
+   write('transport-fragments.jsonl',observed.stdout);
+   const complete=reassembleProtectedRead(observed.stdout,{kind:'preflight'});const candidate=JSON.parse(complete);
    check(candidate&&typeof candidate==='object'&&!Array.isArray(candidate),'Plain capture required');
-   const file=path.join(directory,'preflight.json');write('preflight.json',observed.stdout);
-   result.preflightSha256=sha(observed.stdout);
-   const decoded=decodePreflightCapture(observed.stdout,{generated,expectedSqlSha256:options.expectedSqlSha256,elapsedMs:observed.elapsedMs,preparation:{...prep,now:Date.now(),preflightFile:fs.realpathSync(file),preflightSha256:sha(observed.stdout)}});
+   const file=path.join(directory,'preflight.json');write('preflight.json',complete);
+   result.preflightSha256=sha(complete);result.transportSha256=sha(observed.stdout);
+   const decoded=decodePreflightCapture(complete,{generated,expectedSqlSha256:options.expectedSqlSha256,elapsedMs:observed.elapsedMs,preparation:{...prep,now:Date.now(),preflightFile:fs.realpathSync(file),preflightSha256:sha(complete)}});
    write('draft.json',decoded.draft);result.draftSha256=sha(fs.readFileSync(path.join(directory,'draft.json')));result.status='captured-not-admitted';
   }catch{result.status='failed';result.failure='capture-validation-failed';}
  }

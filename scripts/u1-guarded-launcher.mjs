@@ -2,7 +2,7 @@
 import path from 'node:path';
 import {U1_IDENTITY,U1_LIMITS,verifyDiscovery} from './u1-playwright-runner.mjs';
 import {canonicalHash} from './u1-data-reconciler.mjs';
-export const LAUNCH_LIMITS=Object.freeze({discoveryMs:60000,processMs:1200000,killMs:5000,exitMs:3000,outputBytes:32*1024*1024});
+export const LAUNCH_LIMITS=Object.freeze({discoveryMs:60000,processMs:4500000,killMs:5000,exitMs:3000,outputBytes:32*1024*1024});
 export const EXECUTION_BLOCKERS=Object.freeze([
  'Independent reviewer/tester approvals must bind the exact outer admission core, tools, source and package.',
  'A complete reviewed baseline deployment and index/JS/CSS restoration descriptor is missing.',

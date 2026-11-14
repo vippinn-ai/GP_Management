@@ -9,6 +9,7 @@ import {createProcessSupervisor} from './u1-process-supervisor.mjs';
 import {LAUNCH_LIMITS} from './u1-guarded-launcher.mjs';
 
 const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+export const CHROME_STARTUP_TIMEOUT_MS=1200000;
 export async function runDarwinBrowserProcess({node,playwright,chrome,root,args,env}){
  if(process.platform!=='darwin'||chrome!==fs.realpathSync('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'))throw new Error('Fixed Darwin Chrome required');
  if(![node,playwright,root].every(p=>typeof p==='string'&&path.isAbsolute(p))||!Array.isArray(args)||args.some(a=>typeof a!=='string'))throw new Error('Explicit admitted command required');
@@ -54,7 +55,7 @@ export async function runDarwinBrowserProcess({node,playwright,chrome,root,args,
    };
    cp.spawn=interceptor;
    const browserEnv={CI:'1',PATH:'/usr/bin:/bin'};for(const k of ['HOME','TMPDIR'])if(env[k])browserEnv[k]=env[k];
-   try{server=await chromium.launchServer({channel:'chrome',headless:true,host:'127.0.0.1',timeout:LAUNCH_LIMITS.processMs,env:browserEnv});}
+   try{server=await chromium.launchServer({channel:'chrome',headless:true,host:'127.0.0.1',timeout:CHROME_STARTUP_TIMEOUT_MS,env:browserEnv});}
    finally{launchSettled=true;restore();}
    if(stopped){void server.close().catch(()=>{});return;}
    if(spawnCount!==1||server.process()!==owned[0]?.child)throw new Error('Browser ownership mismatch');

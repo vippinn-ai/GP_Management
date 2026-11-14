@@ -4,11 +4,12 @@ import {createHash} from 'node:crypto';
 import {buildCombinedPreflight,decodePreflightCapture,PREFLIGHT_CAPTURE_LIMITS} from './u1-preflight-collector.mjs';
 import {buildCommandPlan} from './u1-command-plan.mjs';
 import {canonicalHash} from './u1-data-reconciler.mjs';
+import {renderProtectedReadParts,reassembleProtectedRead} from './u1-protected-reader.mjs';
 const check=(v,m)=>{if(!v)throw new Error(m);};
 const sha=b=>createHash('sha256').update(b).digest('hex');
 const keys=(v,k)=>check(v&&Object.keys(v).sort().join(',')===[...k].sort().join(','),'Unexpected authority fields');
 const freeze=v=>{if(v&&typeof v==='object'){Object.values(v).forEach(freeze);Object.freeze(v);}return v;};
-const pins={'u1-preflight-collector.mjs':'cd33064fb2739348adf628df585bf1442984c27dc6df2387a167871923df4014','u1-command-plan.mjs':'2fedad2c2b3278f1eba085205b7f783989687b5d8b30da73ddad84260ec4bd86'};
+const pins={'u1-preflight-collector.mjs':'d2885223be91b4c4ab3f5a74cf6d93e654f64f734781670e099d326b6dc6286c','u1-command-plan.mjs':'bf42b8153fd392a331468997d2f499f0d3ab84d1cc396c97e9c5791930049f37'};
 const q=s=>`'${s}'`; // Only identifiers already admitted by the frozen collector.
 const validated=new WeakMap();
 // Exact scalar fallback semantics of the pinned application mapper. Only a
@@ -20,17 +21,20 @@ export function buildAuthorityPreflight(request){
  keys(request,['runId','applicationCommit','harnessCommit','actorIds','stationIds']);
  for(const [file,digest]of Object.entries(pins))check(sha(fs.readFileSync(new URL(file,import.meta.url)))===digest,'Authority preparation source drift');
  check(sha(fs.readFileSync(new URL('../src/dataGateway/normalizedReads.ts',import.meta.url)))==='b6898c81a5f4f85e6055c5ff24063586923ff1d14da79233c7d7a50ba7eae520','Application mapper source drift');
- const base=buildCombinedPreflight(request),marker='SELECT (',end=' AS evidence;\nROLLBACK;';
- const index=base.sql.indexOf(marker);check(index>0&&base.sql.endsWith(end),'Frozen SQL envelope drift');
- const expression=base.sql.slice(index+'SELECT '.length,-end.length);
+ const base=buildCombinedPreflight(request),plan=structuredClone(base.plan);plan.kind='authority';
+ const expression=plan.parts[0].expression;
  const actor=s=>`(select jsonb_build_object('id',p.id,'name',p.name,'username',p.username,'profileRole',p.role,'membershipRole',m.role,'resolvedRole',coalesce(m.role,p.role),'profileActive',p.active,'membershipActive',m.active,'organization',m.organization_id) from public.profiles p join public.organization_members m on m.user_id=p.id and m.organization_id='org-primary' where p.id=${q(request.actorIds[s])}::uuid)`;
  const stations=`(select coalesce(jsonb_agg(jsonb_build_object('id',s.id,'organization_id',s.organization_id,'name',s.name,'active',s.active,'mode',s.mode,'ltpEnabled',s.ltp_enabled,'overrides',jsonb_build_object('mode',s.raw_data->'mode','active',s.raw_data->'active','ltpEnabled',s.raw_data->'ltpEnabled')) order by s.id),'[]'::jsonb) from public.stations s where s.organization_id='org-primary' and s.id in (${request.stationIds.map(q).join(',')}))`;
  // All organization rules are needed: raw stationId can move a rule into a
  // selected station. 257 is an overflow sentinel; decoder permits at most 256.
  const pricing=`(select coalesce(jsonb_agg(jsonb_build_object('id',r.id,'stationId',r.station_id,'label',r.label,'startMinute',r.start_minute,'endMinute',r.end_minute,'hourlyRate',r.hourly_rate,'overrides',jsonb_build_object('stationId',r.raw_data->'stationId','startMinute',r.raw_data->'startMinute','endMinute',r.raw_data->'endMinute','hourlyRate',r.raw_data->'hourlyRate')) order by r.station_id,r.start_minute),'[]'::jsonb) from (select id,station_id,label,start_minute,end_minute,hourly_rate,raw_data from public.pricing_rules where organization_id='org-primary' order by station_id,start_minute limit 257) r)`;
- const sql=base.sql.slice(0,index)+`SELECT jsonb_build_object('schema','u1-authority-preflight-v1','preflight',${expression},'actorDisplays',jsonb_build_object('A',${actor('A')},'B',${actor('B')}),'stationPricing',${stations},'pricingRules',${pricing})${end}`;
+ plan.parts[0].expression=`jsonb_build_object('schema','u1-authority-preflight-v1','preflight',${expression},'actorDisplays',jsonb_build_object('A',${actor('A')},'B',${actor('B')}),'stationPricing',${stations},'pricingRules',${pricing})`;
+ const sql=renderProtectedReadParts(plan);
  return freeze({schema:'u1-authority-sql-v1',request:structuredClone(request),sql,sha256:sha(sql),base,limits:PREFLIGHT_CAPTURE_LIMITS,executorImplemented:false});
 }
+// Explicit transport boundary; the existing complete-envelope validators below
+// still consume canonical, reconstructed JSON, never partial capture success.
+export function reassembleAuthorityCapture(bytes){return reassembleProtectedRead(bytes,{kind:'authority'});}
 // Allows exclusive persistence by the caller before full validation. This is
 // extraction only, never a successful preflight or a trusted authority.
 export function extractAuthorityPreflight(bytes){

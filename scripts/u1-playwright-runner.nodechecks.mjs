@@ -49,7 +49,7 @@ test('exact discovery, environment, and limits fail closed', () => {
   for (const url of ['https://management.breakperfectgaminglounge.workers.dev/', 'http://gp-management-staging-pages.breakperfectgaminglounge.workers.dev/',
     'https://gp-management-staging-pages.breakperfectgaminglounge.workers.dev/?x=1', 'https://user@gp-management-staging-pages.breakperfectgaminglounge.workers.dev/'])
     assert.throws(() => verifyTarget(url));
-  for (const [key, value] of [['retries', 1], ['workers', 2], ['completionMs', 7001], ['caseTimeout', 900001], ['pairs', 49]])
+  for (const [key, value] of [['retries', 1], ['workers', 2], ['completionMs', 7001], ['caseTimeout', 3600001], ['caseTimeout', 900000], ['pairs', 49]])
     assert.throws(() => verifyLimits({ ...U1_LIMITS, [key]: value }));
 });
 test('coordinator runs all 50 once and cleans up only after parity', async () => {

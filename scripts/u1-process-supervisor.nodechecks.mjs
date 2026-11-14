@@ -42,7 +42,7 @@ test('close-before-kill waits for outcome, and kill-before-close waits for exit'
 
 test('failed/rejected/thrown kill cannot claim termination; no-close settles bounded',async()=>{
  for(const kill of ['false','throw','pending']){const h=harness({kill}),p=h.start('discovery');await h.tick(LAUNCH_LIMITS.discoveryMs);if(kill==='pending')h.killReject(new Error('PRIVATE'));await h.flush();h.child.emit('close',null);const r=await p;assert.equal(r.killStatus,'failed');assert.equal(r.terminationConfirmed,false);assert.equal(r.exitObserved,true);assertSanitized(r);}
- const h=harness({kill:'true'}),p=h.start();await h.tick(LAUNCH_LIMITS.processMs+LAUNCH_LIMITS.killMs+LAUNCH_LIMITS.exitMs);const r=await p;assert.equal(r.exitObserved,false);assert.equal(r.terminationConfirmed,false);assert.equal(r.killStatus,'confirmed');assert.equal(r.elapsedMs,1208000);assert.equal(h.child.stdout.destroyed,true);assert.equal(h.child.unrefs,1);
+  const h=harness({kill:'true'}),p=h.start();await h.tick(LAUNCH_LIMITS.processMs+LAUNCH_LIMITS.killMs+LAUNCH_LIMITS.exitMs);const r=await p;assert.equal(r.exitObserved,false);assert.equal(r.terminationConfirmed,false);assert.equal(r.killStatus,'confirmed');assert.equal(r.elapsedMs,4508000);assert.equal(h.child.stdout.destroyed,true);assert.equal(h.child.unrefs,1);
 });
 
 test('missing kill outcome is bounded with or without close and late events cannot promote result',async()=>{

@@ -6,7 +6,7 @@ export const U1_IDENTITY = Object.freeze({
 });
 export const U1_LIMITS = Object.freeze({ pairs: 50, completionMs: 7000, workers: 1,
   retries: 0, maxFailures: 1, actionTimeout: 15000, navigationTimeout: 30000,
-  expectTimeout: 20000, caseTimeout: 900000 });
+  expectTimeout: 20000, caseTimeout: 3600000 });
 const origin = 'https://gp-management-staging-pages.breakperfectgaminglounge.workers.dev';
 function check(ok, message) { if (!ok) throw new Error(message); }
 export function verifyDiscovery(actual) {

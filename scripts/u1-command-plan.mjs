@@ -15,7 +15,7 @@ const SOURCE_PINS={
  'u1-installed-contract.mjs':'a91b00c96177f31911a35af21d6e42538b68a53b570efa48c129c764bc07f5e1',
  'u1-phase-expectations.mjs':'ce63629edd8e198d2e5fe084ec622e38cacdf15fb7819a39efb2f96aa632e0d5',
  'u1-generated-fields.mjs':'1252df55d32ceda81fed1b1b3c980bc2fd531ece60b2cad40a85beee1a33e800',
- 'u1-playwright-runner.mjs':'64ffb34606c7703cd93d385938173ce3e5302b058dec29335ea8ba4e669a6e11'};
+ 'u1-playwright-runner.mjs':'78fef13afa5eb4f74ddec5f45fcb31e54a4a65492f739b5632384a95abbb8d0f'};
 const check=(ok,message)=>{if(!ok)throw new Error(message);};
 const keys=(v,expected)=>check(v&&Object.keys(v).sort().join(',')===[...expected].sort().join(','),'Unexpected input fields');
 const clone=v=>structuredClone(v);

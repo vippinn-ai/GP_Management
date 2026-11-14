@@ -6,7 +6,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { REQUIRED_PROOF_CHECKS, U1BrowserDatabaseAdapter, loadBrowserPackage } from "./u1-browser-database-adapter.mjs";
-import { PROTECTED_TABLES, buildProtectedRead } from "./u1-protected-reader.mjs";
+import { PROTECTED_TABLES, PROTECTED_GROUPS, buildProtectedRead, buildProtectedReadParts, renderProtectedReadParts, reassembleProtectedRead } from "./u1-protected-reader.mjs";
 import { canonicalHash } from "./u1-data-reconciler.mjs";
 import { prepareInstalledPhase } from './u1-phase-expectations.mjs';
 
@@ -148,6 +148,52 @@ test("protected SQL collector is read-only, staging-pinned, rollback-terminated,
   for (const bad of ["x');drop_table", "space id", "x.y", "'", "a".repeat(121)])
     assert.throws(() => buildProtectedRead({ ...scope, sessionIds: [bad] }));
   assert.throws(() => buildProtectedRead({ ...scope, mutationIds: ["same", "same"] }));
+});
+
+test("shared protected reads retain dynamic caching and specialize literal-empty ownership without changing fingerprints", () => {
+  const sql = buildProtectedRead({ sessionIds: ['session_a'], customerIds: ['customer_a'],
+    customerNames: ['owned_customer'], auditIds: ['audit_a'], mutationIds: ['mutation_a'] });
+  const dynamic = new Set(['analytics_dirty_dates','sessions','customers','audit_logs','operational_events','activity_events','session_pause_logs','session_items','session_combo_applications']);
+  assert.equal((sql.match(/AS MATERIALIZED/g) ?? []).length, dynamic.size);
+  assert.equal((sql.match(/AS NOT MATERIALIZED/g) ?? []).length, 24);
+  assert.equal((sql.match(/to_jsonb\(t\)::text as jt/g) ?? []).length, PROTECTED_TABLES.length);
+  for (const table of PROTECTED_TABLES) {
+    assert.ok(sql.includes(`q_${table} AS ${dynamic.has(table) ? '' : 'NOT '}MATERIALIZED (`));
+    if (dynamic.has(table)) assert.ok(sql.includes(`jsonb_agg(jt::jsonb order by jt),'[]'::jsonb) from q_${table} where is_owned`));
+    else { assert.ok(sql.includes(`'${table}','[]'::jsonb`)); assert.ok(!sql.includes(`from q_${table} where is_owned`)); }
+  }
+  assert.ok(sql.includes("string_agg(jt,E'\\n' order by jt),''"));
+  assert.doesNotMatch(sql, /COLLATE/);
+  assert.ok(sql.includes("t.organization_id='org-primary' as is_owned,t.organization_id<>'org-primary' as is_unowned"));
+  assert.ok(sql.includes('from public.analytics_dirty_dates t where t.organization_id is not null'));
+  assert.ok(sql.includes('from q_analytics_dirty_dates where is_unowned'));
+  assert.ok(sql.includes('from q_activity_events where not coalesce(is_owned,false)'));
+  assert.ok(sql.includes("t.source_kind='audit_log' and t.source_id in ('audit_a')"));
+  assert.ok(sql.includes("t.source_kind='operational_event' and t.source_id in (select e.id from public.operational_events"));
+  assert.ok(sql.includes("e.metadata->>'mutation_id' in ('mutation_a')"));
+});
+
+test("empty protected scope retains nonmatching sentinel and full analytics preimage", () => {
+  const sql = buildProtectedRead({sessionIds:[],customerIds:[],customerNames:[],auditIds:[],mutationIds:[]});
+  assert.ok(sql.includes("t.id in ('__u1_no_owned_id__')"));
+  assert.ok(sql.includes("from q_analytics_dirty_dates where is_owned"));
+  assert.ok(sql.includes("from public.operational_mutations where status<>'committed'"));
+  assert.ok(sql.includes("from public.financial_mutations where status<>'committed'"));
+  assert.ok(sql.includes("SELECT jsonb_build_object('appState'"));
+});
+
+test('three fragments reconstruct complete protected snapshots and reject partial or mixed evidence',()=>{
+ const scope={sessionIds:[],customerIds:[],customerNames:[],auditIds:[],mutationIds:[]};
+ const plan=buildProtectedReadParts(scope),sql=renderProtectedReadParts(plan);
+ assert.equal(plan.parts.length,3);assert.equal((sql.match(/SELECT jsonb_build_object\('schema','u1-protected-fragment-v1'/g)||[]).length,3);
+ assert.equal((sql.match(/BEGIN ISOLATION/g)||[]).length,1);assert.equal((sql.match(/ROLLBACK;/g)||[]).length,1);
+ const payloads=[{appState:{data:{label:'हिन्दी 😀'}},floor:{openSessions:0}},...PROTECTED_GROUPS.map(g=>({protectedRows:{...Object.fromEntries(g.map(t=>[t,[]])),_unowned:Object.fromEntries(g.map(t=>[t,{count:0,md5:'d41d8cd98f00b204e9800998ecf8427e'}]))}}))];
+ const rows=payloads.map((payload,part)=>({schema:'u1-protected-fragment-v1',kind:'protected',part,snapshot:'10:11:',backend:123,transactionAt:'2026-11-14T00:00:00Z',payload}));
+ const bytes=r=>Buffer.from(r.map(x=>JSON.stringify(x)).join('\n')+'\n');
+ const output=JSON.parse(reassembleProtectedRead(bytes(rows)));assert.equal(output.appState.data.label,'हिन्दी 😀');assert.equal(Object.keys(output.protectedRows).length,34);
+ for(const mutate of [r=>r.pop(),r=>r.push(r[0]),r=>r.reverse(),r=>r[1].snapshot='11:12:',r=>r[1].backend++,r=>r[2].transactionAt='2026-11-14T00:00:01Z',r=>r[2].kind='authority',r=>delete r[1].payload.protectedRows.bills,r=>r[0].payload.protectedRows={},r=>r[1].payload.protectedRows.extra=[],r=>r[1].payload.protectedRows._unowned.bills.count=-1]){const changed=structuredClone(rows);mutate(changed);assert.throws(()=>reassembleProtectedRead(bytes(changed)));}
+ assert.throws(()=>reassembleProtectedRead(Buffer.from([0xc3,0x28])));
+ assert.throws(()=>reassembleProtectedRead(Buffer.alloc(32*1024*1024+1)));
 });
 
 function minimalAdapter({ directory, responseStatus = 500, onPost = () => {} }) {
