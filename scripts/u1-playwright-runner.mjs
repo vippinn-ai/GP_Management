@@ -1,4 +1,5 @@
 import { canonicalHash, verifySamples, verifyPairIdentities, reconcilePhase, reconcileProtectedRows, reconcileRun } from './u1-data-reconciler.mjs';
+import { readFailureDiagnostic } from './u1-protected-reader.mjs';
 
 export const U1_IDENTITY = Object.freeze({
   file: 'ui-read-speed-baseline-50-reload-pairs.e2e.ts', project: 'u1-baseline',
@@ -47,7 +48,12 @@ export async function runBaselinePairs(adapter, { manifest, manifestHash, discov
     'convergeAndReconcile', 'cleanupReconciledPair', 'postflight', 'record']) {
     check(typeof adapter[name] === 'function', `Missing adapter method ${name}`);
   }
-  const samples = []; const seen = new Set(); const failures = [];
+  const samples = []; const seen = new Set(); const failures = []; const failureDiagnostics = [];
+  const retainFailure = (phase, error) => {
+    const diagnostic = readFailureDiagnostic(error) ?? { code: 'U1_UNCLASSIFIED_FAILURE' };
+    failureDiagnostics.push({ phase, ...diagnostic });
+    failures.push(new Error(`U1 ${phase} failed; ${diagnostic.code}; inspect protected phase evidence`));
+  };
   const supervised = adapter.evidenceMode === 'u1-supervised-numbered-v1';
   check(adapter.evidenceMode === undefined || supervised, 'Unknown adapter evidence mode');
   let verifiedPhases = 0, compatibilityCommits = 0;
@@ -145,7 +151,7 @@ export async function runBaselinePairs(adapter, { manifest, manifestHash, discov
     verifySamples(samples);
     verifyPairIdentities(samples, approvedPairs);
   } catch (error) {
-    failures.push(new Error('U1 execution failed; inspect protected phase evidence'));
+    retainFailure('execution', error);
   } finally {
     // Read-only reconciliation of partial/ambiguous work belongs here. The adapter
     // must not resend, blindly clean up, or erase retained history in postflight.
@@ -180,8 +186,9 @@ export async function runBaselinePairs(adapter, { manifest, manifestHash, discov
           appStateHash: postflight.appStateHash, protectedRowsHash: postflight.protectedRowsHash });
       }
     }
-    catch { failures.push(new Error('U1 postflight failed')); }
-    try { await adapter.record({ phase: 'terminal', status: failures.length ? 'failed' : 'completed-unverified', samples }); }
+    catch (error) { retainFailure('postflight', error); }
+    try { await adapter.record({ phase: 'terminal', status: failures.length ? 'failed' : 'completed-unverified', samples,
+      ...(failureDiagnostics.length ? { failureDiagnostics } : {}) }); }
     catch { failures.push(new Error('U1 evidence recording failed')); }
   }
   if (failures.length) throw new AggregateError(failures, 'U1 run failed; preserve evidence, no automatic rerun');

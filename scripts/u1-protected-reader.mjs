@@ -10,6 +10,21 @@ export const PROTECTED_TABLES = Object.freeze(['inventory_categories', 'stations
   'expense_templates', 'expense_template_overrides', 'operational_events', 'activity_events', 'financial_mutations',
   'operational_mutations', 'analytics_dirty_dates']);
 const check = (ok, message) => { if (!ok) throw new Error(message); };
+const READ_CODES = Object.freeze(['U1_READ_TIMEOUT', 'U1_READ_OUTPUT_LIMIT', 'U1_READ_SQL_TIMEOUT',
+  'U1_READ_EXIT', 'U1_READ_PROCESS', 'U1_READ_STDIN', 'U1_READ_FORMAT']);
+const READ_NUMBERS = Object.freeze(['readOrdinal', 'elapsedMs', 'stdoutBytes', 'stderrBytes', 'stdoutLines']);
+// Only this fixed schema may leave the reader. Never retain raw diagnostics or credentials.
+export function readFailureDiagnostic(error) {
+  try {
+  const raw = error?.readDiagnostic;
+  const d = raw && { ...raw }; // Read fields once, then validate the copied values.
+  if (!d || !READ_CODES.includes(d.code) ||
+    Object.keys(d).sort().join(',') !== [...READ_NUMBERS, 'code', 'exitCode'].sort().join(',') ||
+    !READ_NUMBERS.every(k => Number.isSafeInteger(d[k]) && d[k] >= 0) ||
+    !(d.exitCode === null || (Number.isSafeInteger(d.exitCode) && d.exitCode >= 0 && d.exitCode <= 255))) return null;
+  return { code: d.code, ...Object.fromEntries(READ_NUMBERS.map(k => [k, d[k]])), exitCode: d.exitCode };
+  } catch { return null; }
+}
 function ids(values, max) {
   check(Array.isArray(values) && values.length <= max && new Set(values).size === values.length &&
     values.every(value => typeof value === 'string' && /^[A-Za-z0-9_-]{1,120}$/.test(value)), 'Invalid owned IDs');
@@ -101,20 +116,38 @@ export function createProtectedReader({ executable, executableSha256, scope, pas
   check(typeof sslRootCert === 'string' && fs.existsSync(sslRootCert), 'Explicit TLS trust certificate required');
   check(createHash('sha256').update(fs.readFileSync(executable)).digest('hex') === executableSha256, 'Read tool bytes changed');
   const sql = renderProtectedReadParts(buildProtectedReadParts(scope));
+  let readOrdinal = 0;
   return () => new Promise((resolve, reject) => {
+    const ordinal = ++readOrdinal, started = performance.now();
+    let outputBytes = 0, stderrBytes = 0, stdoutLines = 0, stderrTail = '', sqlTimeout = false;
+    const failure = (code, exitCode = null) => {
+      const error = new Error(code);
+      error.readDiagnostic = Object.freeze({ code, readOrdinal: ordinal,
+        elapsedMs: Math.max(0, Math.round(performance.now() - started)),
+        stdoutBytes: outputBytes, stderrBytes, stdoutLines, exitCode });
+      return error;
+    };
     const child = spawn(executable, ['-X', '-q', '-A', '-t', '-w', '-v', 'ON_ERROR_STOP=1'], {
       windowsHide: true, shell: false, stdio: ['pipe', 'pipe', 'pipe'],
       env: { SystemRoot: process.env.SystemRoot, PATH: process.env.PATH,
         PGHOST: 'db.tkbdyzxwwbhkpztgjjxh.supabase.co', PGPORT: '5432', PGDATABASE: 'postgres', PGUSER: user,
         PGPASSWORD: password, PGSSLMODE: 'verify-full', PGSSLROOTCERT: sslRootCert, PGCONNECT_TIMEOUT: '10' },
     });
-    const chunks=[]; let outputBytes=0; let failed = false;
-    const timer = setTimeout(() => { failed = true; child.kill(); }, 15000);
-    child.stdout.on('data', bytes => { outputBytes+=bytes.length; if (outputBytes > 32 * 1024 * 1024) { failed = true; child.kill(); } else if(!failed)chunks.push(Buffer.from(bytes)); });
-    child.stderr.on('data', () => { /* Raw diagnostics may contain environment details; do not publish them. */ });
-    child.on('error', () => { clearTimeout(timer); reject(new Error('Protected staging reader unavailable')); });
-    child.on('close', code => { clearTimeout(timer); if (failed || code !== 0) return reject(new Error('Protected staging read failed'));
-      try { resolve(JSON.parse(reassembleProtectedRead(Buffer.concat(chunks)))); } catch { reject(new Error('Invalid protected snapshot')); } });
-    child.stdin.on('error', () => { failed = true; }); child.stdin.end(sql);
+    const chunks=[]; let failed = null;
+    const timer = setTimeout(() => { failed ??= 'U1_READ_TIMEOUT'; child.kill(); }, 15000);
+    child.stdout.on('data', bytes => { outputBytes+=bytes.length;
+      for (let at = bytes.indexOf(10); at !== -1; at = bytes.indexOf(10, at + 1)) stdoutLines++;
+      if (outputBytes > 32 * 1024 * 1024) { failed ??= 'U1_READ_OUTPUT_LIMIT'; child.kill(); } else if(!failed)chunks.push(Buffer.from(bytes)); });
+    child.stderr.on('data', bytes => {
+      stderrBytes += bytes.length;
+      const text = stderrTail + bytes.toString('utf8');
+      sqlTimeout ||= text.includes('canceling statement due to statement timeout');
+      stderrTail = text.slice(-64); // Bounded marker carry across chunks; never serialized.
+    });
+    child.on('error', () => { clearTimeout(timer); reject(failure('U1_READ_PROCESS')); });
+    child.on('close', code => { clearTimeout(timer); stderrTail = '';
+      if (failed || code !== 0) return reject(failure(failed ?? (sqlTimeout ? 'U1_READ_SQL_TIMEOUT' : 'U1_READ_EXIT'), code));
+      try { resolve(JSON.parse(reassembleProtectedRead(Buffer.concat(chunks)))); } catch { reject(failure('U1_READ_FORMAT', code)); } });
+    child.stdin.on('error', () => { failed ??= 'U1_READ_STDIN'; }); child.stdin.end(sql);
   });
 }

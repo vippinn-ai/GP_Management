@@ -76,6 +76,30 @@ test('failure drains in-flight sibling, preserves failure and does not retry/cle
   assert.equal(events.filter(e => e.startsWith('setup:')).length, 1);
   assert.equal(events.filter(e => e.startsWith('cleanup:')).length, 0);
 });
+test('terminal retains safe original reader diagnostics even when postflight also fails', async () => {
+  const {adapter,events,options}=fake();let terminal;
+  const secret='private-password-and-SQL-never-record';
+  const error=new Error(secret);error.readDiagnostic={code:'U1_READ_SQL_TIMEOUT',readOrdinal:2,
+    elapsedMs:10170,stdoutBytes:4900345,stderrBytes:53,stdoutLines:1,exitCode:3};
+  adapter.setup=async()=>{events.push('setup:0');throw error;};
+  adapter.postflight=async()=>{events.push('postflight');throw Error(secret);};
+  adapter.record=async record=>{if(record.phase==='terminal')terminal=record;};
+  await assert.rejects(runBaselinePairs(adapter,options),e=>{
+    assert.equal(e.errors.length,2);assert.ok(e.errors[0].message.includes('U1_READ_SQL_TIMEOUT'));
+    assert.ok(!e.errors.some(x=>x.message.includes(secret)));return true;
+  });
+  assert.equal(terminal.status,'failed');assert.deepEqual(terminal.samples,[]);
+  assert.deepEqual(terminal.failureDiagnostics,[{phase:'execution',...error.readDiagnostic},
+    {phase:'postflight',code:'U1_UNCLASSIFIED_FAILURE'}]);
+  assert.ok(!JSON.stringify(terminal).includes(secret));assert.equal(events.filter(x=>x==='setup:0').length,1);
+  assert.ok(events.includes('postflight'));
+});
+test('successful terminal shape remains unchanged by diagnostic support',async()=>{
+  const {adapter,options}=fake();let terminal;
+  adapter.record=async record=>{if(record.phase==='terminal')terminal=record;};
+  await runBaselinePairs(adapter,options);
+  assert.deepEqual(Object.keys(terminal).sort(),['phase','samples','status']);
+});
 test('7000ms fails without replacing the sample', async () => {
   const { adapter, events, options } = fake(); let t = 0;
   let retained;

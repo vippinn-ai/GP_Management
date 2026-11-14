@@ -8,7 +8,7 @@ const check=(v,m)=>{if(!v)throw new Error(m);};
 const clone=v=>structuredClone(v);
 const freeze=v=>{if(v&&typeof v==='object'){Object.values(v).forEach(freeze);Object.freeze(v);}return v;};
 const providers=new WeakMap();
-const pins={'u1-command-plan.mjs':'bf42b8153fd392a331468997d2f499f0d3ab84d1cc396c97e9c5791930049f37','u1-result-expectations.mjs':'f4ad42b60031fe48842711e6daef5d8140227cbfd452f9ac33ef9213127e4cee'};
+const pins={'u1-command-plan.mjs':'c6eba04ba5b3281ffb319e96197228ee1de7f6245fe9b69c67b30b186a1f9955','u1-result-expectations.mjs':'31a22c7b3f9af96ff2967776c60890baa551d6e13b26de87d53e168494b28c30'};
 function plain(value){if(value&&typeof value==='object'){check(Array.isArray(value)||Object.getPrototypeOf(value)===Object.prototype,'Plain inputs only');for(const key of Reflect.ownKeys(value)){check(typeof key==='string','Symbol input forbidden');const d=Object.getOwnPropertyDescriptor(value,key);check('value'in d,'Getter input forbidden');plain(d.value);}}}
 function internal(provider){check(providers.has(provider),'Builder-owned expectation provider required');return providers.get(provider);}
 export function prepareRuntimeExpectations(options){
