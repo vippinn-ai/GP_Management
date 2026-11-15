@@ -24,10 +24,16 @@ test('diagnostics retain only allowlisted codes and finite numeric fields', () =
 });
 const client={spawnMs:0,stdinMs:1,firstStdoutMs:null,firstStderrMs:2,closeMs:100};
 const marker=id=>'U1_READ_PHASE_V1 '+id+'\n';
-test('execution adds only local warn commands; canonical SQL and four-part scope unchanged',()=>{
+test('execution batches only four startup statements; canonical SQL and four-part scope unchanged',()=>{
  const plan=buildProtectedReadParts({sessionIds:['session-a'],customerIds:[],auditIds:['audit-a'],mutationIds:['mutation-a'],customerNames:[]});
  const canonical=renderProtectedReadParts(plan),execution=renderProtectedReadExecution(plan);
- assert.equal(execution.replace(/^\\warn U1_READ_PHASE_V1 (?:guard|part[0-3])_(?:before|after)\n/gm,''),canonical);
+ const startup=canonical.slice(0,canonical.indexOf('DO $u1$ BEGIN\n'));
+ const wire=startup.replaceAll(';','\\;')+'\\g\n';
+ assert.ok(execution.startsWith(wire));assert.equal((wire.match(/\\;/g)||[]).length,4);
+ const stripped=execution.replace(/^\\warn U1_READ_PHASE_V1 (?:guard|part[0-3])_(?:before|after)\n/gm,'');
+ assert.equal(startup+stripped.slice(wire.length),canonical);
+ assert.equal((execution.match(/^\\g$/gm)||[]).length,1);
+ assert.throws(()=>renderProtectedReadExecution({...plan,header:plan.header.replace("lock_timeout='1s'","lock_timeout='2s'")}),/Fixed startup/);
  assert.equal((execution.match(/^\\warn /gm)||[]).length,10);assert.ok(!canonical.includes('\\warn'));
 });
 test('phase metadata retains only ordered client-observed prefix and rejects malformed diagnostics',()=>{

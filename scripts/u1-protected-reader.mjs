@@ -123,10 +123,15 @@ export function renderProtectedReadExecution(plan){
  const original=renderProtectedReadParts(plan),guard=plan.header.indexOf('DO $u1$ BEGIN\n');
  check(guard>0&&!original.includes(PHASE_PREFIX)&&!/^\s*\\/m.test(original),'Fixed execution marker boundary');
  const warn=id=>'\\warn '+PHASE_PREFIX+id+'\n';
- let output=plan.header.slice(0,guard)+warn('guard_before')+plan.header.slice(guard)+warn('guard_after'),rest=original.slice(plan.header.length);
+ // Only the fixed four startup statements share a dispatch. Guard/data queries
+ // retain their original dispatch boundaries and per-statement timeout budgets.
+ const startup="BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY;\nSET LOCAL statement_timeout='5s'; SET LOCAL lock_timeout='1s'; SET LOCAL TIME ZONE 'UTC';\n";
+ check(plan.header.slice(0,guard)===startup,'Fixed startup statements');
+ const startupWire=startup.replaceAll(';','\\;')+'\\g\n';
+ let output=startupWire+warn('guard_before')+plan.header.slice(guard)+warn('guard_after'),rest=original.slice(plan.header.length);
  for(let i=0;i<4;i++){const end=rest.indexOf(');\n')+3;check(end>=3,'Fixed statement boundary');const statement=rest.slice(0,end);check(statement.startsWith(plan.parts[i].prefix+'SELECT jsonb_build_object('),'Fixed part statement');output+=warn('part'+i+'_before')+statement+warn('part'+i+'_after');rest=rest.slice(end);}
  check(rest==='ROLLBACK;','Fixed transaction tail');output+=rest;
- let stripped=output;for(const id of READ_PHASE_MARKERS)stripped=stripped.replace(warn(id),'');check(stripped===original,'Original SQL preserved');return output;
+ let stripped=output;for(const id of READ_PHASE_MARKERS)stripped=stripped.replace(warn(id),'');check(stripped.startsWith(startupWire),'Fixed startup transport');stripped=startup+stripped.slice(startupWire.length);check(stripped===original,'Original SQL preserved');return output;
 }
 export function reassembleProtectedRead(bytes,{kind='protected'}={}) {
  check(Buffer.isBuffer(bytes)&&bytes.length>0&&bytes.length<=32*1024*1024,'Protected fragment byte bound');
