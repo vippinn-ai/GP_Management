@@ -77,10 +77,11 @@ ROLLBACK;`;
 }
 
 // Retained single-envelope reference for native equivalence checks. Execution
-// uses the three-part plan below, with the exact same per-table expressions.
+// uses the four-part plan below, with the exact same per-table expressions.
 export function buildProtectedRead(scope) { return protectedComponents(scope).sql; }
 export const PROTECTED_GROUPS=Object.freeze([
- Object.freeze(['activity_events','bill_line_discounts','bills','combo_choice_groups','combo_choice_options','combo_fixed_items','customer_tab_combo_applications','customer_tabs','financial_mutations','inventory_categories','inventory_items','sale_variants','session_combo_applications','session_items','sessions','stations','stock_movements']),
+ Object.freeze(['activity_events']),
+ Object.freeze(['bill_line_discounts','bills','combo_choice_groups','combo_choice_options','combo_fixed_items','customer_tab_combo_applications','customer_tabs','financial_mutations','inventory_categories','inventory_items','sale_variants','session_combo_applications','session_items','sessions','stations','stock_movements']),
  Object.freeze(['audit_logs','bill_discounts','bill_lines','combo_station_targets','combos','customer_tab_items','customers','expense_template_overrides','expense_templates','expenses','operational_events','operational_mutations','payments','pricing_rules','session_pause_logs','analytics_dirty_dates'])]);
 export function buildProtectedReadParts(scope) {
  const c=protectedComponents(scope),start=c.sql.indexOf('WITH q_'),floorStart=c.sql.indexOf("'floor',")+8,end=c.sql.lastIndexOf(');\nROLLBACK;');
@@ -91,21 +92,21 @@ export function buildProtectedReadParts(scope) {
  return {header:c.sql.slice(0,start),kind:'protected',parts};
 }
 export function renderProtectedReadParts(plan) {
- check(['protected','preflight','authority'].includes(plan.kind)&&plan.parts.length===3&&plan.header.startsWith('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY;'),'Fixed read plan');
+ check(['protected','preflight','authority'].includes(plan.kind)&&plan.parts.length===4&&plan.header.startsWith('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY;'),'Fixed read plan');
  return plan.header+plan.parts.map((p,i)=>p.prefix+"SELECT jsonb_build_object('schema','u1-protected-fragment-v1','kind','"+plan.kind+"','part',"+i+",'snapshot',pg_current_snapshot()::text,'backend',pg_backend_pid(),'transactionAt',transaction_timestamp(),'payload',"+p.expression+");\n").join('')+'ROLLBACK;';
 }
 export function reassembleProtectedRead(bytes,{kind='protected'}={}) {
  check(Buffer.isBuffer(bytes)&&bytes.length>0&&bytes.length<=32*1024*1024,'Protected fragment byte bound');
  check(['protected','preflight','authority'].includes(kind),'Fixed fragment kind');
- const lines=new TextDecoder('utf-8',{fatal:true}).decode(bytes).trim().split('\n');check(lines.length===3,'Exactly three fragments');
+ const lines=new TextDecoder('utf-8',{fatal:true}).decode(bytes).trim().split('\n');check(lines.length===4,'Exactly four fragments');
  const rows=lines.map(l=>JSON.parse(l)),keys=v=>Object.keys(v).sort().join(',');
  const first=rows[0];check(typeof first.snapshot==='string'&&/^\d+:\d+:(?:\d+(?:,\d+)*)?$/.test(first.snapshot)&&Number.isSafeInteger(first.backend)&&first.backend>0&&typeof first.transactionAt==='string'&&Number.isFinite(Date.parse(first.transactionAt)),'Snapshot identity');
- for(let i=0;i<3;i++){const r=rows[i];check(r&&keys(r)==='backend,kind,part,payload,schema,snapshot,transactionAt'&&r.schema==='u1-protected-fragment-v1'&&r.kind===kind&&r.part===i&&r.snapshot===first.snapshot&&r.backend===first.backend&&r.transactionAt===first.transactionAt,'Fragment order/snapshot mismatch');check(r.payload&&typeof r.payload==='object'&&!Array.isArray(r.payload),'Object payload');}
+ for(let i=0;i<4;i++){const r=rows[i];check(r&&keys(r)==='backend,kind,part,payload,schema,snapshot,transactionAt'&&r.schema==='u1-protected-fragment-v1'&&r.kind===kind&&r.part===i&&r.snapshot===first.snapshot&&r.backend===first.backend&&r.transactionAt===first.transactionAt,'Fragment order/snapshot mismatch');check(r.payload&&typeof r.payload==='object'&&!Array.isArray(r.payload),'Object payload');}
  const output=first.payload,target=kind==='authority'?output.preflight:output;
  check(target&&typeof target==='object'&&!Array.isArray(target)&&!Object.hasOwn(target,'protectedRows'),'First payload cannot supply partial tables');
  if(kind==='protected')check(keys(target)==='appState,floor','Exact protected first payload');
  const protectedRows={_unowned:{}};
- for(let i=1;i<3;i++){const p=rows[i].payload,group=PROTECTED_GROUPS[i-1];check(keys(p)==='protectedRows'&&p.protectedRows&&keys(p.protectedRows)===[...group,'_unowned'].sort().join(',')&&keys(p.protectedRows._unowned)===group.slice().sort().join(','),'Exact fragment table coverage');for(const t of group){check(Array.isArray(p.protectedRows[t]),'Owned row array');const u=p.protectedRows._unowned[t];check(u&&keys(u)==='count,md5'&&Number.isSafeInteger(u.count)&&u.count>=0&&/^[a-f0-9]{32}$/.test(u.md5),'Unowned fingerprint');protectedRows[t]=p.protectedRows[t];protectedRows._unowned[t]=u;}}
+ for(let i=1;i<4;i++){const p=rows[i].payload,group=PROTECTED_GROUPS[i-1];check(keys(p)==='protectedRows'&&p.protectedRows&&keys(p.protectedRows)===[...group,'_unowned'].sort().join(',')&&keys(p.protectedRows._unowned)===group.slice().sort().join(','),'Exact fragment table coverage');for(const t of group){check(Array.isArray(p.protectedRows[t]),'Owned row array');const u=p.protectedRows._unowned[t];check(u&&keys(u)==='count,md5'&&Number.isSafeInteger(u.count)&&u.count>=0&&/^[a-f0-9]{32}$/.test(u.md5),'Unowned fingerprint');protectedRows[t]=p.protectedRows[t];protectedRows._unowned[t]=u;}}
  target.protectedRows=protectedRows;const result=Buffer.from(JSON.stringify(output)+'\n');check(result.length<=32*1024*1024,'Reconstructed capture byte bound');return result;
 }
 

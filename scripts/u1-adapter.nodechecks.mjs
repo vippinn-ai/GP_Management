@@ -182,16 +182,30 @@ test("empty protected scope retains nonmatching sentinel and full analytics prei
   assert.ok(sql.includes("SELECT jsonb_build_object('appState'"));
 });
 
-test('three fragments reconstruct complete protected snapshots and reject partial or mixed evidence',()=>{
+test('four-part boundaries preserve every original per-table SQL expression exactly',()=>{
+ const scope={sessionIds:['owned-session'],customerIds:['owned-customer'],customerNames:['owned-name'],auditIds:['owned-audit'],mutationIds:['owned-mutation']};
+ const original=buildProtectedRead(scope),plan=buildProtectedReadParts(scope),ctes=[];
+ const tablePairs=(text,tables)=>{let offset=0;return tables.map((t,i)=>{const key="'"+t+"',";assert.ok(text.startsWith(key,offset));const end=i+1===tables.length?text.length:text.indexOf(",'"+tables[i+1]+"',",offset+key.length);assert.ok(end>offset);const pair=text.slice(offset,end);offset=end+1;return pair;});};
+ for(const p of plan.parts.slice(1)){
+  const rows=p.prefix.slice(5,-1).split(/,\n(?=q_)/);assert.equal(rows.length,p.tables.length);for(const c of rows){assert.ok(original.includes(c));ctes.push(c.slice(0,c.indexOf(' AS ')));}
+  const begin="jsonb_build_object('protectedRows',jsonb_build_object(",middle=",'_unowned',jsonb_build_object(";assert.ok(p.expression.startsWith(begin)&&p.expression.endsWith(')))'));const at=p.expression.indexOf(middle);
+  for(const pair of [...tablePairs(p.expression.slice(begin.length,at),p.tables),...tablePairs(p.expression.slice(at+middle.length,-3),p.tables)])assert.ok(original.includes(pair));
+ }
+ assert.equal(ctes.length,33);assert.equal(new Set(ctes).size,33);assert.deepEqual([...ctes].sort(),PROTECTED_TABLES.map(t=>'q_'+t).sort());assert.ok(original.startsWith(plan.header));
+});
+
+test('four fragments reconstruct complete protected snapshots and reject partial or mixed evidence',()=>{
  const scope={sessionIds:[],customerIds:[],customerNames:[],auditIds:[],mutationIds:[]};
  const plan=buildProtectedReadParts(scope),sql=renderProtectedReadParts(plan);
- assert.equal(plan.parts.length,3);assert.equal((sql.match(/SELECT jsonb_build_object\('schema','u1-protected-fragment-v1'/g)||[]).length,3);
+ assert.equal(plan.parts.length,4);assert.equal((sql.match(/SELECT jsonb_build_object\('schema','u1-protected-fragment-v1'/g)||[]).length,4);
+ assert.deepEqual(PROTECTED_GROUPS.map(g=>g.length),[1,16,16]);assert.deepEqual(PROTECTED_GROUPS[0],['activity_events']);
  assert.equal((sql.match(/BEGIN ISOLATION/g)||[]).length,1);assert.equal((sql.match(/ROLLBACK;/g)||[]).length,1);
  const payloads=[{appState:{data:{label:'हिन्दी 😀'}},floor:{openSessions:0}},...PROTECTED_GROUPS.map(g=>({protectedRows:{...Object.fromEntries(g.map(t=>[t,[]])),_unowned:Object.fromEntries(g.map(t=>[t,{count:0,md5:'d41d8cd98f00b204e9800998ecf8427e'}]))}}))];
  const rows=payloads.map((payload,part)=>({schema:'u1-protected-fragment-v1',kind:'protected',part,snapshot:'10:11:',backend:123,transactionAt:'2026-11-14T00:00:00Z',payload}));
  const bytes=r=>Buffer.from(r.map(x=>JSON.stringify(x)).join('\n')+'\n');
  const output=JSON.parse(reassembleProtectedRead(bytes(rows)));assert.equal(output.appState.data.label,'हिन्दी 😀');assert.equal(Object.keys(output.protectedRows).length,34);
- for(const mutate of [r=>r.pop(),r=>r.push(r[0]),r=>r.reverse(),r=>r[1].snapshot='11:12:',r=>r[1].backend++,r=>r[2].transactionAt='2026-11-14T00:00:01Z',r=>r[2].kind='authority',r=>delete r[1].payload.protectedRows.bills,r=>r[0].payload.protectedRows={},r=>r[1].payload.protectedRows.extra=[],r=>r[1].payload.protectedRows._unowned.bills.count=-1]){const changed=structuredClone(rows);mutate(changed);assert.throws(()=>reassembleProtectedRead(bytes(changed)));}
+ for(const mutate of [r=>r.pop(),r=>r.push(r[0]),r=>r.reverse(),r=>r[1].snapshot='11:12:',r=>r[1].backend++,r=>r[2].transactionAt='2026-11-14T00:00:01Z',r=>r[2].kind='authority',r=>delete r[2].payload.protectedRows.bills,r=>r[0].payload.protectedRows={},r=>r[1].payload.protectedRows.extra=[],r=>r[2].payload.protectedRows._unowned.bills.count=-1,r=>r[2].payload.protectedRows.activity_events=[],r=>r[1].payload.protectedRows.activity_events=null,r=>r[3].extra=true]){const changed=structuredClone(rows);mutate(changed);assert.throws(()=>reassembleProtectedRead(bytes(changed)));}
+ for(const kind of ['preflight','authority']){const other=structuredClone(rows);for(const r of other)r.kind=kind;const first={...other[0].payload,runId:'fixed-test',capturedAt:'2026-11-14T00:00:00Z'};other[0].payload=kind==='authority'?{preflight:first,actors:{A:{id:'a'}}}:first;const rebuilt=JSON.parse(reassembleProtectedRead(bytes(other),{kind}));assert.deepEqual(kind==='authority'?rebuilt.preflight.protectedRows:rebuilt.protectedRows,output.protectedRows);assert.equal((kind==='authority'?rebuilt.preflight:rebuilt).runId,'fixed-test');}
  assert.throws(()=>reassembleProtectedRead(Buffer.from([0xc3,0x28])));
  assert.throws(()=>reassembleProtectedRead(Buffer.alloc(32*1024*1024+1)));
 });
