@@ -7,7 +7,7 @@ import cp from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
 import { EventEmitter } from 'node:events';
 import { createHash } from 'node:crypto';
-import { createProtectedReader, readFailureDiagnostic, PROTECTED_GROUPS, READ_PHASE_MARKERS, createReadPhaseObserver, buildProtectedReadParts, renderProtectedReadParts, renderProtectedReadExecution } from './u1-protected-reader.mjs';
+import { createProtectedReader, readFailureDiagnostic, PROTECTED_GROUPS, READ_PHASE_MARKERS, READ_BATCH_MARKERS, createReadPhaseObserver, buildProtectedReadParts, renderProtectedReadParts, renderProtectedReadExecution } from './u1-protected-reader.mjs';
 
 const secret = 'synthetic-private-diagnostic-never-persist';
 const metric = { code: 'U1_READ_SQL_TIMEOUT', readOrdinal: 1, elapsedMs: 100,
@@ -79,7 +79,7 @@ test('actual reader reports bounded failure categories without raw diagnostics o
           if(mode==='combined-output'){child.stdout.emit('data',Buffer.alloc(32*1024*1024));child.stderr.emit('data',Buffer.from('x'));child.emit('close',null);return;}
           if(mode==='sql-timeout'){
             child.stdout.emit('data',Buffer.from('one\n'));
-            for(const b of Buffer.from(READ_PHASE_MARKERS.slice(0,5).map(marker).join('')))child.stderr.emit('data',Buffer.from([b]));
+            for(const b of Buffer.from(READ_BATCH_MARKERS.slice(0,3).map(marker).join('')))child.stderr.emit('data',Buffer.from([b]));
             child.stderr.emit('data',Buffer.from(secret+' canceling statement due to state'));
             child.stderr.emit('data',Buffer.from('ment timeout '+secret));child.emit('close',3);return;
           }
@@ -96,7 +96,7 @@ test('actual reader reports bounded failure categories without raw diagnostics o
         for(let ordinal=1;ordinal<=2;ordinal++)await assert.rejects(read(),error=>{
           const d=readFailureDiagnostic(error);assert.ok(d);assert.equal(d.code,expected);assert.equal(d.readOrdinal,ordinal);
           assert.ok(!JSON.stringify(error).includes(secret));assert.ok(!error.message.includes(secret));
-          if(mode==='sql-timeout'){assert.equal(d.stdoutLines,1);assert.equal(d.phases.markers.at(-1).stage,'part1_before');assert.equal(d.phases.complete,false);}return true;
+          if(mode==='sql-timeout'){assert.equal(d.stdoutLines,1);assert.equal(d.phases.markers.at(-1).stage,'data_batch_before');assert.equal(d.phases.complete,false);}return true;
         });
       }
       assert.equal(calls,mode==='success'?1:2); // Explicit independent calls only; the reader never retries.

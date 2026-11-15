@@ -15,27 +15,31 @@ const READ_CODES = Object.freeze(['U1_READ_TIMEOUT', 'U1_READ_OUTPUT_LIMIT', 'U1
   'U1_READ_EXIT', 'U1_READ_PROCESS', 'U1_READ_STDIN', 'U1_READ_FORMAT']);
 const READ_NUMBERS = Object.freeze(['readOrdinal', 'elapsedMs', 'stdoutBytes', 'stderrBytes', 'stdoutLines']);
 export const READ_PHASE_MARKERS=Object.freeze(['guard','part0','part1','part2','part3'].flatMap(s=>[s+'_before',s+'_after']));
+export const READ_BATCH_MARKERS=Object.freeze(['guard_before','guard_after','data_batch_before','data_batch_after']);
 const PHASE_PREFIX='U1_READ_PHASE_V1 ';
 const CLIENT_MARKS=['spawnMs','stdinMs','firstStdoutMs','firstStderrMs','closeMs'];
 function safePhases(raw){
  const p={...raw};check(Object.keys(p).sort().join(',')===[...CLIENT_MARKS,'valid','complete','markers'].sort().join(','),'Phase keys');
  check(typeof p.valid==='boolean'&&typeof p.complete==='boolean'&&Array.isArray(p.markers)&&p.markers.length<=10,'Phase shape');
  check(CLIENT_MARKS.every(k=>p[k]===null||(Number.isSafeInteger(p[k])&&p[k]>=0)),'Client timestamps');
- let last=0;const markers=p.markers.map((v,i)=>{const m={...v};check(Object.keys(m).sort().join(',')==='elapsedMs,stage'&&m.stage===READ_PHASE_MARKERS[i]&&Number.isSafeInteger(m.elapsedMs)&&m.elapsedMs>=last,'Ordered phase prefix');last=m.elapsedMs;return {stage:m.stage,elapsedMs:m.elapsedMs};});
- check((p.valid||markers.length===0)&&p.complete===(p.valid&&markers.length===10),'Phase completeness');
+ const sequence=p.markers[2]?.stage==='data_batch_before'?READ_BATCH_MARKERS:READ_PHASE_MARKERS;
+ let last=0;const markers=p.markers.map((v,i)=>{const m={...v};check(Object.keys(m).sort().join(',')==='elapsedMs,stage'&&m.stage===sequence[i]&&Number.isSafeInteger(m.elapsedMs)&&m.elapsedMs>=last,'Ordered phase prefix');last=m.elapsedMs;return {stage:m.stage,elapsedMs:m.elapsedMs};});
+ check((p.valid||markers.length===0)&&p.complete===(p.valid&&markers.length===sequence.length),'Phase completeness');
  return {valid:p.valid,complete:p.complete,markers,...Object.fromEntries(CLIENT_MARKS.map(k=>[k,p[k]]))};
 }
 // Client arrival times only: psql-local markers add no server statements.
 // Unknown stderr is withheld; malformed markers invalidate only phase metadata.
-export function createReadPhaseObserver(){
+export function createReadPhaseObserver(){return phaseObserver(READ_PHASE_MARKERS);}
+export function createReadBatchObserver(){return phaseObserver(READ_BATCH_MARKERS);}
+function phaseObserver(sequence){
  let pending=Buffer.alloc(0),bytes=0,valid=true,last=0;const markers=[];
  function line(b,elapsedMs){let s;try{s=new TextDecoder('utf-8',{fatal:true}).decode(b).replace(/\r$/,'');}catch{valid=false;return;}
   if(!s.startsWith(PHASE_PREFIX)){if(s.includes('U1_READ_PHASE'))valid=false;return;}
-  const stage=s.slice(PHASE_PREFIX.length);if(stage!==READ_PHASE_MARKERS[markers.length]||!Number.isSafeInteger(elapsedMs)||elapsedMs<last){valid=false;return;}
+  const stage=s.slice(PHASE_PREFIX.length);if(stage!==sequence[markers.length]||!Number.isSafeInteger(elapsedMs)||elapsedMs<last){valid=false;return;}
   last=elapsedMs;markers.push({stage,elapsedMs});
  }
  return {consume(chunk,elapsedMs){bytes+=chunk.length;if(bytes>32768){valid=false;pending=Buffer.alloc(0);return;}pending=Buffer.concat([pending,chunk]);let at;while((at=pending.indexOf(10))>=0){line(pending.subarray(0,at),elapsedMs);pending=pending.subarray(at+1);}},
-  finish(client){if(pending.length){try{if(new TextDecoder('utf-8',{fatal:true}).decode(pending).includes('U1_READ_PHASE'))valid=false;}catch{valid=false;}pending=Buffer.alloc(0);}return safePhases({valid,complete:valid&&markers.length===10,markers:valid?markers:[],...client});}};
+  finish(client){if(pending.length){try{if(new TextDecoder('utf-8',{fatal:true}).decode(pending).includes('U1_READ_PHASE'))valid=false;}catch{valid=false;}pending=Buffer.alloc(0);}return safePhases({valid,complete:valid&&markers.length===sequence.length,markers:valid?markers:[],...client});}};
 }
 // Only this fixed schema may leave the reader. Never retain raw diagnostics or credentials.
 export function readFailureDiagnostic(error) {
@@ -152,6 +156,30 @@ export function reassembleProtectedRead(bytes,{kind='protected'}={}) {
 // Runtime protected reads alone split the stable state/floor fragment into two
 // lossless character pieces. Authority/preflight can contain volatile capture
 // timestamps and must continue using the canonical four-fragment protocol.
+// Strict lexer reused from native-proven fixed psql transport.
+const MAX=33554432,SUFFIX='\n\\g\n';
+function batchTransform(text,decode){let i=0,out='',state='normal',tag='',depth=0,escaped=false,semicolons=0;
+ while(i<text.length){const c=text[i],next=text[i+1];
+  if(state==='line'){out+=c;i++;if(c==='\n')state='normal';continue;}
+  if(state==='block'){if(c==='/'&&next==='*'){depth++;out+='/*';i+=2;}else if(c==='*'&&next==='/'){depth--;out+='*/';i+=2;if(!depth)state='normal';}else{out+=c;i++;}continue;}
+  if(state==='dollar'){if(text.startsWith(tag,i)){out+=tag;i+=tag.length;state='normal';}else{out+=c;i++;}continue;}
+  if(state==='single'||state==='double'){const quote=state==='single'?"'":'"';out+=c;i++;if(state==='single'&&escaped&&c==='\\'){assert.ok(i<text.length,'Unclosed escape');out+=text[i++];}else if(c===quote){if(text[i]===quote)out+=text[i++];else state='normal';}continue;}
+  if(c==='-'&&next==='-'){state='line';out+='--';i+=2;continue;}
+  if(c==='/'&&next==='*'){state='block';depth=1;out+='/*';i+=2;continue;}
+  if(c==='"'){state='double';out+=c;i++;continue;}
+  if(c==="'"){escaped=i>0&&/[eE]/.test(text[i-1])&&(i<2||!/[A-Za-z0-9_$]/.test(text[i-2]));state='single';out+=c;i++;continue;}
+  if(c==='$'){const m=/^\$(?:[A-Za-z_][A-Za-z_0-9]*)?\$/.exec(text.slice(i));assert.ok(m,'Unsupported dollar token');tag=m[0];state='dollar';out+=tag;i+=tag.length;continue;}
+  if(c===':'){assert.equal(next,':','Client variable syntax prohibited');out+='::';i+=2;continue;}
+  if(c==='\\'){assert.ok(decode&&next===';','Client command or unsupported backslash');out+=';';i+=2;semicolons++;continue;}
+  if(c===';'){assert.ok(!decode,'Unescaped dispatch semicolon');out+='\\;';i++;semicolons++;continue;}
+  out+=c;i++;
+ }
+ assert.ok(state==='normal'||state==='line','Unclosed SQL lexical state');assert.ok(semicolons>0,'No complete SQL statements');return out;
+}
+function batchString(bytes){assert.ok(Buffer.isBuffer(bytes)&&bytes.length>0&&bytes.length<=MAX);const s=new TextDecoder('utf-8',{fatal:true}).decode(bytes);assert.ok(Buffer.from(s).equals(bytes)&&!s.includes('\0'));return s;}
+export function wrapProtectedDataDispatch(sql){const out=Buffer.from(batchTransform(batchString(sql),false)+SUFFIX);assert.ok(out.length<=MAX);return out;}
+export function unwrapProtectedDataDispatch(wire){const s=batchString(wire);assert.ok(s.endsWith(SUFFIX),'Missing unique final dispatch');const raw=Buffer.from(batchTransform(s.slice(0,-SUFFIX.length),true));assert.ok(wrapProtectedDataDispatch(raw).equals(wire));return raw;}
+
 function statePieceSelect(expression,piece){
  const start=piece===0?'1':'((total_chars+1)/2)+1',count=piece===0?'(total_chars+1)/2':'total_chars-((total_chars+1)/2)';
  return "WITH state_text AS MATERIALIZED (SELECT ("+expression+")::text AS txt), state_size AS MATERIALIZED (SELECT txt,char_length(txt) AS total_chars,octet_length(txt) AS total_bytes,encode(sha256(convert_to(txt,'UTF8')),'hex') AS digest FROM state_text) SELECT jsonb_build_object('schema','u1-state-piece-v1','kind','protected','part',0,'piece',"+piece+",'fromChar',"+start+",'chars',"+count+",'totalChars',total_chars,'totalBytes',total_bytes,'sha256',digest,'snapshot',pg_current_snapshot()::text,'backend',pg_backend_pid(),'transactionAt',transaction_timestamp())::text || E'\\t' || substring(txt FROM "+start+" FOR "+count+") FROM state_size;\n";
@@ -164,7 +192,11 @@ export function renderProtectedReadRuntime(scope){
  check(first.startsWith('SELECT jsonb_build_object(')&&expression.endsWith(')')&&!expression.includes('clock_timestamp'),'Stable protected expression');
  const execution=renderProtectedReadExecution(plan),pieces=statePieceSelect(expression,0)+statePieceSelect(expression,1);
  check(execution.split(first).length===2,'Unique state statement');
- const output=execution.replace(first,pieces);check(output.replace(pieces,first)===execution,'Only state transport changes');return output;
+ const output=execution.replace(first,pieces);check(output.replace(pieces,first)===execution,'Only state transport changes');
+ const before='\\warn '+PHASE_PREFIX+'part0_before\n',after='\\warn '+PHASE_PREFIX+'part3_after\n',begin=output.indexOf(before),finish=output.indexOf(after)+after.length;
+ check(begin>0&&finish>begin,'Fixed data batch boundary');const marked=output.slice(begin,finish),data=marked.replace(/^\\warn U1_READ_PHASE_V1 part[0-3]_(?:before|after)\n/gm,'');
+ check(!/statement_timestamp\s*\(/i.test(data),'No statement-start-dependent expressions');const wire=wrapProtectedDataDispatch(Buffer.from(data));check(unwrapProtectedDataDispatch(wire).equals(Buffer.from(data)),'Exact data SQL reversal');
+ return output.slice(0,begin)+'\\warn '+PHASE_PREFIX+'data_batch_before\n'+wire.toString()+'\\warn '+PHASE_PREFIX+'data_batch_after\n'+output.slice(finish);
 }
 function codepoints(text){let count=0;for(const character of text)count++;return count;}
 export function reassembleProtectedRuntime(bytes){
@@ -196,7 +228,7 @@ export function createProtectedReader({ executable, executableSha256, scope, pas
   let readOrdinal = 0;
   return () => new Promise((resolve, reject) => {
     const ordinal = ++readOrdinal, started = performance.now();
-    const phases=createReadPhaseObserver(),client={spawnMs:0,stdinMs:null,firstStdoutMs:null,firstStderrMs:null,closeMs:null};
+    const phases=createReadBatchObserver(),client={spawnMs:0,stdinMs:null,firstStdoutMs:null,firstStderrMs:null,closeMs:null};
     const elapsed=()=>Math.max(0,Math.round(performance.now()-started));
     let outputBytes = 0, stderrBytes = 0, stdoutLines = 0, stderrTail = '', sqlTimeout = false;
     const failure = (code, exitCode = null) => {

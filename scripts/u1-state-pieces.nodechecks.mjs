@@ -1,15 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
-import {PROTECTED_GROUPS,buildProtectedReadParts,renderProtectedReadParts,renderProtectedReadExecution,renderProtectedReadRuntime,reassembleProtectedRead,reassembleProtectedRuntime} from './u1-protected-reader.mjs';
+import {PROTECTED_GROUPS,buildProtectedReadParts,renderProtectedReadParts,renderProtectedReadExecution,renderProtectedReadRuntime,reassembleProtectedRead,reassembleProtectedRuntime,unwrapProtectedDataDispatch} from './u1-protected-reader.mjs';
 const scope={sessionIds:['session-a'],customerIds:[],auditIds:[],mutationIds:[],customerNames:[]};
 function original(value){const identity={schema:'u1-protected-fragment-v1',kind:'protected',snapshot:'1:2:',backend:42,transactionAt:'2026-11-16T00:00:00Z'};return [{...identity,part:0,payload:{appState:value,floor:{openSessions:0}}},...PROTECTED_GROUPS.map((g,i)=>({...identity,part:i+1,payload:{protectedRows:{...Object.fromEntries(g.map(t=>[t,[]])),_unowned:Object.fromEntries(g.map(t=>[t,{count:0,md5:'0'.repeat(32)}]))}}}))].map(JSON.stringify).join('\n')+'\n';}
 function frame(raw){const lines=raw.trimEnd().split('\n'),text=lines[0],v=JSON.parse(text);let total=0;for(const c of text)total++;const half=Math.ceil(total/2);let offset=0,n=0;for(const c of text){if(n++===half)break;offset+=c.length;}return [text.slice(0,offset),text.slice(offset)].map((p,i)=>JSON.stringify({schema:'u1-state-piece-v1',kind:'protected',part:0,piece:i,fromChar:i?half+1:1,chars:i?total-half:half,totalChars:total,totalBytes:Buffer.byteLength(text),sha256:createHash('sha256').update(text).digest('hex'),snapshot:v.snapshot,backend:v.backend,transactionAt:v.transactionAt})+'\t'+p).concat(lines.slice(1));}
 const bytes=lines=>Buffer.from(lines.join('\n')+'\n');
-test('protected runtime changes only state SELECT; canonical authority/preflight transport stays four parts',()=>{
+test('protected runtime batches five unchanged statements; canonical admission stays four parts',()=>{
  const plan=buildProtectedReadParts(scope),canonical=renderProtectedReadParts(plan),execution=renderProtectedReadExecution(plan),runtime=renderProtectedReadRuntime(scope);
- const before='\\warn U1_READ_PHASE_V1 part0_before\n',after='\\warn U1_READ_PHASE_V1 part0_after\n',a=execution.indexOf(before)+before.length,b=execution.indexOf(after),c=runtime.indexOf(after);
- assert.equal(runtime.slice(0,a),execution.slice(0,a));assert.equal(runtime.slice(c),execution.slice(b));assert.equal((runtime.slice(a,c).match(/WITH state_text AS MATERIALIZED/g)||[]).length,2);assert.ok(!canonical.includes('state_text'));assert.equal((runtime.match(/^\\warn /gm)||[]).length,10);assert.equal((runtime.match(/^\\g$/gm)||[]).length,1);
+ const before='\\warn U1_READ_PHASE_V1 data_batch_before\n',after='\\warn U1_READ_PHASE_V1 data_batch_after\n',wire=runtime.split(before)[1].split(after)[0],data=unwrapProtectedDataDispatch(Buffer.from(wire)).toString();
+ assert.equal(runtime.split(before)[0],execution.split('\\warn U1_READ_PHASE_V1 part0_before\n')[0]);assert.equal(runtime.split(after)[1],execution.split('\\warn U1_READ_PHASE_V1 part3_after\n')[1]);
+ const rest=execution.split('\\warn U1_READ_PHASE_V1 part0_after\n')[1].split('\\warn U1_READ_PHASE_V1 part3_after\n')[0].replace(/^\\warn U1_READ_PHASE_V1 part[1-3]_(?:before|after)\n/gm,'');
+ assert.ok(data.endsWith(rest));assert.equal((data.match(/WITH state_text AS MATERIALIZED/g)||[]).length,2);assert.ok(!canonical.includes('state_text'));assert.equal((runtime.match(/^\\warn /gm)||[]).length,4);assert.equal((runtime.match(/^\\g$/gm)||[]).length,2);
  for(const kind of ['authority','preflight']){assert.throws(()=>renderProtectedReadRuntime({...scope,kind}));const alternate=renderProtectedReadParts({...plan,kind});assert.equal((alternate.match(/SELECT jsonb_build_object/g)||[]).length,4);assert.ok(!alternate.includes('u1-state-piece-v1'));}
 });
 test('five records reconstruct exact canonical full33 output including Unicode midpoint, escapes, nested/null/empty',()=>{
