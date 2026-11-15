@@ -13,16 +13,40 @@ const check = (ok, message) => { if (!ok) throw new Error(message); };
 const READ_CODES = Object.freeze(['U1_READ_TIMEOUT', 'U1_READ_OUTPUT_LIMIT', 'U1_READ_SQL_TIMEOUT',
   'U1_READ_EXIT', 'U1_READ_PROCESS', 'U1_READ_STDIN', 'U1_READ_FORMAT']);
 const READ_NUMBERS = Object.freeze(['readOrdinal', 'elapsedMs', 'stdoutBytes', 'stderrBytes', 'stdoutLines']);
+export const READ_PHASE_MARKERS=Object.freeze(['guard','part0','part1','part2','part3'].flatMap(s=>[s+'_before',s+'_after']));
+const PHASE_PREFIX='U1_READ_PHASE_V1 ';
+const CLIENT_MARKS=['spawnMs','stdinMs','firstStdoutMs','firstStderrMs','closeMs'];
+function safePhases(raw){
+ const p={...raw};check(Object.keys(p).sort().join(',')===[...CLIENT_MARKS,'valid','complete','markers'].sort().join(','),'Phase keys');
+ check(typeof p.valid==='boolean'&&typeof p.complete==='boolean'&&Array.isArray(p.markers)&&p.markers.length<=10,'Phase shape');
+ check(CLIENT_MARKS.every(k=>p[k]===null||(Number.isSafeInteger(p[k])&&p[k]>=0)),'Client timestamps');
+ let last=0;const markers=p.markers.map((v,i)=>{const m={...v};check(Object.keys(m).sort().join(',')==='elapsedMs,stage'&&m.stage===READ_PHASE_MARKERS[i]&&Number.isSafeInteger(m.elapsedMs)&&m.elapsedMs>=last,'Ordered phase prefix');last=m.elapsedMs;return {stage:m.stage,elapsedMs:m.elapsedMs};});
+ check((p.valid||markers.length===0)&&p.complete===(p.valid&&markers.length===10),'Phase completeness');
+ return {valid:p.valid,complete:p.complete,markers,...Object.fromEntries(CLIENT_MARKS.map(k=>[k,p[k]]))};
+}
+// Client arrival times only: psql-local markers add no server statements.
+// Unknown stderr is withheld; malformed markers invalidate only phase metadata.
+export function createReadPhaseObserver(){
+ let pending=Buffer.alloc(0),bytes=0,valid=true,last=0;const markers=[];
+ function line(b,elapsedMs){let s;try{s=new TextDecoder('utf-8',{fatal:true}).decode(b).replace(/\r$/,'');}catch{valid=false;return;}
+  if(!s.startsWith(PHASE_PREFIX)){if(s.includes('U1_READ_PHASE'))valid=false;return;}
+  const stage=s.slice(PHASE_PREFIX.length);if(stage!==READ_PHASE_MARKERS[markers.length]||!Number.isSafeInteger(elapsedMs)||elapsedMs<last){valid=false;return;}
+  last=elapsedMs;markers.push({stage,elapsedMs});
+ }
+ return {consume(chunk,elapsedMs){bytes+=chunk.length;if(bytes>32768){valid=false;pending=Buffer.alloc(0);return;}pending=Buffer.concat([pending,chunk]);let at;while((at=pending.indexOf(10))>=0){line(pending.subarray(0,at),elapsedMs);pending=pending.subarray(at+1);}},
+  finish(client){if(pending.length){try{if(new TextDecoder('utf-8',{fatal:true}).decode(pending).includes('U1_READ_PHASE'))valid=false;}catch{valid=false;}pending=Buffer.alloc(0);}return safePhases({valid,complete:valid&&markers.length===10,markers:valid?markers:[],...client});}};
+}
 // Only this fixed schema may leave the reader. Never retain raw diagnostics or credentials.
 export function readFailureDiagnostic(error) {
   try {
   const raw = error?.readDiagnostic;
   const d = raw && { ...raw }; // Read fields once, then validate the copied values.
   if (!d || !READ_CODES.includes(d.code) ||
-    Object.keys(d).sort().join(',') !== [...READ_NUMBERS, 'code', 'exitCode'].sort().join(',') ||
+    Object.keys(d).sort().join(',') !== [...READ_NUMBERS, 'code', 'exitCode',...(Object.hasOwn(d,'phases')?['phases']:[])].sort().join(',') ||
     !READ_NUMBERS.every(k => Number.isSafeInteger(d[k]) && d[k] >= 0) ||
     !(d.exitCode === null || (Number.isSafeInteger(d.exitCode) && d.exitCode >= 0 && d.exitCode <= 255))) return null;
-  return { code: d.code, ...Object.fromEntries(READ_NUMBERS.map(k => [k, d[k]])), exitCode: d.exitCode };
+  return { code: d.code, ...Object.fromEntries(READ_NUMBERS.map(k => [k, d[k]])), exitCode: d.exitCode,
+    ...(Object.hasOwn(d,'phases')?{phases:safePhases(d.phases)}:{}) };
   } catch { return null; }
 }
 function ids(values, max) {
@@ -95,6 +119,15 @@ export function renderProtectedReadParts(plan) {
  check(['protected','preflight','authority'].includes(plan.kind)&&plan.parts.length===4&&plan.header.startsWith('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY;'),'Fixed read plan');
  return plan.header+plan.parts.map((p,i)=>p.prefix+"SELECT jsonb_build_object('schema','u1-protected-fragment-v1','kind','"+plan.kind+"','part',"+i+",'snapshot',pg_current_snapshot()::text,'backend',pg_backend_pid(),'transactionAt',transaction_timestamp(),'payload',"+p.expression+");\n").join('')+'ROLLBACK;';
 }
+export function renderProtectedReadExecution(plan){
+ const original=renderProtectedReadParts(plan),guard=plan.header.indexOf('DO $u1$ BEGIN\n');
+ check(guard>0&&!original.includes(PHASE_PREFIX)&&!/^\s*\\/m.test(original),'Fixed execution marker boundary');
+ const warn=id=>'\\warn '+PHASE_PREFIX+id+'\n';
+ let output=plan.header.slice(0,guard)+warn('guard_before')+plan.header.slice(guard)+warn('guard_after'),rest=original.slice(plan.header.length);
+ for(let i=0;i<4;i++){const end=rest.indexOf(');\n')+3;check(end>=3,'Fixed statement boundary');const statement=rest.slice(0,end);check(statement.startsWith(plan.parts[i].prefix+'SELECT jsonb_build_object('),'Fixed part statement');output+=warn('part'+i+'_before')+statement+warn('part'+i+'_after');rest=rest.slice(end);}
+ check(rest==='ROLLBACK;','Fixed transaction tail');output+=rest;
+ let stripped=output;for(const id of READ_PHASE_MARKERS)stripped=stripped.replace(warn(id),'');check(stripped===original,'Original SQL preserved');return output;
+}
 export function reassembleProtectedRead(bytes,{kind='protected'}={}) {
  check(Buffer.isBuffer(bytes)&&bytes.length>0&&bytes.length<=32*1024*1024,'Protected fragment byte bound');
  check(['protected','preflight','authority'].includes(kind),'Fixed fragment kind');
@@ -116,16 +149,18 @@ export function createProtectedReader({ executable, executableSha256, scope, pas
   check(typeof password === 'string' && password && typeof user === 'string' && /^[A-Za-z0-9_]+$/.test(user), 'Missing explicit staging read credentials');
   check(typeof sslRootCert === 'string' && fs.existsSync(sslRootCert), 'Explicit TLS trust certificate required');
   check(createHash('sha256').update(fs.readFileSync(executable)).digest('hex') === executableSha256, 'Read tool bytes changed');
-  const sql = renderProtectedReadParts(buildProtectedReadParts(scope));
+  const sql = renderProtectedReadExecution(buildProtectedReadParts(scope));
   let readOrdinal = 0;
   return () => new Promise((resolve, reject) => {
     const ordinal = ++readOrdinal, started = performance.now();
+    const phases=createReadPhaseObserver(),client={spawnMs:0,stdinMs:null,firstStdoutMs:null,firstStderrMs:null,closeMs:null};
+    const elapsed=()=>Math.max(0,Math.round(performance.now()-started));
     let outputBytes = 0, stderrBytes = 0, stdoutLines = 0, stderrTail = '', sqlTimeout = false;
     const failure = (code, exitCode = null) => {
       const error = new Error(code);
       error.readDiagnostic = Object.freeze({ code, readOrdinal: ordinal,
         elapsedMs: Math.max(0, Math.round(performance.now() - started)),
-        stdoutBytes: outputBytes, stderrBytes, stdoutLines, exitCode });
+        stdoutBytes: outputBytes, stderrBytes, stdoutLines, exitCode,phases:phases.finish(client) });
       return error;
     };
     const child = spawn(executable, ['-X', '-q', '-A', '-t', '-w', '-v', 'ON_ERROR_STOP=1'], {
@@ -136,19 +171,21 @@ export function createProtectedReader({ executable, executableSha256, scope, pas
     });
     const chunks=[]; let failed = null;
     const timer = setTimeout(() => { failed ??= 'U1_READ_TIMEOUT'; child.kill(); }, 15000);
-    child.stdout.on('data', bytes => { outputBytes+=bytes.length;
+    child.stdout.on('data', bytes => { client.firstStdoutMs??=elapsed();outputBytes+=bytes.length;
       for (let at = bytes.indexOf(10); at !== -1; at = bytes.indexOf(10, at + 1)) stdoutLines++;
-      if (outputBytes > 32 * 1024 * 1024) { failed ??= 'U1_READ_OUTPUT_LIMIT'; child.kill(); } else if(!failed)chunks.push(Buffer.from(bytes)); });
+      if (outputBytes+stderrBytes > 32 * 1024 * 1024) { failed ??= 'U1_READ_OUTPUT_LIMIT'; child.kill(); } else if(!failed)chunks.push(Buffer.from(bytes)); });
     child.stderr.on('data', bytes => {
       stderrBytes += bytes.length;
+      client.firstStderrMs??=elapsed();phases.consume(Buffer.from(bytes),elapsed());
+      if(outputBytes+stderrBytes>32*1024*1024){failed??='U1_READ_OUTPUT_LIMIT';child.kill();}
       const text = stderrTail + bytes.toString('utf8');
       sqlTimeout ||= text.includes('canceling statement due to statement timeout');
       stderrTail = text.slice(-64); // Bounded marker carry across chunks; never serialized.
     });
     child.on('error', () => { clearTimeout(timer); reject(failure('U1_READ_PROCESS')); });
-    child.on('close', code => { clearTimeout(timer); stderrTail = '';
+    child.on('close', code => { client.closeMs=elapsed();clearTimeout(timer); stderrTail = '';
       if (failed || code !== 0) return reject(failure(failed ?? (sqlTimeout ? 'U1_READ_SQL_TIMEOUT' : 'U1_READ_EXIT'), code));
       try { resolve(JSON.parse(reassembleProtectedRead(Buffer.concat(chunks)))); } catch { reject(failure('U1_READ_FORMAT', code)); } });
-    child.stdin.on('error', () => { failed ??= 'U1_READ_STDIN'; }); child.stdin.end(sql);
+    child.stdin.on('error', () => { failed ??= 'U1_READ_STDIN'; });client.stdinMs=elapsed(); child.stdin.end(sql);
   });
 }

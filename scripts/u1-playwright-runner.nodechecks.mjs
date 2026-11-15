@@ -80,7 +80,9 @@ test('terminal retains safe original reader diagnostics even when postflight als
   const {adapter,events,options}=fake();let terminal;
   const secret='private-password-and-SQL-never-record';
   const error=new Error(secret);error.readDiagnostic={code:'U1_READ_SQL_TIMEOUT',readOrdinal:2,
-    elapsedMs:10170,stdoutBytes:4900345,stderrBytes:53,stdoutLines:1,exitCode:3};
+    elapsedMs:10170,stdoutBytes:4900345,stderrBytes:53,stdoutLines:1,exitCode:3,
+    phases:{valid:true,complete:false,markers:[{stage:'guard_before',elapsedMs:100}],
+      spawnMs:0,stdinMs:1,firstStdoutMs:200,firstStderrMs:100,closeMs:10170}};
   adapter.setup=async()=>{events.push('setup:0');throw error;};
   adapter.postflight=async()=>{events.push('postflight');throw Error(secret);};
   adapter.record=async record=>{if(record.phase==='terminal')terminal=record;};

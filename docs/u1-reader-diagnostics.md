@@ -1,5 +1,15 @@
 # U1 verification-reader diagnostics
 
+## 2026-11-15 diagnostic extension
+
+The original scope and fixed-code/numeric-only contract below describe the first
+diagnostic revision. They are extended by [client phase markers](u1-reader-phase-markers.md):
+failures may now carry optional bounded, allowlisted `phases` metadata. Canonical
+server SQL remains unchanged, while the executed psql input adds local `\warn`
+commands. The same 32-MiB budget is enforced more strictly across stdout plus
+stderr. Successful snapshots and terminal records remain unchanged. See the
+linked page for current marker validation and client-timing limitations.
+
 ## Scope
 
 The first reader comparison stopped after one confirmed session start and before
