@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import { createHash } from 'node:crypto';
+import assert from 'node:assert/strict';
 
 export const PROTECTED_TABLES = Object.freeze(['inventory_categories', 'stations', 'pricing_rules', 'customers',
   'inventory_items', 'sale_variants', 'combos', 'combo_station_targets', 'combo_fixed_items', 'combo_choice_groups',
@@ -148,13 +149,50 @@ export function reassembleProtectedRead(bytes,{kind='protected'}={}) {
  target.protectedRows=protectedRows;const result=Buffer.from(JSON.stringify(output)+'\n');check(result.length<=32*1024*1024,'Reconstructed capture byte bound');return result;
 }
 
+// Runtime protected reads alone split the stable state/floor fragment into two
+// lossless character pieces. Authority/preflight can contain volatile capture
+// timestamps and must continue using the canonical four-fragment protocol.
+function statePieceSelect(expression,piece){
+ const start=piece===0?'1':'((total_chars+1)/2)+1',count=piece===0?'(total_chars+1)/2':'total_chars-((total_chars+1)/2)';
+ return "WITH state_text AS MATERIALIZED (SELECT ("+expression+")::text AS txt), state_size AS MATERIALIZED (SELECT txt,char_length(txt) AS total_chars,octet_length(txt) AS total_bytes,encode(sha256(convert_to(txt,'UTF8')),'hex') AS digest FROM state_text) SELECT jsonb_build_object('schema','u1-state-piece-v1','kind','protected','part',0,'piece',"+piece+",'fromChar',"+start+",'chars',"+count+",'totalChars',total_chars,'totalBytes',total_bytes,'sha256',digest,'snapshot',pg_current_snapshot()::text,'backend',pg_backend_pid(),'transactionAt',transaction_timestamp())::text || E'\\t' || substring(txt FROM "+start+" FOR "+count+") FROM state_size;\n";
+}
+export function renderProtectedReadRuntime(scope){
+ assert.deepEqual(Object.keys(scope).sort(),['auditIds','customerIds','customerNames','mutationIds','sessionIds'],'Protected scope only');
+ const plan=buildProtectedReadParts(scope),canonical=renderProtectedReadParts(plan),end=canonical.indexOf(');\n',plan.header.length)+3;
+ check(plan.kind==='protected'&&plan.parts[0].prefix===''&&end>plan.header.length,'Fixed protected part0');
+ const first=canonical.slice(plan.header.length,end),expression=first.slice(7,-2).trimEnd();
+ check(first.startsWith('SELECT jsonb_build_object(')&&expression.endsWith(')')&&!expression.includes('clock_timestamp'),'Stable protected expression');
+ const execution=renderProtectedReadExecution(plan),pieces=statePieceSelect(expression,0)+statePieceSelect(expression,1);
+ check(execution.split(first).length===2,'Unique state statement');
+ const output=execution.replace(first,pieces);check(output.replace(pieces,first)===execution,'Only state transport changes');return output;
+}
+function codepoints(text){let count=0;for(const character of text)count++;return count;}
+export function reassembleProtectedRuntime(bytes){
+ const limit=32*1024*1024,keys=v=>Object.keys(v).sort().join(','),expectedKeys=['schema','kind','part','piece','fromChar','chars','totalChars','totalBytes','sha256','snapshot','backend','transactionAt'].sort().join(',');
+ check(Buffer.isBuffer(bytes)&&bytes.length>0&&bytes.length<=limit,'Aggregate byte bound');
+ const text=new TextDecoder('utf-8',{fatal:true}).decode(bytes);check(text.endsWith('\n'),'Complete records required');const lines=text.slice(0,-1).split('\n');check(lines.length===5,'Exactly two pieces and three fragments');
+ let first=null,joined='',next=1;
+ for(let i=0;i<2;i++){
+  const at=lines[i].indexOf('\t');check(at>0,'Piece separator');const h=JSON.parse(lines[i].slice(0,at)),piece=lines[i].slice(at+1);
+  check(keys(h)===expectedKeys&&h.schema==='u1-state-piece-v1'&&h.kind==='protected'&&h.part===0&&h.piece===i,'Exact piece schema/order');check(!/[\t\r\n]/.test(piece)&&Buffer.byteLength(piece)<=limit,'Piece delimiters/bytes');
+  for(const k of ['fromChar','chars','totalChars','totalBytes'])check(Number.isSafeInteger(h[k])&&h[k]>=0,'Integer coverage');
+  check(h.totalChars>0&&h.totalBytes>0&&h.totalBytes<=limit&&h.fromChar===next&&h.chars===(i===0?Math.ceil(h.totalChars/2):Math.floor(h.totalChars/2))&&codepoints(piece)===h.chars,'Exact Unicode coverage');
+  check(typeof h.sha256==='string'&&/^[a-f0-9]{64}$/.test(h.sha256)&&typeof h.snapshot==='string'&&/^\d+:\d+:(?:\d+(?:,\d+)*)?$/.test(h.snapshot)&&Number.isSafeInteger(h.backend)&&h.backend>0&&typeof h.transactionAt==='string'&&Number.isFinite(Date.parse(h.transactionAt)),'Piece digest/identity');
+  if(first)for(const k of ['schema','kind','part','totalChars','totalBytes','sha256','snapshot','backend','transactionAt'])check(h[k]===first[k],'Identical piece identity/coverage');else first=h;
+  joined+=piece;next+=h.chars;
+ }
+ check(next===first.totalChars+1&&Buffer.byteLength(joined)===first.totalBytes&&createHash('sha256').update(joined).digest('hex')===first.sha256,'Complete original fragment digest');
+ const original=JSON.parse(joined);check(original.schema==='u1-protected-fragment-v1'&&original.kind==='protected'&&original.part===0,'Original protected fragment');for(const k of ['snapshot','backend','transactionAt'])check(original[k]===first[k],'Original fragment identity');
+ const reconstructed=Buffer.from(joined+'\n'+lines.slice(2).join('\n')+'\n');check(reconstructed.length<=limit,'Reconstructed byte bound');return reassembleProtectedRead(reconstructed);
+}
+
 // Uses the already pinned restore-tool psql binary. No install, migration, provider
 // API, secret discovery or interactive password prompt is performed.
 export function createProtectedReader({ executable, executableSha256, scope, password, user, sslRootCert }) {
   check(typeof password === 'string' && password && typeof user === 'string' && /^[A-Za-z0-9_]+$/.test(user), 'Missing explicit staging read credentials');
   check(typeof sslRootCert === 'string' && fs.existsSync(sslRootCert), 'Explicit TLS trust certificate required');
   check(createHash('sha256').update(fs.readFileSync(executable)).digest('hex') === executableSha256, 'Read tool bytes changed');
-  const sql = renderProtectedReadExecution(buildProtectedReadParts(scope));
+  const sql = renderProtectedReadRuntime(scope);
   let readOrdinal = 0;
   return () => new Promise((resolve, reject) => {
     const ordinal = ++readOrdinal, started = performance.now();
@@ -190,7 +228,7 @@ export function createProtectedReader({ executable, executableSha256, scope, pas
     child.on('error', () => { clearTimeout(timer); reject(failure('U1_READ_PROCESS')); });
     child.on('close', code => { client.closeMs=elapsed();clearTimeout(timer); stderrTail = '';
       if (failed || code !== 0) return reject(failure(failed ?? (sqlTimeout ? 'U1_READ_SQL_TIMEOUT' : 'U1_READ_EXIT'), code));
-      try { resolve(JSON.parse(reassembleProtectedRead(Buffer.concat(chunks)))); } catch { reject(failure('U1_READ_FORMAT', code)); } });
+      try { resolve(JSON.parse(reassembleProtectedRuntime(Buffer.concat(chunks)))); } catch { reject(failure('U1_READ_FORMAT', code)); } });
     child.stdin.on('error', () => { failed ??= 'U1_READ_STDIN'; });client.stdinMs=elapsed(); child.stdin.end(sql);
   });
 }

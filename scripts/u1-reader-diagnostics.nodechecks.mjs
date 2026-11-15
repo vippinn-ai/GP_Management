@@ -49,10 +49,12 @@ test('phase metadata retains only ordered client-observed prefix and rejects mal
 
 const envelope = () => {
   const common={schema:'u1-protected-fragment-v1',kind:'protected',snapshot:'1:2:',backend:123,transactionAt:'2026-11-14T19:00:00Z'};
-  return [ {...common,part:0,payload:{appState:{id:'primary'},floor:{}}},
+  const lines=[ {...common,part:0,payload:{appState:{id:'primary'},floor:{}}},
     ...PROTECTED_GROUPS.map((group,i)=>({...common,part:i+1,payload:{protectedRows:{
       ...Object.fromEntries(group.map(t=>[t,[]])),_unowned:Object.fromEntries(group.map(t=>[t,{count:0,md5:'0'.repeat(32)}]))}}}))
-  ].map(x=>JSON.stringify(x)).join('\n')+'\n';
+  ].map(x=>JSON.stringify(x));
+  const text=lines[0],half=Math.ceil(text.length/2);
+  return [text.slice(0,half),text.slice(half)].map((p,i)=>JSON.stringify({schema:'u1-state-piece-v1',kind:'protected',part:0,piece:i,fromChar:i?half+1:1,chars:p.length,totalChars:text.length,totalBytes:Buffer.byteLength(text),sha256:createHash('sha256').update(text).digest('hex'),snapshot:common.snapshot,backend:common.backend,transactionAt:common.transactionAt})+'\t'+p).concat(lines.slice(1)).join('\n')+'\n';
 };
 test('actual reader reports bounded failure categories without raw diagnostics or changed SQL limits',async()=>{
   const dir=fs.mkdtempSync(path.join(os.tmpdir(),'u1-read-diagnostic-'));

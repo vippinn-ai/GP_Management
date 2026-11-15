@@ -6,7 +6,7 @@ import {draftIdentityPlan,prepareDraft,isComparisonApplicationCommit,HARNESS_BAS
 const check=(ok,message)=>{if(!ok)throw new Error(message);};
 export const PREFLIGHT_CAPTURE_LIMITS=Object.freeze({statementMs:5000,lockMs:1000,processMs:15000,maxBytes:32*1024*1024});
 const q=value=>`'${String(value).replaceAll("'","''")}'`;
-const sourcePins=Object.freeze({'u1-protected-reader.mjs':'19073aeeb0b87a2b7ca822f010701411f4cd3d535d400b89f0c9f669ae8ee359','u1-package-builder.mjs':'0191e0780dcb616bd6f90632e41b2d5a664c1d5031ffa8a69a80385502686cd4'});
+const sourcePins=Object.freeze({'u1-protected-reader.mjs':'a5cd64caad972e032abff0512cc6baeec0ac02f20ca1bf896e5116850ff079ce','u1-package-builder.mjs':'0191e0780dcb616bd6f90632e41b2d5a664c1d5031ffa8a69a80385502686cd4'});
 export function buildCombinedPreflight({runId,applicationCommit,harnessCommit,actorIds,stationIds}){
  for(const [file,hash] of Object.entries(sourcePins))check(createHash('sha256').update(fs.readFileSync(new URL(file,import.meta.url))).digest('hex')===hash,'Frozen collector input drift');
  check(isComparisonApplicationCommit(applicationCommit)&&harnessCommit===HARNESS_BASE_COMMIT,'Wrong source baseline');

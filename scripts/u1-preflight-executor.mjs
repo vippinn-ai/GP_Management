@@ -6,7 +6,7 @@ import {buildCombinedPreflight,decodePreflightCapture} from './u1-preflight-coll
 import {reassembleProtectedRead} from './u1-protected-reader.mjs';
 const check=(ok,message)=>{if(!ok)throw new Error(message);};
 const sha=b=>createHash('sha256').update(b).digest('hex');
-const PINS={'u1-preflight-collector.mjs':'379af386f9bff42b0d946e259f0e2af0aaa915b352e8c07c893ba9b6f426da4b','u1-package-builder.mjs':'0191e0780dcb616bd6f90632e41b2d5a664c1d5031ffa8a69a80385502686cd4'};
+const PINS={'u1-preflight-collector.mjs':'d29df3b763313f4c909454ec6f42f02450e1e249db62e09c77756da3b81e01de','u1-package-builder.mjs':'0191e0780dcb616bd6f90632e41b2d5a664c1d5031ffa8a69a80385502686cd4'};
 const DEADLINE=15000,MAX_BYTES=32*1024*1024,TEARDOWN=2000;
 function checkedFile(file,hash){
  check(typeof file==='string'&&path.isAbsolute(file)&&fs.realpathSync(file)===path.resolve(file),'Canonical file required');
